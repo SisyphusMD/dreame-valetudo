@@ -7,7 +7,7 @@
   "prHourlyLimit": 0,
   "separateMinorPatch": true,
   "fetchChangeLogs": "pr",
-  "enabledManagers": ["pep621", "github-actions", "custom.regex"],
+  "enabledManagers": ["pep621", "github-actions", "dockerfile", "custom.regex"],
   "github-actions": {
     "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"]
   },

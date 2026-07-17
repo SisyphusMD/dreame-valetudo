@@ -1,12 +1,13 @@
 name: Publish
 
-# Tag-triggered (from release.yml): build the .deb + tarball and create the release on each forge.
-# The GitHub mirror's release-macos.yml appends the signed .pkg; the `nas-pkg` job here bridges
-# that .pkg to the NAS. See packaging/README.md for the secrets.
+# Tag-triggered (from release.yml / prerelease.yml): build both .debs + the tarball and create the
+# release on each forge. The GitHub mirror's release-macos.yml appends the signed .pkgs; the
+# reconcile job here fans every asset out to all three registries (and backfills any historical gap).
+# See packaging/README.md for the secrets.
 on:
   push:
     # Stable (v1.2.3) and prerelease (v1.2.3-rc.N) tags both build here; the release helpers mark
-    # the hyphenated ones as prereleases, and the homebrew-tap job below skips them.
+    # the hyphenated ones as prereleases, and the tap job writes them to the separate -rc formula.
     tags: ["v*.*.*", "v*.*.*-*"]
 
 permissions:
@@ -14,72 +15,56 @@ permissions:
 
 jobs:
   releases:
-    name: Build .deb + tarball, create releases (Forgejo, NAS, GitHub)
+    name: Build .debs + tarball, create releases (Forgejo, NAS, GitHub)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Enable arm64 emulation (to build the arm64 sunxi-fel + bundle)
-        run: |
-          # setup-qemu-action can report success while leaving no usable handler (a stale binfmt
-          # entry makes its installer skip), so drive binfmt directly: re-register from scratch
-          # with the install output in this log. Best-effort — the build step probes emulation and
-          # downgrades a broken QEMU to an arm64-only skip.
-          # renovate: datasource=docker depName=tonistiigi/binfmt
-          BINFMT="tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
-          docker run --privileged --rm "$BINFMT" --uninstall qemu-aarch64 || true
-          docker run --privileged --rm "$BINFMT" --install arm64 \
-            || echo "::warning::binfmt install failed; the arm64 leg will be skipped by its probe"
+      # Both .debs are built through buildx, the way the sister repos build their arm64 images: the
+      # docker-container BuildKit driver carries QEMU, so the arm64 leg emulates INSIDE the builder.
+      # This runner is a Talos node with no usable host binfmt for a plain `docker run --platform
+      # arm64` (that gets `exec format error`); buildx sidesteps it, and its context/output are
+      # client-side streams so the DinD workspace-visibility problem doesn't apply either.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build per-arch bundles (main + fastboot client) + sunxi-fel, package the .debs + tarball
+      - name: Build both .debs (buildx) + the tarball
         run: |
           set -euo pipefail
           # Read the pins from the Python constants so there's ONE source of truth (Renovate-tracked).
           read_pin() { python3 -c "import re,sys; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           export VERSION="${GITHUB_REF_NAME#v}"
+          # renovate: datasource=pypi depName=pyinstaller
+          PYINSTALLER="6.21.0"
           # nfpm packages the .debs. Pinned image; its digest IS the integrity check (Renovate-kept).
           # renovate: datasource=docker depName=goreleaser/nfpm
           NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
-          # The bundle is per-arch (PyInstaller can't cross-compile), so each arch builds
-          # sunxi-fel + the main bundle + the fastboot client inside a python:3.14 container of that
-          # arch, then nfpm packages ./dist/* + ./sunxi-fel.
-          # renovate: datasource=docker depName=python
-          PYIMG="python:3.14.6-bookworm@sha256:5dcba30b5f8fbd97e2f35dd1b140b3c94db70bd01b39ed88365732f8db8f68b5"
-          # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.21.0"
-          # The runner's docker daemon is a DinD sidecar that can't see the job workspace (a $PWD
-          # bind-mount comes up empty), so each container gets the tree copied in and the build
-          # products copied out over the API.
-          build_arch() { # build_arch <docker-platform> <deb-arch>
-            CID=$(docker create --platform "$1" -e SREF="$SREF" -e PYUSB="$PYUSB" -e PYINSTALLER="$PYINSTALLER" -w /w "$PYIMG" bash -c '
-              set -euo pipefail
-              apt-get update -qq && apt-get install -y -qq git make gcc pkg-config libusb-1.0-0-dev libfdt-dev zlib1g-dev
-              pip install --quiet --root-user-action=ignore "pyinstaller==$PYINSTALLER" "pyusb==$PYUSB"
-              git clone -q https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx && git -C /tmp/sx checkout -q "$SREF"
-              make -C /tmp/sx clean >/dev/null 2>&1 || true; make -C /tmp/sx sunxi-fel && cp /tmp/sx/sunxi-fel /w/sunxi-fel
-              rm -rf /w/dist && bash packaging/build-bundle.sh /w/dist && bash packaging/build-fastboot-client.sh /w/dist')
+
+          build_deb() { # build_deb <docker-platform> <deb-arch>
+            local plat="$1" arch="$2"
+            # buildx builds the per-arch bundle (main tool + fastboot client + sunxi-fel) and exports
+            # just those native binaries. The base image is pinned in deb.Dockerfile; the sunxi/pyusb/
+            # pyinstaller pins ride in as build-args.
+            rm -rf "out-$arch"
+            docker buildx build --platform "$plat" \
+              --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
+              -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
+            # Lay the exported binaries out where nfpm.yaml expects them, then package with the pinned
+            # nfpm image. nfpm is arch-independent (DEB_ARCH only labels the package), so it runs on
+            # the amd64 runner natively — via docker create+cp, since the DinD daemon can't bind-mount
+            # the job workspace.
+            rm -rf dist && mkdir dist
+            cp "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
+            cp "out-$arch/sunxi-fel" ./sunxi-fel
+            CID=$(docker create -e DEB_ARCH="$arch" -e VERSION -w /w "$NFPM" package -p deb -f packaging/nfpm.yaml -t "/w/dreame-valetudo_$arch.deb")
             docker cp . "$CID":/w
             docker start -a "$CID"
-            rm -rf dist sunxi-fel
-            docker cp "$CID":/w/dist ./dist
-            docker cp "$CID":/w/sunxi-fel ./sunxi-fel
-            docker rm "$CID" >/dev/null
-            CID=$(docker create -e DEB_ARCH="$2" -e VERSION -w /w "$NFPM" package -p deb -f packaging/nfpm.yaml -t "/w/dreame-valetudo_$2.deb")
-            docker cp . "$CID":/w
-            docker start -a "$CID"
-            docker cp "$CID":"/w/dreame-valetudo_$2.deb" .
+            docker cp "$CID":"/w/dreame-valetudo_$arch.deb" .
             docker rm "$CID" >/dev/null
           }
-          build_arch linux/amd64 amd64
-          # Probe emulation with the image the leg would build in anyway: broken QEMU must cost
-          # only the arm64 .deb — never the amd64 .deb, tarball, releases, tap, or NAS bridge.
-          # A real build failure under working emulation still fails the job loudly.
-          if docker run --rm --platform linux/arm64 "$PYIMG" true 2>/dev/null; then
-            build_arch linux/arm64 arm64
-          else
-            echo "::warning::arm64 emulation unavailable — skipping the arm64 .deb; fix emulation and re-run publish for this tag to append it"
-          fi
+          build_deb linux/amd64 amd64
+          build_deb linux/arm64 arm64
           # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
           bash packaging/build-tarball.sh
           ls -l ./*.deb ./*.tar.gz
@@ -100,9 +85,7 @@ jobs:
             "${{ secrets.GH_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}"
 
   homebrew-tap:
-    name: Update the Homebrew tap formula
-    # Stable only — brew must never track a prerelease (hyphenated tag).
-    if: ${{ !contains(github.ref_name, '-') }}
+    name: Update the Homebrew tap formula (stable or -rc per tag)
     needs: releases
     runs-on: ubuntu-latest
     steps:
@@ -112,9 +95,10 @@ jobs:
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
         run: |
           set -euo pipefail
-          # The tap is Forgejo-primary (Forgejo is the source of truth): write the formula here, and
-          # the tap's own sync_on_commit push-mirror fans this commit out to GitHub (where `brew`
-          # fetches the tap from) + NAS — no explicit sync call, which a repo-scoped token can't make.
+          # The tap is Forgejo-primary: write the formula here, and the tap's own sync_on_commit
+          # push-mirror fans this commit out to GitHub (where `brew` fetches it) + NAS. A stable tag
+          # writes Formula/dreame-valetudo.rb; a prerelease tag writes the separate
+          # Formula/dreame-valetudo-rc.rb, so the stable formula never points at a candidate build.
           AUTH="http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
           git -c "$AUTH" clone "${GITHUB_SERVER_URL}/SisyphusMD/homebrew-tap.git" tap
           chmod +x packaging/update-tap.sh
@@ -122,36 +106,36 @@ jobs:
           cd tap
           git config user.name "forgejo-actions[bot]"
           git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add Formula/dreame-valetudo.rb
+          git add Formula/
           git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v}" || { echo "no change to publish"; exit 0; }
           git -c "$AUTH" push
 
-  nas-pkg:
-    name: Bridge the macOS .pkg → NAS
+  reconcile:
+    name: Reconcile releases across registries (bridge .pkgs to NAS, heal history)
     needs: releases
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Wait for the .pkg on the public Forgejo release, then copy to NAS
+        with:
+          fetch-depth: 0  # all tags needed for the reconcile loop
+      - name: Wait for the current release's GitHub-built .pkgs, then reconcile every tag
+        env:
+          CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
+          GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           API=https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo
-          # The .pkg is built + notarized on GitHub (slow), then appended to the public Forgejo
-          # release. Wait for it (up to 30 min), then copy to NAS.
-          urls=""
+          # The signed .pkgs build on GitHub (slow) and land on the public Forgejo release minutes
+          # later. Wait so the current tag's .pkgs are in the union before the fan-out; a timeout just
+          # defers them to the next release's reconcile.
+          n=0
           for _ in $(seq 1 180); do
-            urls=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" \
-              | jq -r '.assets[]? | select(.name | endswith(".pkg")) | .browser_download_url' || true)
-            [ -n "$urls" ] && break
+            n=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" \
+                | jq -r '[.assets[]?.name | select(endswith(".pkg"))] | length' 2>/dev/null || echo 0)
+            [ "${n:-0}" -ge 2 ] && break
             sleep 10
           done
-          if [ -z "$urls" ]; then
-            echo "::warning::no .pkg on the Forgejo release after 30m; NAS release will lack it"
-            exit 0
-          fi
-          # -f: an HTTP error must fail the job, not upload an error page to the NAS release as a .pkg.
-          echo "$urls" | while read -r u; do [ -n "$u" ] || continue; curl -fsSL -O "$u" || exit 1; done
-          bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
-          chmod +x packaging/forgejo-release.sh
-          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
-            "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md ./*.pkg
+          [ "${n:-0}" -ge 2 ] || echo "::warning::current tag's .pkgs not present after 30m; reconcile fans out what exists and heals the rest next release"
+          chmod +x packaging/reconcile-releases.sh packaging/forgejo-release.sh packaging/github-release.sh
+          bash packaging/reconcile-releases.sh
