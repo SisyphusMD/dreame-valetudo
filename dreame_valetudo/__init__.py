@@ -4,4 +4,4 @@ The behaviour of every external-command sequence is pinned by the test harness u
 tests/python/ (transcript assertions + goldens), so it can't silently drift.
 """
 
-__version__ = "0.0.0"
+__version__ = "0.1.0-rc.3"
