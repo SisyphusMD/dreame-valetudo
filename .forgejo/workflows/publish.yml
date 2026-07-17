@@ -20,7 +20,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Enable arm64 emulation (to build the arm64 sunxi-fel + bundle)
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        run: |
+          # setup-qemu-action can report success while leaving no usable handler (a stale binfmt
+          # entry makes its installer skip), so drive binfmt directly: re-register from scratch
+          # with the install output in this log. Best-effort — the build step probes emulation and
+          # downgrades a broken QEMU to an arm64-only skip.
+          # renovate: datasource=docker depName=tonistiigi/binfmt
+          BINFMT="tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+          docker run --privileged --rm "$BINFMT" --uninstall qemu-aarch64 || true
+          docker run --privileged --rm "$BINFMT" --install arm64 \
+            || echo "::warning::binfmt install failed; the arm64 leg will be skipped by its probe"
 
       - name: Build per-arch bundles (main + fastboot client) + sunxi-fel, package the .debs + tarball
         run: |
@@ -63,7 +72,14 @@ jobs:
             docker rm "$CID" >/dev/null
           }
           build_arch linux/amd64 amd64
-          build_arch linux/arm64 arm64
+          # Probe emulation with the image the leg would build in anyway: broken QEMU must cost
+          # only the arm64 .deb — never the amd64 .deb, tarball, releases, tap, or NAS bridge.
+          # A real build failure under working emulation still fails the job loudly.
+          if docker run --rm --platform linux/arm64 "$PYIMG" true 2>/dev/null; then
+            build_arch linux/arm64 arm64
+          else
+            echo "::warning::arm64 emulation unavailable — skipping the arm64 .deb; fix emulation and re-run publish for this tag to append it"
+          fi
           # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
           bash packaging/build-tarball.sh
           ls -l ./*.deb ./*.tar.gz
