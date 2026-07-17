@@ -28,9 +28,11 @@ release helpers.
 
 1. **Cut it on Forgejo**: run the **Release** workflow (`.forgejo/workflows/release.yml`) from
    the Forgejo UI and pick `patch` / `minor` / `major`. (First release on a fresh repo: dispatch
-   `minor` → `0.1.0`.) It promotes `## [Unreleased]` in the CHANGELOG, bumps the `VERSION` line in
-   the script, runs the lint/smoke gate, commits, tags, and pushes. The push-mirror fans the
-   commit + tag out to GitHub and the NAS Forgejo.
+   `minor` → `0.1.0`.) It promotes `## [Unreleased]` in the CHANGELOG — appending a `### Dependencies`
+   list of the Renovate `(chore|fix)(deps):` bumps since the previous release, **deduped to the
+   latest bump per dependency** (so an image bumped several times shows only its newest version) —
+   bumps the version in `pyproject.toml` + the package `__init__`, runs the lint/smoke gate, commits,
+   tags, and pushes. The push-mirror fans the commit + tag out to GitHub and the NAS Forgejo.
 2. **Forgejo `publish.yml`** (tag-triggered): builds **both `.deb`s** (buildx) and the **tarball**,
    **creates the release on all three** forges (Forgejo, NAS, GitHub) with the CHANGELOG section as
    the notes + those assets, and **updates the Homebrew tap** — the stable formula for a plain tag,
