@@ -179,6 +179,19 @@ jobs:
           shellcheck -S warning packaging/*.sh tests/integration/*.sh
           for t in tests/integration/*.sh; do bash "$t"; done
 
+      - name: Sync uv.lock to the bumped version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The bump moves pyproject's version; re-lock so uv.lock's own project entry matches, else
+          # the next local `uv` run dirties the tree. Plain `uv lock` preserves every existing
+          # dependency pin — only the project's own version field changes.
+          python -m pip install uv
+          uv lock
+          grep -A2 'name = "dreame-valetudo"' uv.lock | grep -qE "^version = \"${VERSION}\"" \
+            || { echo "::error::uv.lock project version not synced to ${VERSION}"; exit 1; }
+
       - name: Commit, tag, push
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -187,8 +200,8 @@ jobs:
         run: |
           set -euo pipefail
           # Stage the files the bump actually touched — the version of record lives in pyproject.toml
-          # and the package __init__.
-          git add CHANGELOG.md README.md pyproject.toml dreame_valetudo/__init__.py
+          # and the package __init__, and uv.lock carries the project's own version too.
+          git add CHANGELOG.md README.md pyproject.toml dreame_valetudo/__init__.py uv.lock
           git commit -m "release: ${VERSION}"
           # Fail closed: never tag a commit that doesn't actually carry the version bump.
           git show "HEAD:pyproject.toml" | grep -qE "^version = \"${VERSION}\"" \
