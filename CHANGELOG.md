@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **docs**: the Homebrew install steps now include the one-time `brew trust sisyphusmd/tap`
+  (Homebrew 6.0+ refuses to load formulae from an untrusted third-party tap).
+
 ## [0.1.0] - 2026-07-17
 
 A guided, idempotent, one-command tool to root supported Dreame robot vacuums and install

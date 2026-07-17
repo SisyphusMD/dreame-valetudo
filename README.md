@@ -123,10 +123,14 @@ One command on any OS/arch: macOS (Apple Silicon or Intel) or Linux (amd64 or ar
 source build, so nothing here is arch-specific. Install Homebrew first if you don't have it
 (see <https://brew.sh>), then:
 ```bash
+brew tap sisyphusmd/tap
+brew trust sisyphusmd/tap    # one-time; Homebrew 6+ won't load a third-party tap until you trust it
 brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
-Builds `sunxi-fel` from source on the first run (one-time). Both OSes use the **same** libusb
+`brew trust` is a one-time step — Homebrew 6.0+ won't load a non-official tap until you trust it,
+and the trust is saved on disk so you never repeat it (it also covers the `-rc` formula). Builds
+`sunxi-fel` from source on the first run (one-time). Both OSes use the **same** libusb
 fastboot client, so nothing else is needed and it's one command everywhere. **On Linux**,
 grant USB access once so you don't need `sudo` (the formula ships the rule):
 ```bash
