@@ -6,6 +6,7 @@ from pathlib import Path
 
 from conftest import ScriptedConsole
 
+from dreame_valetudo import __version__
 from dreame_valetudo.cli import main
 from dreame_valetudo.run import RecordingRunner, Result
 
@@ -17,7 +18,9 @@ def _has(console: ScriptedConsole, needle: str) -> bool:
 def test_main_version() -> None:
     con = ScriptedConsole()
     assert main(["version"], env={}, console=con, runner=RecordingRunner()) == 0
-    assert _has(con, "dreame-valetudo 0.0.0")
+    # Track __version__ rather than a literal: release/prerelease stamp the real version
+    # before running this gate, so a hardcoded string would fail exactly there.
+    assert _has(con, f"dreame-valetudo {__version__}")
 
 
 def test_main_help() -> None:
