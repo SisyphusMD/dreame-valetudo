@@ -55,6 +55,9 @@ jobs:
       - name: Build sunxi-fel + the PyInstaller fastboot client
         run: |
           set -euo pipefail
+          # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
+          # call; we install only homebrew-core formulae, so drop the stray tap instead.
+          brew untap aws/tap 2>/dev/null || true
           brew install libusb dtc pkg-config
           # sunxi-fel (pin must match SUNXI_TOOLS_REF in the main script). Builds native to the runner.
           git clone https://github.com/linux-sunxi/sunxi-tools.git /tmp/sunxi-tools
