@@ -30,7 +30,7 @@ echo "release id on $host: $id"
 
 for f in "$@"; do
   name=$(basename "$f")
-  rel_delete_asset "$api/releases/$id/assets" "$name"
+  rel_delete_asset "$api/releases/$id/assets" "$api/releases/$id/assets" "$name"
   curl -fsS "${auth[@]}" -X POST "$api/releases/$id/assets?name=$name" -F "attachment=@$f" >/dev/null
   echo "  uploaded $name -> $host"
 done

@@ -23,10 +23,12 @@ rel_release_id() {
   curl -sf "${auth[@]}" "$1/tags/$2" 2>/dev/null | jq -r '.id // empty' || true
 }
 
-# rel_delete_asset <assets-api> <name> — delete a same-named asset (so a re-run replaces it). Uses
-# $auth. <assets-api> is the ".../releases/<id>/assets" base. No-op if absent.
+# rel_delete_asset <list-api> <delete-base> <name> — delete a same-named asset (so a re-run
+# replaces it rather than 422-ing on GitHub). Uses $auth. The LIST url and the DELETE base differ by
+# forge: Forgejo deletes at .../releases/<id>/assets/<aid> (same as the list base), but GitHub
+# deletes at .../releases/assets/<aid> (no release id) — so the caller passes both. No-op if absent.
 rel_delete_asset() {
   local old
-  old=$(curl -sf "${auth[@]}" "$1" 2>/dev/null | jq -r ".[] | select(.name==\"$2\") | .id" || true)
-  [ -n "$old" ] && curl -sf "${auth[@]}" -X DELETE "$1/$old" >/dev/null || true
+  old=$(curl -sf "${auth[@]}" "$1" 2>/dev/null | jq -r ".[] | select(.name==\"$3\") | .id" || true)
+  [ -n "$old" ] && curl -sf "${auth[@]}" -X DELETE "$2/$old" >/dev/null || true
 }

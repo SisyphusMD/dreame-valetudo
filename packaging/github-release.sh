@@ -31,7 +31,7 @@ echo "GitHub release id: $id"
 
 for f in "$@"; do
   name=$(basename "$f")
-  rel_delete_asset "$api/releases/$id/assets" "$name"
+  rel_delete_asset "$api/releases/$id/assets" "$api/releases/assets" "$name"
   curl -sSf -H "Authorization: Bearer $token" -H "Content-Type: application/octet-stream" \
     --data-binary @"$f" "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$name" >/dev/null
   echo "  uploaded $name -> GitHub"

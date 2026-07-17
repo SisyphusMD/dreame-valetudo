@@ -77,4 +77,41 @@ for spec in "forgejo forge.example tok v9.9.9-rc.1" "github tok v9.9.9-rc.1"; do
 done
 echo "  prerelease flag: rc tag -> prerelease:true, stable tag -> prerelease:false (both forges) OK"
 
+# ---- asset REPLACE: deleting a same-named asset must hit each forge's CORRECT delete URL ----
+# Regression: GitHub deletes at /releases/assets/<id> (no release id); Forgejo at
+# /releases/<id>/assets/<id>. A wrong URL silently no-ops, so the re-upload 422s (reconcile does this
+# for every already-present asset). The prior stub returned an EMPTY asset list, so this path — and
+# the bug — went untested. This stub returns an EXISTING same-named asset so the delete actually fires.
+cat > "$tmp/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >> "$calls"
+u="\$*"
+case "\$u" in
+  *"-X DELETE"*) : ;;
+  *assets*)
+    case "\$u" in
+      *"attachment=@"*|*"--data-binary"*) : ;;
+      *) printf '[{"name":"dreame-valetudo_amd64.deb","id":42}]\n' ;;
+    esac ;;
+  *"/releases/tags/"*) printf '{"id":999}\n' ;;
+  *"/releases"*) printf '{"id":999}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/curl"
+
+: > "$calls"
+bash "$root/packaging/github-release.sh" tok v9.9.9 "$notes" "$asset" >/dev/null 2>&1 || fail "github-release.sh (replace) nonzero"
+grep -Eq 'DELETE .*api\.github\.com/repos/SisyphusMD/dreame-valetudo/releases/assets/42' "$calls" \
+  || fail "github: same-named asset delete must hit /releases/assets/<id> (no release id)"
+! grep -q 'releases/999/assets/42' "$calls" \
+  || fail "github: asset delete wrongly kept the release id (/releases/999/assets/42) — this is the 422 bug"
+echo "  github-release.sh: asset delete uses the correct /releases/assets/<id> URL OK"
+
+: > "$calls"
+bash "$root/packaging/forgejo-release.sh" forge.example tok v9.9.9 "$notes" "$asset" >/dev/null 2>&1 || fail "forgejo-release.sh (replace) nonzero"
+grep -Eq 'DELETE .*forge\.example/api/v1/repos/SisyphusMD/dreame-valetudo/releases/999/assets/42' "$calls" \
+  || fail "forgejo: same-named asset delete must hit /releases/<id>/assets/<id>"
+echo "  forgejo-release.sh: asset delete uses the /releases/<id>/assets/<id> URL OK"
+
 echo "PASS: both release scripts issue their expected create+upload calls via the shared release-common.sh helpers"
