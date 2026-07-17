@@ -154,7 +154,9 @@ jobs:
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
         run: |
           set -euo pipefail
-          # The branch push above trips sync_on_commit, but force a sync so the tag is guaranteed to
-          # reach GitHub (fires the signed .pkg) and NAS without waiting out the 8h mirror interval.
+          # Best-effort: sync-on-commit propagates the branch + tag pushes immediately in practice,
+          # and this endpoint needs more than the PAT's write:repository scope (403 otherwise).
+          # Warn-only so a scope refusal never fails a release whose refs already fanned out.
           curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync"
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync" \
+            || echo "::warning::push_mirrors-sync refused (PAT scope); relying on sync_on_commit"

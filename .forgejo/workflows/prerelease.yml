@@ -123,8 +123,9 @@ jobs:
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
         run: |
           set -euo pipefail
-          # A tag-only push may not trip the mirrors' sync-on-commit, and their fallback interval is
-          # 8h. Force an immediate sync so the tag reaches GitHub (fires the signed .pkg build) and
-          # NAS (so publish.yml's wait-for-tag on those forges doesn't stall).
+          # Best-effort: sync-on-commit propagates tag pushes immediately in practice, and this
+          # endpoint needs more than the PAT's write:repository scope (403 otherwise). Warn-only so
+          # a scope refusal never fails a release whose tag already fanned out.
           curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync"
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync" \
+            || echo "::warning::push_mirrors-sync refused (PAT scope); relying on sync_on_commit"
