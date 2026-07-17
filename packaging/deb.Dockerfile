@@ -17,11 +17,21 @@ RUN apt-get update -qq \
  && apt-get install -y -qq git make gcc pkg-config libusb-1.0-0-dev libfdt-dev zlib1g-dev
 RUN pip install --quiet --root-user-action=ignore "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
 # sunxi-fel: cloned + built before the repo COPY so it caches independently of source edits.
+# Pre-generate version.h ourselves rather than let make run sunxi's autoversion.sh: that script has
+# no shebang, and qemu-user (the arm64 emulation) doesn't do the shell's ENOEXEC fallback, so a
+# `make`-invoked `./autoversion.sh` fails under emulation (it works natively). A pre-written
+# version.h has no prerequisites, so make treats it as up to date and never runs the script.
 RUN git clone -q https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx \
  && git -C /tmp/sx checkout -q "${SREF}" \
+ && printf '/* Auto-generated: do not edit */\n#define VERSION "%s"\n' \
+      "$(git -C /tmp/sx describe --tags --dirty --always 2>/dev/null || echo "${SREF}")" > /tmp/sx/version.h \
  && make -C /tmp/sx sunxi-fel
 WORKDIR /w
 COPY . /w
+# The build scripts smoke-test the frozen binaries by running them (dreame-valetudo version, the
+# fastboot client's usage). Under the emulated arm64 leg this runs a PyInstaller onefile through
+# qemu-user; keeping it as a real check — if qemu genuinely can't run it, the failure here tells us,
+# and only then would we make it native-only.
 RUN bash packaging/build-bundle.sh /w/dist \
  && bash packaging/build-fastboot-client.sh /w/dist \
  && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel
