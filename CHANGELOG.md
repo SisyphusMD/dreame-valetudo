@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-17
+
 A guided, idempotent, one-command tool to root supported Dreame robot vacuums and install
 [Valetudo](https://valetudo.cloud), on macOS or Linux.
 
