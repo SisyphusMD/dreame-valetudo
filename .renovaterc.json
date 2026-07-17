@@ -1,0 +1,93 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "gitAuthor": "Renovate Bot <renovate@bryantserver.local>",
+  "assignees": ["cody"],
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "separateMinorPatch": true,
+  "fetchChangeLogs": "pr",
+  "enabledManagers": ["pep621", "github-actions", "custom.regex"],
+  "github-actions": {
+    "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, and workflow shell blocks (pypi / github-releases).",
+      "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>pypi|github-releases) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "sunxi-tools commit pins (Python constants, legacy script, both build workflows), tracked on the master branch.",
+      "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>git-refs) depName=(?<depName>\\S+)\\s+[^\\n]*?(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "currentValueTemplate": "master"
+    },
+    {
+      "customType": "regex",
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block.",
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Docker Images",
+      "matchDatasources": ["docker"],
+      "addLabels": ["docker"]
+    },
+    {
+      "description": "Major Updates",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-update"]
+    },
+    {
+      "description": "Minor Updates",
+      "matchUpdateTypes": ["minor"],
+      "addLabels": ["minor-update"]
+    },
+    {
+      "description": "Patch Updates",
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["patch-update"]
+    },
+    {
+      "description": "Automerge patch, minor, and digest updates. Every dep that ships or builds the tool is exercised by a CI job (shellcheck / python / build / integration) and Renovate only automerges on green, so a breaking bump fails the PR before it can merge. Major updates, and the exceptions below, are reviewed by hand.",
+      "matchUpdateTypes": ["patch", "minor", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "These actions run ONLY inside the release/publish workflows, which ci.yml's push checks don't exercise, so their minor + major bumps get a human review (patch + digest still automerge).",
+      "matchDepNames": ["docker/setup-qemu-action", "actions/upload-artifact", "actions/download-artifact"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
+    },
+    {
+      "description": "Valetudo is the firmware flashed to the robot. Renovate surfaces version bumps (the download self-verifies against GitHub's published digest, so there's no checksum to hand-edit), but never automerge them: a human should eye each firmware change.",
+      "matchDepNames": ["Hypfer/Valetudo"],
+      "automerge": false
+    },
+    {
+      "description": "CPython (the interpreter frozen into the bundle): patch bumps automerge on green; a NEW minor (e.g. 3.14 -> 3.15) is a bigger move that gets a human review.",
+      "matchDepNames": ["python/cpython"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false,
+      "prBodyNotes": ["A CPython minor bump must also update `depends_on \"python@3.x\"` in packaging/homebrew/dreame-valetudo.rb by hand — no Renovate manager covers the formula."]
+    },
+    {
+      "description": "The .deb builder image (docker `python`) freezes the same interpreter as the bundle; a MINOR bump (3.14 -> 3.15) must not slip in via automerge — it gets the same human review as the setup-python CPython pin.",
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["python"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
+    }
+  ]
+}

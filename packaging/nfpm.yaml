@@ -1,0 +1,52 @@
+# nfpm config for the Debian/Ubuntu/Raspberry Pi .deb.
+#   DEB_ARCH=arm64 VERSION=1.2.3 nfpm package -p deb -f packaging/nfpm.yaml
+#
+# The .deb is SELF-CONTAINED: it ships a single Python-free `dreame-valetudo` binary (the
+# interpreter + the whole package frozen in by PyInstaller), the `dreame-fastboot` libusb client
+# (pyusb frozen in), and a prebuilt `sunxi-fel` — all built per arch in CI. So it needs no python3
+# / python3-usb (bundled) or jq (fix-impl patches JSON in-process); it still needs the ubiquitous
+# base-repo libusb + curl the tool loads/shells at runtime. Because it ships compiled binaries it
+# is architecture-specific (amd64/arm64).
+#
+# The main binary at /usr/bin finds its sibling helpers at /usr/lib/dreame-valetudo via the tool's
+# own libexec search (find_helper) — no wrapper or DREAME_LIBEXEC needed.
+name: dreame-valetudo
+arch: "${DEB_ARCH}"
+platform: linux
+version: "${VERSION}"
+section: utils
+priority: optional
+maintainer: "Cody Bryant <SisyphusMD@users.noreply.github.com>"
+vendor: SisyphusMD
+homepage: https://github.com/SisyphusMD/dreame-valetudo
+license: AGPL-3.0-or-later
+description: |
+  Guided, idempotent tool to root supported Dreame robot vacuums (X40 Ultra, X30 Ultra,
+  L10s Pro Ultra Heat, and the rest of the MR813 gen3 family) and install Valetudo, the local
+  cloud-free robot firmware. Self-contained: no python3 or pyusb needed on the target.
+
+depends:
+  - libusb-1.0-0         # the bundled fastboot client + sunxi-fel load libusb at runtime
+  - libfdt1              # sunxi-fel also links libfdt at runtime
+  - curl                 # downloads (stage1 pkg + Valetudo binary) still shell out to curl
+  - unzip                # the image phase unpacks the dustbuilder FEL zip
+  - openssh-client       # phase 3 push + the fix-*/diagnose helpers run ssh
+
+contents:
+  - src: ./dist/dreame-valetudo              # self-contained main bundle (Python frozen in)
+    dst: /usr/bin/dreame-valetudo
+    file_info:
+      mode: 0755
+  - src: ./dist/dreame-fastboot              # fastboot libusb client (pyusb frozen in)
+    dst: /usr/lib/dreame-valetudo/dreame-fastboot
+    file_info:
+      mode: 0755
+  - src: ./sunxi-fel                         # built per arch in CI, bundled so nothing compiles at runtime
+    dst: /usr/lib/dreame-valetudo/sunxi-fel
+    file_info:
+      mode: 0755
+  - src: ./packaging/udev/99-dreame-valetudo.rules   # USB access without sudo
+    dst: /usr/lib/udev/rules.d/99-dreame-valetudo.rules
+
+scripts:
+  postinstall: ./packaging/deb-postinstall.sh   # reload udev so the rules apply immediately

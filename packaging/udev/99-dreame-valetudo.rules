@@ -1,0 +1,11 @@
+# USB access for dreame-valetudo on Linux, so rooting works WITHOUT sudo. Grants the logged-in
+# user (systemd uaccess) access to the two devices the tool talks to over libusb, PLUS a plugdev
+# group fallback so headless/SSH sessions (e.g. a Raspberry Pi driven over SSH, where uaccess
+# grants nothing) also work — add your user to plugdev and re-plug the cable. The .deb installs
+# this automatically; for a Homebrew/from-source install, copy it to /etc/udev/rules.d/ and run
+# `sudo udevadm control --reload-rules && sudo udevadm trigger`.
+
+# Allwinner FEL mode (sunxi-fel loads the FEL payload):
+SUBSYSTEM=="usb", ATTR{idVendor}=="1f3a", ATTR{idProduct}=="efe8", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+# Dreame U-Boot fastboot gadget (the libusb fastboot client):
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", TAG+="uaccess", GROUP="plugdev", MODE="0660"

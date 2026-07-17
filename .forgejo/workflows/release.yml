@@ -1,0 +1,160 @@
+name: Release
+
+# Cut a release from main: pick the bump in the Forgejo UI. Advances the CHANGELOG, bumps the
+# VERSION line in the script, runs the lint/smoke gate, then commits + tags. The tag triggers
+# publish.yml (the .deb + tarball + the forgejo/nas/github releases) and, on the GitHub mirror,
+# the signed macOS .pkg job.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cut release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse non-main dispatches
+        run: |
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "::error::Release must be dispatched from main; got '${{ github.ref_name }}'"
+            exit 1
+          fi
+
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+
+      - name: Compute next version
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          # Exclude prerelease tags (v1.2.3-rc.N) — only a real, published stable version is the base.
+          PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -vE -- '-' | head -n1 || true)
+          CURRENT="${PREV_TAG#v}"; CURRENT="${CURRENT:-0.0.0}"
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          case "$BUMP" in
+            patch) PATCH=$((PATCH + 1)) ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+          esac
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${NEXT} (bump=${BUMP}, previous=${PREV_TAG:-none})"
+
+      - name: Sanity guards
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          grep -qE '^## \[Unreleased\]' CHANGELOG.md || { echo "::error::Missing '## [Unreleased]'"; exit 1; }
+          ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md || { echo "::error::CHANGELOG already has [${VERSION}]"; exit 1; }
+          ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
+
+      - name: Promote [Unreleased] in CHANGELOG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%d)
+          awk -v ver="$VERSION" -v date="$DATE" '
+            /^## \[Unreleased\]/ {
+              print "## [Unreleased]"; print ""; print "## [" ver "] - " date; next
+            }
+            { print }
+          ' CHANGELOG.md > CHANGELOG.md.new
+          mv CHANGELOG.md.new CHANGELOG.md
+
+      - name: Bump the version (pyproject + package)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
+          sed -i -E "s/^__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" dreame_valetudo/__init__.py
+          grep -qE "^version = \"${VERSION}\"" pyproject.toml || { echo "::error::pyproject version bump did not apply"; exit 1; }
+          grep -qE "^__version__ = \"${VERSION}\"" dreame_valetudo/__init__.py || { echo "::error::__version__ bump did not apply"; exit 1; }
+
+      - name: Point README download links at this release
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Rewrite the version segment of every releases/download/<ver>/ link (forgejo + github,
+          # .pkg + both .debs) to this tag. Bootstraps from the literal 'VERSION' placeholder.
+          sed -i -E "s#(releases/download/)[^/]+/#\1${TAG}/#g" README.md
+          grep -q "releases/download/${TAG}/" README.md || { echo "::error::README link rewrite did not apply"; exit 1; }
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          # renovate: datasource=github-releases depName=python/cpython versioning=pep440
+          python-version: "3.14.6"
+
+      - name: Test gate (lint + typecheck + unit + integration)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          python -m pip install --upgrade pip pytest ruff mypy
+          # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
+          ruff check dreame_valetudo libexec tests/python
+          mypy
+          pytest -q tests/python
+          python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
+          python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
+          python -m dreame_valetudo help | grep -q "Supported models"
+          shellcheck -S warning packaging/*.sh tests/integration/*.sh
+          for t in tests/integration/*.sh; do bash "$t"; done
+
+      - name: Commit, tag, push
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          # Stage the files the bump actually touched — the version of record lives in pyproject.toml
+          # and the package __init__.
+          git add CHANGELOG.md README.md pyproject.toml dreame_valetudo/__init__.py
+          git commit -m "release: ${VERSION}"
+          # Fail closed: never tag a commit that doesn't actually carry the version bump.
+          git show "HEAD:pyproject.toml" | grep -qE "^version = \"${VERSION}\"" \
+            || { echo "::error::release commit is missing the pyproject version bump"; exit 1; }
+          git show "HEAD:dreame_valetudo/__init__.py" | grep -qE "^__version__ = \"${VERSION}\"" \
+            || { echo "::error::release commit is missing the __version__ bump"; exit 1; }
+          git tag "${TAG}"
+          AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "HEAD:${{ github.ref_name }}"
+          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "${TAG}"
+
+      - name: Force the push-mirrors to propagate the commit + tag now (GitHub + NAS)
+        env:
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          # The branch push above trips sync_on_commit, but force a sync so the tag is guaranteed to
+          # reach GitHub (fires the signed .pkg) and NAS without waiting out the 8h mirror interval.
+          curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync"

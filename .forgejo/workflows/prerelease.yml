@@ -1,0 +1,130 @@
+name: Prerelease
+
+# On-demand dev/test build, same idea as Release but without cutting a real version. Dispatch from
+# any branch and pick the target bump; this stamps an `-rc.N` version onto a TAG only — the branch,
+# CHANGELOG, and README are never touched. The tag triggers publish.yml + release-macos.yml, which
+# build the real .deb/.pkg/tarball and publish them as a GitHub + Forgejo *prerelease* (never
+# "latest"; the Homebrew tap stays on the last stable). Use it to validate the shipping artifacts on
+# hardware, then cut the matching stable release the normal way.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Target version this rc is a candidate for"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+concurrency:
+  group: release          # serialize with real releases so version computation never races
+  cancel-in-progress: false
+
+jobs:
+  prerelease:
+    name: Cut prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+
+      - name: Compute the next -rc version
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          # Base = the bump applied to the latest STABLE tag (prereleases excluded from the lookup).
+          PREV_STABLE=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -vE -- '-' | head -n1 || true)
+          CURRENT="${PREV_STABLE#v}"; CURRENT="${CURRENT:-0.0.0}"
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          case "$BUMP" in
+            patch) PATCH=$((PATCH + 1)) ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+          esac
+          BASE="${MAJOR}.${MINOR}.${PATCH}"
+          # Next rc counter for this base: numeric max of existing v<base>-rc.<n>, + 1 (robust to
+          # however git version-sorts prerelease suffixes).
+          LAST=$(git tag -l "v${BASE}-rc.*" | sed -E 's/.*-rc\.//' | sort -n | tail -n1 || true)
+          N=$(( ${LAST:-0} + 1 ))
+          NEXT="${BASE}-rc.${N}"
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Prerelease ${NEXT} (candidate for ${BASE}, from ${GITHUB_REF_NAME})"
+
+      - name: Refuse if the tag already exists
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
+
+      - name: Stamp the version (pyproject + package)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
+          sed -i -E "s/^__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" dreame_valetudo/__init__.py
+          grep -qE "^version = \"${VERSION}\"" pyproject.toml || { echo "::error::pyproject version stamp did not apply"; exit 1; }
+          grep -qE "^__version__ = \"${VERSION}\"" dreame_valetudo/__init__.py || { echo "::error::__version__ stamp did not apply"; exit 1; }
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          # renovate: datasource=github-releases depName=python/cpython versioning=pep440
+          python-version: "3.14.6"
+
+      - name: Test gate (lint + typecheck + unit + integration)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          python -m pip install --upgrade pip pytest ruff mypy
+          ruff check dreame_valetudo libexec tests/python
+          mypy
+          pytest -q tests/python
+          python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
+          python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
+          python -m dreame_valetudo help | grep -q "Supported models"
+          shellcheck -S warning packaging/*.sh tests/integration/*.sh
+          for t in tests/integration/*.sh; do bash "$t"; done
+
+      - name: Tag the stamped commit (branch untouched), push the tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          # The version stamp rides on the TAGGED commit only; the branch is never pushed, so main
+          # (or a feature branch) never carries an -rc marker. publish.yml/release-macos.yml check
+          # out the tag, so the built artifacts still report the rc version.
+          git add pyproject.toml dreame_valetudo/__init__.py
+          git commit -m "prerelease: ${VERSION}"
+          git show "HEAD:pyproject.toml" | grep -qE "^version = \"${VERSION}\"" \
+            || { echo "::error::prerelease commit is missing the version stamp"; exit 1; }
+          git tag "${TAG}"
+          AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "${TAG}"
+
+      - name: Force the push-mirrors to propagate the tag now (GitHub + NAS)
+        env:
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          # A tag-only push may not trip the mirrors' sync-on-commit, and their fallback interval is
+          # 8h. Force an immediate sync so the tag reaches GitHub (fires the signed .pkg build) and
+          # NAS (so publish.yml's wait-for-tag on those forges doesn't stall).
+          curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync"

@@ -1,0 +1,155 @@
+name: Release (macOS pkg)
+
+# The one job that needs a Mac, so it lives on the GitHub mirror (free hosted macOS runners).
+# It builds a SELF-CONTAINED, signed + notarized .pkg for BOTH arm64 and x86_64 (a matrix) — each
+# bundles a prebuilt sunxi-fel, a PyInstaller'd fastboot client, and libusb —
+# so ANY Mac user (Apple Silicon or Intel) double-clicks and gets a working `dreame-valetudo` with
+# nothing else to install. The publish job appends both .pkgs to the GitHub + public-Forgejo
+# releases (the only two it can reach); publish.yml's nas-pkg job bridges them to the NAS.
+#
+# NOTE: the libusb bundling + codesign of the native binaries is the one piece that can't be
+# dry-run off-CI; if a release's .pkg fails to load libusb at runtime, adjust the
+# install_name_tool / DYLD steps below (see packaging/README.md). The x86_64 leg is built + signed
+# the same way but is untested on real Intel hardware.
+on:
+  push:
+    # Stable and prerelease (v1.2.3-rc.N) tags both build the signed .pkg; the publish step marks
+    # prereleases via the release helper.
+    tags: ["v*.*.*", "v*.*.*-*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build signed pkg (${{ matrix.arch }})
+    # Forgejo Actions also reads .github/workflows but has no macOS runner — only run on GitHub.
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-26 is GitHub's current image (bleeding-edge by choice).
+          - os: macos-26
+            arch: arm64
+          # x86_64 macOS is being sunset by GitHub (~2027); macos-26-intel is the latest Intel image.
+          - os: macos-26-intel
+            arch: x86_64
+    env:
+      APP_CERT_P12: ${{ secrets.MACOS_APP_CERT_P12 }}
+      INSTALLER_CERT_P12: ${{ secrets.MACOS_INSTALLER_CERT_P12 }}
+      CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APP_IDENTITY: ${{ secrets.MACOS_APP_IDENTITY }}
+      INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+      NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+      NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          # renovate: datasource=github-releases depName=python/cpython versioning=pep440
+          python-version: "3.14.6"   # exact interpreter frozen into the bundle
+
+      - name: Build sunxi-fel + the PyInstaller fastboot client
+        run: |
+          set -euo pipefail
+          brew install libusb dtc pkg-config
+          # sunxi-fel (pin must match SUNXI_TOOLS_REF in the main script). Builds native to the runner.
+          git clone https://github.com/linux-sunxi/sunxi-tools.git /tmp/sunxi-tools
+          # renovate: datasource=git-refs depName=https://github.com/linux-sunxi/sunxi-tools
+          git -C /tmp/sunxi-tools checkout d7bbd172a5da601a08f94479de308c6fb714a19a
+          make -C /tmp/sunxi-tools sunxi-fel
+          cp /tmp/sunxi-tools/sunxi-fel .
+          # Self-contained native binaries (python + the package / pyusb frozen in).
+          python -m pip install --upgrade pip
+          # renovate: datasource=pypi depName=pyinstaller
+          python -m pip install pyinstaller==6.21.0
+          PYUSB="$(python3 -c "import re; print(re.search(r'PYUSB_VERSION = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))")"
+          python -m pip install "pyusb==$PYUSB"
+          rm -rf dist
+          bash packaging/build-bundle.sh "$PWD/dist"           # main tool bundle (Python frozen in)
+          bash packaging/build-fastboot-client.sh "$PWD/dist"  # dreame-fastboot client (pyusb frozen in)
+          cp dist/dreame-valetudo dist/dreame-fastboot .
+
+      - name: Bundle libusb next to the native binaries
+        run: |
+          set -euo pipefail
+          # brew --prefix adapts per arch (/opt/homebrew on arm64, /usr/local on Intel).
+          LIBUSB="$(brew --prefix libusb)/lib/libusb-1.0.0.dylib"
+          cp "$LIBUSB" ./libusb-1.0.0.dylib
+          chmod u+w ./libusb-1.0.0.dylib
+          # Point sunxi-fel's libusb reference at the co-located copy (absolute Homebrew path
+          # won't exist on a user's Mac). The client finds it via DYLD_LIBRARY_PATH the script sets.
+          OLD="$(otool -L sunxi-fel | awk '/libusb-1.0/{print $1; exit}')"
+          install_name_tool -change "$OLD" "@loader_path/libusb-1.0.0.dylib" sunxi-fel
+          install_name_tool -id "@loader_path/libusb-1.0.0.dylib" ./libusb-1.0.0.dylib
+
+      - name: Import signing certificates
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$APP_CERT_P12" | base64 -d > app.p12
+          echo "$INSTALLER_CERT_P12" | base64 -d > installer.p12
+          security import app.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security import installer.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+
+      - name: Sign, assemble, package, notarize, staple
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          # Sign the native Mach-O bits with the hardened runtime (required for notarization).
+          for f in libusb-1.0.0.dylib sunxi-fel dreame-fastboot dreame-valetudo; do
+            codesign --force --options runtime --timestamp \
+              --entitlements packaging/entitlements.plist --sign "$APP_IDENTITY" "$f"
+          done
+          # Lay out the install tree: native binaries in libexec, a thin wrapper in bin. The main
+          # bundle has fastboot-libusb.py + the form baseline frozen in (via _MEIPASS), so libexec
+          # only needs the native helpers + the co-located libusb.
+          LX=root/usr/local/libexec/dreame-valetudo
+          mkdir -p "$LX" root/usr/local/bin
+          cp dreame-valetudo dreame-fastboot sunxi-fel libusb-1.0.0.dylib "$LX/"
+          cat > root/usr/local/bin/dreame-valetudo <<'SH'
+          #!/bin/bash
+          export DREAME_LIBEXEC="/usr/local/libexec/dreame-valetudo"
+          exec "/usr/local/libexec/dreame-valetudo/dreame-valetudo" "$@"
+          SH
+          chmod +x root/usr/local/bin/dreame-valetudo "$LX/dreame-valetudo"
+          pkgbuild --root root --identifier com.sisyphusmd.dreame-valetudo \
+            --version "$VERSION" --install-location / unsigned.pkg
+          productsign --sign "$INSTALLER_IDENTITY" unsigned.pkg "$PKG"
+          echo "$NOTARY_KEY_P8" | base64 -d > notary.p8
+          xcrun notarytool submit "$PKG" \
+            --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+          xcrun stapler staple "$PKG"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pkg-${{ matrix.arch }}
+          path: dreame-valetudo-macos-${{ matrix.arch }}.pkg
+
+  publish:
+    name: Append the signed .pkgs to the GitHub + Forgejo releases
+    if: ${{ github.server_url == 'https://github.com' }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: pkgs
+          merge-multiple: true
+      - name: Append both .pkgs to the GitHub + public-Forgejo releases
+        run: |
+          set -euo pipefail
+          bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
+          chmod +x packaging/github-release.sh packaging/forgejo-release.sh
+          packaging/github-release.sh "${{ secrets.GITHUB_TOKEN }}" \
+            "$GITHUB_REF_NAME" notes.md pkgs/*.pkg
+          packaging/forgejo-release.sh forgejo.bryantserver.com \
+            "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md pkgs/*.pkg

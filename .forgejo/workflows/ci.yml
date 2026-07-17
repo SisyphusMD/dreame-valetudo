@@ -1,0 +1,96 @@
+name: CI
+
+# Lint + tests on every PR and push to main: pinned shellcheck +
+# a Python lint/typecheck/test job + a build job + integration scripts, with integration gated
+# behind lint. Make this a required check on main so releases (cut from main by release.yml) only
+# ever ship a green tree.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: shellcheck
+        uses: docker://koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+        with:
+          args: >-
+            --severity=warning
+            packaging/build-tarball.sh packaging/build-bundle.sh packaging/build-fastboot-client.sh
+            packaging/changelog-section.sh
+            packaging/forgejo-release.sh packaging/github-release.sh packaging/release-common.sh
+            packaging/update-tap.sh packaging/deb-postinstall.sh
+            tests/integration/release-scripts.sh
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          # renovate: datasource=github-releases depName=python/cpython versioning=pep440
+          python-version: "3.14.6"   # exact pin (repo convention); Renovate bumps the patch
+      - name: lint + typecheck + test
+        run: |
+          python -m pip install --upgrade pip pytest ruff mypy
+          ruff check dreame_valetudo libexec tests/python
+          mypy
+          pytest -q tests/python
+
+  build:
+    # Compile-check the build/packaging deps on every push, so Renovate can automerge their MINOR
+    # bumps safely: a break here fails the PR before it can merge. Covers sunxi-fel (the FEL host
+    # tool), the PyInstaller fastboot client (pyusb + pyinstaller), and the .deb (the nfpm image).
+    # sunxi + pyusb are read from the script's own pins; pyinstaller + nfpm are pinned here and kept
+    # in lockstep with the release workflows by Renovate (same depName, one grouped PR).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          # renovate: datasource=github-releases depName=python/cpython versioning=pep440
+          python-version: "3.14.6"
+      - name: build the bundle (main + fastboot client) + sunxi-fel + .deb (release-time deps)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git make gcc pkg-config libusb-1.0-0-dev libfdt-dev zlib1g-dev
+          # Pins come from the Python constants (one Renovate-tracked source of truth).
+          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
+          SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
+          echo "using sunxi $SREF, pyusb $PYUSB"
+          git clone --quiet https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx
+          git -C /tmp/sx checkout --quiet "$SREF"
+          make -C /tmp/sx sunxi-fel && cp /tmp/sx/sunxi-fel ./sunxi-fel
+          # renovate: datasource=pypi depName=pyinstaller
+          python3 -m pip install --quiet "pyinstaller==6.21.0" "pyusb==$PYUSB"
+          rm -rf dist
+          bash packaging/build-bundle.sh "$PWD/dist"           # main tool bundle (Python frozen in)
+          bash packaging/build-fastboot-client.sh "$PWD/dist"  # dreame-fastboot client (pyusb frozen in)
+          ./dist/dreame-valetudo version                       # the frozen binary runs
+          # renovate: datasource=docker depName=goreleaser/nfpm
+          NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
+          # The runner's docker daemon is a DinD sidecar that can't see the job workspace (a $PWD
+          # bind-mount comes up empty), so copy the tree in and the .deb out over the API instead.
+          CID=$(docker create -e DEB_ARCH=amd64 -e VERSION=0.0.0-ci -w /w "$NFPM" package -p deb -f packaging/nfpm.yaml -t /w/ci.deb)
+          docker cp . "$CID":/w
+          docker start -a "$CID"
+          docker cp "$CID":/w/ci.deb ./ci.deb
+          docker rm "$CID" >/dev/null
+          dpkg-deb -c ci.deb | grep -E '/(dreame-valetudo|dreame-fastboot|sunxi-fel)$'
+          echo "build OK: main bundle + fastboot client + sunxi-fel + .deb all built from the pinned deps"
+
+  integration:
+    needs: [shellcheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: run integration scripts (externals PATH-stubbed; no hardware)
+        run: |
+          for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done

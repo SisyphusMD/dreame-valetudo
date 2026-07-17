@@ -1,0 +1,40 @@
+# Runtime / device-specific artifacts. The default work dir (~/dreame-valetudo-work) is
+# already outside the repo; this is belt-and-suspenders in case DREAME_WORK is ever pointed
+# here. These match at any depth, so per-robot subdirs are covered too.
+dreame-valetudo-work/
+cache/
+dist/
+state/
+robots/
+recon/
+fw/
+sunxi-tools/
+
+# Never commit device identity / keys / backups.
+id_dreame*
+*.pem
+config.txt
+check.txt
+*-backup-*/
+*.img
+*.bin
+*.tar
+*.tar.gz
+dreame_samples.zip
+
+# Python bytecode from the helpers.
+__pycache__/
+*.pyc
+
+# Tool caches (each tool self-ignores these, but pin them explicitly).
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Packaging build outputs (PyInstaller, pkgbuild, deb).
+build/
+*.pkg
+*.deb
+root/
+notary.p8
+*.p12
