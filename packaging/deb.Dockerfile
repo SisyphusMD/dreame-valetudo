@@ -17,14 +17,14 @@ RUN apt-get update -qq \
  && apt-get install -y -qq git make gcc pkg-config libusb-1.0-0-dev libfdt-dev zlib1g-dev
 RUN pip install --quiet --root-user-action=ignore "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
 # sunxi-fel: cloned + built before the repo COPY so it caches independently of source edits.
-# Pre-generate version.h ourselves rather than let make run sunxi's autoversion.sh: that script has
-# no shebang, and qemu-user (the arm64 emulation) doesn't do the shell's ENOEXEC fallback, so a
-# `make`-invoked `./autoversion.sh` fails under emulation (it works natively). A pre-written
-# version.h has no prerequisites, so make treats it as up to date and never runs the script.
+# Pre-generate version.h so make skips its own version.h target (it has no prerequisites, so an
+# existing file counts as up to date). We must, because that target runs `./autoversion.sh`, which
+# has no shebang — qemu-user (the arm64 emulation) doesn't do the shell's ENOEXEC fallback, so the
+# make-invoked exec fails under emulation (it works natively). Running the SAME script via an explicit
+# `sh` reads it instead of exec-ing it, so it works under qemu and keeps upstream's exact version logic.
 RUN git clone -q https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx \
  && git -C /tmp/sx checkout -q "${SREF}" \
- && printf '/* Auto-generated: do not edit */\n#define VERSION "%s"\n' \
-      "$(git -C /tmp/sx describe --tags --dirty --always 2>/dev/null || echo "${SREF}")" > /tmp/sx/version.h \
+ && ( cd /tmp/sx && sh ./autoversion.sh > version.h ) \
  && make -C /tmp/sx sunxi-fel
 WORKDIR /w
 COPY . /w
