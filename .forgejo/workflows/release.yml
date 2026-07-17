@@ -79,20 +79,27 @@ jobs:
           PREV: ${{ steps.ver.outputs.previous }}
         run: |
           set -euo pipefail
-          RANGE="HEAD"; [ -n "$PREV" ] && RANGE="${PREV}..HEAD"
-          # Collect Renovate's dep commits newest-first, then keep only the LATEST bump per dep: the
-          # dedup key is the subject minus its trailing " to <version>" (Renovate's format is
-          # "<type>(deps): update <dep> to <version>"), so repeated bumps of the same image collapse
-          # to the most recent one — git log is newest-first, so the first key seen is the latest.
-          DEPS=$(git log "$RANGE" --pretty=format:'%s' \
-            | grep -E '^(chore|fix)\(deps\):' \
-            | awk '{ key=$0; sub(/ to [^ ]+$/, "", key); if (!seen[key]++) print }' || true)
+          # First release (no previous stable tag): the deps it ships ARE the initial set, not updates
+          # from a prior release, so emit no "### Dependencies" list — even if Renovate bumps landed
+          # before the first tag. Otherwise, collect Renovate's dep commits since the previous release,
+          # newest-first, and keep only the LATEST bump per dep: the dedup key is the subject minus its
+          # trailing " to <version>" (Renovate's format is "<type>(deps): update <dep> to <version>"),
+          # so repeated bumps of one image collapse to the most recent (git log is newest-first, so the
+          # first key seen is the latest).
+          if [ -z "$PREV" ]; then
+            DEPS=""
+            echo "first release — no dependency-update notes"
+          else
+            DEPS=$(git log "${PREV}..HEAD" --pretty=format:'%s' \
+              | grep -E '^(chore|fix)\(deps\):' \
+              | awk '{ key=$0; sub(/ to [^ ]+$/, "", key); if (!seen[key]++) print }' || true)
+            echo "dependency bumps to note:"; echo "${DEPS:-<none>}"
+          fi
           {
             echo 'deps<<DEPS_EOF'
             [ -n "$DEPS" ] && echo "$DEPS"
             echo 'DEPS_EOF'
           } >> "$GITHUB_OUTPUT"
-          echo "dependency bumps to note:"; echo "${DEPS:-<none>}"
 
       - name: Promote [Unreleased] in CHANGELOG (+ append the dependency bumps)
         env:
