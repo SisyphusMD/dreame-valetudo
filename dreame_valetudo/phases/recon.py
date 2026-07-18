@@ -10,7 +10,7 @@ from __future__ import annotations
 from ..console import die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
-from ..util import parse_config
+from ..util import parse_config, parse_getvar
 from ..workspace import Robot
 from .doctor import _is_exe, doctor
 from .fetch import fetch
@@ -32,10 +32,10 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
     ctx.console.say("Phase 1 — reconnaissance (reads only; writes NOTHING to the robot)")
     ctx.console.info("Validates the whole USB path with zero brick risk and records the")
     ctx.console.info("'config' value that identifies the robot + drives the dustbuilder.")
-    ctx.console.info("If this robot was ever set up in the Mi Home / Dreame Home app, factory-reset "
-                     "it first")
-    ctx.console.info("(Settings -> Reset) — the rooting guides assume a factory-new robot never "
-                     "connected to the vendor cloud.")
+    ctx.console.action("BEFORE you start: if this robot was EVER set up in the Mi Home / Dreame "
+                       "Home app, factory-reset it first (Settings -> Reset).")
+    ctx.console.info("The rooting guides assume a factory-new robot never connected to the vendor "
+                     "cloud.")
     print_fel_entry(ctx.console, ctx.host)
     if not ctx.fel.poll_fel(180):
         die("No FEL device — aborting recon.")
@@ -70,6 +70,19 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
     (robot.state_dir / "model_key").write_text(f"{ctx.profile.key}\n")
 
+    # Also capture the extra fastboot identity vars the dustbuilder's manual checker
+    # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
+    # robot's config isn't auto-recognized. Best-effort + read-only: a var the bootloader doesn't
+    # expose is omitted, and the rescue block prints the getvar command to run by hand instead.
+    identity = []
+    for var in ("serialno", "toc0hash", "toc1hash"):
+        res = ctx.fastboot.fbt("getvar", var, check=False)
+        val = parse_getvar(res.stdout + res.stderr)
+        if val:
+            identity.append(f"{var}: {val}")
+    if identity:
+        (robot.recon_dir / "identity.txt").write_text("\n".join(identity) + "\n")
+
     if samples:
         warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
         ctx.console.say("Pulling ~1.2GB flash disaster-recovery samples (slow; skip with "
@@ -79,7 +92,9 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
                              "was saved.")
 
     robot.state_set("recon", f"config={cfg}")
-    ctx.console.say("Phase 1 done. Power the robot off (hold power ~15s), then unplug USB.")
+    ctx.console.say("Phase 1 done.")
+    ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
+                       "the USB cable.")
     ctx.console.info("Next: image  (opens the dustbuilder and waits for your built .zip)")
 
 

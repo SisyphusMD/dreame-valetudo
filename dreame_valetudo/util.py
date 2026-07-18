@@ -29,6 +29,26 @@ def parse_config(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+# A fastboot getvar reply: the libusb client (default transport) prints 'OKAY <value>' on stdout;
+# Google's fastboot prints '<var>: <value>' on stderr. Only used for the non-config identity vars
+# (serialno/toc0hash/toc1hash) the dustbuilder's manual checker wants — config has its own parser.
+_GETVAR_LABEL_RE = re.compile(r"^[\w-]+:\s*(\S.*)$")
+
+
+def parse_getvar(text: str) -> str | None:
+    """The value token from a fastboot getvar reply, across either transport, or None."""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("OKAY"):
+            rest = line[len("OKAY"):].strip()
+            if rest:
+                return rest
+        m = _GETVAR_LABEL_RE.match(line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
 def repair_did(did: str) -> str | None:
     """Reinterpret a signed-int32 factory deviceId as its true uint32.
 

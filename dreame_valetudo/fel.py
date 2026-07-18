@@ -20,12 +20,14 @@ from .run import Runner
 
 def print_fel_entry(console: Console, host: str = "computer") -> None:
     """The FEL button sequence — the one step no script can do."""
-    console.say("Put the robot into FEL mode (Breakout PCB)")
-    console.info("1. PCB plugged into the robot; USB OTG ID jumper NOT connected.")
-    console.info("2. Press and HOLD the PCB button.")
-    console.info("3. Also press and HOLD the robot's power button (keep the PCB button held).")
-    console.info("4. After ~5s release power; keep holding the PCB button ~3s more.")
-    console.info(f"5. LEDs pulse -> connect the USB cable to this {host}.")
+    console.action("Hands on the robot: put it into FEL mode (Breakout PCB)")
+    console.info("1. Robot powered OFF first (hold power ~15s until it fully shuts down); USB "
+                 "cable unplugged.")
+    console.info("2. PCB plugged into the robot; USB OTG ID jumper NOT connected.")
+    console.info("3. Press and HOLD the PCB button.")
+    console.info("4. Also press and HOLD the robot's power button (keep the PCB button held).")
+    console.info("5. After ~5s release power; keep holding the PCB button ~3s more.")
+    console.info(f"6. LEDs pulse -> connect the USB cable to this {host}.")
     console.info("(No key to press here — the script auto-detects the FEL device.)")
 
 

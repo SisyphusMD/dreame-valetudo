@@ -81,6 +81,21 @@ def test_parse_config_none_when_absent() -> None:
     assert util.parse_config("no identity here") is None
 
 
+# --- parse_getvar: the value token from a getvar reply, either transport ----------------------
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("OKAY DR9316AB1234", "DR9316AB1234"),          # libusb client on stdout
+        ("toc0hash: 0011aabb\nFinished.", "0011aabb"),  # Google fastboot on stderr
+        ("OKAY", None),                                 # OKAY with no value
+        ("", None),                                     # nothing
+        ("FAILED getvar toc0hash -> FAIL unknown", None),  # a failure line yields no false value
+    ],
+)
+def test_parse_getvar(text: str, expected: str | None) -> None:
+    assert util.parse_getvar(text) == expected
+
+
 # --- sha256_of: matches hashlib on the same bytes --------------------------------------------
 def test_sha256_of_matches_hashlib(tmp_path: Path) -> None:
     f = tmp_path / "blob.bin"

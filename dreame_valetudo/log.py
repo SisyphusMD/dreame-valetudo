@@ -131,6 +131,10 @@ class LoggingConsole(Console):
         self._log.line(">>", message)
         super().say(message)
 
+    def action(self, message: str) -> None:
+        self._log.line("=>", message)
+        super().action(message)
+
     def info(self, message: str) -> None:
         self._log.line("  ", message)
         super().info(message)

@@ -44,6 +44,20 @@ def test_ask_returns_input_and_empty_on_eof(monkeypatch: pytest.MonkeyPatch) -> 
     assert _console().ask("name?") == ""
 
 
+def test_action_renders_a_highlighted_banner(capsys: pytest.CaptureFixture[str]) -> None:
+    Console(color=True).action("Power the robot OFF")
+    out = capsys.readouterr().out
+    assert "Power the robot OFF" in out
+    assert "\033[1;30;103m" in out and out.rstrip().endswith("\033[0m")  # bold black-on-yellow
+
+
+def test_action_is_plain_when_color_off(capsys: pytest.CaptureFixture[str]) -> None:
+    Console(color=False).action("Power the robot OFF")
+    out = capsys.readouterr().out
+    assert "ACTION" in out and "Power the robot OFF" in out
+    assert "\033[" not in out  # no escape codes on a non-tty / redirected stream
+
+
 def test_warn_if_low_disk_stays_quiet_with_ample_space(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     warn_if_low_disk(_console(), tmp_path, need_bytes=1)
     assert capsys.readouterr().out == ""

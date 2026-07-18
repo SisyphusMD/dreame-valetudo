@@ -56,6 +56,23 @@ def test_config_does_not_leak_env_when_a_robot_is_named(tmp_path: Path) -> None:
     assert r.config(robot_env="kitchen", config_env=_CFG) is None
 
 
+def test_identity_reads_captured_getvars(tmp_path: Path) -> None:
+    r = Robot(tmp_path / "r9316-abc")
+    r.recon_dir.mkdir(parents=True)
+    (r.recon_dir / "identity.txt").write_text(
+        "serialno: DR9316AB1234\ntoc0hash: 0011aabb\ntoc1hash: 2233ccdd\n"
+    )
+    assert r.identity() == {
+        "serialno": "DR9316AB1234",
+        "toc0hash": "0011aabb",
+        "toc1hash": "2233ccdd",
+    }
+
+
+def test_identity_is_empty_without_a_record(tmp_path: Path) -> None:
+    assert Robot(tmp_path / "r9316-abc").identity() == {}  # older recon / var not exposed
+
+
 def test_config_present_but_no_hex_is_none(tmp_path: Path) -> None:
     r = Robot(tmp_path / "r2416-abc")
     r.recon_dir.mkdir(parents=True)

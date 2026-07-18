@@ -94,6 +94,19 @@ class Robot:
             return config_env
         return None
 
+    def identity(self) -> dict[str, str]:
+        """The extra fastboot getvar values recon captured (serialno/toc0hash/toc1hash), for the
+        dustbuilder's manual checker. Empty if none were recorded (an older recon, or a bootloader
+        that didn't expose them)."""
+        out: dict[str, str] = {}
+        f = self.recon_dir / "identity.txt"
+        if f.is_file():
+            for line in f.read_text().splitlines():
+                key, sep, val = line.partition(":")
+                if sep and key.strip() and val.strip():
+                    out[key.strip()] = val.strip()
+        return out
+
 
 def robot_tag(model_code: str, config: str | None, robot_name: str | None = None) -> str:
     """A filename-safe tag identifying THIS robot: model code + optional name + config value, so a

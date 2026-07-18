@@ -60,6 +60,39 @@ def test_recon_creates_robot_named_by_device_identity(make_ctx: CtxFactory) -> N
     assert robot.state_has("recon")
 
 
+def test_recon_captures_identity_vars_for_the_manual_checker(make_ctx: CtxFactory) -> None:
+    # recon records serialno/toc0hash/toc1hash so 'image' can hand them to check.builder verbatim
+    # if the config isn't auto-recognized (the X30 Ultra scenario).
+    vals = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(str(a) for a in argv)
+        if "getvar config" in joined:
+            return Result(argv, 0, f"OKAY {_CFG}", "")
+        for var, val in vals.items():
+            if f"getvar {var}" in joined:
+                return Result(argv, 0, f"OKAY {val}", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(model="x30-ultra", responder=responder)
+    _dist_ready(ctx)
+    recon(ctx, samples=False)
+    robot = ctx.robot
+    assert robot is not None
+    assert robot.identity() == vals
+
+
+def test_recon_omits_identity_vars_the_bootloader_wont_answer(make_ctx: CtxFactory) -> None:
+    # Only config comes back; the extra getvars return a bare OKAY (no value) -> no identity file.
+    ctx = make_ctx(model="x30-ultra", responder=_responder())
+    _dist_ready(ctx)
+    recon(ctx, samples=False)
+    robot = ctx.robot
+    assert robot is not None
+    assert not (robot.recon_dir / "identity.txt").exists()
+    assert robot.identity() == {}
+
+
 def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         return Result(argv, 0, "OKAY (no hex here)", "")

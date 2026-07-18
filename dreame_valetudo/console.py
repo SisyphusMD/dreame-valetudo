@@ -54,6 +54,12 @@ class Console:
     def say(self, message: str) -> None:
         print("\n" + self._c("1;36", f">> {message}"))
 
+    def action(self, message: str) -> None:
+        """A hands-on step the user must physically perform (PCB buttons, cables, power). Rendered
+        as a high-visibility banner (bold black-on-yellow) so the one thing a script can't do
+        stands out from the scrolling narrative and isn't skipped."""
+        print("\n" + self._c("1;30;103", f"  ACTION >  {message}  "))
+
     def info(self, message: str) -> None:
         print(f"   {message}")
 

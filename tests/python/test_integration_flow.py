@@ -38,8 +38,8 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
             return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")  # sunxi-fel, fastboot client, ssh-keygen, zip, ...
 
-    # confirms: [open dustbuilder in browser?] then [flash now?]; asks: SSH key choice (1 = dedicated)
-    ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[True, True],
+    # confirms: [open dustbuilder?] [config accepted?] [flash now?]; asks: SSH key choice (1 = dedicated)
+    ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[True, True, True],
                    asks=["1"], env={"HOME": str(home)})
     # stage1 present so recon proceeds
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)

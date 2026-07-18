@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **feat**: after you submit to the dustbuilder, `image` now checks in — if the build was rejected
+  with `Error: unknown config value` (the robot isn't auto-recognized yet), answer "no" and it
+  prints exactly what `check.builder.dontvacuum.me` needs: the `get_staged` image to upload plus the
+  device serial / config / toc0hash / toc1hash values and the model, then stops cleanly so re-running
+  resumes. `recon` now records serialno/toc0hash/toc1hash alongside the config so those values are
+  filled in for you (it falls back to the `fastboot getvar` command for anything it couldn't read).
+- **ux**: the steps only a human can do — the FEL button sequence, powering the robot OFF, and
+  unplugging the USB / removing the Breakout PCB — are now shown as a highlighted ACTION banner so
+  they don't get lost in the scrolling output. The FEL sequence now spells out powering the robot
+  OFF first, and the "factory-reset it first if it ever touched the Dreame / Mi Home app" note is
+  highlighted up front.
 - **docs**: the Homebrew install steps now include the one-time `brew trust sisyphusmd/tap`
   (Homebrew 6.0+ refuses to load formulae from an untrusted third-party tap).
 

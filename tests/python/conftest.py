@@ -29,6 +29,9 @@ class ScriptedConsole(Console):
     def say(self, message: str) -> None:
         self.lines.append(("say", message))
 
+    def action(self, message: str) -> None:
+        self.lines.append(("action", message))
+
     def info(self, message: str) -> None:
         self.lines.append(("info", message))
 

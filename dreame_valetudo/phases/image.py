@@ -85,12 +85,11 @@ def _open_dustbuilder(ctx: Context) -> None:
     if shutil.which("pbcopy") and ctx.runner.run(["pbcopy"], stdin=cfg, check=False).ok:
         ctx.console.info("The config value is on your clipboard — just paste it into the Config "
                          "field.")
-    ctx.console.warn("If the builder rejects it with 'Error: invalid config value', your firmware "
-                     "is too new")
-    ctx.console.warn("for the builder yet. Do NOT fake the serial or patch the installer — that "
-                     "BRICKS the robot.")
-    ctx.console.info(f"Instead upload {robot.recon_dir / 'dreame_samples.zip'} to "
-                     "https://check.builder.dontvacuum.me and wait for support to be added.")
+    ctx.console.warn("If the builder rejects your config with 'Error: unknown config value', this "
+                     "robot isn't auto-recognized yet — recoverable; the check-in right after this "
+                     "step prints exactly what to send Dennis.")
+    ctx.console.warn("Either way, do NOT fake the serial or patch the installer to force a build — "
+                     "that BRICKS the robot.")
 
     receipt = robot.recon_dir / ".submitted"
     if receipt.is_file():
@@ -112,6 +111,40 @@ def _open_dustbuilder(ctx: Context) -> None:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
         receipt.write_text(ctx.now() + "\n")
     ctx.console.info(f"Page: {ctx.dustbuilder_page}")
+
+
+def _config_rejected_help(ctx: Context) -> None:
+    """Everything the dustbuilder's manual checker (check.builder.dontvacuum.me) needs when the
+    build is rejected with 'unknown config value': the get_staged image to upload plus the exact
+    getvar values — using what recon captured, and falling back to the command to run by hand for
+    anything it couldn't read."""
+    robot = ctx.need_robot()
+    cfg = ctx.robot_config()
+    ident = robot.identity()
+    zip_path = robot.recon_dir / "dreame_samples.zip"
+
+    ctx.console.action("Config not recognized — here's exactly what check.builder.dontvacuum.me "
+                       "needs")
+    ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). It's "
+                     "recoverable: send Dennis a 'get_staged' image plus the values below so "
+                     "support can be added. Do NOT fake the serial or patch the installer.")
+    ctx.console.info(f"   {'Page':<22} https://check.builder.dontvacuum.me")
+    if zip_path.is_file():
+        size = zip_path.stat().st_size / (1 << 20)
+        ctx.console.info(f"   {'get_staged image':<22} {zip_path}  ({size:.1f} MiB)")
+    else:
+        ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
+                         "--force' (keep samples on) to build it, then come back.")
+    ctx.console.info(f"   {'Model':<22} {ctx.profile.model} "
+                     f"(dreame.vacuum.{ctx.profile.model_code})")
+    ctx.console.info(f"   {'config value':<22} {cfg or '(re-run recon to capture)'}")
+    for label, var in (("Device serial number", "serialno"),
+                       ("toc0hash value", "toc0hash"),
+                       ("toc1hash value", "toc1hash")):
+        shown = ident.get(var) or f"(read it: fastboot getvar {var}, with the robot in fastboot)"
+        ctx.console.info(f"   {label:<22} {shown}")
+    ctx.console.info("When Dennis adds support (you'll get a working FEL build), re-run "
+                     "'dreame-valetudo' for this robot to continue.")
 
 
 def _watch_for_zip(ctx: Context, tries: int = 720) -> str | None:
@@ -149,6 +182,13 @@ def image(ctx: Context, *, force: bool = False) -> None:
     if not verify_form(ctx):
         ctx.console.warn("Proceeding despite form drift — go by the on-page labels.")
     _open_dustbuilder(ctx)
+
+    # Check in: a rejected config never produces a zip, so watching would just time out for an
+    # hour. Ask first; on 'no', print the check.builder rescue block and stop cleanly.
+    if not ctx.console.confirm("Did the dustbuilder accept your config and start the build?"):
+        _config_rejected_help(ctx)
+        die("Config not recognized yet — follow the steps above, then re-run 'dreame-valetudo' "
+            "for this robot once you have a working FEL image.")
 
     ctx.console.say("Watching ~/Downloads and the robot's fw dir for the built zip...")
     zip_path = _watch_for_zip(ctx)

@@ -128,6 +128,8 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.say("Phase 3 — install Valetudo onto the rooted robot.")
     ctx.console.info(f"It talks to the robot over ITS OWN Wi-Fi AP (a direct link at {ROBOT_AP_IP}),")
     ctx.console.info(f"NOT your home network — where {ROBOT_AP_IP} is usually your ROUTER. So:")
+    ctx.console.action("Hands on the robot: unplug the USB cable + remove the Breakout PCB (done "
+                       "with them), then hold the two OUTER buttons until it starts its Wi-Fi AP.")
     ctx.console.info("  1. USB cable + Breakout PCB are done — unplug/remove them if you haven't.")
     ctx.console.info("  2. On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.")
     ctx.console.info(f"  3. On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' /")
