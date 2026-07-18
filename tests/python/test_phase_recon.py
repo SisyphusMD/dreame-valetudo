@@ -10,7 +10,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
-from dreame_valetudo.phases.recon import recon
+from dreame_valetudo.phases.recon import read_identity_from_robot, recon
 from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import Robot
 
@@ -91,6 +91,24 @@ def test_recon_omits_identity_vars_the_bootloader_wont_answer(make_ctx: CtxFacto
     assert robot is not None
     assert not (robot.recon_dir / "identity.txt").exists()
     assert robot.identity() == {}
+
+
+def test_read_identity_from_robot_brings_it_up_and_records(make_ctx: CtxFactory) -> None:
+    # The on-demand reader used by the image rescue when an older recon didn't capture identity:
+    # the TOOL does the FEL->fastboot bring-up and the getvars; the user only does the buttons.
+    vals = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(str(a) for a in argv)
+        for var, val in vals.items():
+            if f"getvar {var}" in joined:
+                return Result(argv, 0, f"OKAY {val}", "")
+        return Result(argv, 0, "OKAY", "")  # sunxi-fel ver/write/exe + fastboot wait all succeed
+
+    ctx = make_ctx(model="x30-ultra", robot_name=f"r9316-{_CFG[:12]}", responder=responder)
+    _dist_ready(ctx)
+    assert read_identity_from_robot(ctx) == vals
+    assert ctx.need_robot().identity() == vals  # persisted for later runs
 
 
 def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:

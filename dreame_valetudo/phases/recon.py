@@ -7,13 +7,65 @@ disaster-recovery samples.
 
 from __future__ import annotations
 
-from ..console import die, warn_if_low_disk
+from ..console import Die, die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
 from ..util import parse_config, parse_getvar
 from ..workspace import Robot
 from .doctor import _is_exe, doctor
 from .fetch import fetch
+
+# The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
+# asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
+_IDENTITY_VARS = ("serialno", "toc0hash", "toc1hash")
+
+
+def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
+    """Read the identity vars off a robot that is ALREADY in fastboot, record them in identity.txt,
+    and return {var: value}. Best-effort + read-only: a var the bootloader doesn't expose is
+    omitted (and no file is written if nothing came back)."""
+    captured: dict[str, str] = {}
+    for var in _IDENTITY_VARS:
+        res = ctx.fastboot.fbt("getvar", var, check=False)
+        val = parse_getvar(res.stdout + res.stderr)
+        if val:
+            captured[var] = val
+    if captured:
+        robot.recon_dir.mkdir(parents=True, exist_ok=True)
+        (robot.recon_dir / "identity.txt").write_text(
+            "".join(f"{k}: {v}\n" for k, v in captured.items())
+        )
+    return captured
+
+
+def read_identity_from_robot(ctx: Context) -> dict[str, str]:
+    """Bring the robot up in FEL->fastboot (the non-destructive recon path) solely to read the
+    dustbuilder-checker identity vars and record them — for when an older recon didn't capture them.
+    The TOOL drives every fastboot step; the user only does the FEL button sequence. Returns the
+    captured {var: value} (possibly partial), or {} if the robot never came up in fastboot."""
+    robot = ctx.need_robot()
+    if not _is_exe(ctx.sunxi_fel):
+        doctor(ctx)
+    if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
+        fetch(ctx)
+    print_fel_entry(ctx.console, ctx.host)
+    if not ctx.fel.poll_fel(180):
+        ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
+                         "connected to try again.")
+        return {}
+    try:
+        ctx.fel.fel_boot_fastboot(
+            ctx.ws.dist, ctx.fsbl_name, "payload.bin",
+            ctx.profile.fsbl_addr, ctx.profile.payload_addr,
+        )
+    except Die as exc:  # this is an auxiliary read, not the flash — never abort the caller over it
+        ctx.console.warn(f"Couldn't bring the robot up in fastboot to read the values ({exc}).")
+        return {}
+    captured = capture_identity(ctx, robot)
+    if captured:
+        ctx.console.info(f"Read {len(captured)} value(s) off the robot: {', '.join(captured)}.")
+    ctx.console.action("Power the robot OFF again (hold power ~15s), then unplug the USB cable.")
+    return captured
 
 
 def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
@@ -72,16 +124,8 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
 
     # Also capture the extra fastboot identity vars the dustbuilder's manual checker
     # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
-    # robot's config isn't auto-recognized. Best-effort + read-only: a var the bootloader doesn't
-    # expose is omitted, and the rescue block prints the getvar command to run by hand instead.
-    identity = []
-    for var in ("serialno", "toc0hash", "toc1hash"):
-        res = ctx.fastboot.fbt("getvar", var, check=False)
-        val = parse_getvar(res.stdout + res.stderr)
-        if val:
-            identity.append(f"{var}: {val}")
-    if identity:
-        (robot.recon_dir / "identity.txt").write_text("\n".join(identity) + "\n")
+    # robot's config isn't auto-recognized. The robot is already in fastboot here.
+    capture_identity(ctx, robot)
 
     if samples:
         warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy

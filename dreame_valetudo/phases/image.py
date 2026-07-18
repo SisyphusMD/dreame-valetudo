@@ -17,6 +17,7 @@ from ..context import Context
 from ..dustbuilder import form_signature
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import zip_matches_model
+from .recon import read_identity_from_robot
 
 
 def verify_form(ctx: Context) -> bool:
@@ -113,16 +114,29 @@ def _open_dustbuilder(ctx: Context) -> None:
     ctx.console.info(f"Page: {ctx.dustbuilder_page}")
 
 
+_RESCUE_VARS = (("Device serial number", "serialno"),
+                ("toc0hash value", "toc0hash"),
+                ("toc1hash value", "toc1hash"))
+
+
 def _config_rejected_help(ctx: Context) -> None:
     """Everything the dustbuilder's manual checker (check.builder.dontvacuum.me) needs when the
     build is rejected with 'unknown config value': the get_staged image to upload plus the exact
-    getvar values — using what recon captured, and falling back to the command to run by hand for
-    anything it couldn't read."""
+    getvar values. If an older recon didn't record serialno/toc0hash/toc1hash, the TOOL offers to
+    read them off the robot itself — the user never runs fastboot by hand."""
     robot = ctx.need_robot()
-    cfg = ctx.robot_config()
     ident = robot.identity()
-    zip_path = robot.recon_dir / "dreame_samples.zip"
 
+    # Fill any gap by reading it off the robot ourselves, not by handing the user a command.
+    missing = [var for _label, var in _RESCUE_VARS if not ident.get(var)]
+    if missing and ctx.interactive:
+        ctx.console.warn(f"This robot's recon didn't record: {', '.join(missing)}. The tool reads "
+                         "these off the robot for you — you never run fastboot yourself.")
+        if ctx.console.confirm("Reconnect the robot and put it in FEL mode so I can read them now?"):
+            ident = {**ident, **read_identity_from_robot(ctx)}
+
+    cfg = ctx.robot_config()
+    zip_path = robot.recon_dir / "dreame_samples.zip"
     ctx.console.action("Config not recognized — here's exactly what check.builder.dontvacuum.me "
                        "needs")
     ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). It's "
@@ -138,10 +152,8 @@ def _config_rejected_help(ctx: Context) -> None:
     ctx.console.info(f"   {'Model':<22} {ctx.profile.model} "
                      f"(dreame.vacuum.{ctx.profile.model_code})")
     ctx.console.info(f"   {'config value':<22} {cfg or '(re-run recon to capture)'}")
-    for label, var in (("Device serial number", "serialno"),
-                       ("toc0hash value", "toc0hash"),
-                       ("toc1hash value", "toc1hash")):
-        shown = ident.get(var) or f"(read it: fastboot getvar {var}, with the robot in fastboot)"
+    for label, var in _RESCUE_VARS:
+        shown = ident.get(var) or "(not recorded — re-run recon and the tool will read it off the robot)"
         ctx.console.info(f"   {label:<22} {shown}")
     ctx.console.info("When Dennis adds support (you'll get a working FEL build), re-run "
                      "'dreame-valetudo' for this robot to continue.")
