@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Integration: drive reconcile-releases.sh end-to-end with a STUBBED curl (no network, no forge).
-# Simulates each registry's release carrying one asset, and asserts reconcile downloads the union
-# once and re-publishes it to ALL THREE registries (cluster, NAS, GitHub) via the shared publishers
-# — i.e. a gap on any registry gets backfilled. Run directly: bash tests/integration/reconcile.sh
+# Scenario: the cluster + GitHub releases already carry the asset at the right byte size, but the
+# NAS release is missing it. Asserts reconcile downloads the union once, then uploads ONLY to the
+# NAS (the gap) and SKIPS the two already-complete registries — i.e. it no longer re-uploads every
+# asset to every registry every run. Run directly: bash tests/integration/reconcile.sh
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 calls="$tmp/curl.log"; : > "$calls"
 
-# Fake curl: log every call; serve a release object (with one downloadable asset) for tag lookups,
-# write a file for -o downloads, empty asset lists for the delete-probe, and OK for uploads. This
-# lets reconcile-releases.sh + the real forgejo/github publishers run without a forge.
+# The union download writes 'BINARY' (6 bytes), so a registry that reports size 6 is "in sync" and
+# gets skipped; the NAS reports an empty asset list, so it's the gap that gets backfilled.
 cat > "$tmp/curl" <<EOF
 #!/usr/bin/env bash
 printf 'curl %s\n' "\$*" >> "$calls"
-# Handle a download (-o <path> <url>): create the file so the union gather succeeds.
+# Handle a download (-o <path> <url>): create the 6-byte file so the union gather succeeds.
 prev=""
 for a in "\$@"; do
   if [ "\$prev" = "-o" ]; then printf 'BINARY' > "\$a"; exit 0; fi
@@ -28,7 +28,12 @@ case "\$u" in
       *) printf '[]\n' ;;
     esac ;;
   *"/releases/tags/"*)
-    printf '{"id":999,"assets":[{"name":"dreame-valetudo_amd64.deb","browser_download_url":"http://stub/dreame-valetudo_amd64.deb"}]}\n' ;;
+    case "\$u" in
+      # NAS is missing the asset entirely -> reconcile must backfill it there.
+      *forgejo.nas.bryantserver.com*) printf '{"id":999,"assets":[]}\n' ;;
+      # Cluster + GitHub already carry it at the matching size -> reconcile must skip them.
+      *) printf '{"id":999,"assets":[{"name":"dreame-valetudo_amd64.deb","size":6,"browser_download_url":"http://stub/dreame-valetudo_amd64.deb"}]}\n' ;;
+    esac ;;
   *"/releases"*) printf '{"id":999}\n' ;;
   *) : ;;
 esac
@@ -50,15 +55,19 @@ out="$(bash "$root/packaging/reconcile-releases.sh" 2>&1)" || fail "reconcile ex
 # Downloaded the union asset from a registry's browser_download_url.
 grep -Eq -- '-o .*dreame-valetudo_amd64\.deb http://stub/dreame-valetudo_amd64\.deb' "$calls" \
   || fail "reconcile did not download the union asset"
-# Re-published it to the cluster + NAS Forgejo (multipart) AND GitHub (data-binary), for a tag.
-grep -Eq 'forgejo\.bryantserver\.com/.*/releases/999/assets\?name=dreame-valetudo_amd64\.deb.*attachment=@' "$calls" \
-  || fail "reconcile did not upload to cluster Forgejo"
+# Backfilled ONLY the NAS Forgejo (the registry missing the asset), via a multipart upload.
 grep -Eq 'forgejo\.nas\.bryantserver\.com/.*/releases/999/assets\?name=dreame-valetudo_amd64\.deb.*attachment=@' "$calls" \
-  || fail "reconcile did not upload to NAS Forgejo"
-grep -Eq 'uploads\.github\.com/.*/releases/999/assets\?name=dreame-valetudo_amd64\.deb' "$calls" \
-  || fail "reconcile did not upload to GitHub"
+  || fail "reconcile did not backfill the NAS (the registry with the gap)"
+# Did NOT re-upload to the cluster Forgejo or GitHub — both already had it at the right size.
+grep -Eq 'forgejo\.bryantserver\.com/.*/releases/999/assets\?name=.*attachment=@' "$calls" \
+  && fail "reconcile re-uploaded to the cluster Forgejo despite it already having the asset"
+grep -Eq 'uploads\.github\.com/.*/releases/999/assets\?name=' "$calls" \
+  && fail "reconcile re-uploaded to GitHub despite it already having the asset"
+# The human-readable summary reflects skip vs backfill.
+grep -q 'already present — skipped' <<<"$out" || fail "reconcile did not report the skip"
+grep -q 'missing or changed — uploading' <<<"$out" || fail "reconcile did not report the backfill"
 # Walked BOTH tags (stable + rc); anchor end-of-line since v9.9.0 is a prefix of v9.9.0-rc.1.
 grep -Eq 'releases/tags/v9\.9\.0$' "$calls" || fail "reconcile skipped the stable tag"
 grep -Eq 'releases/tags/v9\.9\.0-rc\.1$' "$calls" || fail "reconcile skipped the rc tag"
 
-echo "PASS: reconcile downloads the union and backfills all three registries for every tag"
+echo "PASS: reconcile backfills only the registry with the gap and skips the already-complete ones"
