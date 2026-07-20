@@ -153,8 +153,14 @@ def _config_rejected_help(ctx: Context) -> None:
                      f"(dreame.vacuum.{ctx.profile.model_code})")
     ctx.console.info(f"   {'config value':<22} {cfg or '(re-run recon to capture)'}")
     for label, var in _RESCUE_VARS:
-        shown = ident.get(var) or "(not recorded — re-run recon and the tool will read it off the robot)"
+        val = ident.get(var)
+        shown = val or "(not recorded — re-run recon and the tool will read it off the robot)"
         ctx.console.info(f"   {label:<22} {shown}")
+        # Some models (e.g. the X30) don't expose a serial over fastboot at all; flag that it's
+        # expected so a "not supported" value doesn't read as a missing field the user must chase.
+        if var == "serialno" and val and "not supported" in val.lower():
+            ctx.console.info(f"   {'':<22} (this model doesn't expose a serial — expected; Dennis "
+                             "can add support without it)")
     ctx.console.info("When Dennis adds support (you'll get a working FEL build), re-run "
                      "'dreame-valetudo' for this robot to continue.")
 

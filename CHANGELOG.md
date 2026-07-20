@@ -17,6 +17,9 @@
   highlighted up front.
 - **docs**: the Homebrew install steps now include the one-time `brew trust sisyphusmd/tap`
   (Homebrew 6.0+ refuses to load formulae from an untrusted third-party tap).
+- **ux**: when a model doesn't expose a serial over fastboot (the X30's bootloader returns
+  `not supported`), the `check.builder` rescue block now flags that it's expected, so it doesn't
+  read as a missing field to chase down.
 
 ## [0.1.0] - 2026-07-17
 
