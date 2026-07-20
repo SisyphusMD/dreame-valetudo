@@ -18,7 +18,7 @@ jobs:
     name: Build .debs + tarball, create releases (Forgejo, NAS, GitHub)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Both .debs are built through buildx, the way the sister repos build their arm64 images: the
       # docker-container BuildKit driver carries QEMU, so the arm64 leg emulates INSIDE the builder.
@@ -89,7 +89,7 @@ jobs:
     needs: releases
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fill the formula + push to the Forgejo tap (mirror carries it to GitHub + NAS)
         env:
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
@@ -115,7 +115,7 @@ jobs:
     needs: releases
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # all tags needed for the reconcile loop
       - name: Wait for the current release's GitHub-built .pkgs, then reconcile every tag
