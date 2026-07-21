@@ -23,6 +23,7 @@ from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image, verify_form
+from .phases.manage import rename
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
 from .phases.recon import recon
@@ -35,7 +36,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .workspace import Robot, Workspace
+from .workspace import Robot, Workspace, is_valid_robot_name
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
 _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"})
@@ -81,21 +82,29 @@ def _profile_for_work(ctx: Context) -> None:
 def _name_new_robot(ctx: Context) -> None:
     """Name a brand-new robot up front. Blank — or non-interactive — leaves ctx.robot None so recon
     auto-names it by device ID; a given name creates the robot dir now. Shared by the first-robot
-    and 'start FRESH' paths so a device is nameable from the very first run (recon or auto), not
-    only once a second robot already exists."""
+    and 'start FRESH' paths so a device is nameable from the very first run (recon or auto). A name
+    collision is not fatal — names stay unique (they're the human handle), so it just re-prompts."""
     if not ctx.interactive:
         ctx.robot = None
         return
-    name = ctx.console.ask("Name for this robot [blank = auto-name by device ID]:").strip()
-    name = name.replace(" ", "-")
-    if not name:
-        ctx.robot = None
-        ctx.console.info("New robot — created and named by device ID once recon reads it.")
-    elif (ctx.ws.robots_dir / name).is_dir():
-        raise Die(f"Robot '{name}' already exists — pick it from the list instead.")
-    else:
+    while True:
+        name = ctx.console.ask(
+            "Name for this robot [blank = auto-name by device ID]:"
+        ).strip().replace(" ", "-")
+        if not name:
+            ctx.robot = None
+            ctx.console.info("New robot — created and named by device ID once recon reads it.")
+            return
+        if not is_valid_robot_name(name):
+            ctx.console.warn(f"'{name}' isn't a valid name — use letters, digits, . _ or -.")
+            continue
+        if (ctx.ws.robots_dir / name).is_dir():
+            ctx.console.warn(f"A robot named '{name}' already exists — resume it from the menu, or "
+                             "pick a different name.")
+            continue
         ctx.robot = Robot(ctx.ws.robots_dir / name)
         ctx.console.info(f"New robot: {name}")
+        return
 
 
 def select_robot(ctx: Context) -> None:
@@ -261,6 +270,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
         "  dreame-valetudo migrate    run the one-time workspace migration now (else it's automatic)\n"
+        "  dreame-valetudo rename <old> <new>  rename a robot (its config identity is unchanged)\n"
         "  dreame-valetudo diagnose   on the robot's AP: check why the UI isn't up\n"
         "  dreame-valetudo fix-impl   pin the Valetudo implementation for the robot's model\n"
         "  dreame-valetudo fix-did    repair a NEGATIVE factory deviceId\n"
@@ -287,6 +297,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "migrate":
         report(ctx.env, ctx.console)
+        return 0
+    if cmd == "rename":
+        rename(ctx, rest)
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1

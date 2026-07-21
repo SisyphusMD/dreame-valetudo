@@ -11,7 +11,7 @@ from ..console import Die, die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
 from ..util import parse_config, parse_getvar
-from ..workspace import Robot
+from ..workspace import Robot, Workspace
 from .doctor import _is_exe, doctor
 from .fetch import fetch
 
@@ -68,6 +68,19 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     return captured
 
 
+def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:
+    """The existing robot dir already recorded for this exact hardware (its `config`), or None — so
+    a re-recon adopts the known robot instead of creating a duplicate dir for the same device."""
+    if not ws.robots_dir.is_dir():
+        return None
+    for d in sorted(ws.robots_dir.iterdir()):
+        if d.is_dir() and not d.name.startswith("."):
+            f = d / "recon" / "config.txt"
+            if f.is_file() and parse_config(f.read_text()) == cfg:
+                return Robot(d)
+    return None
+
+
 def recon(ctx: Context, *, force: bool = False, samples: bool = True,
           offer_update: bool = False) -> None:
     # Self-provision before the already-done check: toolchain, then stage1.
@@ -110,20 +123,27 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
     if not cfg:
         die("Could not read the config value from the robot — aborting.")
 
-    # Identity in hand — NOW create the robot dir (a fresh run is named by the device; a resumed
-    # one is checked to match, so a wrong robot can't be silently adopted).
+    # Identity in hand — resolve the robot dir. `config` is the durable hardware ID: if this exact
+    # device already has a dir, ADOPT it rather than making a duplicate; a fresh run is otherwise
+    # named by the device; a resumed dir is cross-checked so a wrong robot can't be silently adopted.
+    existing = _robot_with_config(ctx.ws, cfg)
     if ctx.robot is None:
-        named = ctx.ws.robots_dir / f"{ctx.profile.model_code}-{cfg[:12]}"
-        ctx.robot = Robot(named)
-        ctx.console.say(f"Robot identified — '{named.name}'.")
+        if existing is not None:
+            ctx.robot = existing
+            ctx.console.say(f"This robot is already set up as '{existing.work.name}' — resuming it.")
+        else:
+            ctx.robot = Robot(ctx.ws.robots_dir / f"{ctx.profile.model_code}-{cfg[:12]}")
+            ctx.console.say(f"Robot identified — '{ctx.robot.work.name}'.")
     else:
-        prior = None
         prior_file = ctx.robot.recon_dir / "config.txt"
-        if prior_file.is_file():
-            prior = parse_config(prior_file.read_text())
+        prior = parse_config(prior_file.read_text()) if prior_file.is_file() else None
         if prior and prior != cfg:
             die(f"SAFETY STOP: this robot dir is {prior} but the connected device is {cfg} — "
                 "different robot. Resume the right one, or start fresh.")
+        if prior is None and existing is not None and existing.work != ctx.robot.work:
+            ctx.console.warn(f"This robot is already set up as '{existing.work.name}' — using that "
+                             f"instead of a duplicate '{ctx.robot.work.name}'.")
+            ctx.robot = existing
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)

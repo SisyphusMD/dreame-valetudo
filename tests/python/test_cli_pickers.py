@@ -89,11 +89,21 @@ def test_select_robot_fresh_with_name(make_ctx: CtxFactory) -> None:
     assert ctx.robot.work.name == "living-room"  # spaces sanitized to dashes
 
 
-def test_select_robot_rejects_duplicate_fresh_name(make_ctx: CtxFactory) -> None:
-    # Two prior robots -> "start FRESH" is entry 3; naming it after an existing dir must die.
-    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["3", "existing"])
+def test_select_robot_reprompts_on_duplicate_fresh_name(make_ctx: CtxFactory) -> None:
+    # Naming a fresh robot after an existing dir no longer dies — names stay unique, so it warns
+    # and re-prompts. Here the retry is blank -> falls back to auto-name-by-device-ID.
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["3", "existing", ""])
     ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)
     for name in (f"r2416-{_CFG[:12]}", "existing"):
         (ctx.ws.robots_dir / name).mkdir()
-    with pytest.raises(Die, match="already exists"):
-        select_robot(ctx)
+    select_robot(ctx)
+    assert ctx.robot is None
+    assert any("already exists" in msg for _k, msg in ctx.console.lines)
+
+
+def test_select_robot_reprompts_on_invalid_name(make_ctx: CtxFactory) -> None:
+    # A name that could traverse/nest is refused and re-prompted, not created.
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["bad/name", "good-name"])
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "good-name"
+    assert any("isn't a valid name" in msg for _k, msg in ctx.console.lines)

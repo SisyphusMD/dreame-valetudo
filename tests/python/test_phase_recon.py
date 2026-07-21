@@ -157,6 +157,31 @@ def test_recon_update_prompt_skipped_when_non_interactive(make_ctx: CtxFactory) 
     assert ctx.runner.calls == []
 
 
+def test_recon_adopts_the_existing_robot_for_the_same_config(make_ctx: CtxFactory) -> None:
+    # A second recon of the SAME hardware (no robot selected) adopts the existing dir via config,
+    # instead of creating a duplicate auto-named one.
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    prior = Robot(ctx.ws.robots_dir / "1st-floor")
+    prior.recon_dir.mkdir(parents=True)
+    (prior.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    recon(ctx, samples=False)
+    assert ctx.robot is not None and ctx.robot.work.name == "1st-floor"
+    assert not (ctx.ws.robots_dir / f"r2416-{_CFG[:12]}").exists()  # no duplicate dir
+
+
+def test_recon_redirects_a_new_named_robot_to_the_existing_one(make_ctx: CtxFactory) -> None:
+    # User named a NEW robot, but this hardware already has a dir -> use the existing one, warn.
+    ctx = make_ctx(model="x40-ultra", robot_name="kitchen", responder=_responder())
+    _dist_ready(ctx)
+    prior = Robot(ctx.ws.robots_dir / "1st-floor")
+    prior.recon_dir.mkdir(parents=True)
+    (prior.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    recon(ctx, samples=False)
+    assert ctx.robot is not None and ctx.robot.work.name == "1st-floor"
+    assert any("already set up as" in msg for _kind, msg in ctx.console.lines)
+
+
 def test_recon_resume_rejects_a_different_robot(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder("beef" * 8))
     robot: Robot = ctx.need_robot()

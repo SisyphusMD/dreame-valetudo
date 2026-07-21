@@ -9,6 +9,7 @@ Storage model, all under the ~/dreame-valetudo/ umbrella:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,14 @@ from .util import parse_config
 # The ~/dreame-valetudo/ umbrella holding work/, backups/, and the .layout marker. Shared by
 # workspace/context/migrate so the name can't drift between them.
 WORKSPACE_SUBDIR = "dreame-valetudo"
+
+_ROBOT_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_valid_robot_name(name: str) -> bool:
+    """A robot dir name must be a single path segment (letters, digits, . _ -), so a name a user
+    types can never traverse out of robots/ or nest a subdirectory."""
+    return bool(_ROBOT_NAME_RE.fullmatch(name)) and name not in (".", "..")
 
 
 @dataclass(frozen=True, slots=True)

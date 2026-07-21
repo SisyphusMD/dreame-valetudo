@@ -14,6 +14,10 @@
   (the tool + Valetudo version, model, config, robot name, timestamp, and contained files) — a backup
   is portable and long-lived, so it should be self-describing. Any older backup without one is
   backfilled automatically (and honestly marked as backfilled) the next time the tool runs.
+- **feat**: a robot's `config` value (read off the device) is now its durable identity, and its name
+  is just a label. Re-running `recon` on a robot you already set up adopts its existing folder
+  instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring); and
+  `dreame-valetudo rename <old> <new>` relabels a robot without disturbing its identity or backups.
 - **ux**: the very first robot can now be named right away. The name prompt used to appear only
   once a second robot existed, so the first device was always auto-named by its ID — and getting a
   friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on
