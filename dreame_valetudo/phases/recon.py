@@ -68,16 +68,25 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     return captured
 
 
-def recon(ctx: Context, *, force: bool = False, samples: bool = True) -> None:
+def recon(ctx: Context, *, force: bool = False, samples: bool = True,
+          offer_update: bool = False) -> None:
     # Self-provision before the already-done check: toolchain, then stage1.
     if not _is_exe(ctx.sunxi_fel):
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         fetch(ctx)
     if ctx.robot is not None and ctx.robot.state_has("recon") and not force:
-        ctx.console.info(f"Recon already done — {ctx.robot.state_get('recon')}. "
-                         "Re-run with '--force' to repeat.")
-        return
+        prior = ctx.robot.state_get("recon")
+        # The standalone `recon` command (offer_update=True) offers to refresh a prior recon by
+        # re-reading the device; the auto chain just skips ahead. Non-interactive still needs --force.
+        if offer_update and ctx.interactive:
+            ctx.console.info(f"Recon already done — {prior}.")
+            if not ctx.console.confirm("Re-run recon to update the saved recon for this robot?"):
+                return
+            ctx.console.say("Updating recon — re-reading the device...")
+        else:
+            ctx.console.info(f"Recon already done — {prior}. Re-run with '--force' to repeat.")
+            return
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 

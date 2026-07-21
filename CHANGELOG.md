@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-07-22
-
+- **ux**: the very first robot can now be named right away. The name prompt used to appear only
+  once a second robot existed, so the first device was always auto-named by its ID — and getting a
+  friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on
+  the first robot too; blank still auto-names by device ID.
+- **feat**: running `recon` on a robot that's already been reconned now offers to re-read the
+  device and refresh the saved recon, instead of only printing the `--force` hint. (The auto chain
+  still skips a completed recon and moves on; non-interactive runs still need `--force`.)
 - **feat**: after you submit to the dustbuilder, `image` now checks in — if the build was rejected
   with `Error: unknown config value` (the robot isn't auto-recognized yet), answer "no" and it
   prints exactly what `check.builder.dontvacuum.me` needs: the `get_staged` image to upload plus the

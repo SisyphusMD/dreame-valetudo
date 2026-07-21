@@ -44,9 +44,26 @@ def test_select_robot_from_env(make_ctx: CtxFactory) -> None:
 
 
 def test_select_robot_fresh_when_none_exist(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"})
+    # Blank at the first-robot name prompt keeps auto-name-by-device-ID (robot None until recon).
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=[""])
     select_robot(ctx)
-    assert ctx.robot is None  # no robot until recon reads the device
+    assert ctx.robot is None
+
+
+def test_select_robot_first_robot_is_nameable(make_ctx: CtxFactory) -> None:
+    # The very first robot (empty robots dir) can now be named directly — no need to create a
+    # throwaway device first just to get the naming prompt.
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["kitchen"])
+    select_robot(ctx)
+    assert ctx.robot is not None
+    assert ctx.robot.work.name == "kitchen"
+
+
+def test_select_robot_first_robot_non_interactive_auto_names(make_ctx: CtxFactory) -> None:
+    # Non-interactive first run: no prompt, robot stays None for recon to auto-name (unchanged).
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, interactive=False)
+    select_robot(ctx)
+    assert ctx.robot is None
 
 
 def test_select_robot_resume_picks_from_list(make_ctx: CtxFactory) -> None:

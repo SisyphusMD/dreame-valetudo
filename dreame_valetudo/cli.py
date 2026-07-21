@@ -74,6 +74,26 @@ def _profile_for_work(ctx: Context) -> None:
         select_model(ctx)
 
 
+def _name_new_robot(ctx: Context) -> None:
+    """Name a brand-new robot up front. Blank — or non-interactive — leaves ctx.robot None so recon
+    auto-names it by device ID; a given name creates the robot dir now. Shared by the first-robot
+    and 'start FRESH' paths so a device is nameable from the very first run (recon or auto), not
+    only once a second robot already exists."""
+    if not ctx.interactive:
+        ctx.robot = None
+        return
+    name = ctx.console.ask("Name for this robot [blank = auto-name by device ID]:").strip()
+    name = name.replace(" ", "-")
+    if not name:
+        ctx.robot = None
+        ctx.console.info("New robot — created and named by device ID once recon reads it.")
+    elif (ctx.ws.robots_dir / name).is_dir():
+        raise Die(f"Robot '{name}' already exists — pick it from the list instead.")
+    else:
+        ctx.robot = Robot(ctx.ws.robots_dir / name)
+        ctx.console.info(f"New robot: {name}")
+
+
 def select_robot(ctx: Context) -> None:
     ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)
     named = ctx.env.get("DREAME_ROBOT")
@@ -87,9 +107,8 @@ def select_robot(ctx: Context) -> None:
     dirs = [d for d in sorted(ctx.ws.robots_dir.iterdir())
             if d.is_dir() and not d.name.startswith(".")]
     if not dirs:
-        ctx.robot = None  # fresh: no robot exists until recon reads the device
-        ctx.console.info("No prior robots — pick a model now; the robot dir is created (named by "
-                         "device ID) once recon reads it.")
+        ctx.console.say("No prior robots — setting up your first one.")
+        _name_new_robot(ctx)  # nameable here too, so the first device needn't be a throwaway
         _profile_for_work(ctx)
         return
     if not ctx.interactive:
@@ -105,16 +124,7 @@ def select_robot(ctx: Context) -> None:
         ctx.robot = Robot(dirs[int(choice) - 1])
         ctx.console.info(f"Resuming: {dirs[int(choice) - 1].name}")
     elif choice == str(fresh):
-        name = ctx.console.ask("Name for the new robot [blank = auto-name by device ID]:").strip()
-        name = name.replace(" ", "-")
-        if not name:
-            ctx.robot = None
-            ctx.console.info("New robot — created and named by device ID once recon reads it.")
-        elif (ctx.ws.robots_dir / name).is_dir():
-            raise Die(f"Robot '{name}' already exists — pick it from the list instead.")
-        else:
-            ctx.robot = Robot(ctx.ws.robots_dir / name)
-            ctx.console.info(f"New robot: {name}")
+        _name_new_robot(ctx)
     else:
         raise Die(f"Invalid choice: {choice}")
     _profile_for_work(ctx)
@@ -185,11 +195,14 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
     if ctx.profile.method == "uart":
         uart(ctx)
         return
-    if ctx.robot is not None:
+    # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
+    # "resuming" (recon is the first hardware phase, so its marker is what distinguishes the two).
+    if ctx.robot is not None and ctx.robot.state_has("recon"):
         ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.work.name}', resuming and "
                         "driving every phase")
     else:
-        ctx.console.say(f"{ctx.profile.model} — new robot. I'll guide every step.")
+        named = f" '{ctx.robot.work.name}'" if ctx.robot is not None else ""
+        ctx.console.say(f"{ctx.profile.model} — new robot{named}. I'll guide every step.")
         _pcb_help(ctx)
         ctx.console.info("This replaces the robot's firmware — flashing always carries some risk "
                          "of bricking, so you do this at your own risk. Ctrl+C is safe at any "
@@ -289,7 +302,7 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     elif cmd == "fetch":
         fetch(ctx)
     elif cmd == "recon":
-        recon(ctx, force="--force" in rest, samples="--no-samples" not in rest)
+        recon(ctx, force="--force" in rest, samples="--no-samples" not in rest, offer_update=True)
     elif cmd == "image":
         image(ctx, force="--force" in rest)
     elif cmd == "root":

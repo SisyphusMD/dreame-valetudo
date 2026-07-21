@@ -126,7 +126,35 @@ def test_recon_is_idempotent(make_ctx: CtxFactory) -> None:
     ctx.need_robot().state_set("recon", f"config={_CFG}")
     _dist_ready(ctx)
     recon(ctx, samples=False)
-    assert ctx.runner.calls == []  # skipped — no hardware touched
+    assert ctx.runner.calls == []  # skipped — no hardware touched (auto chain: no offer_update)
+
+
+def test_recon_offers_update_and_reruns_when_confirmed(make_ctx: CtxFactory) -> None:
+    # The standalone `recon` command on an already-reconned robot offers to refresh it; a "yes"
+    # re-reads the device (touches hardware) instead of just bailing with the --force hint.
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), confirms=[True])
+    ctx.need_robot().state_set("recon", f"config={_CFG}")
+    _dist_ready(ctx)
+    recon(ctx, samples=False, offer_update=True)
+    assert ctx.runner.calls != []  # re-ran: the device was re-read
+    assert (ctx.need_robot().recon_dir / "config.txt").read_text().strip() == f"config: {_CFG}"
+
+
+def test_recon_update_declined_leaves_it_untouched(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), confirms=[False])
+    ctx.need_robot().state_set("recon", f"config={_CFG}")
+    _dist_ready(ctx)
+    recon(ctx, samples=False, offer_update=True)
+    assert ctx.runner.calls == []  # declined — nothing touched
+
+
+def test_recon_update_prompt_skipped_when_non_interactive(make_ctx: CtxFactory) -> None:
+    # Non-interactive: no prompt even with offer_update — still requires --force (unchanged).
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), interactive=False)
+    ctx.need_robot().state_set("recon", f"config={_CFG}")
+    _dist_ready(ctx)
+    recon(ctx, samples=False, offer_update=True)
+    assert ctx.runner.calls == []
 
 
 def test_recon_resume_rejects_a_different_robot(make_ctx: CtxFactory) -> None:
