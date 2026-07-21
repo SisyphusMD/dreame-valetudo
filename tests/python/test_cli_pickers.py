@@ -101,9 +101,17 @@ def test_select_robot_reprompts_on_duplicate_fresh_name(make_ctx: CtxFactory) ->
     assert any("already exists" in msg for _k, msg in ctx.console.lines)
 
 
-def test_select_robot_reprompts_on_invalid_name(make_ctx: CtxFactory) -> None:
-    # A name that could traverse/nest is refused and re-prompted, not created.
+def test_select_robot_reprompts_on_a_name_with_a_slash(make_ctx: CtxFactory) -> None:
+    # A name with a path separator is refused and re-prompted, not turned into a nested folder.
     ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["bad/name", "good-name"])
     select_robot(ctx)
     assert ctx.robot is not None and ctx.robot.work.name == "good-name"
-    assert any("isn't a valid name" in msg for _k, msg in ctx.console.lines)
+    assert any("can't contain" in msg for _k, msg in ctx.console.lines)
+
+
+def test_select_robot_saves_a_spaced_name_as_a_slug_folder(make_ctx: CtxFactory) -> None:
+    # A name with spaces is kept verbatim (carried to recon to save) while the FOLDER is a slug.
+    ctx = make_ctx(env={"DREAME_MODEL": "x40-ultra"}, asks=["living room"])
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "living-room"
+    assert ctx.pending_name == "living room"

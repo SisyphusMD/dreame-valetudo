@@ -9,15 +9,20 @@
   anything, leaving a compatibility symlink at the old `~/dreame-valetudo-work`) — or run
   `dreame-valetudo migrate` to do it on demand. A `.layout` version marker lets an older build refuse
   a workspace a newer build wrote instead of mis-reading it, and `DREAME_BACKUPS` overrides where
-  backups go.
+  backups go. The migration also brings older data fully current — it normalizes legacy backup folder
+  names and backfills anything that predates a feature (backup manifests, saved robot names) — so the
+  workspace is left uniformly in the current shape rather than a mix of old and new.
 - **feat**: each factory backup now carries a `manifest.json` recording what it is and what wrote it
   (the tool + Valetudo version, model, config, robot name, timestamp, and contained files) — a backup
   is portable and long-lived, so it should be self-describing. Any older backup without one is
   backfilled automatically (and honestly marked as backfilled) the next time the tool runs.
 - **feat**: a robot's `config` value (read off the device) is now its durable identity, and its name
-  is just a label. Re-running `recon` on a robot you already set up adopts its existing folder
-  instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring); and
-  `dreame-valetudo rename <old> <new>` relabels a robot without disturbing its identity or backups.
+  is just a label — you can use spaces and capitals (the exact name is saved; the folder gets a
+  filesystem-safe slug). Re-running `recon` on a robot you already set up adopts its existing folder
+  instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring).
+  `dreame-valetudo rename` and `dreame-valetudo forget` take a name or, run with no arguments, pick
+  from a list, and accept either the folder slug or the display name — a rename never disturbs the
+  robot's identity or its backups.
 - **feat**: new cleanup commands. `dreame-valetudo forget <name>` removes a robot's working dir (type
   the name to confirm; it flags the ~1.2 GB recon recovery dumps that go with it), and
   `dreame-valetudo clean` reclaims the re-obtainable cache — `clean --all` clears every robot's state

@@ -41,6 +41,7 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 # False positive: ruff can't see that console.die is NoReturn across the module boundary.
 "dreame_valetudo/fastboot.py" = ["RET503"]
+"dreame_valetudo/phases/manage.py" = ["RET503"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

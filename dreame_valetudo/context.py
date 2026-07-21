@@ -47,6 +47,9 @@ class Context:
     sleep: Callable[[float], None] = time.sleep
     now: Callable[[], str] = _local_now
     interactive: bool = field(default_factory=_stdin_isatty)
+    # The human name typed at the naming prompt (may have spaces), carried to recon to save as the
+    # robot's display name once its dir is finalized. The dir itself is a filesystem-safe slug.
+    pending_name: str | None = None
 
     _libexec: Path | None = field(default=None, repr=False, compare=False)
     _fastboot: Fastboot | None = field(default=None, repr=False, compare=False)

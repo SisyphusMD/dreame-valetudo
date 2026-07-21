@@ -85,7 +85,7 @@ def test_consolidates_legacy_and_leaves_a_compat_symlink(tmp_path: Path) -> None
     old = tmp_path / "dreame-valetudo-work"
     assert old.is_symlink() and old.resolve() == (base / "work").resolve()
     assert not any(tmp_path.glob("dreame-*-backup-*"))  # scattered backup was moved out of ~
-    assert (base / "backups" / _BK0 / "manifest.json").exists()  # backfilled during migration
+    assert (base / "backups" / _BK1 / "manifest.json").exists()  # moved + renamed, then backfilled
 
 
 def test_is_idempotent(tmp_path: Path) -> None:
@@ -152,7 +152,23 @@ def test_exdev_falls_back_to_a_verified_copy(
     M.migrate(_env(tmp_path), ScriptedConsole())
     base = tmp_path / "dreame-valetudo"
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
-    assert (base / "backups" / _BK0 / "files.tar.gz").read_bytes() == SENTINEL
+    assert (base / "backups" / _BK1 / "files.tar.gz").read_bytes() == SENTINEL
+
+
+def test_normalizes_legacy_backup_names_on_move(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)  # the legacy backup name carries a '-backup-' infix
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    assert (backups / _BK1).is_dir()  # renamed to the current form
+    assert not any("-backup-" in p.name for p in backups.iterdir())  # no legacy names remain
+
+
+def test_backfills_a_display_name_for_a_nameless_robot(tmp_path: Path) -> None:
+    # A robot dir with no state/name gets its slug recorded on launch (self-heal, no version bump).
+    _seed_v1(tmp_path)
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    name = tmp_path / "dreame-valetudo" / "work" / "robots" / "kitchen" / "state" / "name"
+    assert name.read_text().strip() == "kitchen"
 
 
 def test_migrate_command_reports_state(tmp_path: Path) -> None:

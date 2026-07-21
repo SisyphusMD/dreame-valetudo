@@ -23,6 +23,7 @@ import contextlib
 import errno
 import json
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from pathlib import Path
 
 from . import __version__, manifest
 from .console import Console, die
-from .workspace import WORKSPACE_SUBDIR
+from .workspace import WORKSPACE_SUBDIR, Robot
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,15 @@ def _looks_like_backup(d: Path) -> bool:
     )
 
 
+# Legacy backups were named `<tag>-backup-<YYYYMMDD-HHMMSS>`; the current form drops the `-backup-`
+# infix. Normalize a moved backup so the backups/ folder ends up uniformly named.
+_LEGACY_BACKUP_SUFFIX = re.compile(r"-backup-(\d{8}-\d{6})$")
+
+
+def _normalize_backup_name(name: str) -> str:
+    return _LEGACY_BACKUP_SUFFIX.sub(r"-\1", name)
+
+
 def _safe_move(src: Path, dst: Path, console: Console) -> bool:
     """Move src -> dst, NEVER clobbering. Atomic rename on one filesystem; a verified copy-then-
     remove across filesystems (never remove before the copy verifies). Returns True if it moved."""
@@ -107,7 +117,7 @@ def _to_v1(env: Mapping[str, str], console: Console) -> None:
     if not env.get("DREAME_BACKUPS"):
         dest = base / "backups"
         n = sum(
-            _looks_like_backup(d) and _safe_move(d, dest / d.name, console)
+            _looks_like_backup(d) and _safe_move(d, dest / _normalize_backup_name(d.name), console)
             for d in sorted(home.glob("dreame-*-backup-*"))
         )
         if n:
@@ -148,6 +158,21 @@ def _stamp(env: Mapping[str, str]) -> None:
     )
 
 
+def _backfill_names(env: Mapping[str, str]) -> None:
+    """Self-heal: ensure every robot dir records a display name (state/name). Gaps-only + idempotent,
+    so a robot that predates saved names gets its folder slug recorded as its name — keeping the
+    on-disk state uniformly current every launch. This does NOT bump the layout version: an older
+    build reads the same workspace fine and just ignores the file, so bumping would only lock older
+    builds out for no real incompatibility."""
+    work = Path(env["DREAME_WORK"]) if env.get("DREAME_WORK") else base_dir(env) / "work"
+    robots = work / "robots"
+    if not robots.is_dir():
+        return
+    for d in sorted(robots.iterdir()):
+        if d.is_dir() and not d.name.startswith(".") and not (d / "state" / "name").is_file():
+            Robot(d).set_display_name(d.name)
+
+
 def migrate(env: Mapping[str, str], console: Console) -> None:
     """Bring the on-disk workspace up to LAYOUT_VERSION. A cheap no-op once current. Refuses (never
     corrupts) if the on-disk layout is newer than this build understands."""
@@ -164,9 +189,11 @@ def migrate(env: Mapping[str, str], console: Console) -> None:
             if layout.version > on_disk:
                 layout.apply(env, console)
         _stamp(env)
-    # Manifests are a self-healing invariant, not a layout step: ensure every backup carries one on
-    # every launch (gaps-only, idempotent), so a legacy backup is backfilled even without a bump.
+    # Self-healing invariants, not layout steps: bring the data fully current on every launch
+    # (gaps-only, idempotent) so nothing is left half-migrated — a legacy backup gets a manifest and
+    # a nameless robot gets its slug recorded — without a version bump (which only gates old builds).
     manifest.backfill_manifests(env, console)
+    _backfill_names(env)
 
 
 def report(env: Mapping[str, str], console: Console) -> None:

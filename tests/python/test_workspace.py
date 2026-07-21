@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dreame_valetudo.workspace import Robot, Workspace, robot_tag
+from dreame_valetudo.workspace import Robot, Workspace, robot_tag, slugify
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 
@@ -36,6 +36,21 @@ def test_state_marker_default_value(tmp_path: Path) -> None:
     r = Robot(tmp_path / "r2416-abc")
     r.state_set("rooted")
     assert r.state_get("rooted") == "done"
+
+
+# --- display name (folder slug vs the human name) ---------------------------------------------
+def test_robot_display_name_falls_back_to_the_folder(tmp_path: Path) -> None:
+    r = Robot(tmp_path / "living-room")
+    assert r.display_name() == "living-room"  # no saved name -> the folder slug (backward-compatible)
+    r.set_display_name("Living Room")
+    assert r.display_name() == "Living Room"  # a saved name wins
+
+
+def test_slugify() -> None:
+    assert slugify("Living Room") == "Living-Room"
+    assert slugify("  a  b  ") == "a-b"
+    assert slugify("weird!!name") == "weird-name"
+    assert slugify("...") == ""  # nothing usable -> empty (the caller rejects it)
 
 
 # --- config resolution ------------------------------------------------------------------------

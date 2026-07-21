@@ -203,7 +203,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
             "model_key": ctx.profile.key,
             "model_code": ctx.profile.model_code,
             "config": cfg,
-            "robot": ctx.need_robot().work.name,
+            "robot": ctx.need_robot().display_name(),
             "valetudo_version": ctx.valetudo_version,
         },
     )

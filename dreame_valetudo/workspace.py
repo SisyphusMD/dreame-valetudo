@@ -20,13 +20,11 @@ from .util import parse_config
 # workspace/context/migrate so the name can't drift between them.
 WORKSPACE_SUBDIR = "dreame-valetudo"
 
-_ROBOT_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
-
-
-def is_valid_robot_name(name: str) -> bool:
-    """A robot dir name must be a single path segment (letters, digits, . _ -), so a name a user
-    types can never traverse out of robots/ or nest a subdirectory."""
-    return bool(_ROBOT_NAME_RE.fullmatch(name)) and name not in (".", "..")
+def slugify(name: str) -> str:
+    """A filesystem-safe single-segment folder slug from a human name: spaces become dashes, other
+    unsafe characters are dropped, and runs collapse. May be empty (the caller rejects that). The
+    original human name is preserved separately as the robot's display name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +88,17 @@ class Robot:
 
     def state_has(self, name: str) -> bool:
         return (self.state_dir / name).is_file()
+
+    def display_name(self) -> str:
+        """The human name the user chose (may contain spaces / capitals), saved in state/name — or
+        the dir slug if none was recorded. The dir slug and `config` remain the identifiers; this is
+        purely what's shown."""
+        f = self.state_dir / "name"
+        return f.read_text().strip() if f.is_file() else self.work.name
+
+    def set_display_name(self, name: str) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "name").write_text(name.strip() + "\n")
 
     def state_get(self, name: str) -> str | None:
         marker = self.state_dir / name

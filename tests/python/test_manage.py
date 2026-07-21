@@ -7,6 +7,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases.manage import clean, forget, rename
+from dreame_valetudo.workspace import Robot
 
 
 def test_rename_moves_the_robot_dir_with_its_state(make_ctx: CtxFactory) -> None:
@@ -35,17 +36,40 @@ def test_rename_dies_on_existing_target(make_ctx: CtxFactory) -> None:
         rename(ctx, ["old", "taken"])
 
 
-def test_rename_rejects_an_unsafe_target_name(make_ctx: CtxFactory) -> None:
+def test_rename_rejects_a_name_with_a_slash(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     (ctx.ws.robots_dir / "old").mkdir(parents=True)
-    with pytest.raises(Die, match="valid robot name"):
+    with pytest.raises(Die, match="can't contain"):
         rename(ctx, ["old", "../escape"])
 
 
-def test_rename_requires_two_args(make_ctx: CtxFactory) -> None:
+def test_rename_saves_a_spaced_name_as_the_display_name(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
+    (ctx.ws.robots_dir / "old").mkdir(parents=True)
+    rename(ctx, ["old", "living room"])
+    assert (ctx.ws.robots_dir / "living-room").is_dir()  # folder is the slug
+    assert (ctx.ws.robots_dir / "living-room" / "state" / "name").read_text().strip() == "living room"
+
+
+def test_rename_prompts_for_the_new_name_when_only_old_is_given(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["fresh"])
+    (ctx.ws.robots_dir / "old").mkdir(parents=True)
+    rename(ctx, ["old"])
+    assert (ctx.ws.robots_dir / "fresh").is_dir()
+
+
+def test_rename_picks_from_a_list_when_no_args(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["1", "renamed"])  # pick robot #1, then the new name
+    (ctx.ws.robots_dir / "kitchen" / "state").mkdir(parents=True)
+    rename(ctx, [])
+    assert (ctx.ws.robots_dir / "renamed").is_dir()
+
+
+def test_rename_non_interactive_needs_both_names(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(interactive=False)
+    (ctx.ws.robots_dir / "old").mkdir(parents=True)
     with pytest.raises(Die, match="usage"):
-        rename(ctx, ["only-one"])
+        rename(ctx, ["old"])
 
 
 def test_forget_removes_the_robot_after_typed_confirmation(make_ctx: CtxFactory) -> None:
@@ -74,6 +98,21 @@ def test_forget_refuses_non_interactive(make_ctx: CtxFactory) -> None:
     (ctx.ws.robots_dir / "kitchen").mkdir(parents=True)
     with pytest.raises(Die, match="non-interactively"):
         forget(ctx, ["kitchen"])
+
+
+def test_forget_picks_from_a_list_when_no_args(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["1", "kitchen"])  # pick robot #1, then type its name to confirm
+    (ctx.ws.robots_dir / "kitchen" / "state").mkdir(parents=True)
+    forget(ctx, [])
+    assert not (ctx.ws.robots_dir / "kitchen").exists()
+
+
+def test_forget_resolves_a_robot_by_its_display_name(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["living room"])  # confirm by the display name
+    r = Robot(ctx.ws.robots_dir / "living-room")
+    r.set_display_name("living room")  # folder slug 'living-room', display 'living room'
+    forget(ctx, ["living room"])  # given the display name, not the slug
+    assert not (ctx.ws.robots_dir / "living-room").exists()
 
 
 def test_clean_removes_only_the_cache(make_ctx: CtxFactory) -> None:

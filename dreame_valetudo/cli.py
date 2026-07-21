@@ -36,7 +36,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .workspace import Robot, Workspace, is_valid_robot_name
+from .workspace import Robot, Workspace, slugify
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
 _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"})
@@ -88,22 +88,25 @@ def _name_new_robot(ctx: Context) -> None:
         ctx.robot = None
         return
     while True:
-        name = ctx.console.ask(
-            "Name for this robot [blank = auto-name by device ID]:"
-        ).strip().replace(" ", "-")
-        if not name:
+        raw = ctx.console.ask("Name for this robot [blank = auto-name by device ID]:").strip()
+        if not raw:
             ctx.robot = None
             ctx.console.info("New robot — created and named by device ID once recon reads it.")
             return
-        if not is_valid_robot_name(name):
-            ctx.console.warn(f"'{name}' isn't a valid name — use letters, digits, . _ or -.")
+        if "/" in raw:
+            ctx.console.warn("A robot name can't contain '/'. Try again.")
             continue
-        if (ctx.ws.robots_dir / name).is_dir():
-            ctx.console.warn(f"A robot named '{name}' already exists — resume it from the menu, or "
+        slug = slugify(raw)  # the folder is a filesystem-safe slug; the typed name is saved as-is
+        if not slug:
+            ctx.console.warn("That name has no usable characters — try letters or digits.")
+            continue
+        if (ctx.ws.robots_dir / slug).is_dir():
+            ctx.console.warn(f"A robot named '{raw}' already exists — resume it from the menu, or "
                              "pick a different name.")
             continue
-        ctx.robot = Robot(ctx.ws.robots_dir / name)
-        ctx.console.info(f"New robot: {name}")
+        ctx.robot = Robot(ctx.ws.robots_dir / slug)
+        ctx.pending_name = raw
+        ctx.console.info(f"New robot: '{raw}'" + (f" (folder {slug})" if slug != raw else ""))
         return
 
 
@@ -129,14 +132,14 @@ def select_robot(ctx: Context) -> None:
 
     ctx.console.say(f"Found {len(dirs)} prior robot(s):")
     for i, d in enumerate(dirs, 1):
-        ctx.console.info(f"   {i}) {d.name}   {_summary(d)}")
+        ctx.console.info(f"   {i}) {Robot(d).display_name()}   {_summary(d)}")
     fresh = len(dirs) + 1
     ctx.console.info(f"   {fresh}) start a FRESH robot")
     ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
     choice = ctx.console.ask(f"Resume which robot, or start fresh [1-{fresh}]?").strip()
     if re.fullmatch(r"[0-9]+", choice) and 1 <= int(choice) <= len(dirs):
         ctx.robot = Robot(dirs[int(choice) - 1])
-        ctx.console.info(f"Resuming: {dirs[int(choice) - 1].name}")
+        ctx.console.info(f"Resuming: {ctx.robot.display_name()}")
     elif choice == str(fresh):
         _name_new_robot(ctx)
     else:
@@ -212,10 +215,10 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
     # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
     # "resuming" (recon is the first hardware phase, so its marker is what distinguishes the two).
     if ctx.robot is not None and ctx.robot.state_has("recon"):
-        ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.work.name}', resuming and "
+        ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming and "
                         "driving every phase")
     else:
-        named = f" '{ctx.robot.work.name}'" if ctx.robot is not None else ""
+        named = f" '{ctx.robot.display_name()}'" if ctx.robot is not None else ""
         ctx.console.say(f"{ctx.profile.model} — new robot{named}. I'll guide every step.")
         _pcb_help(ctx)
         ctx.console.info("This replaces the robot's firmware — flashing always carries some risk "

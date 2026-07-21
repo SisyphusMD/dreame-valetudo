@@ -130,10 +130,11 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
     if ctx.robot is None:
         if existing is not None:
             ctx.robot = existing
-            ctx.console.say(f"This robot is already set up as '{existing.work.name}' — resuming it.")
+            ctx.console.say(f"This robot is already set up as '{existing.display_name()}' — "
+                            "resuming it.")
         else:
             ctx.robot = Robot(ctx.ws.robots_dir / f"{ctx.profile.model_code}-{cfg[:12]}")
-            ctx.console.say(f"Robot identified — '{ctx.robot.work.name}'.")
+            ctx.console.say(f"Robot identified — '{ctx.robot.display_name()}'.")
     else:
         prior_file = ctx.robot.recon_dir / "config.txt"
         prior = parse_config(prior_file.read_text()) if prior_file.is_file() else None
@@ -141,8 +142,8 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
             die(f"SAFETY STOP: this robot dir is {prior} but the connected device is {cfg} — "
                 "different robot. Resume the right one, or start fresh.")
         if prior is None and existing is not None and existing.work != ctx.robot.work:
-            ctx.console.warn(f"This robot is already set up as '{existing.work.name}' — using that "
-                             f"instead of a duplicate '{ctx.robot.work.name}'.")
+            ctx.console.warn(f"This robot is already set up as '{existing.display_name()}' — using "
+                             f"that instead of a duplicate '{ctx.robot.display_name()}'.")
             ctx.robot = existing
 
     robot = ctx.robot
@@ -150,6 +151,8 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
     robot.state_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
     (robot.state_dir / "model_key").write_text(f"{ctx.profile.key}\n")
+    if ctx.pending_name:  # save the exact human name the user typed (the dir stays a slug)
+        robot.set_display_name(ctx.pending_name)
 
     # Also capture the extra fastboot identity vars the dustbuilder's manual checker
     # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
