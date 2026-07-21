@@ -85,6 +85,7 @@ def test_consolidates_legacy_and_leaves_a_compat_symlink(tmp_path: Path) -> None
     old = tmp_path / "dreame-valetudo-work"
     assert old.is_symlink() and old.resolve() == (base / "work").resolve()
     assert not any(tmp_path.glob("dreame-*-backup-*"))  # scattered backup was moved out of ~
+    assert (base / "backups" / _BK0 / "manifest.json").exists()  # backfilled during migration
 
 
 def test_is_idempotent(tmp_path: Path) -> None:

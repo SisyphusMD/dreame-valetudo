@@ -1,0 +1,85 @@
+"""Backup provenance manifests.
+
+A factory backup is a portable, long-lived artifact — it gets copied off the machine and may be
+opened years later on a different setup — so each carries a ``manifest.json`` describing what it is
+and what wrote it. New backups get a full manifest from ``push``; pre-manifest backups are
+backfilled (gaps-only, honestly marked) the next time the tool touches the workspace, following the
+convention that an ABSENT manifest means a legacy backup.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Mapping
+from pathlib import Path
+
+from . import __version__
+from .console import Console
+from .workspace import WORKSPACE_SUBDIR
+
+MANIFEST_VERSION = 1
+_CONFIG_RE = re.compile(r"[0-9a-f]{32}")  # the 32-hex 'config' identity, if it's in the dir name
+
+
+def _contents(backup_dir: Path) -> list[str]:
+    return sorted(p.name for p in backup_dir.iterdir() if p.name != "manifest.json")
+
+
+def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
+    (backup_dir / "manifest.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    )
+
+
+def write(backup_dir: Path, data: Mapping[str, object]) -> None:
+    """Write a full provenance manifest for a backup the tool just created. ``contents`` is computed
+    from the dir, so call this AFTER every backup file exists. Overwrites — a live push knows best."""
+    _dump(
+        backup_dir,
+        {
+            "manifest_version": MANIFEST_VERSION,
+            "created_by": f"dreame-valetudo {__version__}",
+            **dict(data),
+            "contents": _contents(backup_dir),
+        },
+    )
+
+
+def backfill_if_missing(backup_dir: Path) -> bool:
+    """For a pre-manifest backup, write a best-effort manifest inferred from the dir name + files,
+    honestly marked backfilled. GAPS ONLY — never overwrites an existing manifest. Returns True if
+    it wrote one."""
+    if (backup_dir / "manifest.json").is_file():
+        return False
+    m = _CONFIG_RE.search(backup_dir.name)
+    _dump(
+        backup_dir,
+        {
+            "manifest_version": MANIFEST_VERSION,
+            "backfilled": True,
+            "created_by": "unknown (pre-manifest)",
+            "source_dir_name": backup_dir.name,
+            "config": m.group(0) if m else None,
+            "contents": _contents(backup_dir),
+        },
+    )
+    return True
+
+
+def _backups_dir(env: Mapping[str, str]) -> Path:
+    override = env.get("DREAME_BACKUPS")
+    if override:
+        return Path(override)
+    return Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "backups"
+
+
+def backfill_manifests(env: Mapping[str, str], console: Console) -> None:
+    """Self-heal invariant (runs every launch, gaps-only + idempotent): ensure every backup under
+    the backups dir carries a manifest.json, backfilling any legacy backup that predates them."""
+    backups = _backups_dir(env)
+    if not backups.is_dir():
+        return
+    n = sum(backfill_if_missing(d) for d in sorted(backups.iterdir()) if d.is_dir())
+    if n:
+        console.info(f"Backfilled a provenance manifest into {n} pre-manifest backup(s).")

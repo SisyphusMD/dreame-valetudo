@@ -10,6 +10,10 @@
   `dreame-valetudo migrate` to do it on demand. A `.layout` version marker lets an older build refuse
   a workspace a newer build wrote instead of mis-reading it, and `DREAME_BACKUPS` overrides where
   backups go.
+- **feat**: each factory backup now carries a `manifest.json` recording what it is and what wrote it
+  (the tool + Valetudo version, model, config, robot name, timestamp, and contained files) — a backup
+  is portable and long-lived, so it should be self-describing. Any older backup without one is
+  backfilled automatically (and honestly marked as backfilled) the next time the tool runs.
 - **ux**: the very first robot can now be named right away. The name prompt used to appear only
   once a second robot existed, so the first device was always auto-named by its ID — and getting a
   friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on

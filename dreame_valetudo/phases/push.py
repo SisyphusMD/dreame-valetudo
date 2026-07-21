@@ -12,6 +12,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from .. import manifest
 from ..console import die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
@@ -194,6 +195,18 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
                              "mounted data.")
 
     _backup_dedicated_key(ctx, key, backup)
+    manifest.write(
+        backup,
+        {
+            "created": ts,
+            "model": ctx.profile.model,
+            "model_key": ctx.profile.key,
+            "model_code": ctx.profile.model_code,
+            "config": cfg,
+            "robot": ctx.need_robot().work.name,
+            "valetudo_version": ctx.valetudo_version,
+        },
+    )
 
     ctx.console.say("Copying the Valetudo binary onto the robot...")
     if not ctx.runner.run_redirect(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -196,3 +197,7 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     assert backups, "no factory backup dir created"
     assert (backups[0] / "id_dreame").read_text() == "PRIV"      # private half preserved off-workdir
     assert (backups[0] / "id_dreame.pub").read_text() == "PUB"
+    m = json.loads((backups[0] / "manifest.json").read_text())   # provenance manifest written
+    assert m["model"] == ctx.profile.model
+    assert m["robot"] == "r2416-d97c4de6f648"
+    assert "id_dreame" in m["contents"]

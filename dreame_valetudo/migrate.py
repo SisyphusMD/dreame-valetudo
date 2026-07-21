@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import __version__
+from . import __version__, manifest
 from .console import Console, die
 from .workspace import WORKSPACE_SUBDIR
 
@@ -159,12 +159,14 @@ def migrate(env: Mapping[str, str], console: Console) -> None:
             f"{__version__}) understands (up to v{LAYOUT_VERSION}). Upgrade to dreame-valetudo "
             f">= {need}, or run with DREAME_WORK pointed at a separate directory."
         )
-    if on_disk == LAYOUT_VERSION:
-        return
-    for layout in LAYOUTS:
-        if layout.version > on_disk:
-            layout.apply(env, console)
-    _stamp(env)
+    if on_disk < LAYOUT_VERSION:
+        for layout in LAYOUTS:
+            if layout.version > on_disk:
+                layout.apply(env, console)
+        _stamp(env)
+    # Manifests are a self-healing invariant, not a layout step: ensure every backup carries one on
+    # every launch (gaps-only, idempotent), so a legacy backup is backfilled even without a bump.
+    manifest.backfill_manifests(env, console)
 
 
 def report(env: Mapping[str, str], console: Console) -> None:
