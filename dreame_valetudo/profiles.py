@@ -165,6 +165,12 @@ def load_profile(key: str) -> Profile:
         ) from None
 
 
+def profile_for_model_code(code: str) -> Profile | None:
+    """The profile whose model_code matches `code` (as it appears in a backup folder name), or None
+    — lets a backfilled backup manifest recover the marketing model name from the code."""
+    return next((p for p in _PROFILES.values() if p.model_code == code), None)
+
+
 # Robot-reported dreame.vacuum.<code> -> Valetudo implementation class. A SUPERSET of the picker
 # (used by fix-impl) that follows Valetudo's own per-class codes for BOTH families. Matched by
 # PREFIX, so regional/colour suffixes (…a/…c/…k/…o/…t) resolve to the base class. Ordered so no

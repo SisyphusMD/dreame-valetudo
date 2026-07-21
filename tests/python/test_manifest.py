@@ -38,6 +38,8 @@ def test_backfill_infers_everything_derivable_from_the_dir_name(tmp_path: Path) 
     assert m["config"] == cfg
     assert m["created"] == "20200101-000000"  # inferred from the trailing timestamp
     assert m["model_code"] == "r2416"          # inferred from the dir name
+    assert m["model"] == "Dreame X40 Ultra"    # marketing name recovered via the model code
+    assert m["model_key"] == "x40-ultra"
     assert "files.tar.gz" in m["contents"]
 
 

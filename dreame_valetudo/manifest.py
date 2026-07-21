@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import __version__
 from .console import Console
+from .profiles import profile_for_model_code
 from .workspace import WORKSPACE_SUBDIR
 
 MANIFEST_VERSION = 1
@@ -58,6 +59,7 @@ def backfill_if_missing(backup_dir: Path) -> bool:
     cfg = _CONFIG_RE.search(name)
     created = _CREATED_RE.search(name)
     model = _MODEL_RE.match(name)
+    profile = profile_for_model_code(model.group(1)) if model else None
     _dump(
         backup_dir,
         {
@@ -65,6 +67,8 @@ def backfill_if_missing(backup_dir: Path) -> bool:
             "backfilled": True,
             "created_by": "unknown (pre-manifest)",  # the tool/Valetudo version can't be recovered
             "created": created.group(1) if created else None,  # inferred from the dir timestamp
+            "model": profile.model if profile else None,       # marketing name, via the model code
+            "model_key": profile.key if profile else None,
             "model_code": model.group(1) if model else None,   # inferred from the dir name
             "config": cfg.group(0) if cfg else None,
             "source_dir_name": name,
