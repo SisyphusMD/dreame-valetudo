@@ -14,6 +14,7 @@ from conftest import ScriptedConsole
 
 from dreame_valetudo import migrate as M
 from dreame_valetudo.console import Die
+from dreame_valetudo.workspace import Robot
 
 SENTINEL = b"do-not-lose-me\n"
 _CFG = "abcdef0123456789abcdef0123456789"  # a 32-hex config value
@@ -172,6 +173,23 @@ def test_backfills_a_display_name_for_a_nameless_robot(tmp_path: Path) -> None:
     M.migrate(_env(tmp_path), ScriptedConsole())
     name = tmp_path / "dreame-valetudo" / "work" / "robots" / "kitchen" / "state" / "name"
     assert name.read_text().strip() == "kitchen"
+
+
+def test_syncs_the_current_robot_name_into_its_backups(tmp_path: Path) -> None:
+    # A backfilled backup (no recorded name) gains the robot's CURRENT name, joined by config, on
+    # migrate — so backups track the robot without needing an explicit rename.
+    cfg = "d97c4de6f64818765e2faf9f14309818"
+    base = tmp_path / "dreame-valetudo"
+    recon = base / "work" / "robots" / "kitchen" / "recon"
+    recon.mkdir(parents=True)
+    (recon / "config.txt").write_text(f"config: {cfg}\n")
+    Robot(base / "work" / "robots" / "kitchen").set_display_name("Kitchen Bot")
+    (base / ".layout").write_text(json.dumps({"layout_version": 1, "min_tool_version": "0.2.0"}))
+    bk = base / "backups" / f"dreame-r2416-{cfg}-20200101-000000"
+    bk.mkdir(parents=True)
+    (bk / "files.tar.gz").write_bytes(b"x")  # no manifest yet -> backfilled + synced during migrate
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    assert json.loads((bk / "manifest.json").read_text())["robot"] == "Kitchen Bot"
 
 
 def test_migrate_command_reports_state(tmp_path: Path) -> None:

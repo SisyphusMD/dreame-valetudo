@@ -182,6 +182,22 @@ def _backfill_names(env: Mapping[str, str]) -> None:
             Robot(d).set_display_name(d.name)
 
 
+def _sync_backup_robot_names(env: Mapping[str, str]) -> None:
+    """Self-heal: set each backup's recorded robot name to its robot's CURRENT name (joined by
+    `config`), so a backfilled backup gains a name and every backup tracks a rename even without one.
+    Only the manifest label is touched; a backup whose config matches no current robot is left as-is."""
+    work = Path(env["DREAME_WORK"]) if env.get("DREAME_WORK") else base_dir(env) / "work"
+    robots = work / "robots"
+    if not robots.is_dir():
+        return
+    for d in sorted(robots.iterdir()):
+        if d.is_dir() and not d.name.startswith("."):
+            r = Robot(d)
+            cfg = r.config()
+            if cfg:
+                manifest.retag_robot(env, cfg, r.display_name())
+
+
 def migrate(env: Mapping[str, str], console: Console) -> None:
     """Bring the on-disk workspace up to LAYOUT_VERSION. A cheap no-op once current. Refuses (never
     corrupts) if the on-disk layout is newer than this build understands."""
@@ -203,6 +219,7 @@ def migrate(env: Mapping[str, str], console: Console) -> None:
     # a nameless robot gets its slug recorded — without a version bump (which only gates old builds).
     manifest.backfill_manifests(env, console)
     _backfill_names(env)
+    _sync_backup_robot_names(env)
 
 
 def report(env: Mapping[str, str], console: Console) -> None:

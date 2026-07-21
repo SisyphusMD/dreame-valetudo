@@ -28,14 +28,16 @@ def test_write_records_provenance_and_contents(tmp_path: Path) -> None:
     assert m["contents"] == ["files.tar.gz", "private.dd.gz"]  # manifest.json itself excluded
 
 
-def test_backfill_infers_config_from_dir_name(tmp_path: Path) -> None:
+def test_backfill_infers_everything_derivable_from_the_dir_name(tmp_path: Path) -> None:
     cfg = "abcdef0123456789abcdef0123456789"
-    b = _backup(tmp_path, f"dreame-r2416-kitchen-{cfg}-backup-20200101-000000")
+    b = _backup(tmp_path, f"dreame-r2416-{cfg}-20200101-000000")  # config-based (post-normalize) name
     assert manifest.backfill_if_missing(b) is True
     m = json.loads((b / "manifest.json").read_text())
     assert m["backfilled"] is True
-    assert m["created_by"] == "unknown (pre-manifest)"
+    assert m["created_by"] == "unknown (pre-manifest)"  # tool/Valetudo version unrecoverable
     assert m["config"] == cfg
+    assert m["created"] == "20200101-000000"  # inferred from the trailing timestamp
+    assert m["model_code"] == "r2416"          # inferred from the dir name
     assert "files.tar.gz" in m["contents"]
 
 

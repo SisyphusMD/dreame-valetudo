@@ -20,6 +20,8 @@ from .workspace import WORKSPACE_SUBDIR
 
 MANIFEST_VERSION = 1
 _CONFIG_RE = re.compile(r"[0-9a-f]{32}")  # the 32-hex 'config' identity, if it's in the dir name
+_CREATED_RE = re.compile(r"(\d{8}-\d{6})$")  # the trailing backup timestamp
+_MODEL_RE = re.compile(r"^dreame-([^-]+)-")  # the model code right after 'dreame-'
 
 
 def _contents(backup_dir: Path) -> list[str]:
@@ -52,15 +54,20 @@ def backfill_if_missing(backup_dir: Path) -> bool:
     it wrote one."""
     if (backup_dir / "manifest.json").is_file():
         return False
-    m = _CONFIG_RE.search(backup_dir.name)
+    name = backup_dir.name
+    cfg = _CONFIG_RE.search(name)
+    created = _CREATED_RE.search(name)
+    model = _MODEL_RE.match(name)
     _dump(
         backup_dir,
         {
             "manifest_version": MANIFEST_VERSION,
             "backfilled": True,
-            "created_by": "unknown (pre-manifest)",
-            "source_dir_name": backup_dir.name,
-            "config": m.group(0) if m else None,
+            "created_by": "unknown (pre-manifest)",  # the tool/Valetudo version can't be recovered
+            "created": created.group(1) if created else None,  # inferred from the dir timestamp
+            "model_code": model.group(1) if model else None,   # inferred from the dir name
+            "config": cfg.group(0) if cfg else None,
+            "source_dir_name": name,
             "contents": _contents(backup_dir),
         },
     )
