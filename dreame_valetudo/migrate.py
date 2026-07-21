@@ -74,12 +74,21 @@ def _looks_like_backup(d: Path) -> bool:
     )
 
 
-# Legacy backups were named `<tag>-backup-<YYYYMMDD-HHMMSS>`; the current form drops the `-backup-`
-# infix. Normalize a moved backup so the backups/ folder ends up uniformly named.
+# Legacy backups were `dreame-<model>-[<name>-]<config>-backup-<YYYYMMDD-HHMMSS>`; the current form
+# is name-free `dreame-<model>-<config>-<ts>`. Normalize a MOVED backup all the way to that shape,
+# once, during migration — so old backups match the config-based scheme too. (Ongoing robot renames
+# never move backup folders; they update the manifest instead.) If the full shape doesn't parse,
+# fall back to at least dropping the `-backup-` infix rather than guess at the name/config split.
+_LEGACY_BACKUP_FULL = re.compile(
+    r"^(dreame-[^-]+)-(?:.+-)?([0-9a-f]{32}|unknownconfig)-(?:backup-)?(\d{8}-\d{6})$"
+)
 _LEGACY_BACKUP_SUFFIX = re.compile(r"-backup-(\d{8}-\d{6})$")
 
 
 def _normalize_backup_name(name: str) -> str:
+    m = _LEGACY_BACKUP_FULL.match(name)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"  # drop the name segment + '-backup-'
     return _LEGACY_BACKUP_SUFFIX.sub(r"-\1", name)
 
 

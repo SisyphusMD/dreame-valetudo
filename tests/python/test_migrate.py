@@ -16,8 +16,9 @@ from dreame_valetudo import migrate as M
 from dreame_valetudo.console import Die
 
 SENTINEL = b"do-not-lose-me\n"
-_BK0 = "dreame-r2416-kitchen-abcdef012345-backup-20200101-000000"  # legacy scattered-backup name
-_BK1 = "dreame-r2416-kitchen-abcdef012345-20200101-000000"          # consolidated backup name
+_CFG = "abcdef0123456789abcdef0123456789"  # a 32-hex config value
+_BK0 = f"dreame-r2416-kitchen-{_CFG}-backup-20200101-000000"  # legacy: name segment + '-backup-'
+_BK1 = f"dreame-r2416-{_CFG}-20200101-000000"                 # consolidated: config-based, name-free
 
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
@@ -156,11 +157,13 @@ def test_exdev_falls_back_to_a_verified_copy(
 
 
 def test_normalizes_legacy_backup_names_on_move(tmp_path: Path) -> None:
-    _seed_v0(tmp_path)  # the legacy backup name carries a '-backup-' infix
+    _seed_v0(tmp_path)  # legacy backup: a name segment AND a '-backup-' infix
     M.migrate(_env(tmp_path), ScriptedConsole())
     backups = tmp_path / "dreame-valetudo" / "backups"
-    assert (backups / _BK1).is_dir()  # renamed to the current form
-    assert not any("-backup-" in p.name for p in backups.iterdir())  # no legacy names remain
+    assert (backups / _BK1).is_dir()  # renamed all the way to the config-based form
+    names = [p.name for p in backups.iterdir()]
+    assert not any("-backup-" in n for n in names)  # no legacy '-backup-' infix
+    assert not any("kitchen" in n for n in names)   # the name segment was dropped too
 
 
 def test_backfills_a_display_name_for_a_nameless_robot(tmp_path: Path) -> None:
