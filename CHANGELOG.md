@@ -2,44 +2,23 @@
 
 ## [Unreleased]
 
-- **change**: everything now lives under one `~/dreame-valetudo/` folder — `work/` (the cache +
-  per-robot state, formerly `~/dreame-valetudo-work`) and `backups/` (the factory un-brick backups,
-  formerly scattered as `~/dreame-<tag>-backup-<ts>` in your home dir). The first time you run the
-  tool after upgrading it migrates the old layout automatically (atomic moves that never overwrite
-  anything, leaving a compatibility symlink at the old `~/dreame-valetudo-work`) — or run
-  `dreame-valetudo migrate` to do it on demand. A `.layout` version marker lets an older build refuse
-  a workspace a newer build wrote instead of mis-reading it, and `DREAME_BACKUPS` overrides where
-  backups go. The migration also brings older data fully current — it normalizes legacy backup folder
-  names and backfills anything that predates a feature (backup manifests, saved robot names) — so the
-  workspace is left uniformly in the current shape rather than a mix of old and new.
-- **feat**: each factory backup now carries a `manifest.json` recording what it is and what wrote it
-  (the tool + Valetudo version, model, config, robot name, timestamp, and contained files) — a backup
-  is portable and long-lived, so it should be self-describing. Any older backup without one is
-  backfilled automatically the next time the tool runs — with everything derivable from its folder
-  name (config, timestamp, model code) and honestly marked backfilled where a value can't be
-  recovered — and every backup's recorded robot name is kept current by matching its config to your
-  robots (so backups track a rename even without one).
-- **feat**: a robot's `config` value (read off the device) is now its durable identity, and its name
-  is just a label — you can use spaces and capitals (the exact name is saved; the folder gets a
-  filesystem-safe slug). Re-running `recon` on a robot you already set up adopts its existing folder
-  instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring).
-  `dreame-valetudo rename` and `dreame-valetudo forget` take a name or, run with no arguments, pick
-  from a list, and accept either the folder slug or the display name. A rename never disturbs the
-  robot's identity, and it brings the robot name current in every backup that matches its config
-  (only the name recorded in each backup's manifest is updated — the backup data is never touched).
-  Factory backup folders are now config-based (`dreame-<model>-<config>-<timestamp>`), so they're
-  stable and hardware-identified; the robot name lives in the manifest.
-- **feat**: new cleanup commands. `dreame-valetudo forget <name>` removes a robot's working dir (type
-  the name to confirm; it flags the ~1.2 GB recon recovery dumps that go with it), and
-  `dreame-valetudo clean` reclaims the re-obtainable cache — `clean --all` clears every robot's state
-  too. Neither ever touches your factory backups under `~/dreame-valetudo/backups`.
-- **ux**: the very first robot can now be named right away. The name prompt used to appear only
-  once a second robot existed, so the first device was always auto-named by its ID — and getting a
-  friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on
-  the first robot too; blank still auto-names by device ID.
-- **feat**: running `recon` on a robot that's already been reconned now offers to re-read the
-  device and refresh the saved recon, instead of only printing the `--force` hint. (The auto chain
-  still skips a completed recon and moves on; non-interactive runs still need `--force`.)
+- **change**: everything the tool creates now lives under one `~/dreame-valetudo/` folder — `work/`
+  (working files) and `backups/` (your factory un-brick backups). Upgrading migrates your old files
+  into it automatically on first run (or run `dreame-valetudo migrate`); uninstalling never touches
+  your backups.
+- **feat**: name your robots — spaces and capitals are kept — and manage them with
+  `dreame-valetudo rename`, `forget`, and `clean` (each picks from a list if run with no name).
+  Re-running `recon` on a robot you've already set up reuses it instead of making a duplicate, and
+  you can name the very first robot right away.
+- **feat**: every factory backup now carries a `manifest.json` describing what it is, and backups
+  are identified by hardware — renaming a robot updates its backups automatically.
+- **feat**: running `recon` on a robot you've already reconned offers to refresh it, instead of only
+  hinting at `--force`.
+- **ux**: when a model doesn't expose a serial over fastboot (e.g. the X30), the `check.builder`
+  rescue block flags that it's expected rather than a missing field to chase down.
+
+## [0.1.1] - 2026-07-22
+
 - **feat**: after you submit to the dustbuilder, `image` now checks in — if the build was rejected
   with `Error: unknown config value` (the robot isn't auto-recognized yet), answer "no" and it
   prints exactly what `check.builder.dontvacuum.me` needs: the `get_staged` image to upload plus the
@@ -53,9 +32,6 @@
   highlighted up front.
 - **docs**: the Homebrew install steps now include the one-time `brew trust sisyphusmd/tap`
   (Homebrew 6.0+ refuses to load formulae from an untrusted third-party tap).
-- **ux**: when a model doesn't expose a serial over fastboot (the X30's bootloader returns
-  `not supported`), the `check.builder` rescue block now flags that it's expected, so it doesn't
-  read as a missing field to chase down.
 
 ## [0.1.0] - 2026-07-17
 
