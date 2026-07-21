@@ -41,6 +41,10 @@ class DreameValetudoRc < Formula
       Just run `dreame-valetudo` (no arguments). On the first run it builds sunxi-fel from source
       (needs a compiler + network, one time) and fetches the pinned Valetudo binary. It talks to
       the robot over the robot's own Wi-Fi AP, not your LAN.
+
+      Your workspace lives under ~/dreame-valetudo/ (work/ + backups/). After upgrading, the first
+      run migrates it automatically, or run `dreame-valetudo migrate`. Uninstalling never touches
+      it: your factory backups under ~/dreame-valetudo/backups/ survive.
     EOS
     if OS.linux?
       s += <<~EOS

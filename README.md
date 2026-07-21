@@ -171,10 +171,32 @@ You also need **libusb** and **curl** at runtime (macOS: `brew install libusb`; 
 (`git make pkg-config libusb-1.0-0-dev libfdt-dev`, or a system `sunxi-tools`). On Linux, install
 the udev rule from `packaging/udev/`.
 
+## Upgrading
+
+Upgrade the package the usual way for your channel:
+
+```bash
+brew upgrade sisyphusmd/tap/dreame-valetudo          # Homebrew (macOS/Linux)
+sudo apt update && sudo apt upgrade dreame-valetudo  # Debian/Ubuntu (.deb)
+# .pkg: download and open the newer installer from the Releases page
+git pull                                             # from source
+```
+
+The **first time you run the tool** after upgrading, it migrates the workspace to any new on-disk
+layout automatically — atomic moves that never overwrite anything, leaving a compatibility symlink at
+the old location so an older build still works during the transition. There's nothing extra to do; if
+you'd rather run it deliberately (you upgraded but have no rooting task yet), run
+`dreame-valetudo migrate`. Your factory backups are preserved, and [`docs/LAYOUT.md`](docs/LAYOUT.md)
+documents every layout version.
+
+**Uninstalling** removes only the program — it never touches `~/dreame-valetudo/`. Your factory
+backups under `~/dreame-valetudo/backups/` survive; delete that folder by hand if you're sure you no
+longer need to un-brick or restore any robot.
+
 ## How to run
 
 The tool is **idempotent**: every phase records a marker under
-`~/dreame-valetudo-work/robots/<robot>/state/` and skips itself when already complete (override
+`~/dreame-valetudo/work/robots/<robot>/state/` and skips itself when already complete (override
 with `--force`). Re-run any command safely; it resumes where it left off.
 
 For the post-flash steps (`push`, `ui`, the `fix-*` helpers) your computer must be joined to
@@ -188,7 +210,7 @@ dreame-valetudo            # NO ARGS: the one command you need. It asks which MO
                              # end, pausing only for the FEL buttons, the web build, and the
                              # flash go/no-go.
 
-# Multiple robots: each lives in its own isolated dir under ~/dreame-valetudo-work/robots/,
+# Multiple robots: each lives in its own isolated dir under ~/dreame-valetudo/work/robots/,
 # named by device. With no prior robots it starts one automatically; with priors it asks
 # which to resume or to start fresh (the list shows each robot's model). Skip the prompts with:
 DREAME_MODEL=x30-ultra DREAME_ROBOT=kitchen dreame-valetudo
@@ -209,7 +231,8 @@ dreame-valetudo help       # full help
 
 There is no config or secrets file; device profiles live in the tool, and everything else
 has a sensible default. Optional env overrides: `DREAME_MODEL` (pick the model),
-`DREAME_ROBOT` (namespace a robot), `DREAME_WORK` (base work dir), `DREAME_SSHKEY` (SSH key
+`DREAME_ROBOT` (namespace a robot), `DREAME_WORK` (base work dir), `DREAME_BACKUPS` (where factory
+backups go), `DREAME_SSHKEY` (SSH key
 for `push`), `DREAME_CONFIG` (pin the config value), `VALETUDO_VERSION` (Valetudo release to
 install; defaults to a pinned known-good version, set `latest` to track upstream),
 `DREAME_PYTHON` (optional: which python runs the libusb fastboot client; auto-detected), and
@@ -222,12 +245,14 @@ key" field, so it lands in the robot's `authorized_keys`; a copy is staged to a 
 **non-hidden** path because browser file dialogs hide `~/.ssh`. The **private** half never leaves
 your machine and is what `push` logs in with; the choice is remembered (override with
 `DREAME_SSHKEY`), and a tool-generated key is copied into the factory backup so you keep SSH access
-even if the work dir is lost. Everything device-specific/sensitive (config value, backups, keys) lives
-under `~/dreame-valetudo-work/`, **outside** this repo. The factory backup lands in `~/`
-named by hardware. **Back it up; it is the robot's identity and cannot be regenerated.**
+even if the work dir is lost. Everything the tool creates lives under `~/dreame-valetudo/`: `work/`
+holds the cache and per-robot state (config value, keys), and `backups/` holds the factory backups —
+named by hardware, each with a `manifest.json`. Backups sit **beside** the work dir, never inside it,
+so clearing work can never lose one. **Back a backup up off this machine; it is the robot's identity
+and cannot be regenerated.**
 
 **Logs (for reporting a problem).** Every run writes a plain-text log to
-`~/dreame-valetudo-work/logs/`: the on-screen narrative plus the external commands, their exit
+`~/dreame-valetudo/work/logs/`: the on-screen narrative plus the external commands, their exit
 codes, and per-command timing (each line is stamped with elapsed seconds, so the flash sequence's
 margin against the robot's watchdog is readable at a glance). It is **scrubbed** before anything is
 written — the home path, the robot's config/identity
