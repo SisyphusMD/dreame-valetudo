@@ -18,6 +18,10 @@
   is just a label. Re-running `recon` on a robot you already set up adopts its existing folder
   instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring); and
   `dreame-valetudo rename <old> <new>` relabels a robot without disturbing its identity or backups.
+- **feat**: new cleanup commands. `dreame-valetudo forget <name>` removes a robot's working dir (type
+  the name to confirm; it flags the ~1.2 GB recon recovery dumps that go with it), and
+  `dreame-valetudo clean` reclaims the re-obtainable cache — `clean --all` clears every robot's state
+  too. Neither ever touches your factory backups under `~/dreame-valetudo/backups`.
 - **ux**: the very first robot can now be named right away. The name prompt used to appear only
   once a second robot existed, so the first device was always auto-named by its ID — and getting a
   friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on

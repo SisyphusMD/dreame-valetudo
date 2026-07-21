@@ -23,7 +23,7 @@ from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image, verify_form
-from .phases.manage import rename
+from .phases.manage import clean, forget, rename
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
 from .phases.recon import recon
@@ -132,6 +132,7 @@ def select_robot(ctx: Context) -> None:
         ctx.console.info(f"   {i}) {d.name}   {_summary(d)}")
     fresh = len(dirs) + 1
     ctx.console.info(f"   {fresh}) start a FRESH robot")
+    ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
     choice = ctx.console.ask(f"Resume which robot, or start fresh [1-{fresh}]?").strip()
     if re.fullmatch(r"[0-9]+", choice) and 1 <= int(choice) <= len(dirs):
         ctx.robot = Robot(dirs[int(choice) - 1])
@@ -271,6 +272,8 @@ def usage(console: Console) -> None:
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
         "  dreame-valetudo migrate    run the one-time workspace migration now (else it's automatic)\n"
         "  dreame-valetudo rename <old> <new>  rename a robot (its config identity is unchanged)\n"
+        "  dreame-valetudo forget <name>  remove a robot's working dir (factory backups are kept)\n"
+        "  dreame-valetudo clean [--all]  delete the cache (--all: all robot state too; backups kept)\n"
         "  dreame-valetudo diagnose   on the robot's AP: check why the UI isn't up\n"
         "  dreame-valetudo fix-impl   pin the Valetudo implementation for the robot's model\n"
         "  dreame-valetudo fix-did    repair a NEGATIVE factory deviceId\n"
@@ -300,6 +303,12 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "rename":
         rename(ctx, rest)
+        return 0
+    if cmd == "forget":
+        forget(ctx, rest)
+        return 0
+    if cmd == "clean":
+        clean(ctx, rest)
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1
