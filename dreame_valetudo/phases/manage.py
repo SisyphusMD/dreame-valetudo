@@ -7,6 +7,7 @@ import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
+from .. import manifest
 from ..console import die
 from ..context import Context
 from ..workspace import Robot, slugify
@@ -55,7 +56,7 @@ def rename(ctx: Context, rest: Sequence[str]) -> None:
     """`rename [old] [new]` — relabel a robot. With no arguments it picks the robot from a list and
     prompts for the new name; the typed name (spaces and all) is saved as the display name and a
     filesystem-safe slug becomes the folder. Identity is the `config` inside the dir, so a rename is
-    cosmetic and safe; existing backups keep their original name (timestamped historical snapshots)."""
+    cosmetic and safe, and it brings the robot name current in every backup matching that config."""
     old = rest[0] if len(rest) >= 1 else _pick_robot(ctx, "rename")
     src = _resolve_robot(ctx, old)
     old_disp = Robot(src).display_name()
@@ -77,9 +78,11 @@ def rename(ctx: Context, rest: Sequence[str]) -> None:
     if dst != src:
         src.rename(dst)
     Robot(dst).set_display_name(raw)
+    retagged = manifest.retag_robot(ctx.env, Robot(dst).config(), raw)
     tail = f" (folder {slug})" if slug != raw else ""
     ctx.console.say(f"Renamed '{old_disp}' -> '{raw}'{tail}.")
-    ctx.console.info("Existing backups keep their original name (they're timestamped snapshots).")
+    if retagged:
+        ctx.console.info(f"Brought the robot name current in {retagged} matching backup(s).")
 
 
 def forget(ctx: Context, rest: Sequence[str]) -> None:

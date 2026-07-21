@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from conftest import CtxFactory
 
+from dreame_valetudo import manifest
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases.manage import clean, forget, rename
 from dreame_valetudo.workspace import Robot
@@ -70,6 +74,22 @@ def test_rename_non_interactive_needs_both_names(make_ctx: CtxFactory) -> None:
     (ctx.ws.robots_dir / "old").mkdir(parents=True)
     with pytest.raises(Die, match="usage"):
         rename(ctx, ["old"])
+
+
+def test_rename_brings_the_name_current_in_matching_backups(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    cfg = "d97c4de6f64818765e2faf9f14309818"
+    ctx = make_ctx(env={"HOME": str(tmp_path)})  # so backups_dir lands under the tmp home
+    r = Robot(ctx.ws.robots_dir / "old")
+    r.recon_dir.mkdir(parents=True)
+    (r.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
+    backup = ctx.backups_dir / f"dreame-r2416-{cfg}-20200101"
+    backup.mkdir(parents=True)
+    (backup / "files.tar.gz").write_bytes(b"x")
+    manifest.write(backup, {"config": cfg, "robot": "old"})
+    rename(ctx, ["old", "new"])
+    assert json.loads((backup / "manifest.json").read_text())["robot"] == "new"
 
 
 def test_forget_removes_the_robot_after_typed_confirmation(make_ctx: CtxFactory) -> None:

@@ -21,8 +21,11 @@
   filesystem-safe slug). Re-running `recon` on a robot you already set up adopts its existing folder
   instead of creating a duplicate; names stay unique (a clash re-prompts instead of erroring).
   `dreame-valetudo rename` and `dreame-valetudo forget` take a name or, run with no arguments, pick
-  from a list, and accept either the folder slug or the display name — a rename never disturbs the
-  robot's identity or its backups.
+  from a list, and accept either the folder slug or the display name. A rename never disturbs the
+  robot's identity, and it brings the robot name current in every backup that matches its config
+  (only the name recorded in each backup's manifest is updated — the backup data is never touched).
+  Factory backup folders are now config-based (`dreame-<model>-<config>-<timestamp>`), so they're
+  stable and hardware-identified; the robot name lives in the manifest.
 - **feat**: new cleanup commands. `dreame-valetudo forget <name>` removes a robot's working dir (type
   the name to confirm; it flags the ~1.2 GB recon recovery dumps that go with it), and
   `dreame-valetudo clean` reclaims the re-obtainable cache — `clean --all` clears every robot's state

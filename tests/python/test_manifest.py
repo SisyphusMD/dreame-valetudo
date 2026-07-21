@@ -46,6 +46,19 @@ def test_backfill_never_overwrites_an_existing_manifest(tmp_path: Path) -> None:
     assert json.loads((b / "manifest.json").read_text())["model"] == "keep me"
 
 
+def test_retag_robot_updates_only_matching_config_backups(tmp_path: Path) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    a = _backup(backups, "dreame-r2416-abc-20200101")
+    manifest.write(a, {"config": "cfg-A", "robot": "kitchen"})
+    b = _backup(backups, "dreame-r2338-def-20200102")
+    manifest.write(b, {"config": "cfg-B", "robot": "bedroom"})
+    n = manifest.retag_robot({"HOME": str(tmp_path)}, "cfg-A", "pantry")
+    assert n == 1
+    assert json.loads((a / "manifest.json").read_text())["robot"] == "pantry"     # matched -> current
+    assert json.loads((b / "manifest.json").read_text())["robot"] == "bedroom"    # other config -> left
+    assert manifest.retag_robot({"HOME": str(tmp_path)}, None, "x") == 0           # no config -> no-op
+
+
 def test_backfill_manifests_scans_the_backups_dir_gaps_only(tmp_path: Path) -> None:
     backups = tmp_path / "dreame-valetudo" / "backups"
     b1 = _backup(backups, "dreame-r2416-a-abc-20200101")   # no manifest -> should be backfilled

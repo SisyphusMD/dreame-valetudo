@@ -74,6 +74,29 @@ def _backups_dir(env: Mapping[str, str]) -> Path:
     return Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "backups"
 
 
+def retag_robot(env: Mapping[str, str], config: str | None, new_name: str) -> int:
+    """Bring the recorded robot name current in every backup matching `config` (the durable join) —
+    a rename updates each backup's authoritative record. Only the manifest's name label is touched;
+    the backup DATA (tar/dd) is never modified. Returns how many were updated."""
+    backups = _backups_dir(env)
+    if not config or not backups.is_dir():
+        return 0
+    n = 0
+    for d in sorted(backups.iterdir()):
+        mf = d / "manifest.json"
+        if not mf.is_file():
+            continue
+        try:
+            data = json.loads(mf.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("config") == config and data.get("robot") != new_name:
+            data["robot"] = new_name
+            _dump(d, data)
+            n += 1
+    return n
+
+
 def backfill_manifests(env: Mapping[str, str], console: Console) -> None:
     """Self-heal invariant (runs every launch, gaps-only + idempotent): ensure every backup under
     the backups dir carries a manifest.json, backfilling any legacy backup that predates them."""
