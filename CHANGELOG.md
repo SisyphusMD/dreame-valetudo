@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **change**: everything now lives under one `~/dreame-valetudo/` folder — `work/` (the cache +
+  per-robot state, formerly `~/dreame-valetudo-work`) and `backups/` (the factory un-brick backups,
+  formerly scattered as `~/dreame-<tag>-backup-<ts>` in your home dir). The first time you run the
+  tool after upgrading it migrates the old layout automatically (atomic moves that never overwrite
+  anything, leaving a compatibility symlink at the old `~/dreame-valetudo-work`) — or run
+  `dreame-valetudo migrate` to do it on demand. A `.layout` version marker lets an older build refuse
+  a workspace a newer build wrote instead of mis-reading it, and `DREAME_BACKUPS` overrides where
+  backups go.
 - **ux**: the very first robot can now be named right away. The name prompt used to appear only
   once a second robot existed, so the first device was always auto-named by its ID — and getting a
   friendly name meant creating a throwaway robot. Now `recon` (or the no-arg run) asks up front on

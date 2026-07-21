@@ -12,7 +12,7 @@ _CFG = "d97c4de6f64818765e2faf9f14309818"
 # --- Workspace paths -------------------------------------------------------------------------
 def test_workspace_defaults_under_home(tmp_path: Path) -> None:
     ws = Workspace.from_env({"HOME": str(tmp_path)})
-    assert ws.base == tmp_path / "dreame-valetudo-work"
+    assert ws.base == tmp_path / "dreame-valetudo" / "work"
     assert ws.robots_dir == ws.base / "robots"
     assert ws.dist == ws.base / "cache" / "dist"
     assert ws.sunxi_fel == ws.base / "cache" / "sunxi-tools" / "sunxi-fel"

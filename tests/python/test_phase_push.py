@@ -192,7 +192,7 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     ctx.runner._responder = _text()  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
     assert push(ctx) is True
-    backups = list(home.glob("*-backup-*"))
+    backups = list((home / "dreame-valetudo" / "backups").glob("*"))
     assert backups, "no factory backup dir created"
     assert (backups[0] / "id_dreame").read_text() == "PRIV"      # private half preserved off-workdir
     assert (backups[0] / "id_dreame.pub").read_text() == "PUB"

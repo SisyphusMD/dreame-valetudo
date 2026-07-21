@@ -18,6 +18,7 @@ from .context import Context
 from .fastboot import resolve_libexec
 from .hazards import model_hazard_check
 from .log import LoggingConsole, LoggingRunner, RunLog
+from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
@@ -38,6 +39,9 @@ from .workspace import Robot, Workspace
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
 _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"})
+
+# Pure commands that never touch the workspace — skip the first-run layout migration for them.
+_NO_WORKSPACE = frozenset({"help", "-h", "--help", "version", "--version", "-V"})
 
 
 def select_model(ctx: Context) -> None:
@@ -256,6 +260,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
+        "  dreame-valetudo migrate    run the one-time workspace migration now (else it's automatic)\n"
         "  dreame-valetudo diagnose   on the robot's AP: check why the UI isn't up\n"
         "  dreame-valetudo fix-impl   pin the Valetudo implementation for the robot's model\n"
         "  dreame-valetudo fix-did    repair a NEGATIVE factory deviceId\n"
@@ -265,8 +270,8 @@ def usage(console: Console) -> None:
         "  dreame-valetudo verify-form check the dustbuilder form hasn't drifted from the baseline\n"
         "  dreame-valetudo version    print the version\n"
         "  dreame-valetudo help       this help\n\n"
-        "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_SSHKEY, DREAME_CONFIG,\n"
-        "                 VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG.\n"
+        "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_BACKUPS, DREAME_SSHKEY,\n"
+        "                 DREAME_CONFIG, VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG.\n"
     )
 
 
@@ -279,6 +284,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "status":
         status(ctx)
+        return 0
+    if cmd == "migrate":
+        report(ctx.env, ctx.console)
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1
@@ -363,9 +371,13 @@ def main(
         ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
 
         # Help the fastboot client + sunxi-fel find libusb (real subprocess runs only; the recording
-        # runner in tests spawns nothing, so skip the brew probe there).
+        # runner in tests spawns nothing, so skip the brew probe there). The first-run layout
+        # migration is gated the same way, so tests never touch a real ~ (test_migrate drives it
+        # directly with a tmp HOME).
         if production:
             apply_library_path(resolve_libexec(resolved_env))
+            if cmd not in _NO_WORKSPACE:
+                migrate(resolved_env, con)
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:

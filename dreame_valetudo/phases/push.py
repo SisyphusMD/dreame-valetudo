@@ -158,7 +158,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
 
     cfg = ctx.robot_config()
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = ctx.home / f"{robot_tag(ctx.profile.model_code, cfg, ctx.env.get('DREAME_ROBOT'))}-backup-{ts}"
+    backup = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg, ctx.env.get('DREAME_ROBOT'))}-{ts}"
     backup.mkdir(parents=True, exist_ok=True)
     backup.chmod(0o700)
     warn_if_low_disk(ctx.console, backup, 2 * (1 << 30))  # files.tar.gz + two raw partition dumps

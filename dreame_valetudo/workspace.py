@@ -1,9 +1,10 @@
 """Workspace layout, per-robot state, and robot identity.
 
-Storage model:
-  * ``cache/``       — toolchain build + downloads; 100% re-obtainable, safe to delete, shared.
-  * ``robots/<id>/`` — a robot's working state, created only once recon reads its identity.
-The one un-obtainable thing (flash backups) is written to $HOME, hardware-named, outside here.
+Storage model, all under the ~/dreame-valetudo/ umbrella:
+  * ``work/cache/``    — toolchain build + downloads; 100% re-obtainable, safe to delete, shared.
+  * ``work/robots/<id>/`` — a robot's working state, created only once recon reads its identity.
+  * ``backups/``       — the one un-obtainable thing (flash/identity backups). A SIBLING of work/,
+                         never inside it, so clearing the work dir can never lose a backup.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ from pathlib import Path
 
 from .util import parse_config
 
+# The ~/dreame-valetudo/ umbrella holding work/, backups/, and the .layout marker. Shared by
+# workspace/context/migrate so the name can't drift between them.
+WORKSPACE_SUBDIR = "dreame-valetudo"
+
 
 @dataclass(frozen=True, slots=True)
 class Workspace:
@@ -23,11 +28,12 @@ class Workspace:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Workspace:
-        """Resolve the base work dir from DREAME_WORK, else ~/dreame-valetudo-work. The single
-        source of this policy — cli.main resolves the workspace through here."""
+        """Resolve the base work dir from DREAME_WORK, else ~/dreame-valetudo/work. The single
+        source of this policy — cli.main resolves the workspace through here. (migrate.py moves a
+        legacy ~/dreame-valetudo-work here on first run.)"""
         base = env.get("DREAME_WORK")
         if not base:
-            base = str(Path(env.get("HOME") or Path.home()) / "dreame-valetudo-work")
+            base = str(Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "work")
         return cls(Path(base))
 
     @property

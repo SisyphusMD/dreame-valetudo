@@ -23,7 +23,7 @@ from .fastboot import Fastboot, find_helper, resolve_libexec, resolve_transport
 from .fel import Fel
 from .profiles import Profile
 from .run import Runner
-from .workspace import Robot, Workspace
+from .workspace import WORKSPACE_SUBDIR, Robot, Workspace
 
 
 def _local_now() -> str:
@@ -94,8 +94,15 @@ class Context:
 
     @property
     def home(self) -> Path:
-        """The user's home dir (backups, SSH keys, the ~/Downloads zip watcher live here)."""
+        """The user's home dir (SSH keys, the ~/Downloads zip watcher live here)."""
         return Path(self.env.get("HOME") or Path.home())
+
+    @property
+    def backups_dir(self) -> Path:
+        """Where irreplaceable factory backups go: ~/dreame-valetudo/backups by default (a SIBLING
+        of the work dir, so clearing work never touches a backup). DREAME_BACKUPS overrides."""
+        override = self.env.get("DREAME_BACKUPS")
+        return Path(override) if override else self.home / WORKSPACE_SUBDIR / "backups"
 
     def robot_config(self) -> str | None:
         """This robot's recorded 'config' identity, with the env fallbacks applied uniformly."""
