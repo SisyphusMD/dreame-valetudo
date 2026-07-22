@@ -143,15 +143,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 Download the `.pkg` for your Mac's chip, open it, then run `dreame-valetudo`. Bundles everything
 (no Homebrew, no build); best for a non-technical person. Not sure which chip? Apple menu →
 About This Mac ("Apple M…" = Apple Silicon, "Intel" = Intel).
-- **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo-macos-arm64.pkg)
-- **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo-macos-x86_64.pkg)
+- **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg)
+- **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg)
 
 ### Debian / Ubuntu / Raspberry Pi OS (`.deb`)
 
 Self-contained (bundles `sunxi-fel`, installs the USB udev rule automatically). Pick your arch
 (`dpkg --print-architecture`):
-- **arm64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo_arm64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo_arm64.deb)
-- **amd64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo_amd64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.0/dreame-valetudo_amd64.deb)
+- **arm64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_arm64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_arm64.deb)
+- **amd64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_amd64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_amd64.deb)
 ```bash
 sudo apt install ./dreame-valetudo_arm64.deb    # or the amd64 file
 dreame-valetudo

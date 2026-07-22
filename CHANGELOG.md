@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-22
+
 - **feat**: after you submit to the dustbuilder, `image` now checks in — if the build was rejected
   with `Error: unknown config value` (the robot isn't auto-recognized yet), answer "no" and it
   prints exactly what `check.builder.dontvacuum.me` needs: the `get_staged` image to upload plus the
