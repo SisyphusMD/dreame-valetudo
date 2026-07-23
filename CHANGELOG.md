@@ -27,6 +27,9 @@
 - **feat**: a best-effort, once-a-day check notes when a newer release is out and prints the right
   upgrade command for how you installed it. It fails silently offline; opt out with
   `DREAME_NO_UPDATE_CHECK=1`.
+- **fix**: logs you're invited to share no longer leak identifying secrets — `diagnose` no longer
+  records your robot's device key, and the run log now redacts the identifying flash token that
+  previously slipped the scrubber.
 
 ## [0.1.1] - 2026-07-22
 
