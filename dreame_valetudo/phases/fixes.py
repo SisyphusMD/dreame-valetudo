@@ -14,6 +14,7 @@ from pathlib import Path
 from ..console import die
 from ..constants import ROBOT_AP_IP
 from ..context import Context
+from ..log import scrub
 from ..profiles import impl_class_for_model
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base
 from ..util import parse_mikey, repair_did
@@ -248,7 +249,9 @@ echo "== listening on :80 =="; netstat -tln 2>/dev/null | grep ":80" || echo "no
 echo "== config =="; ls -l /data/valetudo_config.json 2>&1
 echo "== device.conf (Valetudo parses this; did/key/model must ALL be present + clean) =="
 if [ -s /data/config/miio/device.conf ]; then
-  grep -E "^(did|key|model)=" /data/config/miio/device.conf 2>&1
+  # key= is the robot's miio device secret. This log is meant to be shared publicly, so report
+  # only the key's PRESENCE (below), NEVER its value — grep out did/model alone. did/model are safe.
+  grep -E "^(did|model)=" /data/config/miio/device.conf 2>&1
   DID=$(grep "^did=" /data/config/miio/device.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d "[:space:]")
   case "$DID" in
     "")        echo "!! did MISSING -> device.conf parses to null; regenerate: rm device.conf; reboot" ;;
@@ -257,7 +260,11 @@ if [ -s /data/config/miio/device.conf ]; then
     *)         echo "did OK (positive integer)" ;;
   esac
   KEYV=$(grep "^key=" /data/config/miio/device.conf 2>/dev/null | head -1 | cut -d= -f2 | tr -d "[:space:]")
-  [ -z "$KEYV" ] && echo "!! key MISSING/empty -> Valetudo can't reach the robot; restore it with: fix-key"
+  if [ -z "$KEYV" ]; then
+    echo "!! key MISSING/empty -> Valetudo can't reach the robot; restore it with: fix-key"
+  else
+    echo "key OK (present; value withheld)"
+  fi
   grep -q "^model=" /data/config/miio/device.conf || echo "!! model= MISSING from device.conf -> parses to null"
 else
   echo "!! device.conf MISSING/empty -> Valetudo cannot start; regenerate: rm /data/config/miio/device.conf; reboot (or factory reset)"
@@ -294,6 +301,10 @@ def diagnose(ctx: Context) -> None:
     else:
         got = robot_ssh(ctx.runner, _TARGET, _DIAGNOSE_REMOTE, key=key, check=False)
         lines.extend((got.stdout + got.stderr).splitlines())
+    # Scrub the whole report before it is printed or written: diagnose.log is explicitly meant to
+    # be shared, so home paths and any identity/secret-shaped token (incl. the miio key, should a
+    # future field re-introduce it) must be redacted the same way the run log is.
+    lines = [scrub(line, ctx.home) for line in lines]
     for line in lines:
         ctx.console.info(line)
     log.write_text("\n".join(lines) + "\n")

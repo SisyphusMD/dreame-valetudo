@@ -33,6 +33,11 @@ _HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")             # config/identity value, 
 # Device IDs are 9-10 digit ints; ≥9 catches them (and, harmlessly, big byte counts) while sparing
 # 8-digit YYYYMMDD dates / timestamps, which are useful and not sensitive.
 _LONGINT = re.compile(r"(?<![\w.])-?\d{9,}(?![\w.])")
+# The robot's miio device key (device.conf `key=`, push.py's _MIKEY_RE: [A-Za-z0-9]{8,64}). Its
+# mixed letters+digits dodge both _HEX (non-hex letters) and _LONGINT (has letters), so it needs its
+# own rule. Constrained to tokens carrying BOTH a letter and a digit — the high-entropy shape of a
+# random credential — so ordinary all-alpha words in a shared log (valetudo, processes, …) survive.
+_MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,64}\b")
 
 
 def scrub(text: str, home: Path | None = None) -> str:
@@ -44,7 +49,8 @@ def scrub(text: str, home: Path | None = None) -> str:
     text = _SSH_PUB.sub(r"\1 <redacted-public-key>", text)
     text = _EMAIL.sub("<redacted-email>", text)
     text = _HEX.sub("<redacted-id>", text)
-    return _LONGINT.sub("<redacted-id>", text)
+    text = _LONGINT.sub("<redacted-id>", text)
+    return _MIKEY.sub("<redacted-id>", text)
 
 
 def _prune(logs_dir: Path, keep: int) -> None:

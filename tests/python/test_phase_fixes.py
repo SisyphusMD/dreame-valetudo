@@ -11,7 +11,7 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
-from dreame_valetudo.phases.fixes import fix_did, fix_impl, fix_key
+from dreame_valetudo.phases.fixes import _DIAGNOSE_REMOTE, diagnose, fix_did, fix_impl, fix_key
 from dreame_valetudo.run import Result
 
 _ENV = {"HOME": "/tmp/dreame-none"}
@@ -229,3 +229,33 @@ def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFa
     ctx = make_ctx(model="x40-ultra", responder=r, env=_ENV)
     fix_impl(ctx)
     assert any("fix-did" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+# --- diagnose: the miio key must never reach the shareable log --------------------------------
+def test_diagnose_remote_reports_key_presence_only_never_its_value() -> None:
+    """The remote script greps only did/model — never the key= VALUE — yet still flags whether the
+    key is present. The miio device key must never land in the publicly-shared diagnose.log."""
+    assert 'grep -E "^(did|model)=' in _DIAGNOSE_REMOTE      # did/model are safe to echo verbatim
+    assert '"^(did|key|model)=' not in _DIAGNOSE_REMOTE      # the key value is no longer grepped out
+    assert 'grep "^key=' in _DIAGNOSE_REMOTE                 # presence check on key= survives
+    assert "key MISSING/empty" in _DIAGNOSE_REMOTE           # absence still reported
+    assert "value withheld" in _DIAGNOSE_REMOTE              # presence reported without the value
+
+
+def test_diagnose_scrubs_a_key_shaped_token_from_the_report(make_ctx: CtxFactory) -> None:
+    """Defence in depth: even if the robot returns a key-shaped token, scrub() keeps it out of the
+    written diagnose.log AND the printed output."""
+    mikey = "A1b2C3d4E5f6G7h8"
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        return Result(argv, 0, f"key={mikey}\ndid=12\n", "")  # a stray key line from the robot
+
+    ctx = make_ctx(responder=responder, env=_ENV)
+    diagnose(ctx)
+    written = (ctx.ws.base / "diagnose.log").read_text()
+    assert mikey not in written
+    assert "<redacted-id>" in written
+    assert not any(mikey in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]

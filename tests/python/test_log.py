@@ -52,6 +52,14 @@ def test_scrub_keeps_useful_nonsensitive_values() -> None:
     assert "rc=127" in scrub("$ sunxi-fel version   (rc=127)")
 
 
+def test_scrub_redacts_a_miio_key_shaped_token() -> None:
+    # The mixed-case-plus-digit miio device key dodges the hex and long-int rules; it must not survive.
+    assert "A1b2C3d4E5f6G7h8" not in scrub("key=A1b2C3d4E5f6G7h8")
+    # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
+    assert "valetudo" in scrub("== valetudo running? == RUNNING")
+    assert "RUNNING" in scrub("== valetudo running? == RUNNING")
+
+
 # --- RunLog: writes a readable, flushed, shareable file ---------------------------------------
 def _open(tmp_path: Path, home: Path, clock: Callable[[], float] | None = None) -> RunLog:
     return RunLog.open(tmp_path, home, ["push"], "0.1.0",
