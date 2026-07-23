@@ -1,0 +1,35 @@
+{
+"modulus": [
+3378,
+3634
+],
+"exponent": [
+3636,
+3639
+],
+"serial": [
+3215,
+3216
+],
+"notbefore": [
+3279,
+3292
+],
+"notafter": [
+3294,
+3307
+],
+"addsum": [
+12,
+16
+],
+"signature_UNTOUCHED_unverified": [
+3708,
+3964
+],
+"item1_UNTOUCHED": [
+3968,
+98176
+],
+"root_key_sha256_of_modulus": "4d35859b887307d1ea3149fae8c7ceaa60e53f9e634ac5a7c5f34a8ff306c45c"
+}

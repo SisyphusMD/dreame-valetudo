@@ -1,0 +1,7 @@
+Byte diff: genuine device toc0 (HW-ACCEPTED) vs correctly self-signed toc0 (HW-REJECTED)
+both files: 98304 bytes (0x18000)
+differing runs: 3   total differing bytes: 516
+
+  @ 0x000c     4 bytes   main_info.checksum (BROM add_sum)
+  @ 0x0d32   256 bytes   embedded RSA-2048 modulus
+  @ 0x0e7c   256 bytes   item0 cert signature

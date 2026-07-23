@@ -1,0 +1,594 @@
+Installed 1 package in 2ms
+# UART capture on /dev/cu.usbserial-XXXXXXXX @ 115200 8N1 — power-cycle the robot now (do NOT hold FEL)
+[  45.188] [232]HELLO! SBOOT is starting!
+[  45.188] [235]sboot commit : 92365cb
+[ 255.019] [232]HELLO! SBOOT is starting!
+[ 255.019] [235]sboot commit : 92365cb
+[ 389.682] [135128]fes begin commit:92365cb
+[ 389.682] [135132]set pll start
+[ 389.682] [135134]periph0 has been enabled
+[ 389.682] [135137]set pll end
+[ 389.682] [135139]PL gpio voltage : 3.3V
+[ 389.682] [135142]unknow PMU
+[ 389.682] [135144][pmu]: bus read error
+[ 389.682] [135147]PMU: AXP806
+[ 389.682] [135159]vaild para:8  select dram para0
+[ 389.682] [135163]board init ok, set sys_vol to 940mv!
+[ 389.682] [135167]beign to init dram
+[ 389.682] [135169]DRAM BOOT DRIVE INFO: V0.69
+[ 389.682] [135173]the chip id is 0x600
+[ 389.682] [135175]the chip id is 0x600
+[ 389.682] [135178]the chip id is 0x600
+[ 389.682] [135181]the chip id is 0x600
+[ 389.682] [135184]the chip id is 0x600
+[ 389.682] [135186]chip id check OK
+[ 389.682] [135190]DRAM_VCC set to 1500 mv
+[ 389.682] [135232]DRAM retraining ten
+[ 389.682] [135238][AUTO DEBUG]32bit,1 ranks training success!
+[ 389.682] [135251]DRAM CLK =672 MHZ
+[ 389.682] [135253]DRAM Type =3 (3:DDR3,4:DDR4,7:LPDDR3,8:LPDDR4)
+[ 389.682] [135262]DRAM SIZE =1024 MBytes, para1 = 30fa, para2 = 4000000, tpr13 = 6041
+[ 389.682] [135271]DRAM simple test OK.
+[ 389.682] [135273]init dram ok
+[ 404.786] 
+[ 404.786] 
+[ 404.786] U-Boot 2018.05-config-dirty (Jun 13 2025 - 05:56:29 +0000) Allwinner Technology, Dustbuilder edition
+[ 404.786] 
+[ 404.786] I2C:   ready
+[ 404.786] [150.000]DRAM:  512 MiB
+[ 404.787] [150.003]Relocation Offset is: 15f90000
+[ 404.787] [150.017]secure enable bit: 1
+[ 404.787] [150.020]PMU: AXP806
+[ 404.787] [150.022]PMU: pmu_axp806 found
+[ 404.787] [150.024]bmu_axp81X_probe pmic_bus_read fail
+[ 404.787] [150.028]BMU: no found
+[ 404.787] [150.030]CPU=1008 MHz,PLL6=600 Mhz,AHB=200 Mhz, APB1=100Mhz  MBus=400Mhz
+[ 404.787] [150.040]gic: normal mode
+[ 404.787] [150.042]flash init start
+[ 404.787] [150.044]workmode = 16,storage type = 0
+[ 404.787] try card 2
+[ 404.787] set card number 2
+[ 404.787] get card number 2
+[ 404.787] [150.052][mmc]: mmc driver ver uboot2018:2021-01-14 19:04:00
+[ 404.787] [150.059][mmc]: get sdc_type fail and use default host:tm4.
+[ 404.787] [150.071][mmc]: Is not Boot mode!
+[ 404.787] [150.074][mmc]: SUNXI SDMMC Controller Version:0x50300
+[ 404.787] [150.085][mmc]: ************Try SD card 2************
+[ 404.787] [150.090][mmc]: mmc 2 cmd timeout 100 status 100
+[ 404.787] [150.094][mmc]: smc 2 err, cmd 8,  RTO
+[ 404.787] [150.098][mmc]: mmc 2 close bus gating and reset
+[ 404.787] [150.103][mmc]: mmc 2 cmd timeout 100 status 100
+[ 404.787] [150.107][mmc]: smc 2 err, cmd 55,  RTO
+[ 404.787] [150.111][mmc]: mmc 2 close bus gating and reset
+[ 404.787] [150.115][mmc]: ************Try MMC card 2************
+[ 404.787] [150.139][mmc]: mmc 2 cmd timeout 100 status 100
+[ 404.787] [150.143][mmc]: smc 2 err, cmd 8,  RTO
+[ 404.787] [150.147][mmc]: mmc 2 close bus gating and reset
+[ 404.787] [150.152][mmc]: mmc 2 cmd timeout 100 status 100
+[ 404.787] [150.156][mmc]: smc 2 err, cmd 55,  RTO
+[ 404.787] [150.160][mmc]: mmc 2 close bus gating and reset
+[ 404.787] [150.176][mmc]: gen_tuning_blk_bus8: total blk 10
+[ 404.787] [150.180][mmc]: gen_tuning_blk_bus4: total blk 6
+[ 404.787] [150.185][mmc]: Using 8 bit tuning now
+[ 404.787] [150.189][mmc]: write_tuning_try_freq: write ok
+[ 404.787] [150.194][mmc]: Pattern compare ok
+[ 404.787] [150.197][mmc]: Write tuning pattern ok
+[ 404.787] [150.200][mmc]: ================== HSSDR52_SDR25...
+[ 404.787] [150.205][mmc]: skip freq 400000
+[ 404.787] [150.208][mmc]: skip freq 25000000
+[ 404.787] [150.211][mmc]: freq: 2-50000000-64-4
+[ 404.788] [150.410][mmc]: [0-49|50]
+[ 404.788] [150.412][mmc]: ================== HS200_SDR104...
+[ 404.788] [150.417][mmc]: skip freq 400000
+[ 404.788] [150.420][mmc]: skip freq 25000000
+[ 404.788] [150.423][mmc]: freq: 2-50000000-64-4
+[ 405.793] [150.637][mmc]: freq: 3-100000000-64-4
+[ 405.793] [150.802][mmc]: freq: 4-150000000-64-4
+[ 405.793] [150.915][mmc]: skip freq 200000000
+[ 405.793] [150.918][mmc]: [0-41|42] [49-63|15]
+[ 405.793] [150.921][mmc]: [0-41|42] [49-63|15]
+[ 405.793] [150.924][mmc]: [0-7|8] [15-41|27] [49-63|15]
+[ 405.793] [150.929][mmc]: ================== HSDDR52_DDR50...
+[ 405.793] [150.933][mmc]: skip freq 400000
+[ 405.794] [150.936][mmc]: freq: 1-25000000-64-4
+[ 405.794] [151.157][mmc]: freq: 2-50000000-64-4
+[ 405.794] [151.330][mmc]: [0-40|41] [45-50|6] [52-63|12]
+[ 405.794] [151.334][mmc]: [0-24|25] [26-40|15] [45-63|19]
+[ 405.794] [151.338][mmc]: ================== HS400...
+[ 405.794] [151.342][mmc]: skip freq 400000
+[ 405.794] [151.345][mmc]: skip freq 25000000
+[ 405.794] [151.348][mmc]: freq: 2-50000000
+[ 405.794] [151.363][mmc]: freq: 3-100000000
+[ 405.794] [151.377][mmc]: skip freq 150000000
+[ 405.794] [151.380][mmc]: skip freq 200000000
+[ 405.794] [151.383][mmc]: speed mode: HS400
+[ 405.794] [151.386][mmc]: [0-42|43] [49-63|15]
+[ 405.794] [151.390][mmc]: [0-42|43] [49-63|15]
+[ 405.794] [151.393][mmc]: skip freq 400000
+[ 405.794] [151.396][mmc]: skip freq 25000000
+[ 405.794] [151.399][mmc]: freq: 2-50000000-64-4
+[ 406.797] [151.528][mmc]: freq: 3-100000000-64-4
+[ 406.797] [151.583][mmc]: skip freq 150000000
+[ 406.797] [151.586][mmc]: skip freq 200000000
+[ 406.797] [151.589][mmc]: [0-9|10] [11-43|33]
+[ 406.797] [151.592][mmc]: [0-20|21]
+[ 406.797] [151.595][mmc]: DS26/SDR12: 0xffffffff 0xffffffff
+[ 406.797] [151.599][mmc]: HSSDR52/SDR25: 0xff19ffff 0xffffffff
+[ 406.797] [151.604][mmc]: HSDDR52/DDR50: 0xff0c14ff 0xffffffff
+[ 406.797] [151.608][mmc]: HS200/SDR104: 0x1515ffff 0xffffff1c
+[ 406.797] [151.613][mmc]: HS400: 0x0a1bffff 0xffffffff
+[ 406.797] [151.617][mmc]: HS400: 0x1515ffff 0xffffffff
+[ 406.797] [151.621][mmc]: Best spd md: 4-HS400, freq: 3-100000000, Bus width: 8
+[ 416.867] delay time 0
+[ 416.867] weak:otg_phy_config
+[ 416.867] usb init ok
+[ 416.867] set address 0x2 ok
+[ 421.904] sparse: bad magic
+[ 465.279] [232]HELLO! SBOOT is starting!
+[ 465.279] [235]sboot commit : 92365cb
+[ 675.731] [232]HELLO! SBOOT is starting!
+[ 675.731] [235]sboot commit : 92365cb
+[ 821.301] [145952]fes begin commit:92365cb
+[ 821.301] [145955]set pll start
+[ 821.301] [145957]periph0 has been enabled
+[ 821.301] [145960]set pll end
+[ 821.301] [145962]PL gpio voltage : 3.3V
+[ 821.301] [145966]unknow PMU
+[ 821.301] [145968][pmu]: bus read error
+[ 821.301] [145971]PMU: AXP806
+[ 821.301] [145982]vaild para:8  select dram para0
+[ 821.301] [145986]board init ok, set sys_vol to 940mv!
+[ 821.301] [145990]beign to init dram
+[ 821.301] [145993]DRAM BOOT DRIVE INFO: V0.69
+[ 821.301] [145996]the chip id is 0x600
+[ 821.301] [145999]the chip id is 0x600
+[ 821.301] [146002]the chip id is 0x600
+[ 821.301] [146004]the chip id is 0x600
+[ 821.301] [146007]the chip id is 0x600
+[ 821.301] [146010]chip id check OK
+[ 821.301] [146014]DRAM_VCC set to 1500 mv
+[ 821.301] [146055]DRAM retraining ten
+[ 821.301] [146062][AUTO DEBUG]32bit,1 ranks training success!
+[ 821.301] [146074]DRAM CLK =672 MHZ
+[ 821.301] [146077]DRAM Type =3 (3:DDR3,4:DDR4,7:LPDDR3,8:LPDDR4)
+[ 821.301] [146086]DRAM SIZE =1024 MBytes, para1 = 30fa, para2 = 4000000, tpr13 = 6041
+[ 821.302] [146094]DRAM simple test OK.
+[ 821.302] [146097]init dram ok
+[ 836.365] 
+[ 836.365] 
+[ 836.365] U-Boot 2018.05-config-dirty (Jun 13 2025 - 05:56:29 +0000) Allwinner Technology, Dustbuilder edition
+[ 836.365] 
+[ 836.365] I2C:   ready
+[ 836.365] [160.812]DRAM:  512 MiB
+[ 836.365] [160.815]Relocation Offset is: 15f90000
+[ 836.365] [160.830]secure enable bit: 1
+[ 836.365] [160.832]PMU: AXP806
+[ 836.365] [160.834]PMU: pmu_axp806 found
+[ 836.365] [160.837]bmu_axp81X_probe pmic_bus_read fail
+[ 836.365] [160.841]BMU: no found
+[ 836.365] [160.843]CPU=1008 MHz,PLL6=600 Mhz,AHB=200 Mhz, APB1=100Mhz  MBus=400Mhz
+[ 836.365] [160.852]gic: normal mode
+[ 836.365] [160.854]flash init start
+[ 836.365] [160.857]workmode = 16,storage type = 0
+[ 836.365] try card 2
+[ 836.365] set card number 2
+[ 836.365] get card number 2
+[ 836.365] [160.865][mmc]: mmc driver ver uboot2018:2021-01-14 19:04:00
+[ 836.365] [160.871][mmc]: get sdc_type fail and use default host:tm4.
+[ 836.365] [160.883][mmc]: Is not Boot mode!
+[ 836.365] [160.886][mmc]: SUNXI SDMMC Controller Version:0x50300
+[ 836.365] [160.897][mmc]: ************Try SD card 2************
+[ 836.365] [160.903][mmc]: mmc 2 cmd timeout 100 status 100
+[ 836.365] [160.907][mmc]: smc 2 err, cmd 8,  RTO
+[ 836.365] [160.910][mmc]: mmc 2 close bus gating and reset
+[ 836.365] [160.915][mmc]: mmc 2 cmd timeout 100 status 100
+[ 836.365] [160.920][mmc]: smc 2 err, cmd 55,  RTO
+[ 836.365] [160.923][mmc]: mmc 2 close bus gating and reset
+[ 836.365] [160.928][mmc]: ************Try MMC card 2************
+[ 836.365] [160.952][mmc]: mmc 2 cmd timeout 100 status 100
+[ 836.365] [160.956][mmc]: smc 2 err, cmd 8,  RTO
+[ 836.365] [160.959][mmc]: mmc 2 close bus gating and reset
+[ 836.365] [160.964][mmc]: mmc 2 cmd timeout 100 status 100
+[ 836.365] [160.969][mmc]: smc 2 err, cmd 55,  RTO
+[ 836.365] [160.972][mmc]: mmc 2 close bus gating and reset
+[ 836.365] [160.989][mmc]: gen_tuning_blk_bus8: total blk 10
+[ 836.365] [160.993][mmc]: gen_tuning_blk_bus4: total blk 6
+[ 836.365] [160.997][mmc]: Using 8 bit tuning now
+[ 836.365] [161.002][mmc]: write_tuning_try_freq: write ok
+[ 836.365] [161.006][mmc]: Pattern compare ok
+[ 836.365] [161.009][mmc]: Write tuning pattern ok
+[ 836.365] [161.013][mmc]: ================== HSSDR52_SDR25...
+[ 836.365] [161.017][mmc]: skip freq 400000
+[ 836.365] [161.020][mmc]: skip freq 25000000
+[ 836.365] [161.023][mmc]: freq: 2-50000000-64-4
+[ 836.365] [161.219][mmc]: [0-49|50]
+[ 836.365] [161.221][mmc]: ================== HS200_SDR104...
+[ 836.365] [161.226][mmc]: skip freq 400000
+[ 836.365] [161.229][mmc]: skip freq 25000000
+[ 836.365] [161.232][mmc]: freq: 2-50000000-64-4
+[ 837.366] [161.448][mmc]: freq: 3-100000000-64-4
+[ 837.366] [161.611][mmc]: freq: 4-150000000-64-4
+[ 837.366] [161.722][mmc]: skip freq 200000000
+[ 837.366] [161.725][mmc]: [0-41|42] [50-63|14]
+[ 837.366] [161.728][mmc]: [0-41|42] [50-63|14]
+[ 837.366] [161.732][mmc]: [0-7|8] [15-41|27] [50-63|14]
+[ 837.366] [161.736][mmc]: ================== HSDDR52_DDR50...
+[ 837.366] [161.741][mmc]: skip freq 400000
+[ 837.366] [161.743][mmc]: freq: 1-25000000-64-4
+[ 837.366] [161.961][mmc]: freq: 2-50000000-64-4
+[ 837.366] [162.127][mmc]: [0-39|40] [45-50|6] [53-63|11]
+[ 837.366] [162.131][mmc]: [0-24|25] [27-39|13] [45-63|19]
+[ 837.366] [162.135][mmc]: ================== HS400...
+[ 837.366] [162.139][mmc]: skip freq 400000
+[ 837.366] [162.142][mmc]: skip freq 25000000
+[ 837.366] [162.145][mmc]: freq: 2-50000000
+[ 837.367] [162.160][mmc]: freq: 3-100000000
+[ 837.367] [162.174][mmc]: skip freq 150000000
+[ 837.367] [162.177][mmc]: skip freq 200000000
+[ 837.367] [162.180][mmc]: speed mode: HS400
+[ 837.367] [162.183][mmc]: [0-41|42] [50-63|14]
+[ 837.367] [162.187][mmc]: [0-42|43] [50-63|14]
+[ 837.367] [162.190][mmc]: skip freq 400000
+[ 837.367] [162.193][mmc]: skip freq 25000000
+[ 837.367] [162.196][mmc]: freq: 2-50000000-64-4
+[ 837.367] [162.323][mmc]: freq: 3-100000000-64-4
+[ 837.367] [162.377][mmc]: skip freq 150000000
+[ 837.367] [162.380][mmc]: skip freq 200000000
+[ 837.367] [162.383][mmc]: [0-9|10] [11-43|33]
+[ 837.367] [162.387][mmc]: [0-20|21]
+[ 838.372] [162.389][mmc]: DS26/SDR12: 0xffffffff 0xffffffff
+[ 838.372] [162.393][mmc]: HSSDR52/SDR25: 0xff19ffff 0xffffffff
+[ 838.372] [162.398][mmc]: HSDDR52/DDR50: 0xff0c14ff 0xffffffff
+[ 838.372] [162.403][mmc]: HS200/SDR104: 0x1515ffff 0xffffff1c
+[ 838.372] [162.407][mmc]: HS400: 0x0a1bffff 0xffffffff
+[ 838.372] [162.411][mmc]: HS400: 0x1515ffff 0xffffffff
+[ 838.372] [162.416][mmc]: Best spd md: 4-HS400, freq: 3-100000000, Bus width: 8
+[ 848.411] delay time 0
+[ 848.412] weak:otg_phy_config
+[ 848.412] usb init ok
+[ 848.412] set address 0x2 ok
+[ 853.431] sparse: bad magic
+[ 853.431] uboot size = 0x130000
+[ 853.431] storage type = 2
+[ 885.555] [232]HELLO! SBOOT is starting!
+[ 885.555] [235]sboot commit : 92365cb
+[ 886.560] NOTICE:  BL3-1: v1.0(debug):0880fb7
+[ 886.561] NOTICE:  BL3-1: Built : 18:49:08, 2020-11-17
+[ 886.561] NOTICE:  BL3-1 commit: 8
+[ 886.561] NOTICE:  cpuidle init version V2.0
+[ 886.561] NOTICE:  secure os exist
+[ 886.561] M/TC: OP-TEE version: 7eb0ba4d-dirty (gcc version 5.3.1 20160412 (Linaro GCC 5.3-2016.05)) #1 2021å¹´ 10æ 12æ¥ ææäº 05:46:52 UTC arm
+[ 886.561] NOTICE:  BL3-1: Preparing for EL3 exit to normal world
+[ 886.561] NOTICE:  BL3-1: Next image address = 0x4a000000
+[ 886.561] NOTICE:  BL3-1: Next image spsr = 0x1d3
+[01.000][mmc]: mmc driver ver uboot2018:2021-01-14 19:04:00
+[ 886.561] [01.006][mmc]: get sdc_type fail and use default host:tm4.
+[ 886.561] [01.017][mmc]: SUNXI SDMMC Controller Version:0x50300
+[ 886.561] [01.042][mmc]: Best spd md: 4-HS400, freq: 3-100000000, Bus width: 8
+[ 886.561] [01.137]set disp.dev2_output_type fail. using defval=0
+[ 886.561] [01.184]secure storage read rpmb_key fail with:-1
+[ 886.561] [01.188]secure storage read dm_crypt_key fail with:-1
+[ 890.575] [04.411][ARISC ERROR] :get [allwinner,sunxi-hwspinlock] device node error
+[ 890.575] [SCP] :sunxi-arisc driver begin startup 2
+[ 890.575] [SCP] :0x1
+[ 890.575] [SCP] :arisc version: [ramsm-xt318rnit-2v-ar-0.aele]
+[ 890.575] [SCP] :arisc startup ready
+[ 890.575] [SCP] :arisc startup notify message feedback
+[ 890.575] [SCP] :send hard sync feedback message: 0x900200
+[ 890.575] [SCP] :sunxi-arisc driver v1.10 is starting
+[ 890.575] [04.478]Version: U-Boot 2018.05-g9a42d7d (Mar 22 2022 - 06:15:58 +0000) Allwinner Technology dreame
+[ 890.575] [04.624]Starting kernel ...
+[ 890.575] 
+[ 890.575] [04.627][mmc]: mmc exit start
+[ 890.575] [04.646][mmc]: mmc 2 exit ok
+[ 892.581] numid=14,iface=MIXER,name='Headphone Switch'
+[ 892.581]   ; type=BOOLEAN,access=rw------,values=1
+[ 892.581]   : values=on
+[ 892.581] numid=10,iface=MIXER,name='Headphone Volume'
+[ 892.581]   ; type=INTEGER,access=rw---R--,values=1,min=0,max=7,step=0
+[ 892.581]   : values=3
+[ 892.581]   | dBscale-min=-42.00dB,step=6.00dB,mute=0
+[ 892.581] numid=11,iface=MIXER,name='LINEOUT Output Select'
+[ 892.581]   ; type=ENUMERATED,access=rw------,values=1,items=2
+[ 892.581]   ; Item #0 'DAC_SINGLE'
+[ 892.581]   ; Item #1 'DAC_DIFFER'
+[ 892.581]   : values=1
+[ 892.581] numid=16,iface=MIXER,name='LINEOUT Switch'
+[ 892.581]   ; type=BOOLEAN,access=rw------,values=1
+[ 892.581]   : values=on
+[ 892.581] numid=7,iface=MIXER,name='LINEOUT volume'
+[ 892.581]   ; type=INTEGER,access=rw---R--,values=1,min=0,max=31,step=0
+[ 892.581]   : values=31
+[ 892.581]   | dBrange-
+[ 892.581]     rangemin=0,,rangemax=1
+[ 892.581]       | dBscale-min=0.00dB,step=0.00dB,mute=1
+[ 892.581]     rangemin=2,,rangemax=31
+[ 892.581]       | dBscale-min=-43.50dB,step=1.50dB,mute=1
+[ 892.581] 
+[ 892.581] numid=12,iface=MIXER,name='ADCL Input MIC1 Boost Switch'
+[ 892.581]   ; type=BOOLEAN,access=rw------,values=1
+[ 893.586]   : values=on
+[ 893.587] numid=5,iface=MIXER,name='MIC1 gain volume'
+[ 893.587]   ; type=INTEGER,access=rw---R--,values=1,min=0,max=31,step=0
+[ 893.587]   : values=0
+[ 893.587]   | dBscale-min=0.00dB,step=1.00dB,mute=0
+[ 893.587] numid=13,iface=MIXER,name='ADCR Input MIC2 Boost Switch'
+[ 893.587]   ; type=BOOLEAN,access=rw------,values=1
+[ 893.587]   : values=on
+[ 893.587] numid=6,iface=MIXER,name='MIC2 gain volume'
+[ 893.587]   ; type=INTEGER,access=rw---R--,values=1,min=0,max=31,step=0
+[ 893.587]   : values=0
+[ 893.587]   | dBscale-min=0.00dB,step=1.00dB,mute=0
+[ 893.587] e2fsck 1.43.9 (8-Feb-2018)
+[ 893.587] ext2fs_check_if_mount: Can't check if filesystem is mounted due to missing mtab file while determining whether /dev/by-name/misc is mounted.
+[ 893.587] /dev/by-name/misc: clean, 28/1024 files, 1278/4096 blocks
+[ 893.587] killall: rsyslogd: no process killed
+[ 893.587] Failed to connect to ubus
+[ 893.587] sh: rsyslogd.pid: unknown operand
+[ 894.591] Generating RSA private key, 1024 bit long modulus (2 primes)
+[ 894.592] ......oggdec from vorbis-tools 1.4.0
+[ 894.592] ..+++++
+[ 894.592] ...........Decoding "/audio/EN/0.ogg" to "/tmp/0.wav"
+[ 894.592] ..
+	[  0.0%].
+	[  0.5%]
+	[  1.0%]
+	[  1.5%]
+	[  2.0%]
+	[  2.5%]
+	[  2.5%]
+	[  3.0%]
+	[  3.5%]
+	[  4.0%]
+	[  4.5%]
+	[  5.0%]
+	[  5.5%]
+	[  6.0%]
+	[  6.5%]
+	[  7.0%]
+	[  7.5%]
+	[  8.0%]
+	[  8.5%]
+	[  9.0%]
+	[  9.5%]
+	[ 10.0%].
+	[ 10.5%]
+	[ 11.0%]
+	[ 11.5%]
+	[ 11.5%]
+	[ 12.0%]
+	[ 12.5%]
+	[ 13.0%]
+	[ 13.5%]
+	[ 14.0%]
+	[ 14.5%]
+	[ 15.0%]
+	[ 15.5%]
+	[ 16.0%]
+	[ 16.5%]
+	[ 16.5%]
+	[ 17.0%]
+	[ 17.5%]
+	[ 18.0%]
+	[ 18.5%]
+	[ 19.0%]
+	[ 19.5%]
+	[ 20.0%]
+	[ 20.5%]
+	[ 21.0%]
+	[ 21.5%]
+	[ 21.5%]
+	[ 22.0%]
+	[ 22.5%]
+	[ 23.0%]
+	[ 23.5%]
+	[ 24.0%].
+	[ 24.5%]
+	[ 25.0%]
+	[ 25.5%]
+	[ 26.0%]
+	[ 26.5%]
+	[ 27.0%]
+	[ 27.5%]
+	[ 28.0%]
+	[ 28.5%]
+	[ 29.0%]
+	[ 29.5%]
+	[ 30.0%]
+	[ 31.0%]
+	[ 31.5%]
+	[ 32.0%]
+	[ 32.5%]
+	[ 33.0%]
+	[ 33.5%]
+	[ 33.5%]
+	[ 34.0%]
+	[ 34.5%]
+	[ 34.5%]
+	[ 35.0%]
+	[ 35.0%]
+	[ 35.5%]
+	[ 36.0%]
+	[ 36.5%]
+	[ 37.5%]
+	[ 38.0%]
+	[ 38.5%].
+	[ 39.0%]
+	[ 39.0%]
+	[ 39.5%]
+	[ 40.0%]
+	[ 40.5%]
+	[ 41.0%]
+	[ 41.5%]
+	[ 42.0%]
+	[ 42.5%]
+	[ 43.0%]
+	[ 43.5%]
+	[ 44.0%]
+	[ 44.0%]
+	[ 44.5%]
+	[ 45.0%]
+	[ 45.5%]
+	[ 46.0%]
+	[ 46.5%]
+	[ 47.0%]
+	[ 47.5%]
+	[ 48.0%]
+	[ 48.5%]
+	[ 48.5%]
+	[ 49.0%]
+	[ 49.0%]
+	[ 49.5%]
+	[ 50.0%]
+	[ 50.5%]
+	[ 51.5%]
+	[ 52.0%].
+	[ 52.5%]
+	[ 52.5%]
+	[ 53.0%]
+	[ 53.0%]
+	[ 53.5%]
+	[ 54.0%]
+	[ 54.5%]
+	[ 55.0%]
+	[ 55.5%]
+	[ 56.0%]
+	[ 56.5%]
+	[ 57.0%]
+	[ 57.5%]
+	[ 57.5%]
+	[ 58.0%]
+	[ 58.5%]
+	[ 59.0%]
+	[ 59.5%]
+	[ 60.0%]
+	[ 60.5%]
+	[ 61.0%]
+	[ 61.5%]
+	[ 62.0%]
+	[ 62.0%]
+	[ 62.5%]
+	[ 62.5%]
+	[ 63.0%]
+	[ 63.5%]
+	[ 64.0%]
+	[ 65.0%]
+	[ 65.0%]
+	[ 65.5%].
+	[ 65.5%]
+	[ 66.0%]
+	[ 66.5%]
+	[ 67.0%]
+	[ 67.5%]
+	[ 68.0%]
+	[ 68.5%]
+	[ 69.0%]
+	[ 69.5%]
+	[ 70.0%]
+	[ 70.5%]
+	[ 71.0%]
+	[ 71.5%]
+	[ 72.0%]
+	[ 72.5%]
+	[ 73.0%]
+	[ 73.5%]
+	[ 74.0%]
+	[ 74.5%]
+	[ 75.0%]
+	[ 75.5%]
+	[ 76.0%]
+	[ 76.5%]
+	[ 77.0%]
+	[ 77.5%]
+	[ 78.5%]
+	[ 79.0%]
+	[ 79.5%]
+	[ 80.0%].
+	[ 80.5%]
+	[ 81.0%]
+	[ 81.5%]
+	[ 82.0%]
+	[ 82.5%]
+	[ 83.0%]
+	[ 83.5%]
+	[ 84.0%]
+	[ 84.5%]
+	[ 85.0%]
+	[ 85.5%]
+	[ 86.0%]
+	[ 86.5%]
+	[ 87.0%]
+	[ 87.5%]
+	[ 88.0%]
+	[ 88.5%]
+	[ 89.0%]
+	[ 89.5%]
+	[ 90.0%]
+	[ 90.5%]
+	[ 91.0%]
+	[ 92.0%]
+	[ 92.5%]
+	[ 93.0%]
+	[ 93.5%]
+	[ 94.0%]
+	[ 94.5%].
+	[ 95.0%]
+	[ 95.5%]
+	[ 96.0%]
+	[ 96.5%]
+	[ 97.0%]+
+	[ 97.5%]
+	[ 98.0%]
+	[ 98.5%]
+	[ 99.0%]
+	[ 99.5%]
+	[100.0%]
+[ 894.592] ++++
+[ 894.592] e is 65537 (0x010001)
+[ 894.592] writing RSA key
+[ 894.592] Playing WAVE '/tmp/0.wav' : Signed 16 bit Little Endian, Rate 16000 Hz, Mono
+[ 894.592] 8189fs 1176774 0 - Live 0xffffff8000700000
+[ 895.597] crond[1373]: crond (busybox 1.34.1) started, log level 8
+[ 895.597] 
+[ 895.597] /etc/rc.sysinit: line 35: /etc/init.d/ble.sh: not found
+[ 896.601] 
+[ 896.601] /data/_root_postboot.sh: line 6: can't create /sys/module/8188fu/parameters/rtw_power_mgnt: nonexistent directory
+[ 896.601] /data/_root_postboot.sh: line 7: can't create /sys/module/8723ds/parameters/rtw_power_mgnt: nonexistent directory
+[ 896.601] login[1516]: root login on 'ttyS0'
+[ 896.601] --------------------------------------------------------------
+[ 896.601]     _   _   _                        _     _
+[ 896.601]    / \ | |_| |__   ___ _ __   __ _  | |   (_)_ __  _   ___  __
+[ 896.601]   / _ \| __| '_ \ / _ \ '_ \ / _` | | |   | | '_ \| | | \ \/ /
+[ 896.601]  / ___ \ |_| | | |  __/ | | | (_| | | |___| | | | | |_| |>  <
+[ 896.601] /_/   \_\__|_| |_|\___|_| |_|\__,_| |_____|_|_| |_|\__,_/_/\_\
+[ 896.601] 
+[ 896.601] --------------------------------------------------------------
+[ 896.602]  Athena Linux (r2240_release)
+[ 896.602] --------------------------------------------------------------
+[ 896.602] 
+[ 896.602] built with dustbuilder (https://builder.dontvacuum.me)
+[ 896.602] 2023-10-04T14:56:05Z
+[ 896.602] 1201
+[ 896.602] [root@r2240_release:~]# chpasswd: password for 'root' changed
+[ 907.639] crond[1955]: crond (busybox 1.34.1) started, log level 8
+[ 907.639] 
+[ 918.683] crond[1955]: USER root pid 2038 cmd /etc/rc.d/wifi_monitor.sh
+[ 918.683] 
+[ 918.683] crond[1955]: USER root pid 2039 cmd /etc/rc.d/iot_sdk_monitor.sh
+[ 918.683] 
+[ 918.683] crond[1955]: USER root pid 2040 cmd /usr/bin/check_silent_upgrade.sh
+[ 918.683] 
+[ 918.683] crond[1955]: USER root pid 2041 cmd (flock -xn /var/run/nq.lock -c "/usr/bin/report_data.sh net_quality")
+[ 918.683] 
+[ 918.684] crond[1955]: USER root pid 2042 cmd /usr/bin/report_data.sh dev_resource
+[ 918.684] 
+[ 932.740] crond[2522]: crond (busybox 1.34.1) started, log level 8
+[ 932.740] 
+[ 975.920] crond[2522]: USER root pid 2871 cmd /etc/rc.d/wifi_monitor.sh
+[ 975.920] 
+[ 975.920] crond[2522]: USER root pid 2872 cmd /etc/rc.d/iot_sdk_monitor.sh
+[ 975.920] 
+[ 975.920] crond[2522]: USER root pid 2873 cmd /usr/bin/check_silent_upgrade.sh
+[ 975.920] 
+[ 975.920] crond[2522]: USER root pid 2874 cmd (flock -xn /var/run/nq.lock -c "/usr/bin/report_data.sh net_quality")
+[ 975.920] 

@@ -355,6 +355,16 @@ Measured on an M-series Mac / macOS 26:
 survives the FEL→fastboot re-enumeration. Before the timed flash, throughput is pre-measured
 so the whole `oem`+flash+reboot sequence fits inside the 160 s watchdog.
 
+### Low-level internals & research
+
+The deep reverse-engineering behind this tool — the secure-boot chain, the FEL/fastboot mechanics,
+the `oem dust` token, the boot0 write/read pipeline, the eFuse read, the signature formats, and a
+fully documented attempt to root with owner-generated keys (including exactly where and why it is
+blocked) — is written up as a standalone compendium in
+[`docs/research/`](docs/research/) (start at its [README](docs/research/README.md)). It also carries
+an artifact-sourcing manifest for restoration: which blobs are universal vs model-specific and where
+to get each.
+
 ## References
 
 - Valetudo Dreame install (fastboot): https://valetudo.cloud/pages/installation/dreame/#fastboot
