@@ -86,7 +86,7 @@ def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory)
     ctx.runner._responder = _text(did="-117604433")  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
     assert push(ctx) is True
-    assert ctx.need_robot().state_get("valetudo") == "2026.05.0"
+    assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
     # the negative did was repaired to its uint32 value
     assert any("4177362863" in msg for _, msg in ctx.console.lines)  # type: ignore[attr-defined]
     # the valetudo binary was copied via an SSH `cat >` pipe
