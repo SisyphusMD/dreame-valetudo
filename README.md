@@ -39,12 +39,8 @@ brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
 One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi-fel` (the small C
-helper that drives the robot's FEL mode) once. On **Linux**, grant sudo-less USB access once (the
-formula ships the rule):
-```bash
-sudo install -m0644 "$(brew --prefix)/share/dreame-valetudo/99-dreame-valetudo.rules" /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+helper that drives the robot's FEL mode) once. (Linux only: `brew`'s post-install message prints a
+one-time `udev` step for sudo-less USB, and the tool reminds you if you skip it.)
 
 ### Signed macOS installer (`.pkg`, double-click)
 
