@@ -178,8 +178,8 @@ def fix_impl(ctx: Context) -> None:
         patched_file.write_text(json.dumps(data, indent=2) + "\n")
         if not ctx.runner.run_redirect(
             [*ssh_base(_TARGET, key),
-             "cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
-             "cat > /data/valetudo_config.json"],
+             ("cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
+              "cat > /data/valetudo_config.json")],
             stdin_path=str(patched_file), check=False,
         ).ok:
             die("Couldn't write the patched config to the robot.")

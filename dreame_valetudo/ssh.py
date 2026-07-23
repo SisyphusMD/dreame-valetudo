@@ -133,8 +133,8 @@ def choose_sshkey(ctx: Context) -> Path:
     existing = discover_keys(ctx.home)
     options: list[tuple[str, str, Path]] = [(f"use {k}", "use", k) for k in existing]
     options.append(
-        ("generate a DEDICATED key just for this tool (recommended — nothing personal is shared) "
-         f"-> {dedicated}", "gen", dedicated)
+        (("generate a DEDICATED key just for this tool (recommended — nothing personal is shared) "
+          f"-> {dedicated}"), "gen", dedicated)
     )
     personal = ctx.home / ".ssh" / "id_ed25519"
     if not personal.is_file():
