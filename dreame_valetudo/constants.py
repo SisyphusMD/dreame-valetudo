@@ -5,7 +5,7 @@ from __future__ import annotations
 # Valetudo binary — pinned to a known-good release for reproducibility. Set VALETUDO_VERSION=latest
 # to intentionally track upstream. The download self-verifies against GitHub's published digest.
 # renovate: datasource=github-releases depName=Hypfer/Valetudo versioning=loose
-VALETUDO_VERSION_DEFAULT = "2026.05.0"
+VALETUDO_VERSION_DEFAULT = "2026.07.0"
 
 # The stage1 FEL tarball runs on the SoC before rooting starts, so it is pinned + verified before
 # extraction. Re-pin by hand if the upstream MR813 tarball changes (no datasource to track).
