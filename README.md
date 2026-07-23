@@ -316,7 +316,7 @@ Fixes are baked into the script as helper subcommands:
 - **Robot suddenly "reset itself" / Valetudo vanished** → usually ext4 corruption of `/data`
   (the stock firmware recreates the filesystem, wiping Valetudo; see
   [#2410](https://github.com/Hypfer/Valetudo/discussions/2410)). Not caused by Valetudo and not
-  preventable, so the factory/identity backup `push` writes to `~/` (plus the recon samples zip)
+  preventable, so the factory/identity backup `push` writes to `~/` (plus the recon recovery-backup zip)
   **is your recovery path**: reinstall from it over SSH. Keep it. (The robot's Wi-Fi AP also
   auto-disables ~30 min after boot; hold the two outer buttons to bring it back; see
   [#2158](https://github.com/Hypfer/Valetudo/discussions/2158).)

@@ -41,7 +41,7 @@ def test_recon_ddr3_model_boots_the_ddr3_fsbl(make_ctx: CtxFactory) -> None:
     (ctx.ws.dist / "payload.bin").write_text("p")
     (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")
     assert ctx.fsbl_name == "fsbl_ddr3.bin"
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     sunxi_writes = [" ".join(str(a) for a in c) for c in ctx.runner.calls  # type: ignore[attr-defined]
                     if any("sunxi-fel" in str(a) for a in c) and "write" in c]
     assert any("fsbl_ddr3.bin" in w for w in sunxi_writes)
@@ -51,7 +51,7 @@ def test_recon_ddr3_model_boots_the_ddr3_fsbl(make_ctx: CtxFactory) -> None:
 def test_recon_creates_robot_named_by_device_identity(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="x40-ultra", responder=_responder())  # no robot yet
     _dist_ready(ctx)
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     robot = ctx.robot
     assert robot is not None
     assert robot.work.name == f"r2416-{_CFG[:12]}"
@@ -76,7 +76,7 @@ def test_recon_captures_identity_vars_for_the_manual_checker(make_ctx: CtxFactor
 
     ctx = make_ctx(model="x30-ultra", responder=responder)
     _dist_ready(ctx)
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     robot = ctx.robot
     assert robot is not None
     assert robot.identity() == vals
@@ -86,7 +86,7 @@ def test_recon_omits_identity_vars_the_bootloader_wont_answer(make_ctx: CtxFacto
     # Only config comes back; the extra getvars return a bare OKAY (no value) -> no identity file.
     ctx = make_ctx(model="x30-ultra", responder=_responder())
     _dist_ready(ctx)
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     robot = ctx.robot
     assert robot is not None
     assert not (robot.recon_dir / "identity.txt").exists()
@@ -118,14 +118,14 @@ def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(responder=responder)
     _dist_ready(ctx)
     with pytest.raises(Die, match="config value"):
-        recon(ctx, samples=False)
+        recon(ctx, recovery_backup=False)
 
 
 def test_recon_is_idempotent(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder())
     ctx.need_robot().state_set("recon", f"config={_CFG}")
     _dist_ready(ctx)
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     assert ctx.runner.calls == []  # skipped — no hardware touched (auto chain: no offer_update)
 
 
@@ -135,7 +135,7 @@ def test_recon_offers_update_and_reruns_when_confirmed(make_ctx: CtxFactory) -> 
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), confirms=[True])
     ctx.need_robot().state_set("recon", f"config={_CFG}")
     _dist_ready(ctx)
-    recon(ctx, samples=False, offer_update=True)
+    recon(ctx, recovery_backup=False, offer_update=True)
     assert ctx.runner.calls != []  # re-ran: the device was re-read
     assert (ctx.need_robot().recon_dir / "config.txt").read_text().strip() == f"config: {_CFG}"
 
@@ -144,7 +144,7 @@ def test_recon_update_declined_leaves_it_untouched(make_ctx: CtxFactory) -> None
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), confirms=[False])
     ctx.need_robot().state_set("recon", f"config={_CFG}")
     _dist_ready(ctx)
-    recon(ctx, samples=False, offer_update=True)
+    recon(ctx, recovery_backup=False, offer_update=True)
     assert ctx.runner.calls == []  # declined — nothing touched
 
 
@@ -153,7 +153,7 @@ def test_recon_update_prompt_skipped_when_non_interactive(make_ctx: CtxFactory) 
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder(), interactive=False)
     ctx.need_robot().state_set("recon", f"config={_CFG}")
     _dist_ready(ctx)
-    recon(ctx, samples=False, offer_update=True)
+    recon(ctx, recovery_backup=False, offer_update=True)
     assert ctx.runner.calls == []
 
 
@@ -165,7 +165,7 @@ def test_recon_adopts_the_existing_robot_for_the_same_config(make_ctx: CtxFactor
     prior = Robot(ctx.ws.robots_dir / "1st-floor")
     prior.recon_dir.mkdir(parents=True)
     (prior.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     assert ctx.robot is not None and ctx.robot.work.name == "1st-floor"
     assert not (ctx.ws.robots_dir / f"r2416-{_CFG[:12]}").exists()  # no duplicate dir
 
@@ -177,7 +177,7 @@ def test_recon_redirects_a_new_named_robot_to_the_existing_one(make_ctx: CtxFact
     prior = Robot(ctx.ws.robots_dir / "1st-floor")
     prior.recon_dir.mkdir(parents=True)
     (prior.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     assert ctx.robot is not None and ctx.robot.work.name == "1st-floor"
     assert any("already set up as" in msg for _kind, msg in ctx.console.lines)
 
@@ -189,7 +189,7 @@ def test_recon_resume_rejects_a_different_robot(make_ctx: CtxFactory) -> None:
     (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")  # a different device
     _dist_ready(ctx)
     with pytest.raises(Die, match="SAFETY STOP"):
-        recon(ctx, samples=False)
+        recon(ctx, recovery_backup=False)
 
 
 def _sampling_responder(*, blob: bytes) -> Callable[[tuple[str, ...]], Result]:
@@ -210,13 +210,13 @@ def _sampling_responder(*, blob: bytes) -> Callable[[tuple[str, ...]], Result]:
 def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
     _dist_ready(ctx)
-    recon(ctx, samples=True)
+    recon(ctx, recovery_backup=True)
     robot = ctx.robot
     assert robot is not None
     for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
         assert (robot.recon_dir / name).stat().st_size == 1024
     assert any("Backup:" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert any("Backup samples pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
+    assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
@@ -224,10 +224,10 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
     # Every get_staged reports OKAY but writes 0 bytes — the backup must NOT be declared saved.
     ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b""))
     _dist_ready(ctx)
-    recon(ctx, samples=True)
+    recon(ctx, recovery_backup=True)
     robot = ctx.robot
     assert robot is not None
-    assert not (robot.recon_dir / "dreame_samples.zip").exists()
+    assert not (robot.recon_dir / "dreame_recovery_backup.zip").exists()
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert robot.state_has("recon")  # sampling is best-effort; rooting still proceeds
 
@@ -242,4 +242,4 @@ def test_recon_self_provisions_stage1_via_fetch(make_ctx: CtxFactory) -> None:
 
     ctx = make_ctx(responder=responder)  # dist empty
     with pytest.raises(Die, match="checksum mismatch"):
-        recon(ctx, samples=False)
+        recon(ctx, recovery_backup=False)

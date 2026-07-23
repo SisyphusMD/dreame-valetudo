@@ -17,6 +17,7 @@ from ..context import Context
 from ..dustbuilder import form_signature
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import zip_matches_model
+from ..workspace import RECOVERY_BACKUP_ZIP
 from .recon import read_identity_from_robot
 
 
@@ -136,7 +137,7 @@ def _config_rejected_help(ctx: Context) -> None:
             ident = {**ident, **read_identity_from_robot(ctx)}
 
     cfg = ctx.robot_config()
-    zip_path = robot.recon_dir / "dreame_samples.zip"
+    zip_path = robot.recon_dir / RECOVERY_BACKUP_ZIP
     ctx.console.action("Config not recognized — here's exactly what check.builder.dontvacuum.me "
                        "needs")
     ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). It's "
@@ -148,7 +149,7 @@ def _config_rejected_help(ctx: Context) -> None:
         ctx.console.info(f"   {'get_staged image':<22} {zip_path}  ({size:.1f} MiB)")
     else:
         ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
-                         "--force' (keep samples on) to build it, then come back.")
+                         "--force' (keep the recovery backup on) to build it, then come back.")
     ctx.console.info(f"   {'Model':<22} {ctx.profile.model} "
                      f"(dreame.vacuum.{ctx.profile.model_code})")
     ctx.console.info(f"   {'config value':<22} {cfg or '(re-run recon to capture)'}")

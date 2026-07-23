@@ -20,6 +20,12 @@ from .util import parse_config
 # workspace/context/migrate so the name can't drift between them.
 WORKSPACE_SUBDIR = "dreame-valetudo"
 
+# The recon disaster-recovery backup archive filename (the pre-root un-brick copy, and the
+# `get_staged` image the builder's checker wants). A launch self-heal renames the pre-rename
+# `dreame_samples.zip` forward to this (see migrate.py), so readers only ever need this name.
+RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
+
+
 def slugify(name: str) -> str:
     """A filesystem-safe single-segment folder slug from a human name: spaces become dashes, other
     unsafe characters are dropped, and runs collapse. May be empty (the caller rejects that). The

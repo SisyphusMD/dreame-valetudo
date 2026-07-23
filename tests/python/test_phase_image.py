@@ -74,7 +74,7 @@ def _reject_ctx(
             "".join(f"{k}: {v}\n" for k, v in _IDENT.items())
         )
     if zip_:
-        (robot.recon_dir / "dreame_samples.zip").write_bytes(b"\x00" * (2 << 20))
+        (robot.recon_dir / "dreame_recovery_backup.zip").write_bytes(b"\x00" * (2 << 20))
     return ctx
 
 
@@ -87,7 +87,7 @@ def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory,
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert "check.builder.dontvacuum.me" in text
     assert all(v in text for v in _IDENT.values())      # captured values, verbatim
-    assert "dreame_samples.zip" in text                 # the get_staged image to upload
+    assert "dreame_recovery_backup.zip" in text         # the get_staged image to upload
     assert "fastboot getvar" not in text                # the tool never punts a command to the user
     assert any(kind == "action" for kind, _ in ctx.console.lines)  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("image")      # not staged -> re-run resumes

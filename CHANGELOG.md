@@ -16,6 +16,12 @@
   hinting at `--force`.
 - **ux**: when a model doesn't expose a serial over fastboot (e.g. the X30), the `check.builder`
   rescue block flags that it's expected rather than a missing field to chase down.
+- **change**: the recon disaster-recovery backup is now called the "recovery backup" throughout —
+  the `recon --no-samples` flag is now `--no-recovery-backup`, and the on-disk `dreame_samples.zip`
+  is renamed to `dreame_recovery_backup.zip` for you on upgrade.
+- **feat**: your recon recovery backup is decrypted on upgrade into a compressed, readable stock
+  image (the sealed originals are kept), so it's usable locally instead of an opaque blob. Guarded by
+  a free-space check; skip it with `DREAME_NO_DECRYPT=1`.
 
 ## [0.1.1] - 2026-07-22
 

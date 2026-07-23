@@ -226,7 +226,7 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
                          "non-flash step; re-run to resume.")
     doctor(ctx)
     fetch(ctx)
-    recon(ctx, force="--force" in rest, samples="--no-samples" not in rest)
+    recon(ctx, force="--force" in rest, recovery_backup="--no-recovery-backup" not in rest)
     image(ctx)
     root(ctx)
     robot = ctx.robot
@@ -335,7 +335,7 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     elif cmd == "fetch":
         fetch(ctx)
     elif cmd == "recon":
-        recon(ctx, force="--force" in rest, samples="--no-samples" not in rest, offer_update=True)
+        recon(ctx, force="--force" in rest, recovery_backup="--no-recovery-backup" not in rest, offer_update=True)
     elif cmd == "image":
         image(ctx, force="--force" in rest)
     elif cmd == "root":

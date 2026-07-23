@@ -2,7 +2,7 @@
 
 Validates the whole USB path (FEL -> fastboot) at zero brick risk, reads the robot's 32-hex
 'config' identity, creates the robot dir (the first moment a robot exists), and pulls the ~1.2GB
-disaster-recovery samples.
+disaster-recovery backup.
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from __future__ import annotations
 from ..console import Die, die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
+from ..migrate import decrypt_recovery_backup
 from ..util import parse_config, parse_getvar
-from ..workspace import Robot, Workspace
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace
 from .doctor import _is_exe, doctor
 from .fetch import fetch
 
@@ -81,7 +82,7 @@ def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:
     return None
 
 
-def recon(ctx: Context, *, force: bool = False, samples: bool = True,
+def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
     # Self-provision before the already-done check: toolchain, then stage1.
     if not _is_exe(ctx.sunxi_fel):
@@ -159,13 +160,17 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
     # robot's config isn't auto-recognized. The robot is already in fastboot here.
     capture_identity(ctx, robot)
 
-    if samples:
+    if recovery_backup:
         warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
-        ctx.console.say("Pulling ~1.2GB flash disaster-recovery samples (slow; skip with "
-                        "--no-samples)...")
-        if not _pull_samples(ctx, robot):
-            ctx.console.warn("Sampling errored — not fatal for rooting, but no recovery backup "
-                             "was saved.")
+        ctx.console.say("Pulling ~1.2GB flash disaster-recovery backup (slow; skip with "
+                        "--no-recovery-backup)...")
+        if _pull_recovery_backup(ctx, robot):
+            # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch migration
+            # already ran), so the restorable image exists without waiting for the next launch.
+            decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console)
+        else:
+            ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no recovery "
+                             "backup was saved.")
 
     robot.state_set("recon", f"config={cfg}")
     ctx.console.say("Phase 1 done.")
@@ -174,7 +179,7 @@ def recon(ctx: Context, *, force: bool = False, samples: bool = True,
     ctx.console.info("Next: image  (opens the dustbuilder and waits for your built .zip)")
 
 
-def _pull_samples(ctx: Context, robot: Robot) -> bool:
+def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     """Best-effort ~1.2GB pre-root backup (the un-brick copy). Returns False on any failure."""
     rd = robot.recon_dir
     d100, d101, d102 = rd / "dustx100.bin", rd / "dustx101.bin", rd / "dustx102.bin"
@@ -194,8 +199,8 @@ def _pull_samples(ctx: Context, robot: Robot) -> bool:
     # so a shared run log shows the backup is real, without needing the workspace on hand.
     sizes = ", ".join(f"{f.name} {f.stat().st_size / (1 << 20):.1f} MiB" for f in (d100, d101, d102))
     total = sum(f.stat().st_size for f in (d100, d101, d102)) / (1 << 20)
-    ctx.console.info(f"Backup samples pulled: {sizes} (total {total:.1f} MiB)")
-    zip_path = rd / "dreame_samples.zip"
+    ctx.console.info(f"Recovery backup pulled: {sizes} (total {total:.1f} MiB)")
+    zip_path = rd / RECOVERY_BACKUP_ZIP
     if not ctx.runner.run(
         ["zip", "-q", "-j", str(zip_path), str(d100), str(d101), str(d102)], check=False
     ).ok:

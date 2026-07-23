@@ -18,7 +18,7 @@ from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base
 from ..util import parse_mikey, repair_did
-from ..workspace import robot_tag
+from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
 from .fetch import fetch
 
 _TARGET = f"root@{ROBOT_AP_IP}"
@@ -254,8 +254,8 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.info("   Getting started:  https://valetudo.cloud/pages/general/getting-started/")
     ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {backup} — factory identity/keys, NOT in "
                      "git, CANNOT be regenerated if lost.")
-    ctx.console.info(f"   (The samples zip from recon, {robot.recon_dir / 'dreame_samples.zip'}, is "
-                     "your pre-root un-brick copy — keep it too.)")
+    ctx.console.info(f"   (The recovery-backup zip from recon, {robot.recon_dir / RECOVERY_BACKUP_ZIP}, "
+                     "is your pre-root un-brick copy — keep it too.)")
     return True
 
 

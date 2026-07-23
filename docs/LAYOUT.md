@@ -23,3 +23,24 @@ disk is refused rather than reverse-migrated.
 |---|---|---|
 | 0 | (pre-versioning) | Legacy: work dir at `~/dreame-valetudo-work`, factory backups scattered as `~/dreame-<tag>-backup-<ts>` directly in `$HOME`. No marker. |
 | 1 | 0.2.0 | Consolidated under one `~/dreame-valetudo/` umbrella: `work/` (cache + robots) and `backups/`, plus the `.layout` marker. A compatibility symlink at the old `~/dreame-valetudo-work` keeps a pre-versioning build working through the transition. |
+
+## Self-healing invariants (not versioned)
+
+Some upkeep runs on **every** launch, right after the versioned steps above — gaps-only and
+idempotent — and does **not** bump the layout version. The rule: a change bumps the version only when
+it makes the workspace unreadable to an older build. These are all purely **additive** — an older
+build simply ignores what they add — so version-gating them would lock old builds out for no real
+incompatibility. Because they run after the structural moves, they always see each robot/backup dir
+in its final location.
+
+- **Backup manifests** — every backup under `backups/` gets a `manifest.json`, back-filling any
+  legacy backup that predates them.
+- **Robot display names** — every robot dir records a display name (its folder slug if none was set).
+- **Backup name sync** — each backup's recorded robot name is brought current with its robot's name
+  (joined by `config`).
+- **Recon backup upkeep** — one pass per robot brings the recon disaster-recovery backup current: a
+  pre-rename `recon/dreame_samples.zip` is renamed forward to `recon/dreame_recovery_backup.zip`, and
+  the sealed `get_staged` dumps (`recon/dustx10{0,1,2}.bin`) are decrypted into restorable,
+  gzip-compressed `recon/dustx10{0,1,2}.dd.gz` images (sealed originals untouched). The decrypt is
+  guarded by a free-space check (skipped with a warning if the filesystem is too full), atomic and
+  never-clobber; opt out with `DREAME_NO_DECRYPT=1`.

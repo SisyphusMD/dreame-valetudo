@@ -48,7 +48,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
 
     # 1) recon: no robot yet -> creates it, named by device identity
     assert ctx.robot is None
-    recon(ctx, samples=False)
+    recon(ctx, recovery_backup=False)
     robot = ctx.robot
     assert robot is not None
     assert robot.work.name == f"r2416-{_CFG[:12]}"
