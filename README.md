@@ -39,8 +39,12 @@ brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
 One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi-fel` (the small C
-helper that drives the robot's FEL mode) once. (Linux only: `brew`'s post-install message prints a
-one-time `udev` step for sudo-less USB, and the tool reminds you if you skip it.)
+helper that drives the robot's FEL mode) once.
+
+> [!NOTE]
+> **Linux, one-time:** grant sudo-less USB access with `sudo dreame-valetudo install-udev` (macOS
+> needs nothing). If you forget, any rooting command stops with this exact reminder. The `.deb` and
+> `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
 
 ### Signed macOS installer (`.pkg`, double-click)
 
@@ -229,7 +233,9 @@ The tool is **idempotent**: every phase records a marker under
 For the post-flash steps (`push`, `ui`, the `fix-*` helpers) your computer must be joined to the
 **robot's own Wi-Fi AP** (hold the two OUTER buttons until it starts), **not** your home network: on a
 normal LAN, `192.168.5.1` is your router, so the tool refuses to proceed unless a real Dreame answers
-at that address.
+at that address. **This part needs Wi-Fi** — on an Ethernet-only machine (say a headless Linux box), a
+cheap USB Wi-Fi dongle lets it join the robot's AP; once you point the robot at your home Wi-Fi from
+Valetudo, everything after runs over your LAN.
 
 ```bash
 dreame-valetudo            # NO ARGS: the one command you need. It asks which MODEL you

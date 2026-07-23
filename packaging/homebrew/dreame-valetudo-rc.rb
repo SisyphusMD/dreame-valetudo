@@ -29,7 +29,6 @@ class DreameValetudoRc < Formula
 
   def install
     virtualenv_install_with_resources
-    pkgshare.install "packaging/udev/99-dreame-valetudo.rules" if OS.linux?
   end
 
   def caveats
@@ -49,9 +48,8 @@ class DreameValetudoRc < Formula
     if OS.linux?
       s += <<~EOS
 
-        Linux USB access (so you don't need sudo): install the bundled udev rule once:
-          sudo install -m0644 #{pkgshare}/99-dreame-valetudo.rules /etc/udev/rules.d/
-          sudo udevadm control --reload-rules && sudo udevadm trigger
+        Linux only (not needed on macOS) — grant sudo-less USB access, once:
+          sudo dreame-valetudo install-udev
       EOS
     end
     s

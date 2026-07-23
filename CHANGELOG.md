@@ -35,6 +35,10 @@
 - **fix**: logs you're invited to share no longer leak identifying secrets — `diagnose` no longer
   records your robot's device key, and the run log now redacts the identifying flash token that
   previously slipped the scrubber.
+- **feat**: on Linux, `sudo dreame-valetudo install-udev` sets up sudo-less USB access in one command
+  (macOS needs nothing; the `.deb`/`.rpm` still do it automatically at install). If it isn't set up, a
+  rooting command now stops up front with that exact reminder, instead of failing later with a cryptic
+  USB permission error.
 
 ## [0.1.1] - 2026-07-22
 

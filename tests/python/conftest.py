@@ -59,6 +59,7 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
         robot_name: str | None = None,
         transport_mode: str = "python",
         interactive: bool = True,
+        system: str | None = None,
     ) -> Context:
         rr = RecordingRunner(responder)
         console = ScriptedConsole(confirms=confirms, asks=asks)
@@ -79,6 +80,8 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
             sleep=lambda _s: None,
             interactive=interactive,
         )
+        if system is not None:
+            ctx.system = system
         # Pre-resolve the transport so no system probing happens in tests.
         ctx._fastboot = Fastboot(rr, console, Transport(transport_mode, FB))
         return ctx

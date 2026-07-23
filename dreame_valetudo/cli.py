@@ -36,6 +36,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
+from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
 from .workspace import Robot, Workspace, slugify
@@ -44,7 +45,10 @@ from .workspace import Robot, Workspace, slugify
 _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"})
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
-_NO_WORKSPACE = frozenset({"help", "-h", "--help", "version", "--version", "-V"})
+# install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
+_NO_WORKSPACE = frozenset(
+    {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
+)
 
 
 def select_model(ctx: Context) -> None:
@@ -307,10 +311,12 @@ def usage(console: Console) -> None:
         "  dreame-valetudo fix-wifi   post-root Wi-Fi drop-out helper\n"
         "  dreame-valetudo sshkey     show/generate the SSH public key for the dustbuilder\n"
         "  dreame-valetudo verify-form check the dustbuilder form hasn't drifted from the baseline\n"
+        "  dreame-valetudo install-udev  Linux only, one-time, needs sudo: grant sudo-less USB access\n"
         "  dreame-valetudo version    print the version\n"
         "  dreame-valetudo help       this help\n\n"
         "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_BACKUPS, DREAME_SSHKEY,\n"
-        "                 DREAME_CONFIG, VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG.\n"
+        "                 DREAME_CONFIG, VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG,\n"
+        "                 DREAME_NO_UDEV_CHECK.\n"
     )
 
 
@@ -321,6 +327,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd in ("version", "--version", "-V"):
         ctx.console.info(f"dreame-valetudo {__version__}")
         return 0
+    if cmd == "install-udev":
+        return install_udev(ctx)
     if cmd == "status":
         status(ctx)
         return 0
@@ -428,6 +436,15 @@ def main(
                 migrate(resolved_env, con)
                 show_whats_new(resolved_env, con)
                 check_for_update(ctx)
+            # On Linux the USB device is gated behind a udev rule; fail fast with the fix rather
+            # than a cryptic permission error at FEL time. No-op on macOS (user-space libusb).
+            if guard_blocks(ctx.system, cmd, resolved_env):
+                con.err("USB access isn't set up on this Linux machine yet, so rooting can't reach "
+                        "the robot.")
+                con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")
+                if log is not None:
+                    log.finish(1)
+                return 1
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:

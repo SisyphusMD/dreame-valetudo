@@ -32,8 +32,6 @@ class DreameValetudo < Formula
     # into an isolated venv and link the `dreame-valetudo` entry point. No third-party Python deps
     # to vendor: pyusb is fetched on demand by uv when the fastboot client is first used.
     virtualenv_install_with_resources
-    # On Linux, ship the udev rule so the user can grant USB access without sudo (see caveats).
-    pkgshare.install "packaging/udev/99-dreame-valetudo.rules" if OS.linux?
   end
 
   def caveats
@@ -52,9 +50,8 @@ class DreameValetudo < Formula
     if OS.linux?
       s += <<~EOS
 
-        Linux USB access (so you don't need sudo): install the bundled udev rule once:
-          sudo install -m0644 #{pkgshare}/99-dreame-valetudo.rules /etc/udev/rules.d/
-          sudo udevadm control --reload-rules && sudo udevadm trigger
+        Linux only (not needed on macOS) — grant sudo-less USB access, once:
+          sudo dreame-valetudo install-udev
       EOS
     end
     s

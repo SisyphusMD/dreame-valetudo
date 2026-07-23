@@ -47,6 +47,8 @@ class Context:
     sleep: Callable[[float], None] = time.sleep
     now: Callable[[], str] = _local_now
     interactive: bool = field(default_factory=_stdin_isatty)
+    # The host OS (platform.system()); injectable so Linux-vs-macOS behavior is testable off a Mac.
+    system: str = field(default_factory=platform.system)
     # The human name typed at the naming prompt (may have spaces), carried to recon to save as the
     # robot's display name once its dir is finalized. The dir itself is a filesystem-safe slug.
     pending_name: str | None = None
@@ -158,4 +160,4 @@ class Context:
     @property
     def host(self) -> str:
         # Linux is first-class, so user-facing text says "computer" there instead of "Mac".
-        return "Mac" if platform.system() == "Darwin" else "computer"
+        return "Mac" if self.system == "Darwin" else "computer"
