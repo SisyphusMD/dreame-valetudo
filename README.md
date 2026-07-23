@@ -46,6 +46,8 @@ helper that drives the robot's FEL mode) once.
 > needs nothing). If you forget, any rooting command stops with this exact reminder. The `.deb` and
 > `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
 
+---
+
 ### Signed macOS installer (`.pkg`, double-click)
 
 Bundles everything (no Homebrew, no build); best for a non-technical person. Not sure which chip?
@@ -53,6 +55,8 @@ Apple menu → About This Mac ("Apple M…" is Apple Silicon, "Intel" is Intel).
 `dreame-valetudo`.
 - **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg)
 - **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg)
+
+---
 
 ### Debian / Ubuntu / Raspberry Pi OS (`.deb`)
 
@@ -64,6 +68,20 @@ Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch
 sudo apt install ./dreame-valetudo_arm64.deb    # or the amd64 file
 dreame-valetudo
 ```
+
+---
+
+### Fedora / RHEL / openSUSE (`.rpm`)
+
+Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch (`uname -m`):
+- **x86_64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.x86_64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.x86_64.rpm)
+- **aarch64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.aarch64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.aarch64.rpm)
+```bash
+sudo dnf install ./dreame-valetudo.x86_64.rpm    # or the aarch64 file (zypper/yum work too)
+dreame-valetudo
+```
+
+---
 
 ### From source
 

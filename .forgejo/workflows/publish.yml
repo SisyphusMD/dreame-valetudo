@@ -28,7 +28,7 @@ jobs:
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build both .debs (buildx) + the tarball
+      - name: Build the .debs + .rpms (buildx) + the tarball
         run: |
           set -euo pipefail
           # Read the pins from the Python constants so there's ONE source of truth (Renovate-tracked).
@@ -41,33 +41,38 @@ jobs:
           # renovate: datasource=docker depName=goreleaser/nfpm
           NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
 
-          build_deb() { # build_deb <docker-platform> <deb-arch>
-            local plat="$1" arch="$2"
+          # Package a laid-out arch's binaries with the pinned nfpm image. DEB_ARCH is nfpm's internal
+          # arch (amd64/arm64) for BOTH formats — nfpm maps it to the .deb arch and to the .rpm arch
+          # (x86_64/aarch64). nfpm runs on the amd64 runner natively (arch-independent) via docker
+          # create+cp, since the DinD daemon can't bind-mount the job workspace.
+          nfpm_pkg() { # nfpm_pkg <deb|rpm> <nfpm-arch amd64|arm64> <output-filename>
+            local fmt="$1" narch="$2" name="$3" cid
+            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
+            docker cp . "$cid":/w
+            docker start -a "$cid"
+            docker cp "$cid":"/w/$name" .
+            docker rm "$cid" >/dev/null
+          }
+          build_pkgs() { # build_pkgs <docker-platform> <deb-arch amd64|arm64> <rpm-arch x86_64|aarch64>
+            local plat="$1" arch="$2" rpmarch="$3"
             # buildx builds the per-arch bundle (main tool + fastboot client + sunxi-fel) and exports
             # just those native binaries. The base image is pinned in deb.Dockerfile; the sunxi/pyusb/
-            # pyinstaller pins ride in as build-args.
+            # pyinstaller pins ride in as build-args. The arm64 leg emulates inside the builder.
             rm -rf "out-$arch"
             docker buildx build --platform "$plat" \
               --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
               -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
-            # Lay the exported binaries out where nfpm.yaml expects them, then package with the pinned
-            # nfpm image. nfpm is arch-independent (DEB_ARCH only labels the package), so it runs on
-            # the amd64 runner natively — via docker create+cp, since the DinD daemon can't bind-mount
-            # the job workspace.
             rm -rf dist && mkdir dist
             cp "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
             cp "out-$arch/sunxi-fel" ./sunxi-fel
-            CID=$(docker create -e DEB_ARCH="$arch" -e VERSION -w /w "$NFPM" package -p deb -f packaging/nfpm.yaml -t "/w/dreame-valetudo_$arch.deb")
-            docker cp . "$CID":/w
-            docker start -a "$CID"
-            docker cp "$CID":"/w/dreame-valetudo_$arch.deb" .
-            docker rm "$CID" >/dev/null
+            nfpm_pkg deb "$arch" "dreame-valetudo_$arch.deb"
+            nfpm_pkg rpm "$arch" "dreame-valetudo.$rpmarch.rpm"
           }
-          build_deb linux/amd64 amd64
-          build_deb linux/arm64 arm64
+          build_pkgs linux/amd64 amd64 x86_64
+          build_pkgs linux/arm64 arm64 aarch64
           # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
           bash packaging/build-tarball.sh
-          ls -l ./*.deb ./*.tar.gz
+          ls -l ./*.deb ./*.rpm ./*.tar.gz
 
       - name: Release notes from CHANGELOG
         run: bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
@@ -76,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x packaging/forgejo-release.sh packaging/github-release.sh
-          ASSETS=(./*.deb ./*.tar.gz)
+          ASSETS=(./*.deb ./*.rpm ./*.tar.gz)
           packaging/forgejo-release.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}"
           packaging/forgejo-release.sh forgejo.nas.bryantserver.com \

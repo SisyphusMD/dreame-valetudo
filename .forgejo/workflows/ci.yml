@@ -79,7 +79,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: build the bundle via buildx (deb.Dockerfile) + package the .deb (release-time deps)
+      - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
         run: |
           set -euo pipefail
           read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
@@ -104,7 +104,15 @@ jobs:
           docker cp "$CID":/w/ci.deb ./ci.deb
           docker rm "$CID" >/dev/null
           dpkg-deb -c ci.deb | grep -E '/(dreame-valetudo|dreame-fastboot|sunxi-fel)$'
-          echo "build OK: bundle (buildx) + sunxi-fel + .deb all built from the pinned deps"
+          # Also build the .rpm from the same binaries: validates the rpm overrides/config (it ships in
+          # publish.yml). rpm tooling isn't on the runner to inspect, so just confirm it's non-empty.
+          CIDR=$(docker create -e DEB_ARCH=amd64 -e VERSION=0.0.0 -w /w "$NFPM" package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm)
+          docker cp . "$CIDR":/w
+          docker start -a "$CIDR"
+          docker cp "$CIDR":/w/ci.rpm ./ci.rpm
+          docker rm "$CIDR" >/dev/null
+          test -s ci.rpm
+          echo "build OK: bundle (buildx) + sunxi-fel + .deb + .rpm all built from the pinned deps"
 
   integration:
     needs: [shellcheck]

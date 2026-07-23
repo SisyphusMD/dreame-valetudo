@@ -49,4 +49,18 @@ contents:
     dst: /usr/lib/udev/rules.d/99-dreame-valetudo.rules
 
 scripts:
-  postinstall: ./packaging/deb-postinstall.sh   # reload udev so the rules apply immediately
+  postinstall: ./packaging/deb-postinstall.sh   # reload udev so the rules apply immediately (deb + rpm)
+
+# RPM (Fedora/RHEL/openSUSE) names its runtime deps differently than Debian, and the names vary across
+# distros (libusb is libusbx / libusb1 / libusb-1_0-0). SONAME + file-path requires survive that: rpm
+# resolves whichever package provides the .so / the file. Both target arches are 64-bit ELF. The udev
+# rule + postinstall above apply to the .rpm too (nfpm contents/scripts are format-agnostic), so a
+# .rpm install sets up sudo-less USB access automatically, same as the .deb.
+overrides:
+  rpm:
+    depends:
+      - "libusb-1.0.so.0()(64bit)"
+      - "libfdt.so.1()(64bit)"
+      - /usr/bin/curl
+      - /usr/bin/unzip
+      - /usr/bin/ssh

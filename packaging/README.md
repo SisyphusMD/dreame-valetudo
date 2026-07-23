@@ -7,6 +7,7 @@ Four distribution channels, one release flow:
 | Homebrew stable (macOS **and** Linux) | `dreame-valetudo` formula in `SisyphusMD/homebrew-tap` | `publish.yml` → `update-tap.sh` (stable tags) | none (source build) |
 | Homebrew prerelease | `dreame-valetudo-rc` formula (separate, tracks the newest `-rc.N`) | `publish.yml` → `update-tap.sh` (rc tags) | none (source build) |
 | Debian/Ubuntu/Pi | `dreame-valetudo_{amd64,arm64}.deb` (version-less name, bundles sunxi-fel) | `publish.yml` (buildx `deb.Dockerfile` + nfpm) | none (unsigned .deb) |
+| Fedora/RHEL/SUSE | `dreame-valetudo.{x86_64,aarch64}.rpm` (version-less name, bundles sunxi-fel) | `publish.yml` (same buildx binaries, `nfpm -p rpm`) | none (unsigned .rpm) |
 | Plain tarball | `dreame-valetudo-<v>.tar.gz` | `publish.yml` (`build-tarball.sh`) | none |
 | macOS installer | `dreame-valetudo-macos-{arm64,x86_64}.pkg` (per-arch matrix) | `release-macos.yml` (GitHub) | Developer ID + notarized |
 
@@ -114,3 +115,10 @@ Forgejo/NAS releases still complete.
 - **`macos-26` (arm64) + `macos-26-intel` (x86_64)** are the pinned runner images; bump them
   together as GitHub's images move. Intel/x86_64 runners are on GitHub's sunset path (~2027); if
   that leg disappears, drop it and fall back to brew/source for Intel.
+- **The `.rpm` shares the `.deb`'s bundle + udev postinstall**, built from the same buildx binaries
+  with a second `nfpm -p rpm` (config in `packaging/nfpm.yaml`; `overrides.rpm.depends`). Its runtime
+  deps are SONAME/file requires (`libusb-1.0.so.0()(64bit)`, `/usr/bin/ssh`, …) rather than distro
+  package names, so they should resolve on Fedora/RHEL/openSUSE alike — but this hasn't been installed
+  on a real RPM distro yet. On the first `.rpm` release, validate `sudo dnf install ./dreame-valetudo.*.rpm`
+  pulls its deps and runs, and that the udev postinstall fired. For a prerelease `-rc.N` tag, nfpm maps
+  the `-` into the rpm version/release, so eyeball the rc `.rpm`'s version string too.
