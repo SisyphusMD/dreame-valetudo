@@ -53,6 +53,21 @@ def scrub(text: str, home: Path | None = None) -> str:
     return _MIKEY.sub("<redacted-id>", text)
 
 
+def redact_dust_token(args: Sequence[object]) -> list[str]:
+    """Display form of a fastboot argv with the `oem dust <token>` argument masked.
+
+    The oem-dust flash-authorization token is hex8(config[0:4] XOR 0xC9ACBCC6) — a config-identity
+    secret scrub() redacts everywhere else — but only 8 hex chars, so it slips under scrub()'s
+    >=12-hex rule. Mask it at the source instead. Only the single argument after `oem dust` is
+    replaced, so every other logged/echoed command is byte-identical and the real argv sent to
+    fastboot is untouched."""
+    out = [str(a) for a in args]
+    for i in range(len(out) - 2):
+        if out[i] == "oem" and out[i + 1] == "dust":
+            out[i + 2] = "<redacted-id>"
+    return out
+
+
 def _prune(logs_dir: Path, keep: int) -> None:
     with contextlib.suppress(OSError):
         old = sorted(logs_dir.glob("run-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -109,7 +124,8 @@ class RunLog:
 
     def command(self, result: Result, duration: float | None = None) -> None:
         tool = result.argv[0].rsplit("/", 1)[-1] if result.argv else ""
-        line = scrub("$ " + " ".join((tool, *result.argv[1:])).rstrip(), self._home)
+        parts = redact_dust_token((tool, *result.argv[1:]))
+        line = scrub("$ " + " ".join(parts).rstrip(), self._home)
         if len(line) > 400:
             line = line[:400] + " …(truncated)"
         meta = f"rc={result.returncode}" + (f", {duration:.2f}s" if duration is not None else "")

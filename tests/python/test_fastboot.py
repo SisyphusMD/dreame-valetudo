@@ -36,6 +36,28 @@ def test_fb_passes_on_okay_and_rc0() -> None:
     assert rr.calls[0] == ("python3", "/x/fastboot-libusb.py", "oem", "dust", "token")
 
 
+def test_fb_masks_dust_token_in_echo_but_not_in_real_argv(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The oem-dust token is a config-identity secret; the echoed command (mirrored into the
+    # shareable run log) must mask it, while the real argv sent to fastboot keeps the true token.
+    fb, rr = _fb(lambda a: Result(a, 0, "OKAY", ""))
+    fb.fb("oem", "dust", "10d0f120")
+    out = capsys.readouterr().out
+    assert "10d0f120" not in out
+    assert "fastboot oem dust <redacted-id>" in out
+    assert rr.calls[0] == ("python3", "/x/fastboot-libusb.py", "oem", "dust", "10d0f120")
+
+
+def test_fb_die_message_masks_the_dust_token() -> None:
+    fb, rr = _fb(lambda a: Result(a, 0, "FAILED", ""))  # no OKAY -> gate dies
+    with pytest.raises(Die) as ei:
+        fb.fb("oem", "dust", "10d0f120")
+    assert "10d0f120" not in str(ei.value)
+    assert "oem dust <redacted-id>" in str(ei.value)
+    assert rr.calls[0][-1] == "10d0f120"  # the real command still carried the token
+
+
 def test_fb_hard_stops_on_nonzero_rc_even_with_okay_text() -> None:
     fb, _ = _fb(lambda a: Result(a, 1, "OKAY (but the command actually failed)", ""))
     with pytest.raises(Die):

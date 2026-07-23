@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from dreame_valetudo.log import LoggingConsole, LoggingRunner, RunLog, scrub
+from dreame_valetudo.log import (
+    LoggingConsole,
+    LoggingRunner,
+    RunLog,
+    redact_dust_token,
+    scrub,
+)
 from dreame_valetudo.run import RecordingRunner, Result
 
 
@@ -58,6 +64,27 @@ def test_scrub_redacts_a_miio_key_shaped_token() -> None:
     # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
     assert "valetudo" in scrub("== valetudo running? == RUNNING")
     assert "RUNNING" in scrub("== valetudo running? == RUNNING")
+
+
+# --- redact_dust_token: the 8-hex flash token scrub()'s length rule can't catch ---------------
+def test_redact_dust_token_masks_only_the_token_argument() -> None:
+    # Only the single argument after `oem dust` is masked; every other command is untouched.
+    assert redact_dust_token(("oem", "dust", "10d0f120")) == ["oem", "dust", "<redacted-id>"]
+    assert redact_dust_token(
+        ("dreame-fastboot", "oem", "dust", "10d0f120")
+    ) == ["dreame-fastboot", "oem", "dust", "<redacted-id>"]
+    assert redact_dust_token(("flash", "toc1", "toc1.img")) == ["flash", "toc1", "toc1.img"]
+    assert redact_dust_token(("oem", "prep")) == ["oem", "prep"]
+
+
+def test_command_masks_the_oem_dust_flash_token(tmp_path: Path) -> None:
+    # The token is only 8 hex, below scrub()'s >=12-hex threshold, so the argv logger must mask it.
+    log = _open(tmp_path, tmp_path / "home")
+    log.command(Result(("/x/dreame-fastboot", "oem", "dust", "10d0f120"), 0, "OKAY", ""))
+    log.close()
+    text = log.path.read_text()
+    assert "10d0f120" not in text
+    assert "$ dreame-fastboot oem dust <redacted-id>" in text
 
 
 # --- RunLog: writes a readable, flushed, shareable file ---------------------------------------
@@ -119,6 +146,18 @@ def test_logging_runner_records_commands_without_the_streamed_secret(tmp_path: P
     assert "0.00s)" in text  # the runner timed the command and logged its duration
     assert "SECRETKEY1234567" not in text  # streamed secret never reaches the log
     assert inner.calls  # the wrapped runner still actually ran the command
+
+
+def test_logging_runner_masks_the_oem_dust_token(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    inner = RecordingRunner()
+    runner = LoggingRunner(inner, log)
+    runner.run(["/x/dreame-fastboot", "oem", "dust", "10d0f120"])
+    log.close()
+    text = log.path.read_text()
+    assert "10d0f120" not in text                        # masked in the shareable log
+    assert "oem dust <redacted-id>" in text
+    assert inner.calls[0] == ("/x/dreame-fastboot", "oem", "dust", "10d0f120")  # real argv intact
 
 
 # --- LoggingConsole: mirrors every message into the log, scrubbed -----------------------------

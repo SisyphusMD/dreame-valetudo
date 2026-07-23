@@ -21,6 +21,7 @@ from typing import Literal
 
 from .console import Console, die
 from .constants import PYUSB_VERSION
+from .log import redact_dust_token
 from .run import Result, Runner
 
 # Where fastboot-libusb.py may live, resolved so the tool works from a source checkout AND an
@@ -157,7 +158,9 @@ class Fastboot:
         """
         res = self.fbt(*args, check=False)
         combined = res.stdout + res.stderr
-        argstr = " ".join(str(a) for a in args)
+        # Masked for the echo AND the die message below (both mirror into the shareable run log):
+        # the oem-dust token is a config-identity secret. The real argv above is unaffected.
+        argstr = " ".join(redact_dust_token(args))
         self.console.info(f"fastboot {argstr}")
         for line in combined.splitlines():
             self.console.info(f"  {line}")
