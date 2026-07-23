@@ -56,14 +56,12 @@ def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     info("                          (a copy in a normal folder — browser dialogs hide ~/.ssh; "
          "upload it, do NOT 'generate a keypair')")
     info("   Device serial number . the REAL serial from UNDER THE DUSTBIN, ALL-CAPS.")
-    warn("     Do NOT fake it or substitute an app/API serial — a wrong serial can BRICK the unit.")
-    warn("     If that sticker is damaged or unreadable, do NOT substitute a serial from the Mi "
-         "Home /")
-    warn("     Xiaomi Home app or any API — a replacement-mainboard robot has a serial that no "
-         "longer")
-    warn("     matches its silicon, and a look-alike serial has permanently bricked units "
-         "(secure-boot")
-    warn("     signature rejection). Stop and ask in the dontvacuum / Valetudo community first.")
+    warn("     Do NOT fake it or substitute an app/API serial — a wrong serial can BRICK the "
+         "unit. If that sticker is damaged or unreadable, do NOT substitute a serial from the "
+         "Mi Home / Xiaomi Home app or any API — a replacement-mainboard robot has a serial that "
+         "no longer matches its silicon, and a look-alike serial has permanently bricked units "
+         "(secure-boot signature rejection). Stop and ask in the dontvacuum / Valetudo community "
+         "first.")
     info(f"   Config value ......... {cfg}")
     info("   Create diff .......... leave UNCHECKED")
     info("   Patch DNS ............ CHECK  (required for Valetudo)")
@@ -210,7 +208,11 @@ def image(ctx: Context, *, force: bool = False) -> None:
             "for this robot once you have a working FEL image.")
 
     ctx.console.say("Watching ~/Downloads and the robot's fw dir for the built zip...")
-    zip_path = _watch_for_zip(ctx)
+    with ctx.console.progress("Waiting for the built zip to land (builds take ~5-60 min; "
+                              "Ctrl+C is safe — re-run once it downloads)") as p:
+        zip_path = _watch_for_zip(ctx)
+        if not zip_path:
+            p.close(done=False)
     if not zip_path:
         die("No zip found — re-run once the built zip is downloaded.")
 

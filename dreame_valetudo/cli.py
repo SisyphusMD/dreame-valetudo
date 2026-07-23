@@ -151,63 +151,78 @@ def select_robot(ctx: Context) -> None:
 
 def _pcb_help(ctx: Context) -> None:
     ctx.console.say("The one piece of hardware you must have: the Dreame Breakout PCB")
-    ctx.console.info("Open-hardware board (no soldering to the robot): gerbers at")
-    ctx.console.info("  https://github.com/Hypfer/valetudo-dreameadapter/releases (1.2mm board)")
-    ctx.console.info("Assembly + FEL button sequence, with photos:")
-    ctx.console.info("  https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf")
+    ctx.console.info("Open-hardware board — no soldering to the robot.")
+    ctx.console.detail("Gerbers: https://github.com/Hypfer/valetudo-dreameadapter/releases "
+                       "(1.2mm board)")
+    ctx.console.detail("Assembly + FEL button sequence, with photos: "
+                       "https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf")
+
+
+def _pause(ctx: Context) -> None:
+    """Break the guided-manual walls into chunks the user acknowledges. Skipped when stdin isn't
+    a terminal (an unattended run must never block)."""
+    if ctx.interactive:
+        ctx.console.ask("Press Enter for the next part...")
 
 
 def uart(ctx: Context) -> None:
     p = ctx.profile
     c = ctx.console
-    c.say(f"{p.model} — UART serial-shell method (this model does NOT use fastboot)")
+    c.phase(f"{p.model} — UART serial-shell method (this model does NOT use fastboot)")
     c.info("More hands-on than fastboot. Beyond the Dreame Breakout PCB you also need:")
     c.info("  • a 3.3V USB-to-TTL serial adapter (CP2102 / PL2303 / FT232) + a few dupont wires")
-    c.info("  • a FAT32 USB stick, ideally one with an activity LED (it blinks when the robot reads it)")
-    c.info("The debug-connector orientation VARIES per model — use the photos, don't guess the pinout:")
-    c.info("  • dontvacuum UART guide (pinout + wiring, pictures): "
-           "https://builder.dontvacuum.me/dreameadapter/uart.pdf")
-    c.info("  • Valetudo 'UART shell' walkthrough: https://valetudo.cloud/pages/installation/dreame/")
-    c.info("")
+    c.info("  • a FAT32 USB stick, ideally one with an activity LED (it blinks when the robot "
+           "reads it)")
+    c.warn("The debug-connector orientation VARIES per model — use the photos, don't guess the "
+           "pinout:", lead=True)
+    c.detail("dontvacuum UART guide (pinout + wiring, pictures): "
+             "https://builder.dontvacuum.me/dreameadapter/uart.pdf")
+    c.detail("Valetudo 'UART shell' walkthrough: "
+             "https://valetudo.cloud/pages/installation/dreame/")
+    _pause(ctx)
     c.say("The procedure (guided serial automation is the next feature; for now, the steps):")
-    c.info("  1. Open the robot, plug in the Breakout PCB, wire GND/RX/TX to the 3.3V adapter (NOT 5V).")
     bnote = "  (if you see only garbage, try 500000)" if p.key in ("xiaomi-1c", "f9") else ""
-    c.info(f"  2. Open a serial console at {p.baud} 8N1, XON/XOFF (ixoff):{bnote}")
-    c.info(f"       screen /dev/tty.usbserial-XXXX {p.baud},ixoff   (macOS)  |  "
-           f"screen /dev/ttyUSB0 {p.baud},ixoff   (Linux)")
-    c.info("  3. Prepare the root USB stick, set the OTG-ID jumper, insert it, power on (hold POWER ~3s).")
-    c.info("  4. At the '<model>_release login:' prompt, log in as root. Password:")
-    c.info('       echo -n "$SERIAL" | md5sum | base64')
-    c.info('     (md5sum\'s ASCII-hex output, INCLUDING its trailing "  -", is what gets '
-           "base64-encoded.)")
-    c.info("     SERIAL = the sticker UNDER THE DUSTBIN (not the base of the robot, not the box).")
-    c.warn("If that sticker is damaged or unreadable, do NOT substitute a serial from the Mi Home /")
-    c.warn("Xiaomi Home app or any API — a robot that got a replacement mainboard from service has a")
-    c.warn("serial that no longer matches its silicon, and a look-alike serial has permanently bricked")
-    c.warn("units (secure-boot signature rejection). Stop and ask in the dontvacuum / Valetudo "
-           "community first.")
-    c.info("  5. Back up /mnt/private + /mnt/misc BEFORE any change, then build a 'manual installation'")
-    c.info(f"     image on the dustbuilder ({ctx.dustbuilder_page}) and run its ./install.sh.")
-    c.info(f"  6. Install Valetudo (this model uses the valetudo-{p.arch} binary) and reboot.")
+    c.steps([
+        "Open the robot, plug in the Breakout PCB, wire GND/RX/TX to the 3.3V adapter (NOT 5V).",
+        f"Open a serial console at {p.baud} 8N1, XON/XOFF (ixoff):{bnote}\n"
+        f"screen /dev/tty.usbserial-XXXX {p.baud},ixoff   (macOS)  |  "
+        f"screen /dev/ttyUSB0 {p.baud},ixoff   (Linux)",
+        "Prepare the root USB stick, set the OTG-ID jumper, insert it, power on (hold POWER "
+        "~3s).",
+        "At the '<model>_release login:' prompt, log in as root. Password:\n"
+        'echo -n "$SERIAL" | md5sum | base64\n'
+        '(md5sum\'s ASCII-hex output, INCLUDING its trailing "  -", is what gets '
+        "base64-encoded.)\n"
+        "SERIAL = the sticker UNDER THE DUSTBIN (not the base of the robot, not the box).",
+    ])
+    c.warn("If that sticker is damaged or unreadable, do NOT substitute a serial from the "
+           "Mi Home / Xiaomi Home app or any API — a robot that got a replacement mainboard from "
+           "service has a serial that no longer matches its silicon, and a look-alike serial has "
+           "permanently bricked units (secure-boot signature rejection). Stop and ask in the "
+           "dontvacuum / Valetudo community first.", lead=True)
+    _pause(ctx)
+    c.steps(start=5, items=[
+        "Back up /mnt/private + /mnt/misc BEFORE any change, then build a 'manual installation' "
+        f"image on the dustbuilder ({ctx.dustbuilder_page}) and run its ./install.sh.",
+        f"Install Valetudo (this model uses the valetudo-{p.arch} binary) and reboot.",
+    ])
     if p.secure_boot == "yes":
-        c.info("")
         c.warn(f"{p.model} has SECURE BOOT: do NOT modify the filesystem until install.sh runs — "
-               "doing so can")
-        c.warn("BRICK it. The dustbuilder image's install.sh defeats secure boot for you; let it "
-               "run first.")
+               "doing so can BRICK it. The dustbuilder image's install.sh defeats secure boot "
+               "for you; let it run first.", lead=True)
     if p.key == "xiaomi-1c":
-        c.warn("Only the 'mc1808' hardware revision of the 1C is rootable; ma1808/mb1808 are not.")
+        c.warn("Only the 'mc1808' hardware revision of the 1C is rootable; ma1808/mb1808 are "
+               "not.", lead=True)
     if p.key == "w10":
-        c.info("  • W10 dock tip: its dock makes it awkward to keep the UART attached while "
+        c.info("W10 dock tip: its dock makes it awkward to keep the UART attached while "
                "install.sh runs — use 'sleep 300 && ./install.sh' for a 300s window to detach the "
-               "PCB and dock the robot; the command keeps running.")
+               "PCB and dock the robot; the command keeps running.", lead=True)
     if p.key == "p2148":
-        c.info("  • P2148 has no reset button — hold the two buttons together: <1s = spawn the "
-               "UART shell, >3s = Wi-Fi reset, >5s = full factory reset.")
-    c.info("")
-    c.warn("Auto-login + backup + install over serial — and 'prep-stick' to flash the USB image "
-           "safely —")
-    c.warn("are being built next (they need on-hardware validation). For now, follow the steps above.")
+        c.info("P2148 has no reset button — hold the two buttons together: <1s = spawn the "
+               "UART shell, >3s = Wi-Fi reset, >5s = full factory reset.", lead=True)
+    c.detail("Auto-login + backup + install over serial — and 'prep-stick' to flash the USB "
+             "image safely — are being built next (they need on-hardware validation). For now, "
+             "follow the steps above.", lead=True)
 
 
 def auto(ctx: Context, rest: Sequence[str]) -> None:
@@ -217,11 +232,17 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
     # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
     # "resuming" (recon is the first hardware phase, so its marker is what distinguishes the two).
     if ctx.robot is not None and ctx.robot.state_has("recon"):
-        ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming and "
-                        "driving every phase")
+        ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming: "
+                        "every remaining phase runs guided, in order.")
     else:
         named = f" '{ctx.robot.display_name()}'" if ctx.robot is not None else ""
-        ctx.console.say(f"{ctx.profile.model} — new robot{named}. I'll guide every step.")
+        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every phase is "
+                        "guided and resumable):")
+        ctx.console.steps([
+            "Recon (read-only): validate the USB path and record the robot's identity.",
+            "Root (the one destructive step): flash the image the dustbuilder builds for it.",
+            "Install: push Valetudo onto the robot over its own Wi-Fi AP.",
+        ])
         _pcb_help(ctx)
         ctx.console.info("This replaces the robot's firmware — flashing always carries some risk "
                          "of bricking, so you do this at your own risk. Ctrl+C is safe at any "

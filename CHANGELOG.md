@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **ux**: the terminal output is redesigned for readability — long operations show a live spinner
+  with elapsed time instead of minutes of silence, phase headings show where you are in the
+  journey, output from the robot is set off from the tool's own messages, text wraps to your
+  terminal, and the long walkthroughs pause between chunks instead of printing everything at once.
+  Respects `NO_COLOR`; piped output stays plain.
 - **change**: everything the tool creates now lives under one `~/dreame-valetudo/` folder — `work/`
   (working files) and `backups/` (your factory un-brick backups). Upgrading migrates your old files
   into it automatically on first run (or run `dreame-valetudo migrate`); uninstalling never touches

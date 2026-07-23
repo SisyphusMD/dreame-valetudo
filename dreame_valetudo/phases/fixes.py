@@ -205,17 +205,24 @@ def fix_impl(ctx: Context) -> None:
     )
 
     ctx.console.say(f"Waiting for the Valetudo web UI at http://{ROBOT_AP_IP} ...")
-    for _ in range(20):
-        if ctx.runner.run(
-            ["curl", "-sf", "-m", "3", "-o", "/dev/null", f"http://{ROBOT_AP_IP}"], check=False
-        ).ok:
-            if shutil.which("open"):
-                ctx.runner.run(["open", f"http://{ROBOT_AP_IP}"], check=False)
-            ctx.console.say(f"Valetudo is UP — opened http://{ROBOT_AP_IP}")
-            ctx.console.info("Persistent: the fix is in /data/valetudo_config.json, so it survives "
-                             "reboots.")
-            return
-        ctx.sleep(3)
+    up = False
+    with ctx.console.progress("Waiting for the web UI") as p:
+        for _ in range(20):
+            if ctx.runner.run(
+                ["curl", "-sf", "-m", "3", "-o", "/dev/null", f"http://{ROBOT_AP_IP}"], check=False
+            ).ok:
+                up = True
+                break
+            ctx.sleep(3)
+        if not up:
+            p.close(done=False)
+    if up:
+        if shutil.which("open"):
+            ctx.runner.run(["open", f"http://{ROBOT_AP_IP}"], check=False)
+        ctx.console.say(f"Valetudo is UP — opened http://{ROBOT_AP_IP}")
+        ctx.console.info("Persistent: the fix is in /data/valetudo_config.json, so it survives "
+                         "reboots.")
+        return
     ctx.console.warn("Valetudo still isn't answering on :80 after the restart.")
     fix_log = ctx.ws.base / "fix-impl.log"
     ctx.console.info(f"Grabbing its startup log to capture the next error (saved to {fix_log})...")
@@ -227,8 +234,7 @@ def fix_impl(ctx: Context) -> None:
     )
     report = grabbed.stdout + grabbed.stderr
     fix_log.write_text(report)
-    for line in report.splitlines():
-        ctx.console.info(line)
+    ctx.console.block(report.splitlines(), title="startup log from the robot")
     ctx.console.info("The config pin is saved regardless (persists across reboots).")
     if "reading 'did'" in report:
         ctx.console.warn("That 'null (reading did)' means device.conf won't parse — usually a "
@@ -299,13 +305,13 @@ def diagnose(ctx: Context) -> None:
         lines.append(f">>> Host at {_TARGET} is NOT a Dreame robot (probably your router). Join the "
                      "ROBOT's Wi-Fi AP.")
     else:
-        got = robot_ssh(ctx.runner, _TARGET, _DIAGNOSE_REMOTE, key=key, check=False)
+        with ctx.console.progress("Running the on-robot checks (~30s)"):
+            got = robot_ssh(ctx.runner, _TARGET, _DIAGNOSE_REMOTE, key=key, check=False)
         lines.extend((got.stdout + got.stderr).splitlines())
     # Scrub the whole report before it is printed or written: diagnose.log is explicitly meant to
     # be shared, so home paths and any identity/secret-shaped token (incl. the miio key, should a
     # future field re-introduce it) must be redacted the same way the run log is.
     lines = [scrub(line, ctx.home) for line in lines]
-    for line in lines:
-        ctx.console.info(line)
+    ctx.console.block(lines, title=f"diagnose — {_TARGET}")
     log.write_text("\n".join(lines) + "\n")
     ctx.console.info(f"Saved to: {log}. Rejoin your normal Wi-Fi, then share that file.")

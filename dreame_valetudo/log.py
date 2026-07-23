@@ -20,7 +20,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import ClassVar, TextIO
 
 from .console import Console
 from .run import Result, RunError, Runner
@@ -145,29 +145,21 @@ class RunLog:
 class LoggingConsole(Console):
     """A Console that mirrors every message (and each prompt + answer) into the run log."""
 
+    # The log's own prefix vocabulary — deliberately independent of the terminal rendering, so
+    # presentation changes never reshape the shareable log.
+    _PREFIX: ClassVar[dict[str, str]] = {
+        "say": ">>", "action": "=>", "info": "  ", "warn": "!!", "err": "XX", "phase": "==",
+        "detail": "  ", "step": "  ", "block": " |", "block_title": " |", "progress_done": "->",
+    }
+
     def __init__(self, log: RunLog, *, color: bool | None = None) -> None:
         super().__init__(color=color)
         self._log = log
 
-    def say(self, message: str) -> None:
-        self._log.line(">>", message)
-        super().say(message)
-
-    def action(self, message: str) -> None:
-        self._log.line("=>", message)
-        super().action(message)
-
-    def info(self, message: str) -> None:
-        self._log.line("  ", message)
-        super().info(message)
-
-    def warn(self, message: str) -> None:
-        self._log.line("!!", message)
-        super().warn(message)
-
-    def err(self, message: str) -> None:
-        self._log.line("XX", message)
-        super().err(message)
+    def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
+              lead: bool = False, trail: bool = False) -> None:
+        self._log.line(self._PREFIX.get(kind, "  "), message)
+        super()._emit(kind, message, wrap=wrap, hang=hang, lead=lead, trail=trail)
 
     def confirm(self, prompt: str) -> bool:
         self._log.line("??", prompt)

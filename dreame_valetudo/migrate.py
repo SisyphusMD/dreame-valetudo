@@ -245,10 +245,11 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
     for src, dst in pending:
         tmp = dst.with_name(dst.name + ".tmp")
         try:
-            plain = dust_decrypt.decrypt_dump(src.read_bytes())
-            with gzip.open(tmp, "wb") as fh:
-                fh.write(plain)
-            tmp.replace(dst)  # atomic on the same directory/filesystem
+            with console.progress(f"Decrypting {src.name}"):
+                plain = dust_decrypt.decrypt_dump(src.read_bytes())
+                with gzip.open(tmp, "wb") as fh:
+                    fh.write(plain)
+                tmp.replace(dst)  # atomic on the same directory/filesystem
         except (ValueError, OSError) as exc:
             with contextlib.suppress(OSError):
                 tmp.unlink()

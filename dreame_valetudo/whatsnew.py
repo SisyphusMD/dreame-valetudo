@@ -95,6 +95,18 @@ def changelog_delta(text: str, last: str, current: str) -> str:
     return "\n\n".join(out).strip()
 
 
+# A user who skipped many releases gets the newest few sections, not an unbounded dump at launch.
+_MAX_SECTIONS = 3
+
+
+def _cap_delta(delta: str) -> tuple[str, int]:
+    """(the newest ``_MAX_SECTIONS`` sections of a delta, how many older ones were dropped)."""
+    secs = _sections(delta)
+    if len(secs) <= _MAX_SECTIONS:
+        return delta, 0
+    return "\n\n".join(body for _v, body in secs[:_MAX_SECTIONS]), len(secs) - _MAX_SECTIONS
+
+
 def show_whats_new(env: Mapping[str, str], console: Console) -> None:
     """Print the CHANGELOG delta since the last-run version, then re-stamp the marker. No-op when the
     marker is already current; silent on a fresh install (records the version only). Never raises."""
@@ -104,6 +116,11 @@ def show_whats_new(env: Mapping[str, str], console: Console) -> None:
     if last is not None:
         delta = changelog_delta(_changelog_text(), last, __version__)
         if delta:
+            shown, dropped = _cap_delta(delta)
             console.say(f"Updated to dreame-valetudo {__version__} (was {last}) — what's new:")
-            console.info(delta)
+            console.block(shown)
+            if dropped:
+                console.detail(f"(+{dropped} older release(s) not shown — full history: "
+                               "https://github.com/SisyphusMD/dreame-valetudo/blob/main/"
+                               "CHANGELOG.md)")
     _write_last_version(env, __version__)

@@ -21,14 +21,16 @@ from .run import Runner
 def print_fel_entry(console: Console, host: str = "computer") -> None:
     """The FEL button sequence — the one step no script can do."""
     console.action("Hands on the robot: put it into FEL mode (Breakout PCB)")
-    console.info("1. Robot powered OFF first (hold power ~15s until it fully shuts down); USB "
-                 "cable unplugged.")
-    console.info("2. PCB plugged into the robot; USB OTG ID jumper NOT connected.")
-    console.info("3. Press and HOLD the PCB button.")
-    console.info("4. Also press and HOLD the robot's power button (keep the PCB button held).")
-    console.info("5. After ~5s release power; keep holding the PCB button ~3s more.")
-    console.info(f"6. LEDs pulse -> connect the USB cable to this {host}.")
-    console.info("(No key to press here — the script auto-detects the FEL device.)")
+    console.steps([
+        "Robot powered OFF first (hold power ~15s until it fully shuts down); USB cable "
+        "unplugged.",
+        "PCB plugged into the robot; USB OTG ID jumper NOT connected.",
+        "Press and HOLD the PCB button.",
+        "Also press and HOLD the robot's power button (keep the PCB button held).",
+        "After ~5s release power; keep holding the PCB button ~3s more.",
+        f"LEDs pulse -> connect the USB cable to this {host}.",
+    ])
+    console.detail("(No key to press here — the script auto-detects the FEL device.)")
 
 
 class Fel:
@@ -50,24 +52,23 @@ class Fel:
     def poll_fel(self, secs: int = 180) -> bool:
         """Wait until sunxi-fel sees the SoC (no user keypress needed)."""
         self.console.say(f"Waiting up to {secs}s for the FEL device — do the button sequence now...")
-        t = 0
-        while t < secs:
-            res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
-            out = res.stdout + res.stderr
-            if "not found" not in out.lower():
-                first = out.splitlines()[0] if out.strip() else ""
-                self.console.info(f"FEL up: {first}")
-                if re.search(r"permission|access denied", out, re.IGNORECASE):
-                    self.console.warn("(sunxi-fel reported a USB permission error. On Linux this "
-                                      "usually means the udev rule is missing — install "
-                                      "packaging/udev/99-dreame-valetudo.rules to /etc/udev/rules.d/, "
-                                      "run 'sudo udevadm control --reload && sudo udevadm trigger', "
-                                      "and replug the cable; or re-run with sudo.)")
-                return True
-            self.sleep(1)
-            t += 1
-            if t % 15 == 0:
-                self.console.info(f"...still waiting ({t}/{secs}s)")
+        with self.console.progress("Watching for the FEL device") as p:
+            for _ in range(secs):
+                res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
+                out = res.stdout + res.stderr
+                if "not found" not in out.lower():
+                    first = out.splitlines()[0] if out.strip() else ""
+                    self.console.info(f"FEL up: {first}")
+                    if re.search(r"permission|access denied", out, re.IGNORECASE):
+                        self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
+                                          "this usually means the udev rule is missing — install "
+                                          "packaging/udev/99-dreame-valetudo.rules to "
+                                          "/etc/udev/rules.d/, run 'sudo udevadm control --reload "
+                                          "&& sudo udevadm trigger', and replug the cable; or "
+                                          "re-run with sudo.)")
+                    return True
+                self.sleep(1)
+            p.close(done=False)  # timed out: no completion line ahead of the error
         self.console.err(f"No FEL device after {secs}s. Re-do the button sequence; try the other "
                          "USB port / a data cable.")
         return False
@@ -79,18 +80,19 @@ class Fel:
         which has no 'wait' subcommand — polls 'fastboot devices' instead.
         """
         self.console.say(f"Waiting up to {secs}s for the robot to come up in fastboot...")
-        if self.fastboot.transport.mode != "system":
-            return self.fastboot.fbt("wait", secs, check=False).ok
-        t = 0
-        while t < secs:
-            res = self.runner.run(["fastboot", "devices"], check=False)
-            if res.stdout.strip():
-                self.console.info(f"fastboot device: {res.stdout.strip()}")
-                return True
-            self.sleep(1)
-            t += 1
-            if t % 5 == 0:
-                self.console.info(f"...still waiting ({t}/{secs}s)")
+        with self.console.progress("Watching for the fastboot device") as p:
+            if self.fastboot.transport.mode != "system":
+                ok = self.fastboot.fbt("wait", secs, check=False).ok
+                if not ok:
+                    p.close(done=False)
+                return ok
+            for _ in range(secs):
+                res = self.runner.run(["fastboot", "devices"], check=False)
+                if res.stdout.strip():
+                    self.console.info(f"fastboot device: {res.stdout.strip()}")
+                    return True
+                self.sleep(1)
+            p.close(done=False)
         return False
 
     def fel_boot_fastboot(

@@ -48,20 +48,21 @@ def doctor(ctx: Context) -> None:
 def _build_sunxi(ctx: Context) -> None:
     ctx.console.say(f"Building sunxi-fel from source (sunxi-tools ref: {SUNXI_TOOLS_REF})...")
     sd = ctx.ws.sunxi_dir
-    if not (sd / ".git").is_dir() and not ctx.runner.run(
-        ["git", "clone", "https://github.com/linux-sunxi/sunxi-tools.git", str(sd)],
-        check=False,
-    ).ok:
-        die("clone failed")
-    if not ctx.runner.run(
-        ["git", "-C", str(sd), "checkout", "--quiet", SUNXI_TOOLS_REF], check=False
-    ).ok:
-        ctx.console.warn(f"Couldn't check out sunxi-tools ref '{SUNXI_TOOLS_REF}' — building the "
-                         "current checkout.")
-    ctx.runner.run(["make", "-C", str(sd), "clean"], check=False)
-    if not ctx.runner.run(["make", "-C", str(sd), "sunxi-fel"], check=False).ok:
-        die("sunxi-fel build failed (missing a dev dep? need libusb-1.0, libfdt/dtc, zlib, "
-            "pkg-config, git, make)")
-    if not _is_exe(ctx.ws.sunxi_fel):
-        die("build produced no sunxi-fel binary")
+    with ctx.console.progress("Cloning + compiling sunxi-tools"):
+        if not (sd / ".git").is_dir() and not ctx.runner.run(
+            ["git", "clone", "https://github.com/linux-sunxi/sunxi-tools.git", str(sd)],
+            check=False,
+        ).ok:
+            die("clone failed")
+        if not ctx.runner.run(
+            ["git", "-C", str(sd), "checkout", "--quiet", SUNXI_TOOLS_REF], check=False
+        ).ok:
+            ctx.console.warn(f"Couldn't check out sunxi-tools ref '{SUNXI_TOOLS_REF}' — building "
+                             "the current checkout.")
+        ctx.runner.run(["make", "-C", str(sd), "clean"], check=False)
+        if not ctx.runner.run(["make", "-C", str(sd), "sunxi-fel"], check=False).ok:
+            die("sunxi-fel build failed (missing a dev dep? need libusb-1.0, libfdt/dtc, zlib, "
+                "pkg-config, git, make)")
+        if not _is_exe(ctx.ws.sunxi_fel):
+            die("build produced no sunxi-fel binary")
     ctx.console.info(f"Built: {ctx.ws.sunxi_fel}")

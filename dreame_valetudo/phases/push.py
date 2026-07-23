@@ -126,15 +126,18 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
         die("Valetudo binary missing — run 'fetch'.")
 
-    ctx.console.say("Phase 3 — install Valetudo onto the rooted robot.")
-    ctx.console.info(f"It talks to the robot over ITS OWN Wi-Fi AP (a direct link at {ROBOT_AP_IP}),")
-    ctx.console.info(f"NOT your home network — where {ROBOT_AP_IP} is usually your ROUTER. So:")
+    ctx.console.phase("Install Valetudo over the robot's own Wi-Fi AP", index=3, total=3)
+    ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
+                     f"{ROBOT_AP_IP}), NOT your home network — where {ROBOT_AP_IP} is usually "
+                     "your ROUTER. So:")
     ctx.console.action("Hands on the robot: unplug the USB cable + remove the Breakout PCB (done "
                        "with them), then hold the two OUTER buttons until it starts its Wi-Fi AP.")
-    ctx.console.info("  1. USB cable + Breakout PCB are done — unplug/remove them if you haven't.")
-    ctx.console.info("  2. On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.")
-    ctx.console.info(f"  3. On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' /")
-    ctx.console.info("     'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal.")
+    ctx.console.steps([
+        "USB cable + Breakout PCB are done — unplug/remove them if you haven't.",
+        "On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.",
+        f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' / "
+        "'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal.",
+    ])
     if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
         die("No problem — do steps 1-3 above, then re-run.")
 
@@ -147,11 +150,14 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     # Only proceed once a real Dreame answers (this also waits out the post-reboot /mnt mount).
     ctx.console.say(f"Verifying {_TARGET} is the Dreame robot (not your router)...")
     ready = False
-    for _ in range(15):
-        if is_dreame_ap(ctx.runner, _TARGET, key):
-            ready = True
-            break
-        ctx.sleep(3)
+    with ctx.console.progress("Checking the host (also waits out the post-reboot mount)") as p:
+        for _ in range(15):
+            if is_dreame_ap(ctx.runner, _TARGET, key):
+                ready = True
+                break
+            ctx.sleep(3)
+        if not ready:
+            p.close(done=False)
     if not ready:
         die(f"The host at {_TARGET} is NOT a Dreame robot — on a home network {ROBOT_AP_IP} is "
             "usually your ROUTER. Connect to the ROBOT's own AP and re-run.")
@@ -168,11 +174,12 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
 
     ctx.console.say(f"Backing up the robot -> {backup} (config + keys + raw partitions)...")
     files_gz = backup / "files.tar.gz"
-    ctx.runner.run_redirect(
-        [*ssh_base(_TARGET, key), "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null"],
-        stdout_path=str(files_gz),
-        check=False,
-    )
+    with ctx.console.progress("Pulling files.tar.gz (config + keys, over the robot's Wi-Fi)"):
+        ctx.runner.run_redirect(
+            [*ssh_base(_TARGET, key), "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null"],
+            stdout_path=str(files_gz),
+            check=False,
+        )
     if files_gz.is_file():
         files_gz.chmod(0o600)
     # Gate on archive SIZE, not tar's exit code (a missing /etc/*.pem makes tar exit nonzero).
@@ -183,11 +190,12 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
 
     for part in ("private", "misc"):
         dd = backup / f"{part}.dd.gz"
-        ctx.runner.run_redirect(
-            [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
-            stdout_path=str(dd),
-            check=False,
-        )
+        with ctx.console.progress(f"Pulling the raw {part} partition"):
+            ctx.runner.run_redirect(
+                [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
+                stdout_path=str(dd),
+                check=False,
+            )
         if dd.is_file() and dd.stat().st_size > 1000:
             dd.chmod(0o600)
             ctx.console.info(f"  {part}.dd.gz — raw partition")
@@ -211,11 +219,13 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     )
 
     ctx.console.say("Copying the Valetudo binary onto the robot...")
-    if not ctx.runner.run_redirect(
-        [*ssh_base(_TARGET, key), "cat > /data/valetudo"],
-        stdin_path=str(ctx.valetudo_bin),
-        check=False,
-    ).ok:
+    with ctx.console.progress("Copying valetudo (~37 MB over the robot's Wi-Fi)"):
+        copied = ctx.runner.run_redirect(
+            [*ssh_base(_TARGET, key), "cat > /data/valetudo"],
+            stdin_path=str(ctx.valetudo_bin),
+            check=False,
+        ).ok
+    if not copied:
         die("copy failed")
 
     _repair_did_if_needed(ctx, key)
@@ -236,26 +246,29 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.say(f"Rooted and Valetudo {ctx.valetudo_version} installed! The robot is rebooting "
                     "into Valetudo now (~1-2 min).")
     ctx.console.info("The reboot drops the Wi-Fi AP, so to reach the web UI:")
-    ctx.console.info("   1. Wait ~1-2 min for it to boot and start Valetudo.")
-    ctx.console.info("   2. Hold the two OUTER buttons AGAIN to re-enable the robot's Wi-Fi AP.")
-    ctx.console.info(f"   3. Rejoin the robot's Wi-Fi on this {ctx.host}, then run:  dreame-valetudo ui")
-    ctx.console.info("   Not loading?  ->  dreame-valetudo diagnose")
+    ctx.console.steps([
+        "Wait ~1-2 min for it to boot and start Valetudo.",
+        "Hold the two OUTER buttons AGAIN to re-enable the robot's Wi-Fi AP.",
+        f"Rejoin the robot's Wi-Fi on this {ctx.host}, then run:  dreame-valetudo ui",
+    ])
     if ctx.profile.autodetect_ok == "yes":
-        ctx.console.info(f"   {ctx.profile.model} is recognized by Valetudo's autodetect, so it "
-                         "should serve on the first boot.")
+        ctx.console.detail(f"{ctx.profile.model} is recognized by Valetudo's autodetect, so it "
+                           "should serve on the first boot. Not loading? -> dreame-valetudo "
+                           "diagnose")
     else:
-        ctx.console.info(f"   Heads-up: Valetudo's autodetect can miss {ctx.profile.model} — if the "
+        ctx.console.info(f"Heads-up: Valetudo's autodetect can miss {ctx.profile.model} — if the "
                          "UI stays blank, run:  dreame-valetudo fix-impl")
     if ctx.profile.key.startswith("l10s-pro-ultra-heat"):
-        ctx.console.warn(f"   {ctx.profile.model} note: if it later won't DOCK or you can't select "
-                         "cleaning MODES, that's the known")
-        ctx.console.info("   MCU/firmware mismatch — build a 'manual installation' image on the "
-                         "dustbuilder and install it over SSH to resync the MCU.")
-    ctx.console.info("   Getting started:  https://valetudo.cloud/pages/general/getting-started/")
+        ctx.console.warn(f"{ctx.profile.model} note: if it later won't DOCK or you can't select "
+                         "cleaning MODES, that's the known MCU/firmware mismatch — build a "
+                         "'manual installation' image on the dustbuilder and install it over SSH "
+                         "to resync the MCU.")
+    ctx.console.detail("Getting started: https://valetudo.cloud/pages/general/getting-started/")
     ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {backup} — factory identity/keys, NOT in "
-                     "git, CANNOT be regenerated if lost.")
-    ctx.console.info(f"   (The recovery-backup zip from recon, {robot.recon_dir / RECOVERY_BACKUP_ZIP}, "
-                     "is your pre-root un-brick copy — keep it too.)")
+                     "git, CANNOT be regenerated if lost.", lead=True)
+    ctx.console.detail(f"(The recovery-backup zip from recon, "
+                       f"{robot.recon_dir / RECOVERY_BACKUP_ZIP}, is your pre-root un-brick copy "
+                       "— keep it too.)")
     return True
 
 

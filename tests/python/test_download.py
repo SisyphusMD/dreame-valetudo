@@ -96,8 +96,7 @@ def test_download_fetches_then_atomically_renames(tmp_path: Path) -> None:
     D.download(rr, Console(color=False), "https://example/blob", dest)
     assert dest.read_text() == "payload"
     assert not Path(f"{dest}.part").exists()
-    assert rr.calls[0] == ("curl", "-fL", "--progress-bar", "-o", f"{dest}.part",
-                           "https://example/blob")
+    assert rr.calls[0] == ("curl", "-fsSL", "-o", f"{dest}.part", "https://example/blob")
 
 
 def test_download_cleans_up_part_and_dies_on_failure(tmp_path: Path) -> None:

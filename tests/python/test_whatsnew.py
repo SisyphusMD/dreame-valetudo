@@ -69,6 +69,14 @@ def test_prerelease_shows_the_ungraduated_unreleased_notes() -> None:
     assert W.changelog_delta(_RC_CHANGELOG, "0.1.1", "0.2.0") == ""
 
 
+def test_cap_delta_keeps_only_the_newest_sections() -> None:
+    many = "\n\n".join(f"## [0.{i}.0] - 2026-01-0{i}\n- change {i}" for i in range(9, 0, -1))
+    shown, dropped = W._cap_delta(many)
+    assert dropped == 6
+    assert "0.9.0" in shown and "0.7.0" in shown
+    assert "0.6.0" not in shown  # older sections capped, pointed at the full CHANGELOG instead
+
+
 def test_fresh_install_records_version_silently(tmp_path: Path) -> None:
     con = ScriptedConsole()
     W.show_whats_new({"HOME": str(tmp_path)}, con)

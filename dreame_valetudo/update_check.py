@@ -58,7 +58,9 @@ def _parse_latest(text: str) -> str | None:
 def detect_install_method(env: Mapping[str, str]) -> str:
     """Best-effort guess of how the tool was installed, from the running executable path. Returns one
     of: source, brew, deb, unknown. Errs toward `unknown` (a generic hint) rather than a wrong one."""
-    if (Path(__file__).resolve().parent.parent / ".git").is_dir():
+    # .git is a directory in a normal clone but a pointer FILE in a worktree/submodule checkout —
+    # all of them are source checkouts.
+    if (Path(__file__).resolve().parent.parent / ".git").exists():
         return "source"
     exe = (sys.argv[0] or sys.executable or "").lower()
     with contextlib.suppress(OSError):

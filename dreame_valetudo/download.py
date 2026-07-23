@@ -28,10 +28,12 @@ def download(runner: Runner, console: Console, url: str, dest: str | Path) -> No
     if dest.is_file() and dest.stat().st_size > 0:
         console.info(f"have {dest.name} (skip)")
         return
-    console.say(f"Downloading {dest.name}...")
     part = Path(f"{dest}.part")
     try:
-        runner.run(["curl", "-fL", "--progress-bar", "-o", str(part), url])
+        # -sS: the runner captures curl's output anyway, so the progress meter would only pollute
+        # the error text on failure; liveness comes from the console's own progress display.
+        with console.progress(f"Downloading {dest.name}"):
+            runner.run(["curl", "-fsSL", "-o", str(part), url])
     except RunError:
         part.unlink(missing_ok=True)
         die(f"download failed: {url}")

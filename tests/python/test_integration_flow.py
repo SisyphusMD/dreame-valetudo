@@ -70,3 +70,12 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
         ("flash", "toc1"), ("flash", "boot1"), ("flash", "rootfs1"),
         ("flash", "boot2"), ("flash", "rootfs2"),
     ]
+
+    # SAFETY REGRESSION: no progress display may ever be live inside the signal-masked flash
+    # window — its background thread has no place in the sequence between watchdog-live and
+    # all-flashes-OKAY.
+    kinds_msgs = ctx.console.lines  # type: ignore[attr-defined]
+    start = next(i for i, (_k, m) in enumerate(kinds_msgs) if "WATCHDOG LIVE" in m)
+    end = next(i for i, (_k, m) in enumerate(kinds_msgs) if "All flashes OKAY" in m)
+    assert start < end
+    assert all(k != "progress" for k, _m in kinds_msgs[start:end])

@@ -14,9 +14,12 @@ from ..workspace import Robot
 
 
 def valetudo(ctx: Context) -> None:
-    ctx.console.say(f"Phase 3 — install Valetudo on the rooted robot ({ctx.profile.arch})")
-    ctx.console.info("1. Join the robot's Wi-Fi AP (hold the two OUTER buttons until it talks).")
-    ctx.console.info("2. Push everything over SSH in one shot:  dreame-valetudo push")
+    ctx.console.phase(f"Install Valetudo on the rooted robot ({ctx.profile.arch})",
+                      index=3, total=3)
+    ctx.console.steps([
+        "Join the robot's Wi-Fi AP (hold the two OUTER buttons until it talks).",
+        "Push everything over SSH in one shot:  dreame-valetudo push",
+    ])
     ctx.console.info(f"After reboot, open http://{ROBOT_AP_IP} and follow Getting Started.")
     ctx.console.warn("Wi-Fi won't stick or no auto-detect? -> 'fix-wifi' / 'fix-did' / 'fix-impl'")
 
@@ -25,15 +28,20 @@ def ui(ctx: Context) -> bool:
     url = f"http://{ROBOT_AP_IP}"
     ctx.console.say(f"Waiting for Valetudo at {url} ...")
     ctx.console.info("You must be on the robot's Wi-Fi AP. If it's down, hold the two OUTER buttons.")
-    for i in range(1, 41):
-        if ctx.runner.run(["curl", "-sf", "-m", "3", "-o", "/dev/null", url], check=False).ok:
-            if shutil.which("open"):
-                ctx.runner.run(["open", url], check=False)
-            ctx.console.say(f"Valetudo is up — opened {url}")
-            return True
-        ctx.sleep(3)
-        if i % 5 == 0:
-            ctx.console.info(f"...still waiting ({i}x3s); first boot can take a couple minutes.")
+    up = False
+    with ctx.console.progress("Waiting for the web UI (first boot can take a couple minutes)") as p:
+        for _ in range(40):
+            if ctx.runner.run(["curl", "-sf", "-m", "3", "-o", "/dev/null", url], check=False).ok:
+                up = True
+                break
+            ctx.sleep(3)
+        if not up:
+            p.close(done=False)
+    if up:
+        if shutil.which("open"):
+            ctx.runner.run(["open", url], check=False)
+        ctx.console.say(f"Valetudo is up — opened {url}")
+        return True
     ctx.console.warn(f"Valetudo didn't respond at {url} after ~2 min. Run: diagnose")
     return False
 
@@ -46,7 +54,8 @@ def sshkey(ctx: Context) -> None:
     if pubfile.is_file():
         ctx.console.info(pubfile.read_text().strip())
     ctx.console.info(f"Upload this copy (in a normal, non-hidden folder): {pub}")
-    ctx.console.info(f"Private key '{key}' is what 'push' will use. Override with DREAME_SSHKEY=...")
+    ctx.console.detail(f"Private key '{key}' is what 'push' will use. Override with "
+                       "DREAME_SSHKEY=...")
 
 
 def _summary(base: Path) -> str:

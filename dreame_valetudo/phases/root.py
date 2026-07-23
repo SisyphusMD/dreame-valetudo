@@ -57,7 +57,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
                          "flash again.")
         return
 
-    ctx.console.say("Phase 2 — flashing the rooted image (DESTRUCTIVE)")
+    ctx.console.phase("Flash the rooted image — DESTRUCTIVE", index=2, total=3)
     missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]
     if missing:
         die(f"Run 'image' to stage the dustbuilder FEL image first (missing: {', '.join(missing)}).")
@@ -67,9 +67,9 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not dust:
         die("check.txt is empty.")
 
-    ctx.console.warn("Once the payload boots, a 160s watchdog starts. This runs the flash sequence")
-    ctx.console.warn("back-to-back and STOPS on the first non-OKAY. If anything is not OKAY, power")
-    ctx.console.warn("off and start over — do not improvise.")
+    ctx.console.warn("Once the payload boots, a 160s watchdog starts. This runs the flash "
+                     "sequence back-to-back and STOPS on the first non-OKAY. If anything is not "
+                     "OKAY, power off and start over — do not improvise.")
     ctx.console.info("This is the point of no return: flashing replaces the firmware and can, in "
                      "the worst case, permanently brick the robot. Keep your recon backup.")
     model_hazard_check(ctx)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.console import Console
+from dreame_valetudo.console import Console, Progress
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.profiles import load_profile
@@ -26,20 +26,13 @@ class ScriptedConsole(Console):
         self._asks = list(asks or [])
         self.lines: list[tuple[str, str]] = []
 
-    def say(self, message: str) -> None:
-        self.lines.append(("say", message))
+    def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
+              lead: bool = False, trail: bool = False) -> None:
+        self.lines.append((kind, message))
 
-    def action(self, message: str) -> None:
-        self.lines.append(("action", message))
-
-    def info(self, message: str) -> None:
-        self.lines.append(("info", message))
-
-    def warn(self, message: str) -> None:
-        self.lines.append(("warn", message))
-
-    def err(self, message: str) -> None:
-        self.lines.append(("err", message))
+    def progress(self, label: str) -> Progress:
+        self.lines.append(("progress", label))
+        return Progress()  # inert: no thread, no output
 
     def confirm(self, prompt: str) -> bool:
         return self._confirms.pop(0) if self._confirms else False

@@ -161,6 +161,24 @@ def test_logging_runner_masks_the_oem_dust_token(tmp_path: Path) -> None:
 
 
 # --- LoggingConsole: mirrors every message into the log, scrubbed -----------------------------
+def test_logging_console_mirrors_the_new_output_kinds(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    con = LoggingConsole(log)
+    con.phase("Root", index=2, total=4)
+    con.detail("a reference")
+    con.steps(["press the button"])
+    con.block(["line one"], title="remote output")
+    with con.progress("Pulling"):
+        pass
+    log.close()
+    text = log.path.read_text()
+    assert "== Phase 2 of 4 · Root" in text
+    assert "a reference" in text
+    assert "1. press the button" in text
+    assert " | remote output" in text and " | line one" in text
+    assert "-> Pulling — done (" in text  # exactly the one summary line, no frames/heartbeats
+
+
 def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:
     log = _open(tmp_path, Path("/Users/bob"))
     con = LoggingConsole(log)

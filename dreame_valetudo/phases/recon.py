@@ -104,9 +104,10 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
-    ctx.console.say("Phase 1 — reconnaissance (reads only; writes NOTHING to the robot)")
-    ctx.console.info("Validates the whole USB path with zero brick risk and records the")
-    ctx.console.info("'config' value that identifies the robot + drives the dustbuilder.")
+    ctx.console.phase("Reconnaissance — reads only, writes NOTHING to the robot",
+                      index=1, total=3)
+    ctx.console.info("Validates the whole USB path with zero brick risk and records the 'config' "
+                     "value that identifies the robot + drives the dustbuilder.")
     ctx.console.action("BEFORE you start: if this robot was EVER set up in the Mi Home / Dreame "
                        "Home app, factory-reset it first (Settings -> Reset).")
     ctx.console.info("The rooting guides assume a factory-new robot never connected to the vendor "
@@ -184,11 +185,14 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     rd = robot.recon_dir
     d100, d101, d102 = rd / "dustx100.bin", rd / "dustx101.bin", rd / "dustx102.bin"
     try:
-        ctx.fastboot.fbt("get_staged", str(d100))
+        with ctx.console.progress("Pulling dustx100.bin (1 of 3, over USB)"):
+            ctx.fastboot.fbt("get_staged", str(d100))
         ctx.fastboot.fbt("oem", "stage1")
-        ctx.fastboot.fbt("get_staged", str(d101))
+        with ctx.console.progress("Pulling dustx101.bin (2 of 3)"):
+            ctx.fastboot.fbt("get_staged", str(d101))
         ctx.fastboot.fbt("oem", "stage2")
-        ctx.fastboot.fbt("get_staged", str(d102))
+        with ctx.console.progress("Pulling dustx102.bin (3 of 3)"):
+            ctx.fastboot.fbt("get_staged", str(d102))
     except Exception:
         return False
     # A staged blob that came back empty (or missing) is a hollow backup — refuse to pass it off
@@ -201,9 +205,11 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     total = sum(f.stat().st_size for f in (d100, d101, d102)) / (1 << 20)
     ctx.console.info(f"Recovery backup pulled: {sizes} (total {total:.1f} MiB)")
     zip_path = rd / RECOVERY_BACKUP_ZIP
-    if not ctx.runner.run(
-        ["zip", "-q", "-j", str(zip_path), str(d100), str(d101), str(d102)], check=False
-    ).ok:
+    with ctx.console.progress("Zipping the recovery backup"):
+        zipped = ctx.runner.run(
+            ["zip", "-q", "-j", str(zip_path), str(d100), str(d101), str(d102)], check=False
+        ).ok
+    if not zipped:
         return False
     ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
                      "rejects your config)")
