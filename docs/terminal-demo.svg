@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="782" viewBox="0 0 800 782" font-family="ui-monospace,'SF Mono','SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace" role="img" aria-label="dreame-valetudo running in a macOS Terminal, mid-flash">
+<defs>
+<linearGradient id="tb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ececee"/><stop offset="1" stop-color="#dfe0e2"/></linearGradient>
+<filter id="sh" x="-45%" y="-35%" width="190%" height="200%"><feDropShadow dx="0" dy="9" stdDeviation="15" flood-color="#0b0d12" flood-opacity="0.30"/></filter>
+<clipPath id="win"><rect x="0" y="0" width="700" height="666" rx="11.0" ry="11.0"/></clipPath>
+</defs>
+<g transform="translate(50.0,50.0)">
+<rect x="0" y="0" width="700" height="666" rx="11.0" ry="11.0" fill="#21232d" filter="url(#sh)"/>
+<g clip-path="url(#win)">
+<rect x="0" y="0" width="700" height="666" fill="#21232d"/>
+<rect x="0" y="0" width="700" height="38.0" fill="url(#tb)"/>
+<rect x="0" y="37" width="700" height="1" fill="#c3c4c7"/>
+<circle cx="18" cy="19.0" r="6" fill="#ff5f57"/>
+<circle cx="38" cy="19.0" r="6" fill="#febc2e"/>
+<circle cx="58" cy="19.0" r="6" fill="#28c840"/>
+<text x="350" y="19.0" fill="#565860" font-size="12.5" font-family="-apple-system,'SF Pro Text',system-ui,sans-serif" font-weight="600" text-anchor="middle" dominant-baseline="central">dreame-valetudo — 84×28</text>
+<rect x="26.0" y="383.0" width="564.1" height="20.0" fill="#f2c14e"/>
+<rect x="26.0" y="405.0" width="597.8" height="20.0" fill="#f2c14e"/>
+<text xml:space="preserve" x="26" y="70.0" font-size="14.0"><tspan fill="#82869a">── </tspan><tspan fill="#5ad4dc">Phase 2 of 3 · Flash the rooted image — DESTRUCTIVE</tspan><tspan fill="#82869a"> ──────────────────────</tspan></text>
+<text xml:space="preserve" x="26" y="92.0" font-size="14.0"><tspan fill="#d6d8e0">   Robot identity confirmed (config=d97c4de6…).</tspan></text>
+<text xml:space="preserve" x="26" y="136.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; &gt;&gt;&gt; WATCHDOG LIVE — flashing now &lt;&lt;&lt;</tspan></text>
+<text xml:space="preserve" x="26" y="158.0" font-size="14.0"><tspan fill="#e4c275">!! Do NOT press Ctrl+C or unplug USB until you see &#x27;All flashes OKAY&#x27; —</tspan></text>
+<text xml:space="preserve" x="26" y="180.0" font-size="14.0"><tspan fill="#e4c275">   interrupting a flash in progress can PERMANENTLY brick the robot.</tspan></text>
+<text xml:space="preserve" x="26" y="202.0" font-size="14.0"><tspan fill="#d6d8e0">   fastboot oem dust &lt;redacted-id&gt;</tspan></text>
+<text xml:space="preserve" x="26" y="224.0" font-size="14.0"><tspan fill="#d6d8e0">   fastboot oem prep</tspan></text>
+<text xml:space="preserve" x="26" y="246.0" font-size="14.0"><tspan fill="#d6d8e0">   fastboot flash toc1 ~/…/fw/toc1.img</tspan></text>
+<text xml:space="preserve" x="26" y="268.0" font-size="14.0"><tspan fill="#d6d8e0">   fastboot flash rootfs1 ~/…/fw/rootfs.img</tspan></text>
+<text xml:space="preserve" x="26" y="290.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; All flashes OKAY. Rebooting...</tspan></text>
+<text xml:space="preserve" x="26" y="312.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; Flash complete — if the robot boots normally, it&#x27;s rooted.</tspan></text>
+<text xml:space="preserve" x="26" y="356.0" font-size="14.0"><tspan fill="#82869a">── </tspan><tspan fill="#5ad4dc">Phase 3 of 3 · Install Valetudo over the robot&#x27;s own Wi-Fi AP</tspan><tspan fill="#82869a"> ────</tspan></text>
+<text xml:space="preserve" x="26" y="400.0" font-size="14.0"><tspan fill="#21232d">  ACTION &gt;  Hands on the robot: unplug the USB cable + remove the  </tspan></text>
+<text xml:space="preserve" x="26" y="422.0" font-size="14.0"><tspan fill="#21232d">            Breakout PCB, then hold the two OUTER buttons for its AP.  </tspan></text>
+<text xml:space="preserve" x="26" y="466.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; Verifying 192.168.5.1 is the Dreame robot (not your router)...</tspan></text>
+<text xml:space="preserve" x="26" y="488.0" font-size="14.0"><tspan fill="#82869a">   Checking the host (also waits out the post-reboot mount) — done (12s)</tspan></text>
+<text xml:space="preserve" x="26" y="510.0" font-size="14.0"><tspan fill="#d6d8e0">   Confirmed: Dreame robot (/mnt/private/ULI/factory present).</tspan></text>
+<text xml:space="preserve" x="26" y="532.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; Backing up the robot -&gt; ~/…/backups/Kitchen (config + keys)...</tspan></text>
+<text xml:space="preserve" x="26" y="554.0" font-size="14.0"><tspan fill="#82869a">   Pulling files.tar.gz (config + keys, over the robot&#x27;s Wi-Fi) — done (7s)</tspan></text>
+<text xml:space="preserve" x="26" y="576.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; Repairing negative factory deviceId (-117604433 -&gt; 4177362863)...</tspan></text>
+<text xml:space="preserve" x="26" y="598.0" font-size="14.0"><tspan fill="#d6d8e0">   deviceId repaired (original saved to did_orig.txt + your backup).</tspan></text>
+<text xml:space="preserve" x="26" y="620.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; Copying the Valetudo binary onto the robot...</tspan></text>
+<text xml:space="preserve" x="26" y="642.0" font-size="14.0"><tspan fill="#d6d8e0">   </tspan><tspan fill="#5ad4dc">⠹</tspan><tspan fill="#d6d8e0"> Copying valetudo (~37 MB over the robot&#x27;s Wi-Fi) </tspan><tspan fill="#82869a">(4s)</tspan></text>
+<rect x="517.4" y="632.0" width="8.4" height="16" fill="#d6d8e0" opacity="0.85"/>
+</g>
+</g>
+</svg>
