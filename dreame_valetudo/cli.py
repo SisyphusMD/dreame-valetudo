@@ -36,6 +36,8 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
+from .update_check import check_for_update
+from .whatsnew import show_whats_new
 from .workspace import Robot, Workspace, slugify
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
@@ -403,6 +405,8 @@ def main(
             apply_library_path(resolve_libexec(resolved_env))
             if cmd not in _NO_WORKSPACE:
                 migrate(resolved_env, con)
+                show_whats_new(resolved_env, con)
+                check_for_update(ctx)
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:

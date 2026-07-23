@@ -22,6 +22,11 @@
 - **feat**: your recon recovery backup is decrypted on upgrade into a compressed, readable stock
   image (the sealed originals are kept), so it's usable locally instead of an opaque blob. Guarded by
   a free-space check; skip it with `DREAME_NO_DECRYPT=1`.
+- **feat**: on upgrade the tool prints what changed since the version you last ran (from the bundled
+  changelog) — once, then stays quiet.
+- **feat**: a best-effort, once-a-day check notes when a newer release is out and prints the right
+  upgrade command for how you installed it. It fails silently offline; opt out with
+  `DREAME_NO_UPDATE_CHECK=1`.
 
 ## [0.1.1] - 2026-07-22
 

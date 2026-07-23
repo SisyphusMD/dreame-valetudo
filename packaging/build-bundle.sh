@@ -21,6 +21,7 @@ pyinstaller --onefile --clean --noconfirm \
   --paths "$ROOT" \
   --add-data "$ROOT/libexec/fastboot-libusb.py:libexec" \
   --add-data "$ROOT/libexec/dustbuilder-form.sig:libexec" \
+  --add-data "$ROOT/CHANGELOG.md:dreame_valetudo" \
   "$ROOT/packaging/pyinstaller-entry.py"
 
 # Smoke the frozen binary (no Python on PATH required for this to run).

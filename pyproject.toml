@@ -26,6 +26,8 @@ packages = ["dreame_valetudo"]
 [tool.hatch.build.targets.wheel.force-include]
 "libexec/fastboot-libusb.py" = "dreame_valetudo/libexec/fastboot-libusb.py"
 "libexec/dustbuilder-form.sig" = "dreame_valetudo/libexec/dustbuilder-form.sig"
+# Ship the changelog inside the package so the installed tool can show "what's new" on upgrade.
+"CHANGELOG.md" = "dreame_valetudo/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100
