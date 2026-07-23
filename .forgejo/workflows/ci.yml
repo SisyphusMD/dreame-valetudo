@@ -4,6 +4,14 @@ name: CI
 # a Python lint/typecheck/test job + a build job + integration scripts, with integration gated
 # behind lint. Make this a required check on main so releases (cut from main by release.yml) only
 # ever ship a green tree.
+#
+# The runner is self-hosted with network reach into the home cluster, so the code-executing jobs
+# (python runs the PR's conftest/tests, build builds+runs the PR tree, integration bash-runs the
+# PR's scripts) run only for trusted refs — pushes and same-repo PRs. A fork pull_request carries
+# attacker-controlled code, so those jobs are skipped for it; forks get shellcheck only (it reads
+# the scripts, never executes them). Fork PRs get full validation once a maintainer pushes the
+# branch here or the PR comes from this repo. (Gating in-file is the only lever available; routing
+# forks to a separate ephemeral non-cluster runner can't be expressed from this workflow alone.)
 on:
   pull_request:
   push:
@@ -30,6 +38,8 @@ jobs:
             tests/integration/release-scripts.sh tests/integration/reconcile.sh
 
   python:
+    # trusted-ref gate (see header): don't run PR-supplied pytest on the self-hosted runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +61,8 @@ jobs:
     # at release time). Covers sunxi-fel, the PyInstaller bundle (pyusb + pyinstaller), and the .deb.
     # sunxi + pyusb come from the Python constants; pyinstaller + nfpm are pinned here and kept in
     # lockstep with the release workflows by Renovate (same depName, one grouped PR).
+    # trusted-ref gate (see header): don't build+run PR-supplied code on the self-hosted runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -85,9 +97,11 @@ jobs:
 
   integration:
     needs: [shellcheck]
+    # trusted-ref gate (see header): don't bash-run PR-supplied scripts on the self-hosted runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
-          for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done
+          for t in tests/integration/release-scripts.sh tests/integration/reconcile.sh; do echo "== $t =="; bash "$t"; done
