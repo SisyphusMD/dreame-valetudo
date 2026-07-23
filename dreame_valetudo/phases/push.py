@@ -135,8 +135,8 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.steps([
         "USB cable + Breakout PCB are done — unplug/remove them if you haven't.",
         "On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.",
-        f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' / "
-        "'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal.",
+        (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' / "
+         "'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal."),
     ])
     if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
         die("No problem — do steps 1-3 above, then re-run.")

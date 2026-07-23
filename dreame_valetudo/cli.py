@@ -184,16 +184,16 @@ def uart(ctx: Context) -> None:
     bnote = "  (if you see only garbage, try 500000)" if p.key in ("xiaomi-1c", "f9") else ""
     c.steps([
         "Open the robot, plug in the Breakout PCB, wire GND/RX/TX to the 3.3V adapter (NOT 5V).",
-        f"Open a serial console at {p.baud} 8N1, XON/XOFF (ixoff):{bnote}\n"
-        f"screen /dev/tty.usbserial-XXXX {p.baud},ixoff   (macOS)  |  "
-        f"screen /dev/ttyUSB0 {p.baud},ixoff   (Linux)",
-        "Prepare the root USB stick, set the OTG-ID jumper, insert it, power on (hold POWER "
-        "~3s).",
-        "At the '<model>_release login:' prompt, log in as root. Password:\n"
-        'echo -n "$SERIAL" | md5sum | base64\n'
-        '(md5sum\'s ASCII-hex output, INCLUDING its trailing "  -", is what gets '
-        "base64-encoded.)\n"
-        "SERIAL = the sticker UNDER THE DUSTBIN (not the base of the robot, not the box).",
+        (f"Open a serial console at {p.baud} 8N1, XON/XOFF (ixoff):{bnote}\n"
+         f"screen /dev/tty.usbserial-XXXX {p.baud},ixoff   (macOS)  |  "
+         f"screen /dev/ttyUSB0 {p.baud},ixoff   (Linux)"),
+        ("Prepare the root USB stick, set the OTG-ID jumper, insert it, power on (hold POWER "
+         "~3s)."),
+        ("At the '<model>_release login:' prompt, log in as root. Password:\n"
+         'echo -n "$SERIAL" | md5sum | base64\n'
+         '(md5sum\'s ASCII-hex output, INCLUDING its trailing "  -", is what gets '
+         "base64-encoded.)\n"
+         "SERIAL = the sticker UNDER THE DUSTBIN (not the base of the robot, not the box)."),
     ])
     c.warn("If that sticker is damaged or unreadable, do NOT substitute a serial from the "
            "Mi Home / Xiaomi Home app or any API — a robot that got a replacement mainboard from "
@@ -202,8 +202,8 @@ def uart(ctx: Context) -> None:
            "dontvacuum / Valetudo community first.", lead=True)
     _pause(ctx)
     c.steps(start=5, items=[
-        "Back up /mnt/private + /mnt/misc BEFORE any change, then build a 'manual installation' "
-        f"image on the dustbuilder ({ctx.dustbuilder_page}) and run its ./install.sh.",
+        ("Back up /mnt/private + /mnt/misc BEFORE any change, then build a 'manual installation' "
+         f"image on the dustbuilder ({ctx.dustbuilder_page}) and run its ./install.sh."),
         f"Install Valetudo (this model uses the valetudo-{p.arch} binary) and reboot.",
     ])
     if p.secure_boot == "yes":

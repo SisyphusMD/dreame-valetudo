@@ -22,8 +22,8 @@ def print_fel_entry(console: Console, host: str = "computer") -> None:
     """The FEL button sequence — the one step no script can do."""
     console.action("Hands on the robot: put it into FEL mode (Breakout PCB)")
     console.steps([
-        "Robot powered OFF first (hold power ~15s until it fully shuts down); USB cable "
-        "unplugged.",
+        ("Robot powered OFF first (hold power ~15s until it fully shuts down); USB cable "
+         "unplugged."),
         "PCB plugged into the robot; USB OTG ID jumper NOT connected.",
         "Press and HOLD the PCB button.",
         "Also press and HOLD the robot's power button (keep the PCB button held).",
