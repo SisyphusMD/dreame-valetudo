@@ -36,9 +36,9 @@
   records your robot's device key, and the run log now redacts the identifying flash token that
   previously slipped the scrubber.
 - **feat**: on Linux, `sudo dreame-valetudo install-udev` sets up sudo-less USB access in one command
-  (macOS needs nothing; the `.deb`/`.rpm` still do it automatically at install). If it isn't set up, a
-  rooting command now stops up front with that exact reminder, instead of failing later with a cryptic
-  USB permission error.
+  (macOS needs nothing; the `.deb`/`.rpm` still do it automatically at install). If it isn't set up,
+  the tool now stops up front with that exact reminder, instead of failing later with a cryptic USB
+  permission error.
 - **feat**: a Fedora/RHEL/openSUSE `.rpm` is now published alongside the `.deb` — same self-contained
   bundle, and it sets up sudo-less USB access automatically at install too.
 
