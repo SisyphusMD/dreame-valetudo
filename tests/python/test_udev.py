@@ -55,17 +55,18 @@ def test_access_ok_finds_the_rule_in_any_udev_dir(tmp_path: Path) -> None:
     assert udev.access_ok([empty, present])
 
 
-def test_guard_blocks_only_usb_commands_on_linux_without_the_rule(tmp_path: Path) -> None:
+def test_guard_blocks_every_command_on_linux_without_the_rule_bar_escape_hatches(
+    tmp_path: Path,
+) -> None:
     missing = [tmp_path]  # no rule here
-    # A USB-driving command on Linux with no rule is blocked...
-    assert udev.guard_blocks("Linux", "recon", {}, missing)
-    assert udev.guard_blocks("Linux", "root", {}, missing)
-    assert udev.guard_blocks("Linux", "auto", {}, missing)
-    # ...but not macOS, not once the rule is present, not with the opt-out...
+    # Every real command on Linux with no rule is blocked (auto = the no-arg default)...
+    for cmd in ("auto", "recon", "root", "push", "ui", "fix-wifi", "status"):
+        assert udev.guard_blocks("Linux", cmd, {}, missing), cmd
+    # ...except the escape hatches you'd need to recover (read help/version, run install-udev):
+    for cmd in ("help", "--help", "version", "install-udev"):
+        assert not udev.guard_blocks("Linux", cmd, {}, missing), cmd
+    # ...and not on macOS, not once the rule is present, not with the opt-out.
     assert not udev.guard_blocks("Darwin", "recon", {}, missing)
     (tmp_path / udev.RULE_NAME).write_text(udev.UDEV_RULE)
     assert not udev.guard_blocks("Linux", "recon", {}, [tmp_path])
     assert not udev.guard_blocks("Linux", "recon", {"DREAME_NO_UDEV_CHECK": "1"}, missing)
-    # ...and never for the Wi-Fi-side / workspace commands (they don't touch USB).
-    for cmd in ("push", "ui", "fix-wifi", "status", "help", "install-udev"):
-        assert not udev.guard_blocks("Linux", cmd, {}, missing)

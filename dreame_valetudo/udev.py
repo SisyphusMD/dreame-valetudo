@@ -3,8 +3,8 @@
 macOS lets user-space libusb claim the Dreame gadget without any rule, so everything here is a
 no-op on macOS. On Linux, raw USB is gated behind root/udev. The `.deb`/`.rpm` install the rule at
 (root) package time; Homebrew and from-source installs can't, so `sudo dreame-valetudo install-udev`
-writes it once, and every USB-driving command (recon/root, and the default `auto` chain) checks it
-up front so a missing rule fails fast with the fix instead of an opaque permission error at FEL time.
+writes it once, and every command (bar the escape hatches you'd need to recover) checks it up front
+on Linux, so a missing rule fails fast with the fix instead of an opaque permission error at FEL time.
 
 The rule content is embedded (a from-source/pip install ships no `packaging/` dir at runtime);
 `tests/python/test_udev.py` golden-asserts it against `packaging/udev/99-dreame-valetudo.rules`, so
@@ -24,10 +24,10 @@ RULE_DEST = f"/etc/udev/rules.d/{RULE_NAME}"
 # udev reads rules from both trees; the .deb/.rpm ship to /usr/lib, install-udev writes to /etc.
 RULE_DIRS: tuple[str, ...] = ("/etc/udev/rules.d", "/usr/lib/udev/rules.d")
 
-# Commands that actually drive the USB device (FEL/fastboot). The Wi-Fi-side commands (push/ui/the
-# fix-* helpers) reach the robot over its Wi-Fi AP, not USB, so they need no udev rule and are NOT
-# guarded — blocking them would wrongly stop post-root work.
-GUARDED = frozenset({"auto", "recon", "root"})
+# The guard fires for every invocation EXCEPT these — the commands you'd need to recover a missing
+# rule (help/version to read, install-udev to fix it). A run that only does Wi-Fi-side work
+# (push/ui/fix-*) on a box that never set up udev can opt out with DREAME_NO_UDEV_CHECK=1.
+_EXEMPT = frozenset({"help", "-h", "--help", "version", "--version", "-V", "install-udev"})
 
 UDEV_RULE = """\
 # USB access for dreame-valetudo on Linux, so rooting works WITHOUT sudo. Grants the logged-in
@@ -56,7 +56,7 @@ def guard_blocks(
     Linux-only; opt out with DREAME_NO_UDEV_CHECK=1 (for a root run or a hand-rolled rule)."""
     return (
         system == "Linux"
-        and cmd in GUARDED
+        and cmd not in _EXEMPT
         and env.get("DREAME_NO_UDEV_CHECK") != "1"
         and not access_ok(rule_dirs)
     )
