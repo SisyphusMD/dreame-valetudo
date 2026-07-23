@@ -6,6 +6,7 @@
   "prConcurrentLimit": 0,
   "prHourlyLimit": 0,
   "separateMinorPatch": true,
+  "rebaseWhen": "behind-base-branch",
   "fetchChangeLogs": "pr",
   "enabledManagers": ["pep621", "github-actions", "dockerfile", "custom.regex"],
   "github-actions": {
