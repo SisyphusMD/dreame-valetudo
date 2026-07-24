@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-24
+
 - **fix**: decrypting the recovery backup no longer fails on an in-use robot. The three flash slices
   share one keystream, but 0.2.0 recovered it from each slice on its own — which only works for the
   sparse boot slice, so the dense rootfs/userdata slices of a robot with real maps and logs failed
