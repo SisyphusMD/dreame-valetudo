@@ -291,16 +291,26 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
         )
         return 0
     console.say(f"Decrypting {robot_name}'s recovery backup for local restore (one-time, ~a minute)...")
+    # The slices share one keystream, but only a sparse (0x00-fill-dominated) slice can anchor its
+    # recovery — a dense rootfs/userdata slice can't be decrypted on its own. Pool EVERY sealed slice
+    # still on disk (even one already decrypted to .dd.gz, whose .bin is left in place) so the sparse
+    # boot slice carries the vote for the dense ones.
+    sealed = [recon_dir / f"{name}.bin" for name in _RECON_DUMPS if (recon_dir / f"{name}.bin").is_file()]
+    try:
+        keystream = dust_decrypt.recover_shared_keystream([p.read_bytes() for p in sealed])
+    except (ValueError, OSError) as exc:
+        console.warn(f"  could not decrypt {robot_name}'s recovery backup: {exc}")
+        return 0
     done = 0
     for src, dst in pending:
         tmp = dst.with_name(dst.name + ".tmp")
         try:
             with console.progress(f"Decrypting {src.name}"):
-                plain = dust_decrypt.decrypt_dump(src.read_bytes())
+                plain = dust_decrypt.xor_stream(src.read_bytes(), keystream)
                 with gzip.open(tmp, "wb") as fh:
                     fh.write(plain)
                 tmp.replace(dst)  # atomic on the same directory/filesystem
-        except (ValueError, OSError) as exc:
+        except OSError as exc:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             console.warn(f"  could not decrypt {src.name}: {exc}")

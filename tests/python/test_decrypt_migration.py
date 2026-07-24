@@ -30,6 +30,12 @@ def _fake_flash(nblocks: int = 4) -> bytes:
     return bytes(img)
 
 
+def _dense_flash(seed: int, nblocks: int = 16) -> bytes:
+    """A dense slice (rootfs/userdata of an in-use robot): real data, not 0x00-dominated. Enough
+    blocks that the majority vote can't spuriously zero it on its own."""
+    return random.Random(seed).randbytes(PERIOD * nblocks)
+
+
 def _seed_sealed(recon: Path, *names: str) -> bytes:
     """Write sealed (XOR-obfuscated) dumps for the given names; return the shared plaintext."""
     recon.mkdir(parents=True, exist_ok=True)
@@ -38,6 +44,16 @@ def _seed_sealed(recon: Path, *names: str) -> bytes:
     for name in names or ("dustx100",):
         (recon / f"{name}.bin").write_bytes(sealed)
     return plain
+
+
+def _seed_mixed(recon: Path) -> dict[str, bytes]:
+    """Seal a realistic recovery backup: a sparse boot slice plus two dense slices, each with its own
+    plaintext. Return name -> plaintext."""
+    recon.mkdir(parents=True, exist_ok=True)
+    plains = {"dustx100": _fake_flash(16), "dustx101": _dense_flash(1), "dustx102": _dense_flash(2)}
+    for name, plain in plains.items():
+        (recon / f"{name}.bin").write_bytes(xor_stream(plain, _keystream()))
+    return plains
 
 
 def test_decrypt_produces_restorable_ddgz(tmp_path: Path) -> None:
@@ -50,6 +66,30 @@ def test_decrypt_produces_restorable_ddgz(tmp_path: Path) -> None:
         assert out.is_file()
         assert gzip.decompress(out.read_bytes()) == plain  # restorable to the exact stock image
         assert (recon / f"{name}.bin").is_file()  # sealed original left untouched
+
+
+def test_decrypt_dense_slices_via_shared_keystream(tmp_path: Path) -> None:
+    """An in-use robot's rootfs/userdata slices are dense (not 0x00-dominated) and cannot decrypt on
+    their own; the sparse boot slice pooled alongside them anchors the shared keystream so all three
+    are recovered to their own plaintext."""
+    recon = tmp_path / "recon"
+    plains = _seed_mixed(recon)
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 3
+    for name, plain in plains.items():
+        assert gzip.decompress((recon / f"{name}.dd.gz").read_bytes()) == plain
+
+
+def test_decrypt_reheals_dense_slices_after_partial_run(tmp_path: Path) -> None:
+    """Re-run recovery when only the dense slices are pending (a prior run decrypted the sparse boot
+    slice). Its .bin is still on disk and must be pooled back into the vote — otherwise the dense
+    slices can't be recovered. Regression: 0.2.0 voted per-slice and left an in-use robot's dense
+    slices undecryptable."""
+    recon = tmp_path / "recon"
+    plains = _seed_mixed(recon)
+    (recon / "dustx100.dd.gz").write_bytes(gzip.compress(plains["dustx100"]))  # already decrypted
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 2  # only the two dense pending
+    for name in ("dustx101", "dustx102"):
+        assert gzip.decompress((recon / f"{name}.dd.gz").read_bytes()) == plains[name]
 
 
 def test_decrypt_gaps_only_and_never_clobbers(tmp_path: Path) -> None:
@@ -78,7 +118,7 @@ def test_decrypt_skips_non_obfuscated_data(tmp_path: Path) -> None:
     recon = tmp_path / "recon"
     recon.mkdir(parents=True)
     # High-entropy, no dominant fill (enough blocks that the majority-vote key can't spuriously zero
-    # it): not this obfuscation scheme, so decrypt_dump raises, which is caught and skipped (never fatal).
+    # it): not this obfuscation scheme, so keystream recovery raises, which is caught and skipped (never fatal).
     (recon / "dustx100.bin").write_bytes(random.Random(1234).randbytes(PERIOD * 16))
     assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 0
     assert not (recon / "dustx100.dd.gz").exists()

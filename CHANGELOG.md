@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **fix**: decrypting the recovery backup no longer fails on an in-use robot. The three flash slices
+  share one keystream, but 0.2.0 recovered it from each slice on its own — which only works for the
+  sparse boot slice, so the dense rootfs/userdata slices of a robot with real maps and logs failed
+  with "keystream recovery failed". They're now decrypted together, the sparse slice anchoring the
+  shared keystream for the dense ones; re-running fills in any slice a prior run left behind. The
+  sealed `.bin` dumps and the recovery `.zip` were always preserved, so nothing was ever lost.
+
 ## [0.2.0] - 2026-07-24
 
 - **ux**: the terminal output is redesigned for readability — long operations show a live spinner
