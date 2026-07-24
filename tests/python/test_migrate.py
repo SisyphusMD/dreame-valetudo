@@ -99,15 +99,57 @@ def test_is_idempotent(tmp_path: Path) -> None:
     assert (tmp_path / "dreame-valetudo" / ".layout").read_text() == before
 
 
-def test_never_clobbers_an_existing_destination(tmp_path: Path) -> None:
+def test_merges_a_partial_destination_without_clobbering(tmp_path: Path) -> None:
+    # A stray/partial destination work/ (e.g. a logs/ dir a pre-migration run created) must NOT
+    # block migration: the legacy work dir MERGES in file-by-file, nothing pre-existing is touched,
+    # and — since there's no same-path collision — the legacy dir is fully consumed + symlinked.
     _seed_v0(tmp_path)
-    (tmp_path / "dreame-valetudo" / "work").mkdir(parents=True)
-    (tmp_path / "dreame-valetudo" / "work" / "sentinel").write_text("keep")
+    base = tmp_path / "dreame-valetudo"
+    (base / "work" / "logs").mkdir(parents=True)
+    (base / "work" / "logs" / "run-old.log").write_text("prior")
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    assert (base / "work" / "logs" / "run-old.log").read_text() == "prior"  # pre-existing kept
+    assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
+    old = tmp_path / "dreame-valetudo-work"
+    assert old.is_symlink() and old.resolve() == (base / "work").resolve()  # fully consumed
+    assert json.loads((base / ".layout").read_text())["layout_version"] == M.LAYOUT_VERSION  # stamped
+
+
+def test_merge_keeps_both_on_a_file_collision(tmp_path: Path) -> None:
+    # Same-path file in both trees: keep BOTH. The legacy (source) copy — the workspace of record —
+    # wins the canonical path; the copy already there is set aside as <name>.pre-migration.bak.
+    # Nothing is deleted or overwritten, and the move still completes (legacy consumed, stamped).
+    _seed_v0(tmp_path)  # legacy: work/robots/kitchen/state/recon = SENTINEL
+    base = tmp_path / "dreame-valetudo"
+    dst = base / "work" / "robots" / "kitchen" / "state"
+    dst.mkdir(parents=True)
+    (dst / "recon").write_bytes(b"already-here")
     con = ScriptedConsole()
     M.migrate(_env(tmp_path), con)
-    assert (tmp_path / "dreame-valetudo" / "work" / "sentinel").read_text() == "keep"
-    assert (tmp_path / "dreame-valetudo-work").is_dir()  # legacy left in place, not merged
-    assert any("already exists" in msg for _k, msg in con.lines)
+    assert (dst / "recon").read_bytes() == SENTINEL  # legacy copy took the canonical path
+    assert (dst / "recon.pre-migration.bak").read_bytes() == b"already-here"  # other copy kept
+    assert (tmp_path / "dreame-valetudo-work").is_symlink()  # fully consumed, nothing stranded
+    assert json.loads((base / ".layout").read_text())["layout_version"] == M.LAYOUT_VERSION
+    assert any(".pre-migration.bak" in msg for _k, msg in con.lines)
+
+
+def test_merge_retries_when_even_the_bak_slot_is_taken(tmp_path: Path) -> None:
+    # Pathological double-collision: the file AND its .pre-migration.bak already exist at the
+    # destination. Refuse to touch either (never overwrite), leave the source in place, and DON'T
+    # stamp — so it retries next launch rather than stranding data as migrated.
+    _seed_v0(tmp_path)
+    base = tmp_path / "dreame-valetudo"
+    dst = base / "work" / "robots" / "kitchen" / "state"
+    dst.mkdir(parents=True)
+    (dst / "recon").write_bytes(b"already-here")
+    (dst / "recon.pre-migration.bak").write_bytes(b"prior-bak")
+    con = ScriptedConsole()
+    M.migrate(_env(tmp_path), con)
+    assert (dst / "recon").read_bytes() == b"already-here"  # untouched
+    assert (dst / "recon.pre-migration.bak").read_bytes() == b"prior-bak"  # untouched
+    legacy = tmp_path / "dreame-valetudo-work" / "robots" / "kitchen" / "state" / "recon"
+    assert legacy.read_bytes() == SENTINEL  # source copy NOT lost
+    assert not (base / ".layout").exists()  # incomplete -> un-stamped -> retries next launch
 
 
 def test_refuses_a_newer_on_disk_layout(tmp_path: Path) -> None:

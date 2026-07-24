@@ -11,9 +11,13 @@ needs intermediate installs, and a pre-versioning workspace (version 0) can migr
 current. Steps are permanent history: never delete or renumber one. See ``docs/LAYOUT.md``.
 
 Safety: moves are atomic ``os.rename`` on the same filesystem (impossible to half-lose data) with a
-verified copy-then-remove fallback across filesystems, and NEVER clobber. If the on-disk layout is
-NEWER than this build understands, the tool refuses (it never rewrites data it can't read) and names
-the minimum version to upgrade to — this is how downgrades are handled: detect + refuse, never
+verified copy-then-remove fallback across filesystems, and NEVER delete or overwrite a file.
+Consolidating the work dir is a *merge*, so a stray or partial destination heals instead of
+stranding data; a same-path collision keeps BOTH copies (the legacy one wins the canonical path, the
+other is saved as a ``.pre-migration.bak``), and the layout is stamped only once the move completes,
+so nothing is ever marked migrated while a file is still stranded. If the on-disk layout is NEWER
+than this build understands, the tool refuses (it never rewrites data it can't read) and names the
+minimum version to upgrade to — this is how downgrades are handled: detect + refuse, never
 reverse-migrate.
 """
 
@@ -40,7 +44,7 @@ class Layout:
     version: int
     since: str  # tool release that introduced this layout = the compatible-range LOWER bound
     summary: str
-    apply: Callable[[Mapping[str, str], Console], None]
+    apply: Callable[[Mapping[str, str], Console], bool]  # True only when the step fully completed
 
 
 def _home(env: Mapping[str, str]) -> Path:
@@ -112,30 +116,77 @@ def _safe_move(src: Path, dst: Path, console: Console) -> bool:
     return True
 
 
-def _to_v1(env: Mapping[str, str], console: Console) -> None:
-    """Legacy -> consolidated. ~/dreame-valetudo-work -> ~/dreame-valetudo/work (+ a compat symlink
-    so a pre-.layout build still finds it), and every scattered ~/dreame-*-backup-* into backups/."""
+_BAK_SUFFIX = ".pre-migration.bak"
+
+
+def _safe_merge(src: Path, dst: Path, console: Console) -> bool:
+    """Move ``src`` into ``dst`` without ever deleting or overwriting a file. An absent ``dst`` is a
+    plain atomic move (via ``_safe_move``). When ``dst`` already exists, two real directories merge
+    child-by-child — a child missing at ``dst`` moves wholesale, a directory on both sides recurses.
+    On a genuine same-path collision (file/file, or a file-vs-dir clash) BOTH copies are kept: the
+    legacy ``src`` — the workspace of record — takes the canonical path, and the copy already at
+    ``dst`` is set aside as ``<name>.pre-migration.bak``. If even that ``.bak`` slot is taken, the
+    ``src`` copy is left in place and the caller leaves the layout un-stamped, so the move retries
+    next launch rather than stranding data as done. Returns True only when ``src`` was fully
+    consumed (and removed)."""
+    if not dst.exists() and not dst.is_symlink():
+        return _safe_move(src, dst, console)
+    if src.is_dir() and dst.is_dir() and not src.is_symlink() and not dst.is_symlink():
+        complete = True
+        for child in sorted(src.iterdir()):
+            if not _safe_merge(child, dst / child.name, console):
+                complete = False
+        if complete:
+            with contextlib.suppress(OSError):
+                src.rmdir()  # now-empty
+        return complete
+    bak = dst.with_name(dst.name + _BAK_SUFFIX)
+    if bak.exists() or bak.is_symlink():
+        console.warn(f"Left {src} in place — {dst} already exists and {bak.name} is taken too.")
+        return False
+    dst.rename(bak)  # set the in-the-way copy aside — same directory, atomic, no EXDEV
+    console.warn(f"{dst} already existed — kept the migrated copy, saved the previous one as {bak.name}.")
+    return _safe_move(src, dst, console)  # canonical path now vacated -> plain move
+
+
+def _to_v1(env: Mapping[str, str], console: Console) -> bool:
+    """Legacy -> consolidated. ~/dreame-valetudo-work -> ~/dreame-valetudo/work (MERGED in, keeping
+    both copies on any same-path collision — the legacy copy wins the canonical path and the other
+    is saved as <name>.pre-migration.bak; a compat symlink is left so a pre-.layout build still
+    finds it), and every scattered ~/dreame-*-backup-* into backups/. Returns True only if
+    everything moved cleanly — a collision whose .bak slot is already taken, or a backup whose
+    destination name already exists, yields False, so the caller won't stamp the layout done and the
+    move retries next launch."""
     home = _home(env)
     base = base_dir(env)
+    complete = True
     moved: list[str] = []
     if not env.get("DREAME_WORK"):
         old, new = home / "dreame-valetudo-work", base / "work"
-        if old.is_dir() and not old.is_symlink() and _safe_move(old, new, console):
-            with contextlib.suppress(OSError):
-                old.symlink_to(new)
-            moved.append(f"work dir -> {new} (compat symlink left at {old})")
+        if old.is_dir() and not old.is_symlink():
+            if _safe_merge(old, new, console):
+                with contextlib.suppress(OSError):
+                    old.symlink_to(new)
+                moved.append(f"work dir -> {new} (compat symlink left at {old})")
+            else:
+                complete = False
     if not env.get("DREAME_BACKUPS"):
         dest = base / "backups"
-        n = sum(
-            _looks_like_backup(d) and _safe_move(d, dest / _normalize_backup_name(d.name), console)
-            for d in sorted(home.glob("dreame-*-backup-*"))
-        )
+        n = 0
+        for d in sorted(home.glob("dreame-*-backup-*")):
+            if not _looks_like_backup(d):
+                continue
+            if _safe_move(d, dest / _normalize_backup_name(d.name), console):
+                n += 1
+            else:
+                complete = False
         if n:
             moved.append(f"{n} factory backup(s) -> {dest}/")
     if moved:
         console.say(f"One-time workspace migration to {base}/ (your backups are preserved):")
         for line in moved:
             console.info(f"  moved {line}")
+    return complete
 
 
 # Append-only. Never delete/renumber an entry — every old workspace must retain a full path forward.
@@ -301,10 +352,21 @@ def migrate(env: Mapping[str, str], console: Console) -> None:
             f">= {need}, or run with DREAME_WORK pointed at a separate directory."
         )
     if on_disk < LAYOUT_VERSION:
+        complete = True
         for layout in LAYOUTS:
             if layout.version > on_disk:
-                layout.apply(env, console)
-        _stamp(env)
+                complete = layout.apply(env, console) and complete
+        if complete:
+            _stamp(env)
+        else:
+            # A file already existed at the destination, so the original was left in place. Do NOT
+            # stamp — an un-stamped workspace retries next launch, rather than being marked migrated
+            # while a file is still stranded at the old location (the trap this whole design avoids).
+            console.warn(
+                "Workspace migration is incomplete — a copy already existed at the destination, so "
+                "the original was kept in place. Reconcile the leftover by hand; migration retries "
+                "on the next run."
+            )
     # Self-healing invariants, not layout steps: bring the data fully current on every launch
     # (gaps-only, idempotent) so nothing is left half-migrated — a legacy backup gets a manifest and
     # a nameless robot gets its slug recorded — without a version bump (which only gates old builds).

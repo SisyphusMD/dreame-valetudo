@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import ScriptedConsole
 
-from dreame_valetudo import __version__
+from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
-from dreame_valetudo.run import RecordingRunner, Result
+from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 
 
 def _has(console: ScriptedConsole, needle: str) -> bool:
@@ -93,3 +94,64 @@ def test_main_dispatches_into_fetch_and_verifies_stage1(tmp_path: Path) -> None:
     rc = main(["fetch"], env=env, console=con, runner=RecordingRunner(responder))
     assert rc == 1  # main caught the Die from the verification gate
     assert _has(con, "checksum mismatch")
+
+
+def _stub_production_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep a production-path (SubprocessRunner) test hermetic: no libusb/brew probe, no network
+    # update check, no bundled-changelog read. Migration + the run log still run for real.
+    monkeypatch.setattr(cli, "apply_library_path", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "resolve_libexec", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "show_whats_new", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "check_for_update", lambda *a, **k: None)
+
+
+def test_main_migrates_before_opening_the_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: the run log lives under work/, so migration must run FIRST. If the log opened
+    # first it would pre-create work/, and the never-clobber move would strand the legacy work dir
+    # (leaving the tool seeing zero robots). Drives the real production path against a tmp HOME.
+    home = tmp_path / "home"
+    legacy_state = home / "dreame-valetudo-work" / "robots" / "kitchen" / "state"
+    legacy_state.mkdir(parents=True)
+    (legacy_state / "recon").write_bytes(b"keepme")
+    _stub_production_probes(monkeypatch)
+    env = {"HOME": str(home), "DREAME_NO_UPDATE_CHECK": "1",
+           "DREAME_NO_UDEV_CHECK": "1", "DREAME_NO_DECRYPT": "1"}
+    rc = main(["migrate"], env=env, console=ScriptedConsole(), runner=SubprocessRunner())
+    assert rc == 0
+    base = home / "dreame-valetudo"
+    assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == b"keepme"
+    assert any((base / "work" / "logs").glob("run-*.log"))  # log created INSIDE the migrated work/
+    assert (home / "dreame-valetudo-work").is_symlink()  # legacy consumed, compat symlink left
+
+
+def test_main_pure_command_creates_no_workspace_or_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A _NO_WORKSPACE command (help) must neither migrate nor open a run log — opening a log would
+    # create work/ under HOME and poison a later real command's never-clobber migration.
+    home = tmp_path / "home"
+    home.mkdir()
+    _stub_production_probes(monkeypatch)
+    env = {"HOME": str(home), "DREAME_NO_UDEV_CHECK": "1"}
+    rc = main(["help"], env=env, console=ScriptedConsole(), runner=SubprocessRunner())
+    assert rc == 0
+    assert not (home / "dreame-valetudo").exists()
+
+
+def test_main_blocks_a_workspace_command_when_udev_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Linux with the udev rule absent, a workspace command must fail fast with the install-udev
+    # fix rather than a cryptic USB permission error at FEL time.
+    home = tmp_path / "home"
+    home.mkdir()
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "guard_blocks", lambda *a, **k: True)
+    con = ScriptedConsole()
+    env = {"HOME": str(home), "DREAME_NO_LOG": "1", "DREAME_NO_UPDATE_CHECK": "1"}
+    rc = main(["recon"], env=env, console=con, runner=SubprocessRunner())
+    assert rc == 1
+    assert _has(con, "USB access isn't set up")
+    assert _has(con, "install-udev")

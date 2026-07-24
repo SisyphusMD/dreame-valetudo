@@ -405,46 +405,51 @@ def main(
     ws = Workspace.from_env(resolved_env)
     cmd = args[0] if args else "auto"
 
-    # Production (a real subprocess runner, not a test seam) gets the libusb path plus a scrubbed,
-    # shareable run log wrapped around BOTH seams. Opt out with DREAME_NO_LOG=1.
+    # Production = a real subprocess runner, not a test seam. The recording runner in tests spawns
+    # nothing, so this whole side-effecting block is skipped there (test_migrate drives migration
+    # directly against a tmp HOME).
     production = isinstance(run, SubprocessRunner)
     log: RunLog | None = None
-    if production and resolved_env.get("DREAME_NO_LOG") != "1":
-        now = datetime.now()
-        with contextlib.suppress(OSError):
-            log = RunLog.open(
-                ws.base, Path(resolved_env.get("HOME") or Path.home()), args or ["auto"],
-                __version__, stamp=now.strftime("%Y%m%d-%H%M%S-%f"),
-                when=now.astimezone().strftime("%a %b %d %H:%M:%S %Z %Y"),
-            )
-        if log is not None:
-            con, run = LoggingConsole(log), LoggingRunner(run, log)
-
     try:
+        if production:
+            # Help the fastboot client + sunxi-fel find libusb.
+            apply_library_path(resolve_libexec(resolved_env))
+            if cmd not in _NO_WORKSPACE:
+                # Migrate the on-disk layout BEFORE opening the run log: the log lives under work/,
+                # so opening it first would pre-create the migration destination and defeat the
+                # never-clobber move (stranding a legacy work dir). Pure commands (help/version/
+                # install-udev) skip both — they must never create OR migrate the workspace.
+                migrate(resolved_env, con)
+                if resolved_env.get("DREAME_NO_LOG") != "1":
+                    now = datetime.now()
+                    with contextlib.suppress(OSError):
+                        log = RunLog.open(
+                            ws.base, Path(resolved_env.get("HOME") or Path.home()),
+                            args or ["auto"], __version__,
+                            stamp=now.strftime("%Y%m%d-%H%M%S-%f"),
+                            when=now.astimezone().strftime("%a %b %d %H:%M:%S %Z %Y"),
+                        )
+                    if log is not None:
+                        con, run = LoggingConsole(log), LoggingRunner(run, log)
+
         # An unknown DREAME_MODEL raises ValueError, and any checked command that fails raises
         # RunError — both must read as a clean die, not a raw traceback, so build ctx inside the try.
         profile = load_profile(resolved_env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY)
         ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
 
-        # Help the fastboot client + sunxi-fel find libusb (real subprocess runs only; the recording
-        # runner in tests spawns nothing, so skip the brew probe there). The first-run layout
-        # migration is gated the same way, so tests never touch a real ~ (test_migrate drives it
-        # directly with a tmp HOME).
-        if production:
-            apply_library_path(resolve_libexec(resolved_env))
-            if cmd not in _NO_WORKSPACE:
-                migrate(resolved_env, con)
-                show_whats_new(resolved_env, con)
-                check_for_update(ctx)
-            # On Linux the USB device is gated behind a udev rule; fail fast with the fix rather
-            # than a cryptic permission error at FEL time. No-op on macOS (user-space libusb).
-            if guard_blocks(ctx.system, cmd, resolved_env):
-                con.err("USB access isn't set up on this Linux machine yet, so rooting can't reach "
-                        "the robot.")
-                con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")
-                if log is not None:
-                    log.finish(1)
-                return 1
+        if production and cmd not in _NO_WORKSPACE:
+            show_whats_new(resolved_env, con)
+            check_for_update(ctx)
+        # On Linux the USB device is gated behind a udev rule; fail fast with the fix rather than a
+        # cryptic permission error at FEL time. No-op on macOS (user-space libusb), and self-exempt
+        # for the pure commands.
+        if production and guard_blocks(ctx.system, cmd, resolved_env):
+            con.err("USB access isn't set up on this Linux machine yet, so rooting can't reach "
+                    "the robot.")
+            con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")
+            if log is not None:
+                log.finish(1)
+            return 1
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:
