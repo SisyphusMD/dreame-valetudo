@@ -1,7 +1,7 @@
 # dreame-valetudo — Python CLI to root Dreame robot vacuums and install Valetudo.
 [project]
 name = "dreame-valetudo"
-version = "0.1.1"
+version = "0.2.0-rc.3"
 description = "Guided, idempotent tool to root supported Dreame robot vacuums and install Valetudo"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
