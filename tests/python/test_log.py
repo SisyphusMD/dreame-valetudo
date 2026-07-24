@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from conftest import ScriptedConsole
+
 from dreame_valetudo.log import (
+    BufferingConsole,
     LoggingConsole,
     LoggingRunner,
     RunLog,
@@ -188,3 +191,43 @@ def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:
     assert "/Users/bob" not in text
     assert "d97c4de6f648" not in text
     assert "!! backup at ~/r2416-<redacted-id>-backup" in text
+
+
+# --- BufferingConsole: capture pre-log output, replay it once the log opens --------------------
+def test_buffering_console_forwards_to_the_inner_console(tmp_path: Path) -> None:
+    # It must not swallow output: the wrapped console still sees every message and prompt live.
+    inner = ScriptedConsole(confirms=[True])
+    buf = BufferingConsole(inner)
+    buf.say("migrating")
+    with buf.progress("moving"):
+        pass
+    assert buf.confirm("ok?") is True
+    assert ("say", "migrating") in inner.lines
+    assert ("progress", "moving") in inner.lines  # progress forwarded to the inner console
+
+
+def test_buffering_console_replays_pre_log_output_into_the_log(tmp_path: Path) -> None:
+    inner = ScriptedConsole()
+    buf = BufferingConsole(inner)
+    buf.say("One-time workspace migration to /Users/bob/dreame-valetudo/")
+    with buf.progress("Decrypting the recovery backup"):
+        pass
+    buf.warn("keystream recovery failed: not dominated by fill")
+    log = _open(tmp_path, Path("/Users/bob"))
+    buf.flush_into(log)
+    log.close()
+    text = log.path.read_text()
+    assert "# the workspace migration below ran before this run log was opened" in text
+    assert ">> One-time workspace migration to ~/dreame-valetudo/" in text  # scrubbed on the way in
+    assert "-> Decrypting the recovery backup — done (" in text             # progress done-line kept
+    assert "!! keystream recovery failed: not dominated by fill" in text
+
+
+def test_buffering_console_flush_is_idempotent(tmp_path: Path) -> None:
+    buf = BufferingConsole(ScriptedConsole())
+    buf.say("migrated")
+    log = _open(tmp_path, tmp_path / "home")
+    buf.flush_into(log)
+    buf.flush_into(log)  # second flush is a no-op: the buffer was cleared
+    log.close()
+    assert log.path.read_text().count(">> migrated") == 1

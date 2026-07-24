@@ -126,6 +126,25 @@ def test_main_migrates_before_opening_the_run_log(
     assert not (home / "dreame-valetudo-work").exists()  # legacy consumed, old path removed
 
 
+def test_main_replays_migration_output_into_the_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Migration runs before the log opens (it must), so its output would otherwise be missing from the
+    # shareable log. It's buffered and replayed in, framed by a note that it predates the timeline.
+    home = tmp_path / "home"
+    legacy_state = home / "dreame-valetudo-work" / "robots" / "kitchen" / "state"
+    legacy_state.mkdir(parents=True)
+    (legacy_state / "recon").write_bytes(b"keepme")
+    _stub_production_probes(monkeypatch)
+    env = {"HOME": str(home), "DREAME_NO_UPDATE_CHECK": "1",
+           "DREAME_NO_UDEV_CHECK": "1", "DREAME_NO_DECRYPT": "1"}
+    rc = main(["migrate"], env=env, console=ScriptedConsole(), runner=SubprocessRunner())
+    assert rc == 0
+    log_text = next((home / "dreame-valetudo" / "work" / "logs").glob("run-*.log")).read_text()
+    assert "ran before this run log was opened" in log_text          # the framing note
+    assert "One-time workspace migration" in log_text                # the migration narrative itself
+
+
 def test_main_pure_command_creates_no_workspace_or_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

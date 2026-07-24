@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar, TextIO
 
-from .console import Console
+from .console import Console, Progress, _fmt_elapsed
 from .run import Result, RunError, Runner
 
 # Redaction patterns, applied to every line before it is written. Order matters: the SSH-key blob is
@@ -122,6 +122,11 @@ class RunLog:
     def line(self, prefix: str, text: str) -> None:
         self._raw(f"{self._stamp()} {prefix} {scrub(text, self._home)}")
 
+    def note(self, text: str) -> None:
+        """A raw, unstamped ``#`` annotation line — for framing content that predates the timeline
+        (e.g. migration output replayed in after it ran before the log opened)."""
+        self._raw("# " + scrub(text, self._home))
+
     def command(self, result: Result, duration: float | None = None) -> None:
         tool = result.argv[0].rsplit("/", 1)[-1] if result.argv else ""
         parts = redact_dust_token((tool, *result.argv[1:]))
@@ -201,3 +206,76 @@ class LoggingRunner(Runner):
         if check and not result.ok:
             raise RunError(result)
         return result
+
+
+class _RecordingProgress(Progress):
+    """Forwards to a real Progress while recording its done-line into a pending buffer, so a progress
+    step that ran before the log opened still reaches it. Times with its own clock (created alongside
+    the wrapped one, so the elapsed shown matches within milliseconds)."""
+
+    def __init__(self, inner: Progress, pending: list[tuple[str, str]], label: str,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._inner = inner
+        self._pending = pending
+        self._label = label
+        self._clock = clock
+        self._t0 = clock()
+
+    def __enter__(self) -> Progress:
+        self._inner.__enter__()
+        return self
+
+    def close(self, *, done: bool = False) -> None:
+        self._inner.close(done=done)
+        if done:
+            elapsed = _fmt_elapsed(self._clock() - self._t0)
+            self._pending.append(("->", f"{self._label} — done ({elapsed})"))
+
+    def clear_line(self) -> None:
+        self._inner.clear_line()
+
+
+class BufferingConsole(Console):
+    """Wraps a Console, forwarding every message and prompt to it unchanged (so terminal rendering and
+    test capture are untouched) while recording them, so output produced BEFORE the run log exists can
+    be replayed into the log the moment it opens.
+
+    First-run migration is the case: the log lives under the very ``work/`` dir migration consolidates,
+    so it must run before the log is opened — leaving a migration that hit a snag with nothing in the
+    shareable log. This records the same ``(prefix, text)`` pairs ``LoggingConsole`` writes live, so a
+    replayed line matches a live one bar its elapsed stamp (~0s, since replay is at log-open)."""
+
+    def __init__(self, inner: Console) -> None:
+        super().__init__(color=False)
+        self._inner = inner
+        self._pending: list[tuple[str, str]] = []
+
+    def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
+              lead: bool = False, trail: bool = False) -> None:
+        self._pending.append((LoggingConsole._PREFIX.get(kind, "  "), message))
+        self._inner._emit(kind, message, wrap=wrap, hang=hang, lead=lead, trail=trail)
+
+    def confirm(self, prompt: str) -> bool:
+        self._pending.append(("??", prompt))
+        answer = self._inner.confirm(prompt)
+        self._pending.append(("->", "yes" if answer else "no"))
+        return answer
+
+    def ask(self, prompt: str) -> str:
+        self._pending.append(("??", prompt))
+        answer = self._inner.ask(prompt)
+        self._pending.append(("->", answer))
+        return answer
+
+    def progress(self, label: str) -> Progress:
+        return _RecordingProgress(self._inner.progress(label), self._pending, label)
+
+    def flush_into(self, log: RunLog) -> None:
+        """Replay the buffered pre-log output into ``log`` (file only — the terminal already showed it
+        live), framed by a note that it predates the timeline. Idempotent: clears the buffer."""
+        if not self._pending:
+            return
+        log.note("the workspace migration below ran before this run log was opened")
+        for prefix, text in self._pending:
+            log.line(prefix, text)
+        self._pending.clear()

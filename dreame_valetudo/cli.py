@@ -17,7 +17,7 @@ from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import resolve_libexec
 from .hazards import model_hazard_check
-from .log import LoggingConsole, LoggingRunner, RunLog
+from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
 from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
@@ -419,7 +419,11 @@ def main(
                 # so opening it first would pre-create the migration destination and defeat the
                 # never-clobber move (stranding a legacy work dir). Pure commands (help/version/
                 # install-udev) skip both — they must never create OR migrate the workspace.
-                migrate(resolved_env, con)
+                # Migration output goes to a buffering console and is replayed into the log the
+                # moment it opens, so a first-run migration problem still lands in the shareable log
+                # (the log itself can't exist yet).
+                migration_console = BufferingConsole(con)
+                migrate(resolved_env, migration_console)
                 if resolved_env.get("DREAME_NO_LOG") != "1":
                     now = datetime.now()
                     with contextlib.suppress(OSError):
@@ -430,6 +434,7 @@ def main(
                             when=now.astimezone().strftime("%a %b %d %H:%M:%S %Z %Y"),
                         )
                     if log is not None:
+                        migration_console.flush_into(log)
                         con, run = LoggingConsole(log), LoggingRunner(run, log)
 
         # An unknown DREAME_MODEL raises ValueError, and any checked command that fails raises

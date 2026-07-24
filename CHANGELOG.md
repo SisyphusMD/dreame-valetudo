@@ -8,6 +8,9 @@
   with "keystream recovery failed". They're now decrypted together, the sparse slice anchoring the
   shared keystream for the dense ones; re-running fills in any slice a prior run left behind. The
   sealed `.bin` dumps and the recovery `.zip` were always preserved, so nothing was ever lost.
+- **fix**: the shareable run log now includes first-run workspace migration. Migration runs before
+  the log can be created (the log lives inside the folder it sets up), so its output — including any
+  problem it reported — was previously missing from the log; it's now captured and replayed in.
 
 ## [0.2.0] - 2026-07-24
 
