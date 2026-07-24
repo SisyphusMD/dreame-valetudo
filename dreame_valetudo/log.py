@@ -39,6 +39,19 @@ _LONGINT = re.compile(r"(?<![\w.])-?\d{9,}(?![\w.])")
 # random credential — so ordinary all-alpha words in a shared log (valetudo, processes, …) survive.
 _MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,64}\b")
 
+# Fixed, public filenames of the recon disaster-recovery dumps (migrate._RECON_DUMPS). Each is an
+# 8-char letter+digit token, so _MIKEY would redact it — but they are constant filenames, never
+# secrets, and a shared log is far more useful when it can name WHICH slice it means (which decrypt
+# failed) instead of three identical <redacted-id>s. An EXACT-literal allowlist can only ever spare
+# these strings, never a real credential (which is random and won't equal a fixed filename). Kept in
+# sync with _RECON_DUMPS by test_recon_dump_names_all_survive_scrub.
+_DUST_DUMP_NAMES = frozenset({"dustx100", "dustx101", "dustx102"})
+
+
+def _mask_mikey(match: re.Match[str]) -> str:
+    token = match.group(0)
+    return token if token in _DUST_DUMP_NAMES else "<redacted-id>"
+
 
 def scrub(text: str, home: Path | None = None) -> str:
     """Redact personal + identifying values from one log line."""
@@ -50,7 +63,7 @@ def scrub(text: str, home: Path | None = None) -> str:
     text = _EMAIL.sub("<redacted-email>", text)
     text = _HEX.sub("<redacted-id>", text)
     text = _LONGINT.sub("<redacted-id>", text)
-    return _MIKEY.sub("<redacted-id>", text)
+    return _MIKEY.sub(_mask_mikey, text)
 
 
 def redact_dust_token(args: Sequence[object]) -> list[str]:

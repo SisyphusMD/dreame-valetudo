@@ -10,7 +10,9 @@
   sealed `.bin` dumps and the recovery `.zip` were always preserved, so nothing was ever lost.
 - **fix**: the shareable run log now includes first-run workspace migration. Migration runs before
   the log can be created (the log lives inside the folder it sets up), so its output — including any
-  problem it reported — was previously missing from the log; it's now captured and replayed in.
+  problem it reported — was previously missing from the log; it's now captured and replayed in. The
+  recovery-backup slice names (`dustx100`/`101`/`102`) stay readable in the log instead of being
+  redacted as credential-shaped, so a shared log shows which slice a step refers to.
 
 ## [0.2.0] - 2026-07-24
 

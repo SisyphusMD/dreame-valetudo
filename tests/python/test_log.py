@@ -15,6 +15,7 @@ from dreame_valetudo.log import (
     redact_dust_token,
     scrub,
 )
+from dreame_valetudo.migrate import _RECON_DUMPS
 from dreame_valetudo.run import RecordingRunner, Result
 
 
@@ -67,6 +68,23 @@ def test_scrub_redacts_a_miio_key_shaped_token() -> None:
     # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
     assert "valetudo" in scrub("== valetudo running? == RUNNING")
     assert "RUNNING" in scrub("== valetudo running? == RUNNING")
+
+
+def test_scrub_keeps_the_recon_dump_filenames() -> None:
+    # dustx100/101/102 are miio-key-shaped (8 chars, letters+digits) but are public, constant
+    # filenames — a shared log must name WHICH recovery slice it means, not <redacted-id> them all.
+    text = scrub("dustx101.bin -> dustx101.dd.gz (229 MB); could not decrypt dustx102.bin")
+    assert "dustx101.bin -> dustx101.dd.gz" in text
+    assert "dustx102.bin" in text
+    # The allowlist is exact: a key-shaped lookalike that isn't a real dump name is still redacted.
+    assert "dustx999abc" not in scrub("token dustx999abc")
+
+
+def test_recon_dump_names_all_survive_scrub() -> None:
+    # Drift guard: every dump name migrate actually pulls must be allowlisted, so adding a slice can't
+    # silently start redacting it into an unreadable <redacted-id>.
+    for name in _RECON_DUMPS:
+        assert name in scrub(f"Decrypting {name}.bin")
 
 
 # --- redact_dust_token: the 8-hex flash token scrub()'s length rule can't catch ---------------
