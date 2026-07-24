@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
 - **ux**: the terminal output is redesigned for readability — long operations show a live spinner
   with elapsed time instead of minutes of silence, phase headings show where you are in the
   journey, output from the robot is set off from the tool's own messages, text wraps to your
@@ -41,6 +43,12 @@
   permission error.
 - **feat**: a Fedora/RHEL/openSUSE `.rpm` is now published alongside the `.deb` — same self-contained
   bundle, and it sets up sudo-less USB access automatically at install too.
+
+### Dependencies
+
+- chore(deps): update dependency hypfer/valetudo to v2026.07.0
+- chore(deps): update actions/setup-python action to v7
+- chore(deps): update actions/checkout action to v7.0.1
 
 ## [0.1.1] - 2026-07-22
 

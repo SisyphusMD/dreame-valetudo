@@ -53,8 +53,8 @@ helper that drives the robot's FEL mode) once.
 Bundles everything (no Homebrew, no build); best for a non-technical person. Not sure which chip?
 Apple menu → About This Mac ("Apple M…" is Apple Silicon, "Intel" is Intel). Open it, then run
 `dreame-valetudo`.
-- **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-arm64.pkg)
-- **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo-macos-x86_64.pkg)
+- **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo-macos-arm64.pkg)
+- **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo-macos-x86_64.pkg)
 
 ---
 
@@ -62,8 +62,8 @@ Apple menu → About This Mac ("Apple M…" is Apple Silicon, "Intel" is Intel).
 
 Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch
 (`dpkg --print-architecture`):
-- **arm64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_arm64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_arm64.deb)
-- **amd64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_amd64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo_amd64.deb)
+- **arm64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo_arm64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo_arm64.deb)
+- **amd64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo_amd64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo_amd64.deb)
 ```bash
 sudo apt install ./dreame-valetudo_arm64.deb    # or the amd64 file
 dreame-valetudo
@@ -74,8 +74,8 @@ dreame-valetudo
 ### Fedora / RHEL / openSUSE (`.rpm`)
 
 Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch (`uname -m`):
-- **x86_64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.x86_64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.x86_64.rpm)
-- **aarch64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.aarch64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.1.1/dreame-valetudo.aarch64.rpm)
+- **x86_64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo.x86_64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo.x86_64.rpm)
+- **aarch64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo.aarch64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.0/dreame-valetudo.aarch64.rpm)
 ```bash
 sudo dnf install ./dreame-valetudo.x86_64.rpm    # or the aarch64 file (zypper/yum work too)
 dreame-valetudo
