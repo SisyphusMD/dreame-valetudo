@@ -128,4 +128,4 @@ def test_migrate_heals_recon_backups_after_structural_move(tmp_path: Path) -> No
     assert gzip.decompress((new_recon / "dustx100.dd.gz").read_bytes()) == plain  # decrypted there
     assert (new_recon / "dreame_recovery_backup.zip").read_bytes() == b"zip"  # renamed forward there
     assert not (new_recon / "dreame_samples.zip").exists()
-    assert (tmp_path / "dreame-valetudo-work").is_symlink()  # v1 compat symlink at the old path
+    assert not (tmp_path / "dreame-valetudo-work").exists()  # old path removed, not symlinked forward

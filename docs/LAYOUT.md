@@ -22,7 +22,7 @@ disk is refused rather than reverse-migrated.
 | Layout | Introduced in | What it is / what changed |
 |---|---|---|
 | 0 | (pre-versioning) | Legacy: work dir at `~/dreame-valetudo-work`, factory backups scattered as `~/dreame-<tag>-backup-<ts>` directly in `$HOME`. No marker. |
-| 1 | 0.2.0 | Consolidated under one `~/dreame-valetudo/` umbrella: `work/` (cache + robots) and `backups/`, plus the `.layout` marker. A compatibility symlink at the old `~/dreame-valetudo-work` keeps a pre-versioning build working through the transition. |
+| 1 | 0.2.0 | Consolidated under one `~/dreame-valetudo/` umbrella: `work/` (cache + robots) and `backups/`, plus the `.layout` marker. The old `~/dreame-valetudo-work` path is removed, not symlinked forward — downgrading isn't supported, so an old build starts fresh rather than reading a moved layout it can't understand. |
 
 ## Self-healing invariants (not versioned)
 

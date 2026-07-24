@@ -152,11 +152,12 @@ def _safe_merge(src: Path, dst: Path, console: Console) -> bool:
 def _to_v1(env: Mapping[str, str], console: Console) -> bool:
     """Legacy -> consolidated. ~/dreame-valetudo-work -> ~/dreame-valetudo/work (MERGED in, keeping
     both copies on any same-path collision — the legacy copy wins the canonical path and the other
-    is saved as <name>.pre-migration.bak; a compat symlink is left so a pre-.layout build still
-    finds it), and every scattered ~/dreame-*-backup-* into backups/. Returns True only if
-    everything moved cleanly — a collision whose .bak slot is already taken, or a backup whose
-    destination name already exists, yields False, so the caller won't stamp the layout done and the
-    move retries next launch."""
+    is saved as <name>.pre-migration.bak), and every scattered ~/dreame-*-backup-* into backups/.
+    The emptied old path is removed, NOT symlinked forward: downgrading is unsupported, so an old
+    build starts fresh rather than reading a half-view of a layout it can't understand through a
+    compat link. Returns True only if everything moved cleanly — a collision whose .bak slot is
+    already taken, or a backup whose destination name already exists, yields False, so the caller
+    won't stamp the layout done and the move retries next launch."""
     home = _home(env)
     base = base_dir(env)
     complete = True
@@ -165,9 +166,7 @@ def _to_v1(env: Mapping[str, str], console: Console) -> bool:
         old, new = home / "dreame-valetudo-work", base / "work"
         if old.is_dir() and not old.is_symlink():
             if _safe_merge(old, new, console):
-                with contextlib.suppress(OSError):
-                    old.symlink_to(new)
-                moved.append(f"work dir -> {new} (compat symlink left at {old})")
+                moved.append(f"work dir -> {new}")
             else:
                 complete = False
     if not env.get("DREAME_BACKUPS"):

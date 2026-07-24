@@ -123,7 +123,7 @@ def test_main_migrates_before_opening_the_run_log(
     base = home / "dreame-valetudo"
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == b"keepme"
     assert any((base / "work" / "logs").glob("run-*.log"))  # log created INSIDE the migrated work/
-    assert (home / "dreame-valetudo-work").is_symlink()  # legacy consumed, compat symlink left
+    assert not (home / "dreame-valetudo-work").exists()  # legacy consumed, old path removed
 
 
 def test_main_pure_command_creates_no_workspace_or_log(

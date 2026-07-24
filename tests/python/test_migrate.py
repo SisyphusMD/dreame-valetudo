@@ -79,13 +79,13 @@ def test_fresh_install_just_stamps_current(tmp_path: Path) -> None:
     assert marker["tool_version"] and marker["min_tool_version"] == M.LAYOUTS[-1].since
 
 
-def test_consolidates_legacy_and_leaves_a_compat_symlink(tmp_path: Path) -> None:
+def test_consolidates_legacy_and_removes_the_old_path(tmp_path: Path) -> None:
     _seed_v0(tmp_path)
     M.migrate(_env(tmp_path), ScriptedConsole())
     base = tmp_path / "dreame-valetudo"
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
     old = tmp_path / "dreame-valetudo-work"
-    assert old.is_symlink() and old.resolve() == (base / "work").resolve()
+    assert not old.exists() and not old.is_symlink()  # old path removed, NOT symlinked (no downgrade)
     assert not any(tmp_path.glob("dreame-*-backup-*"))  # scattered backup was moved out of ~
     assert (base / "backups" / _BK1 / "manifest.json").exists()  # moved + renamed, then backfilled
 
@@ -102,7 +102,7 @@ def test_is_idempotent(tmp_path: Path) -> None:
 def test_merges_a_partial_destination_without_clobbering(tmp_path: Path) -> None:
     # A stray/partial destination work/ (e.g. a logs/ dir a pre-migration run created) must NOT
     # block migration: the legacy work dir MERGES in file-by-file, nothing pre-existing is touched,
-    # and — since there's no same-path collision — the legacy dir is fully consumed + symlinked.
+    # and — since there's no same-path collision — the legacy dir is fully consumed + removed.
     _seed_v0(tmp_path)
     base = tmp_path / "dreame-valetudo"
     (base / "work" / "logs").mkdir(parents=True)
@@ -111,7 +111,7 @@ def test_merges_a_partial_destination_without_clobbering(tmp_path: Path) -> None
     assert (base / "work" / "logs" / "run-old.log").read_text() == "prior"  # pre-existing kept
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
     old = tmp_path / "dreame-valetudo-work"
-    assert old.is_symlink() and old.resolve() == (base / "work").resolve()  # fully consumed
+    assert not old.exists()  # fully consumed, old path removed (not symlinked)
     assert json.loads((base / ".layout").read_text())["layout_version"] == M.LAYOUT_VERSION  # stamped
 
 
@@ -128,7 +128,7 @@ def test_merge_keeps_both_on_a_file_collision(tmp_path: Path) -> None:
     M.migrate(_env(tmp_path), con)
     assert (dst / "recon").read_bytes() == SENTINEL  # legacy copy took the canonical path
     assert (dst / "recon.pre-migration.bak").read_bytes() == b"already-here"  # other copy kept
-    assert (tmp_path / "dreame-valetudo-work").is_symlink()  # fully consumed, nothing stranded
+    assert not (tmp_path / "dreame-valetudo-work").exists()  # fully consumed, old path removed
     assert json.loads((base / ".layout").read_text())["layout_version"] == M.LAYOUT_VERSION
     assert any(".pre-migration.bak" in msg for _k, msg in con.lines)
 
