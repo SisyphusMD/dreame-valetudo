@@ -4,7 +4,8 @@
 
 - **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a
   dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
-  starting a second one. Set `DREAME_NO_TMUX=1` to opt out.
+  starting a second one — including when you are already working in your own tmux. Set
+  `DREAME_NO_TMUX=1` to opt out.
 - **new**: a second run against the same workspace is refused instead of racing the first — the
   session wrapper can't cover a user already inside their own tmux, so a lock does.
 - **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no

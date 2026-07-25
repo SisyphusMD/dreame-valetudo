@@ -7,6 +7,7 @@ import contextlib
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -37,7 +38,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .session import PURE_COMMANDS, hold_workspace_lock, tmux_argv, tmux_runs
+from .session import PURE_COMMANDS, hold_workspace_lock, tmux_plan, tmux_runs
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -397,15 +398,20 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str]) -> None:
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
     if found is not None and not tmux_runs(Path(found)):
         found = None  # a broken tmux must not replace the run — exec would succeed and then fail
-    target = tmux_argv(
+    plan = tmux_plan(
         [sys.argv[0], *args], env, Path(found) if found else None,
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
     )
-    if target is None:
+    if plan is None:
         return
-    # tmux unusable (missing terminfo, bad binary) — run inline rather than fail the whole run
+    # Setup steps first (creating the session detached when already inside another). If one fails
+    # there is no session to move to, so fall through and run inline rather than strand the user.
+    for step in plan[:-1]:
+        if subprocess.run(step, check=False).returncode != 0:
+            return
+    # An exec failure here is the same story: run inline rather than fail the whole run.
     with contextlib.suppress(OSError):
-        os.execv(target[0], target)
+        os.execv(plan[-1][0], plan[-1])
 
 
 def main(

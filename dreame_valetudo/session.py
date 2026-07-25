@@ -63,10 +63,13 @@ def hold_workspace_lock(path: Path, command: str) -> None:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
+        # Reached only where the session wrapper did not apply — no terminal, or opted out — so
+        # there is nothing for this invocation to rejoin. Says nothing about how the wrapper works:
+        # from a terminal, re-running simply lands the user back in the run.
         raise Die(
-            "Another dreame-valetudo run is already working in this workspace. Rejoin it with "
-            "'tmux attach -t dreame-valetudo', or wait for it to finish — running two at once "
-            "against the same robot risks bricking it."
+            "Another dreame-valetudo run is already working in this workspace — running two at "
+            "once against the same robot risks bricking it. Wait for it to finish, or re-run "
+            "this from a terminal to rejoin it."
         ) from None
     _HELD.append(fh)
 
@@ -88,24 +91,35 @@ def tmux_runs(tmux: Path) -> bool:
         return False
 
 
-def tmux_argv(
+def tmux_plan(
     self_cmd: Sequence[str],
     env: Mapping[str, str],
     tmux: Path | None,
     *,
     interactive: bool,
-) -> list[str] | None:
-    """The argv to exec to put `self_cmd` inside the session, or None to run inline.
+) -> list[list[str]] | None:
+    """How to put `self_cmd` in the session: commands to run, last one to exec. None = run inline.
 
     Runs inline when there is no tmux, when there is no terminal to attach to (piped or scripted
-    output has nothing to reattach), when already inside tmux (nesting helps nobody), and when
-    DREAME_NO_TMUX is set as the escape hatch.
+    output has nothing to reattach), and when DREAME_NO_TMUX is set as the escape hatch.
+
+    Being inside someone else's tmux is NOT one of those cases. tmux refuses to attach a session
+    from within another, so the session is created detached and this client is moved to it — the
+    user typed `dreame-valetudo` and lands in the run either way, which is the whole point. Doing
+    nothing here would leave the people most likely to be working remotely with no session at all.
     """
     if tmux is None or not interactive:
         return None
-    if env.get("TMUX") or env.get("DREAME_NO_TMUX"):
+    if env.get("DREAME_NO_TMUX"):
         return None
     cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
     if cmd in PURE_COMMANDS:
         return None
-    return [str(tmux), "new-session", "-A", "-s", SESSION, "--", *self_cmd]
+    t = str(tmux)
+    # -A is join-or-start: attach to the session if it exists, otherwise create it.
+    if env.get("TMUX"):
+        return [
+            [t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd],
+            [t, "switch-client", "-t", SESSION],
+        ]
+    return [[t, "new-session", "-A", "-s", SESSION, "--", *self_cmd]]
