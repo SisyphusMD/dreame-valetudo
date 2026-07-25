@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -15,7 +16,7 @@ from . import __version__
 from .console import Console, Die
 from .constants import ROBOT_AP_IP
 from .context import Context
-from .fastboot import resolve_libexec
+from .fastboot import find_helper, resolve_libexec
 from .hazards import model_hazard_check
 from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
 from .migrate import migrate, report
@@ -36,6 +37,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
+from .session import tmux_argv
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -390,6 +392,20 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     return 0
 
 
+def _reexec_under_tmux(args: list[str], env: dict[str, str]) -> None:
+    """Replace this process with one inside the tmux session, when that applies."""
+    found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
+    target = tmux_argv(
+        [sys.argv[0], *args], env, Path(found) if found else None,
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+    )
+    if target is None:
+        return
+    # tmux unusable (missing terminfo, bad binary) — run inline rather than fail the whole run
+    with contextlib.suppress(OSError):
+        os.execv(target[0], target)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -412,6 +428,11 @@ def main(
     log: RunLog | None = None
     try:
         if production:
+            # Before anything touches the workspace or opens the run log: re-exec inside tmux so
+            # the run outlives its terminal, and so a second invocation rejoins it instead of
+            # starting a rival process against the same robot. Replaces this process when it
+            # applies; an exec failure just falls through and runs inline.
+            _reexec_under_tmux(args, resolved_env)
             # Help the fastboot client + sunxi-fel find libusb.
             apply_library_path(resolve_libexec(resolved_env))
             if cmd not in _NO_WORKSPACE:
