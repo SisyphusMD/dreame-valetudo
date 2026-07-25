@@ -40,10 +40,6 @@ PURE_COMMANDS = frozenset(
     {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
 )
 
-# Read-only: safe to run while another run holds the workspace, and refusing them would only hide
-# the very information the user is asking for.
-READ_ONLY_COMMANDS = frozenset({"status"})
-
 # Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
 # loss — so there is never a stale lock to detect, and never a judgement call for the user about
 # whether some recorded pid is still alive. Module-level purely to keep the handle from being
@@ -59,7 +55,7 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     process — but it deliberately does not nest, so anyone working inside their own tmux (the
     remote/Pi case) is not covered by it, and neither is a piped or opted-out run.
     """
-    if command in PURE_COMMANDS or command in READ_ONLY_COMMANDS:
+    if command in PURE_COMMANDS:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = path.open("w")

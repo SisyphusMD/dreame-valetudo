@@ -112,9 +112,10 @@ def test_the_lock_refuses_a_second_run(tmp_path: Path) -> None:
     assert out.returncode == 3  # the rival could not take the lock
 
 
-@pytest.mark.parametrize("cmd", ["status", "help", "--version", "install-udev"])
-def test_read_only_and_pure_commands_take_no_lock(tmp_path: Path, cmd: str) -> None:
-    """Refusing `status` while a run is in progress would hide exactly what the user asked for."""
+@pytest.mark.parametrize("cmd", sorted(PURE_COMMANDS))
+def test_only_pure_commands_skip_the_lock(tmp_path: Path, cmd: str) -> None:
+    """`status` is NOT among them: it creates the workspace, stamps .layout and writes a run log
+    on every invocation, so exempting it would have been an unenforceable claim."""
     lock = tmp_path / ".lock"
     hold_workspace_lock(lock, "root")          # a run is in progress
-    hold_workspace_lock(lock, cmd)             # must not raise
+    hold_workspace_lock(lock, cmd)             # pure commands must still not raise
