@@ -17,13 +17,13 @@ from dreame_valetudo.run import Result
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 
 
-def _stage_image(ctx: Context) -> None:
+def _stage_image(ctx: Context, dust: str = "DUSTTOKEN") -> None:
     robot = ctx.need_robot()
     fw = robot.fw_dir
     fw.mkdir(parents=True, exist_ok=True)
     for f in ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img"):
         (fw / f).write_text("x")
-    (fw / "check.txt").write_text("DUSTTOKEN\n")
+    (fw / "check.txt").write_text(f"{dust}\n")
     robot.state_set("image", "staged")  # so root()'s self-provision chain sees it as staged
 
 
@@ -76,6 +76,37 @@ def test_root_fails_closed_when_recon_identity_missing(make_ctx: CtxFactory) -> 
         root(ctx)
     assert not ctx.need_robot().state_has("rooted")
     assert _flash_ops(ctx) == []  # nothing flashed
+
+
+def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> None:
+    """The staged image's check.txt is hex8(config[0:4] ^ 0xC9ACBCC6). A token belonging to a
+    different config must stop the flash — the live/recon cross-check cannot catch this, because
+    both of its operands come from the connected robot."""
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx, dust="d88e8f82")  # built for 11223344…, not this robot's d97c4de6…
+    _write_recon(ctx, _CFG)
+    with pytest.raises(Die, match="SAFETY STOP: the staged image was built for config 11223344"):
+        root(ctx)
+    assert not ctx.need_robot().state_has("rooted")
+    assert ctx.runner.calls == []  # refused before the FEL button sequence, not just before flashing
+
+
+def test_root_accepts_the_image_built_for_this_robot(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx, dust="10d0f120")  # hex8(d97c4de6 ^ C9ACBCC6)
+    _write_recon(ctx, _CFG)
+    root(ctx)
+    assert ctx.need_robot().state_has("rooted")
+    assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)
+
+
+def test_root_allows_a_token_that_is_not_8_hex(make_ctx: CtxFactory) -> None:
+    """FAIL OPEN by design: a future dustbuilder check.txt format must not block a real flash."""
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx, dust="NOTHEX01")  # right length, not hex
+    _write_recon(ctx, _CFG)
+    root(ctx)
+    assert ctx.need_robot().state_has("rooted")
 
 
 def test_root_refuses_on_config_mismatch(make_ctx: CtxFactory) -> None:

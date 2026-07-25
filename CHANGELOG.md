@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: the flash now refuses an image built for a different robot, and reports a missing recon
+  record before the FEL button sequence instead of after it.
+
 ## [0.2.1] - 2026-07-24
 
 - **fix**: decrypting the recovery backup no longer fails on an in-use robot. The three flash slices
