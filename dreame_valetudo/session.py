@@ -15,6 +15,7 @@ The decision is a pure function so it is testable; only the exec itself lives in
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -30,6 +31,23 @@ SESSION = "dreame-valetudo"
 PURE_COMMANDS = frozenset(
     {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
 )
+
+
+def tmux_runs(tmux: Path) -> bool:
+    """Whether this tmux can actually start.
+
+    Probed BEFORE exec because exec is the point of no return in the wrong direction: a tmux that
+    is the wrong architecture, or bundled without the terminfo it needs, execs successfully and
+    then fails as tmux — so the user gets tmux's error instead of their run, and the OSError
+    fallback never fires. Not routed through the Runner: this decides how the process starts,
+    before any Context exists (same bootstrap exception as platform_env's probes).
+    """
+    try:
+        return subprocess.run(
+            [str(tmux), "-V"], capture_output=True, timeout=5, check=False
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def tmux_argv(

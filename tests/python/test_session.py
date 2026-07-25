@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.session import PURE_COMMANDS, SESSION, tmux_argv
+from dreame_valetudo.session import PURE_COMMANDS, SESSION, tmux_argv, tmux_runs
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
 _SELF = ("/usr/bin/dreame-valetudo", "root")
@@ -63,3 +63,23 @@ def test_runs_inline_without_a_terminal() -> None:
 
 def test_runs_inline_when_no_tmux_is_available() -> None:
     assert tmux_argv(_SELF, {}, None, interactive=True) is None
+
+
+def test_tmux_runs_accepts_a_working_binary(tmp_path: Path) -> None:
+    good = tmp_path / "tmux"
+    good.write_text("#!/bin/sh\necho 'tmux 3.5a'\n")
+    good.chmod(0o755)
+    assert tmux_runs(good) is True
+
+
+def test_tmux_runs_rejects_one_that_cannot_start(tmp_path: Path) -> None:
+    """The bundled-binary failure mode: present and executable, but dies on startup (wrong arch,
+    missing terminfo). exec would succeed and hand the user tmux's error instead of their run."""
+    bad = tmp_path / "tmux"
+    bad.write_text("#!/bin/sh\necho 'missing or unsuitable terminal' >&2\nexit 1\n")
+    bad.chmod(0o755)
+    assert tmux_runs(bad) is False
+
+
+def test_tmux_runs_rejects_a_missing_binary(tmp_path: Path) -> None:
+    assert tmux_runs(tmp_path / "not-here") is False

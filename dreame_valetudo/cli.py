@@ -37,7 +37,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .session import PURE_COMMANDS, tmux_argv
+from .session import PURE_COMMANDS, tmux_argv, tmux_runs
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -395,6 +395,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
 def _reexec_under_tmux(args: list[str], env: dict[str, str]) -> None:
     """Replace this process with one inside the tmux session, when that applies."""
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
+    if found is not None and not tmux_runs(Path(found)):
+        found = None  # a broken tmux must not replace the run — exec would succeed and then fail
     target = tmux_argv(
         [sys.argv[0], *args], env, Path(found) if found else None,
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
