@@ -6,24 +6,28 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die
+from .console import Console, Die, bookmark_prompts_in, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
-from .fastboot import resolve_libexec
+from .fastboot import find_helper, resolve_libexec
 from .hazards import model_hazard_check
+from .installs import find_installs
 from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
 from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image, verify_form
-from .phases.manage import clean, forget, rename
+from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
 from .phases.recon import recon
@@ -36,6 +40,19 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
+from .session import (
+    PURE_COMMANDS,
+    client_attached,
+    describe_run,
+    hold_workspace_lock,
+    kill_session,
+    lock_free,
+    name_the_robot_on_the_bar,
+    running_run,
+    tmux_plan,
+    tmux_runs,
+    tmux_session_exists,
+)
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -46,9 +63,9 @@ _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"}
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
 # install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
-_NO_WORKSPACE = frozenset(
-    {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
-)
+# Shared with the tmux wrapper, which excludes exactly the same set for the same reason: one list,
+# so a command can't end up pure for one purpose and not the other.
+_NO_WORKSPACE = PURE_COMMANDS
 
 
 def select_model(ctx: Context) -> None:
@@ -72,6 +89,22 @@ def select_model(ctx: Context) -> None:
     ctx.profile = load_profile(SUPPORTED_MODELS[int(choice) - 1])
     ctx.console.info(f"Model: {ctx.profile.model}")
     model_hazard_check(ctx)
+
+
+def _bind_robot(ctx: Context) -> None:
+    """Resolve the profile, then record which robot this run is on.
+
+    Recorded as early as the robot is known, so a second invocation can say WHICH robot is busy
+    rather than refusing anonymously. The blank-name path has no robot until recon reads the device
+    id, so recon records it again once it does.
+    """
+    _profile_for_work(ctx)
+    if ctx.robot is not None:
+        describe_run(robot=ctx.robot.display_name())
+        bookmark_prompts_in(ctx.robot.state_dir)
+        tmux = find_helper("tmux", dict(ctx.env)) or shutil.which("tmux")
+        if tmux and ctx.env.get("TMUX"):
+            name_the_robot_on_the_bar(Path(tmux), ctx.robot.display_name())
 
 
 def _profile_for_work(ctx: Context) -> None:
@@ -122,7 +155,7 @@ def select_robot(ctx: Context) -> None:
     if named:
         ctx.robot = Robot(ctx.ws.robots_dir / named)
         ctx.console.info(f"Robot: {named} (from DREAME_ROBOT)")
-        _profile_for_work(ctx)
+        _bind_robot(ctx)
         return
 
     # Skip dot-directories; only real robot dirs count.
@@ -131,7 +164,7 @@ def select_robot(ctx: Context) -> None:
     if not dirs:
         ctx.console.say("No prior robots — setting up your first one.")
         _name_new_robot(ctx)  # nameable here too, so the first device needn't be a throwaway
-        _profile_for_work(ctx)
+        _bind_robot(ctx)
         return
     if not ctx.interactive:
         raise Die("Multiple robots exist and stdin isn't a terminal — set DREAME_ROBOT=<name>.")
@@ -150,7 +183,7 @@ def select_robot(ctx: Context) -> None:
         _name_new_robot(ctx)
     else:
         raise Die(f"Invalid choice: {choice}")
-    _profile_for_work(ctx)
+    _bind_robot(ctx)
 
 
 def _pcb_help(ctx: Context) -> None:
@@ -327,6 +360,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd in ("version", "--version", "-V"):
         ctx.console.info(f"dreame-valetudo {__version__}")
         return 0
+    if cmd == "uninstall":
+        uninstall(ctx)
+        return 0
     if cmd == "install-udev":
         return install_udev(ctx)
     if cmd == "status":
@@ -390,6 +426,99 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     return 0
 
 
+def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
+    """Ask before joining a run already in progress. True = go back to it.
+
+    Joining silently would be wrong as often as it is right: someone who gave up on one robot and
+    came back to start another would be dropped into the old run with no way out that does not
+    involve knowing about tmux. Closing is safe at any moment — a run bookmarks its position when
+    it starts waiting, so nothing is lost by ending it here.
+    """
+    who = running_run(lock)
+    robot = who.get("robot")
+    subject = f"'{robot}'" if isinstance(robot, str) and robot else "a robot"
+    con.say(f"A run for {subject} is already in progress.")
+    con.info("   1) Go back to it")
+    con.info("   2) Close it and start something else (its place is saved)")
+    return con.ask("Which [1-2]?").strip() != "2"
+
+
+def _warn_on_multiple_installs(con: Console, env: Mapping[str, str]) -> None:
+    """Say so when more than one copy is installed.
+
+    Which one runs is decided by PATH order, and the .pkg wrapper exports DREAME_LIBEXEC — so the
+    losing install's native helpers can end up driving the winning install's Python. Nothing has
+    ever surfaced this, and no installer can gate every combination (a .deb cannot see Homebrew).
+    """
+    # A source checkout puts nothing on PATH, so it never competes — counting it would warn on
+    # every run for anyone with a clone AND a released copy, which is most contributors.
+    found = [i for i in find_installs(env) if i.kind != "source checkout"]
+    if len(found) < 2:
+        return
+    con.warn(f"{len(found)} installs of dreame-valetudo are present — which one runs depends on "
+             "your PATH, and they can disagree about their bundled helpers.")
+    for i in found:
+        con.info(f"   {i.kind}: {i.marker}")
+    con.info("   Remove the ones you don't want with: dreame-valetudo uninstall")
+
+
+def cmd_of(args: Sequence[str]) -> str:
+    """The subcommand these args select — bare invocation means the auto chain."""
+    return args[0] if args else "auto"
+
+
+def _idle_seconds(env: Mapping[str, str]) -> float:
+    """How long an unwatched question may sit. An hour by default — long enough that stepping away
+    mid-flash costs nothing, short enough that a forgotten run frees the workspace the same day."""
+    raw = env.get("DREAME_IDLE_TIMEOUT")
+    if raw is None:
+        return 3600.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 3600.0
+
+
+def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
+    """Replace this process with one inside the tmux session, when that applies."""
+    found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
+    if found is not None and not tmux_runs(Path(found)):
+        found = None  # a broken tmux must not replace the run — exec would succeed and then fail
+    if found is not None and tmux_session_exists(Path(found)) and sys.stdin.isatty():
+        if _offer_existing_run(con, Path(found), lock):
+            pass  # fall through: the plan below attaches to it
+        else:
+            kill_session(Path(found))
+            # The dying run releases the flock as it goes; give the kernel a moment to catch up
+            # rather than racing it and refusing the user's own fresh start.
+            for _ in range(20):
+                if lock_free(lock):
+                    break
+                time.sleep(0.1)
+    plan = tmux_plan(
+        [sys.argv[0], *args], env, Path(found) if found else None,
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        session_exists=found is not None and tmux_session_exists(Path(found)),
+    )
+    if plan is None:
+        # Say so when the reason is a MISSING tmux rather than a deliberate choice: every package
+        # channel installs one, but the source tarball cannot ship a native binary without becoming
+        # per-architecture, so this is the one install where a closed terminal still ends the run.
+        if (found is None and sys.stdin.isatty()
+                and not env.get("DREAME_NO_TMUX") and cmd_of(args) not in PURE_COMMANDS):
+            con.info("No tmux found, so this run will end if its terminal closes. Installing tmux "
+                     "lets it survive that, and lets you rejoin by re-running this command.")
+        return
+    # Setup steps first (creating the session detached when already inside another). If one fails
+    # there is no session to move to, so fall through and run inline rather than strand the user.
+    for step in plan[:-1]:
+        if subprocess.run(step, check=False).returncode != 0:
+            return
+    # An exec failure here is the same story: run inline rather than fail the whole run.
+    with contextlib.suppress(OSError):
+        os.execv(plan[-1][0], plan[-1])
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -412,6 +541,25 @@ def main(
     log: RunLog | None = None
     try:
         if production:
+            # Before anything touches the workspace or opens the run log: re-exec inside tmux so
+            # the run outlives its terminal, and so a second invocation rejoins it instead of
+            # starting a rival process against the same robot. Replaces this process when it
+            # applies; an exec failure just falls through and runs inline.
+            _reexec_under_tmux(args, resolved_env, con, ws.base / ".lock")
+            # An unanswered question inside a session would otherwise block forever: tmux keeps
+            # the pty open when the client detaches, so input() never sees EOF. Default an hour;
+            # DREAME_IDLE_TIMEOUT overrides it, 0 disables.
+            tmux_for_idle = find_helper("tmux", resolved_env) or shutil.which("tmux")
+            if tmux_for_idle:
+                seconds = _idle_seconds(resolved_env)
+                if seconds > 0:
+                    idle_timeout(seconds, lambda: client_attached(Path(tmux_for_idle)))
+            if cmd not in PURE_COMMANDS:
+                _warn_on_multiple_installs(con, resolved_env)
+            # One run per workspace. The tmux wrapper above already makes a second invocation
+            # attach instead of starting a rival, but it never nests — so a user inside their own
+            # tmux, or a piped/opted-out run, reaches here unprotected.
+            hold_workspace_lock(ws.base / ".lock", cmd)
             # Help the fastboot client + sunxi-fel find libusb.
             apply_library_path(resolve_libexec(resolved_env))
             if cmd not in _NO_WORKSPACE:

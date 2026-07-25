@@ -42,7 +42,7 @@ One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi
 helper that drives the robot's FEL mode) once.
 
 > [!NOTE]
-> **Linux, one-time:** grant sudo-less USB access with `sudo dreame-valetudo install-udev` (macOS
+> **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev` (it asks for your password) (macOS
 > needs nothing). If you forget, any rooting command stops with this exact reminder. The `.deb` and
 > `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
 
@@ -90,8 +90,10 @@ git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo    # or th
 cd dreame-valetudo && uv run dreame-valetudo
 ```
 [`uv`](https://docs.astral.sh/uv/) handles the interpreter and the on-demand `pyusb`. Or install it as
-a tool: `uv tool install .` (or `pipx install .`). You also need **libusb** and **curl** at runtime
-(macOS: `brew install libusb`; Linux: `sudo apt install libusb-1.0-0 curl`), plus a toolchain to build
+a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl** and **tmux** at
+runtime (macOS: `brew install libusb tmux`; Linux: `sudo apt install libusb-1.0-0 curl tmux`) — every
+packaged install pulls tmux in for you, but a source checkout can't, and without it a run ends when
+its terminal closes instead of surviving to be rejoined. Plus a toolchain to build
 `sunxi-fel` on the first run (`git make pkg-config libusb-1.0-0-dev libfdt-dev`, or a system
 `sunxi-tools`). On Linux, install the udev rule from `packaging/udev/`.
 
@@ -232,10 +234,16 @@ under `~/dreame-valetudo/backups/` survive. Delete that folder by hand only when
 longer need to un-brick or restore any robot.
 
 ```bash
+dreame-valetudo uninstall                            # finds how it was installed and removes it
+```
+
+It reports every install it finds (you can have more than one — Homebrew and the `.pkg` both provide
+the command), says what will be removed, and asks before doing anything. Or remove it by hand:
+
+```bash
 brew uninstall dreame-valetudo                       # Homebrew (or dreame-valetudo-rc)
 sudo apt remove dreame-valetudo                      # Debian/Ubuntu (.deb), incl. its udev rule
-sudo rm -rf /usr/local/bin/dreame-valetudo /usr/local/libexec/dreame-valetudo   # macOS .pkg files
-sudo pkgutil --forget com.sisyphusmd.dreame-valetudo                            # macOS .pkg receipt
+sudo /usr/local/libexec/dreame-valetudo/uninstall.sh  # macOS .pkg (removes its files + receipt)
 uv tool uninstall dreame-valetudo                    # from source (uv tool); or `pipx uninstall`, or rm the clone
 ```
 
@@ -296,6 +304,8 @@ There is no config or secrets file; every knob is an optional environment variab
 | `VALETUDO_VERSION` | Valetudo release to install (a pinned known-good version by default; `latest` tracks upstream) |
 | `DREAME_PYTHON` | Which python runs the libusb fastboot client (auto-detected) |
 | `DREAME_NO_LOG` | Set `1` to turn off the run log |
+| `DREAME_NO_TMUX` | Set `1` to run in the terminal directly, instead of in a session that survives it closing |
+| `DREAME_IDLE_TIMEOUT` | Seconds an unanswered question waits once nobody is watching (default `3600`, `0` to wait forever) |
 
 How the tool handles your SSH key and the scrubbed run log is in [How it works](docs/DESIGN.md).
 

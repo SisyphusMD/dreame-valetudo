@@ -60,6 +60,7 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
         transport_mode: str = "python",
         interactive: bool = True,
         system: str | None = None,
+        is_root: bool = False,
     ) -> Context:
         rr = RecordingRunner(responder)
         console = ScriptedConsole(confirms=confirms, asks=asks)
@@ -79,6 +80,7 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
             robot=robot,
             sleep=lambda _s: None,
             interactive=interactive,
+            is_root=is_root,
         )
         if system is not None:
             ctx.system = system

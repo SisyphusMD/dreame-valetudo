@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+- **new**: `dreame-valetudo uninstall` removes the tool whichever way it was installed, and warns
+  when more than one install is present (Homebrew and the `.pkg` both provide the command, and
+  which one runs comes down to your PATH). Your backups are never touched.
+- **new**: the macOS `.pkg` now ships an uninstaller (`sudo /usr/local/libexec/dreame-valetudo/uninstall.sh`)
+  — macOS has no way to uninstall a `.pkg`, so removal was a hand-typed `rm -rf`. Your backups are
+  untouched.
+- **new**: a single dim line at the bottom of the terminal names the robot and notes that closing
+  the window is safe.
+- **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a
+  dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
+  starting a second one — including when you are already working in your own tmux. Set
+  `DREAME_NO_TMUX=1` to opt out.
+- **fix**: downloads and robot SSH can no longer hang indefinitely — a stalled transfer is given
+  up on, and ssh never falls back to its own password prompt.
+- **new**: a question left unanswered with the window closed now gives up after an hour instead of
+  waiting forever, freeing the workspace for the next run. It never times out while you are looking
+  at it. Set `DREAME_IDLE_TIMEOUT` (seconds, 0 to disable) to change it.
+- **new**: a run interrupted while waiting on an answer now records the question, and the robot
+  list shows it — so coming back days later tells you what you were being asked, not just which
+  phases finished.
+- **new**: starting dreame-valetudo while a run is already in progress now offers to go back to it
+  or close it and start something else, naming the robot involved, instead of silently joining.
+- **new**: a second run against the same workspace is refused instead of racing the first — the
+  session wrapper can't cover a user already inside their own tmux, so a lock does.
+- **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no
+  longer kills or freezes it mid-write.
+- **fix**: re-staging a build is now all-or-nothing. `image --force` extracted over the existing
+  files, so a short or failed unzip left a mixture of two builds that the next flash accepted.
+- **fix**: `image` no longer silently stages another robot's build — a zip that predates the build
+  order or is already staged elsewhere must be confirmed, and browser-renamed `... (1).zip`
+  downloads are now found instead of skipped.
+- **fix**: the flash now refuses an image built for a different robot, and reports a missing recon
+  record before the FEL button sequence instead of after it.
+
 ## [0.2.1] - 2026-07-24
 
 - **fix**: decrypting the recovery backup no longer fails on an in-use robot. The three flash slices

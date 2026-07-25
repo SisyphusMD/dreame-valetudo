@@ -30,7 +30,9 @@ depends:
   - libfdt1              # sunxi-fel also links libfdt at runtime
   - curl                 # downloads (stage1 pkg + Valetudo binary) still shell out to curl
   - unzip                # the image phase unpacks the dustbuilder FEL zip
+  - zip                  # recon archives the pre-root recovery backup (recon.py's `zip -q -j`)
   - openssh-client       # phase 3 push + the fix-*/diagnose helpers run ssh
+  - tmux                 # every run is wrapped in a session so a lost terminal can't end it
 
 contents:
   - src: ./dist/dreame-valetudo              # self-contained main bundle (Python frozen in)
@@ -63,4 +65,6 @@ overrides:
       - "libfdt.so.1()(64bit)"
       - /usr/bin/curl
       - /usr/bin/unzip
+      - /usr/bin/zip
       - /usr/bin/ssh
+      - /usr/bin/tmux

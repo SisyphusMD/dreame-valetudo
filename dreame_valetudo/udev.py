@@ -63,11 +63,16 @@ def guard_blocks(
 
 
 def install_udev(ctx: Context) -> int:
-    """`install-udev`: write the udev rule to /etc/udev/rules.d and reload udev. Run with sudo.
+    """`install-udev`: write the udev rule to /etc/udev/rules.d and reload udev.
+
+    Escalates on its own rather than making the user re-run the whole command under sudo — they
+    get the system password prompt, which is the same thing they would have typed anyway. Already
+    root (the .deb/.rpm postinstall path) means no sudo at all.
 
     The privileged file write goes through the runner (`install`) rather than an in-process write,
     so it stays on the transcript seam and is proven off-hardware like every other side effect.
     """
+    sudo = [] if ctx.is_root else ["sudo"]
     if ctx.system != "Linux":
         ctx.console.info("udev rules are only used on Linux — nothing to do on macOS.")
         return 0
@@ -75,15 +80,15 @@ def install_udev(ctx: Context) -> int:
         fh.write(UDEV_RULE)
         tmp = fh.name
     try:
-        res = ctx.runner.run(["install", "-m", "0644", tmp, RULE_DEST], check=False)
+        res = ctx.runner.run([*sudo, "install", "-m", "0644", tmp, RULE_DEST], check=False)
     finally:
         Path(tmp).unlink(missing_ok=True)
     if not res.ok:
-        ctx.console.err(f"Couldn't write {RULE_DEST} — this needs root. Re-run:  "
-                        "sudo dreame-valetudo install-udev")
+        ctx.console.err(f"Couldn't write {RULE_DEST} — root was refused or unavailable. "
+                        f"Install it by hand:  sudo install -m 0644 <rule> {RULE_DEST}")
         return 1
-    ctx.runner.run(["udevadm", "control", "--reload-rules"], check=False)
-    ctx.runner.run(["udevadm", "trigger"], check=False)
+    ctx.runner.run([*sudo, "udevadm", "control", "--reload-rules"], check=False)
+    ctx.runner.run([*sudo, "udevadm", "trigger"], check=False)
     ctx.console.say("USB access granted — the udev rule is installed (no sudo needed from now on).")
     ctx.console.info("If the robot is already plugged in, unplug and replug the cable once.")
     return 0

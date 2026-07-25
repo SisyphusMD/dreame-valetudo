@@ -9,15 +9,31 @@ the platform-specific brew/Xcode install OFFERS are intentionally left to fail w
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from ..console import die
 from ..constants import SUNXI_TOOLS_REF
 from ..context import Context
 
+# Shelled out to by later phases on every platform. The deb/rpm declare these and macOS ships
+# them, but the tarball channel guarantees nothing — and a missing one otherwise surfaces deep
+# inside a phase as a bare "command not found", often with a robot already half-provisioned.
+_REQUIRED_TOOLS = ("curl", "unzip", "tar", "zip", "ssh", "ssh-keygen")
+
 
 def _is_exe(p: Path) -> bool:
     return p.is_file() and os.access(p, os.X_OK)
+
+
+def _check_external_tools(ctx: Context) -> None:
+    missing = [t for t in _REQUIRED_TOOLS if not shutil.which(t)]
+    if missing:
+        ctx.console.warn(
+            f"Missing external tools: {', '.join(missing)} — the phases that use them will fail "
+            f"when they run. Install them with "
+            f"{'brew' if ctx.system == 'Darwin' else 'your package manager'} and re-run."
+        )
 
 
 def doctor(ctx: Context) -> None:
@@ -27,6 +43,7 @@ def doctor(ctx: Context) -> None:
     )
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
+    _check_external_tools(ctx)
 
     # A broken install (no flash client) must fail HERE with reinstall guidance, not later as a
     # bogus "robot never appeared in fastboot" at FEL time.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from conftest import CtxFactory
 
@@ -68,3 +70,30 @@ def test_doctor_dies_when_flash_client_missing(make_ctx: CtxFactory, monkeypatch
     monkeypatch.setattr(type(ctx), "libexec", property(lambda _self: empty))
     with pytest.raises(Die, match="fastboot-libusb"):
         doctor(ctx)
+
+
+def test_doctor_names_missing_external_tools_up_front(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing curl/zip/ssh otherwise surfaces deep inside a later phase as 'command not found',
+    sometimes with a robot already half-provisioned. doctor runs first, so it reports them here."""
+    absent = {"zip", "ssh-keygen"}
+    real = shutil.which
+    monkeypatch.setattr(
+        "dreame_valetudo.phases.doctor.shutil.which",
+        lambda t, *a, **k: None if t in absent else real(t, *a, **k),
+    )
+    ctx = make_ctx()
+    doctor(ctx)
+    warned = [m for k, m in ctx.console.lines if k == "warn"]  # type: ignore[attr-defined]
+    assert any("zip" in m and "ssh-keygen" in m for m in warned)
+
+
+def test_doctor_is_quiet_when_every_tool_is_present(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.phases.doctor.shutil.which", lambda t, *a, **k: f"/usr/bin/{t}")
+    ctx = make_ctx()
+    doctor(ctx)
+    warned = [m for k, m in ctx.console.lines if k == "warn"]  # type: ignore[attr-defined]
+    assert not any("Missing external tools" in m for m in warned)

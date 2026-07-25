@@ -9,6 +9,8 @@ fastboot by hand.
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases.image import image
 from dreame_valetudo.run import Result
+from dreame_valetudo.util import sha256_of
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
@@ -118,3 +121,156 @@ def test_missing_values_declined_never_tells_the_user_to_run_fastboot(make_ctx: 
     assert "not recorded" in text                     # marked as unread, pointing back at the tool
     assert "reads these off the robot for you" in text
     assert "MISSING" in text                          # the get_staged image was never built
+
+
+def _staging_responder(argv: tuple[str, ...]) -> Result:
+    """_curl_only, plus an unzip that produces the six FEL files the staging check requires."""
+    if argv and argv[0] == "curl":
+        return _curl_only(argv)
+    if argv and argv[0] == "unzip":
+        dest = Path(argv[argv.index("-d") + 1])
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt"):
+            (dest / f).write_text("x")
+        return Result(argv, 0, "", "")
+    return Result(argv, 0, "OKAY", "")
+
+
+def _staging_ctx(make_ctx: CtxFactory, tmp_path: Path, confirms: list[bool]) -> Context:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=confirms,
+                      responder=_staging_responder)
+    (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
+    return ctx
+
+
+def _lands_during_the_wait(ctx: Context, path: Path) -> None:
+    """Make the build appear while the phase waits — i.e. AFTER the build was ordered."""
+    def _land(_seconds: float) -> None:
+        path.write_text("zip")
+
+    ctx.sleep = _land
+
+
+def test_a_zip_older_than_the_build_order_is_never_staged_silently(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """The previous robot's build sits in ~/Downloads under the same name. This robot's own build
+    does not exist yet, so the watcher would return the stale one instantly and deterministically."""
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True, False])  # open, accepted, decline the stale
+    stale = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    stale.write_text("previous robot's build")
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+    with pytest.raises(Die, match="No zip found"):
+        image(ctx)
+    assert not ctx.need_robot().state_has("image")
+    assert not any(c and c[0] == "unzip" for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_a_browser_deduplicated_download_is_visible_to_the_watcher(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """A repeat download is saved as '... (1).zip', which the old '*_fel_ng.zip' glob could not
+    match at all — leaving a stale look-alike as the only candidate."""
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True])
+    _lands_during_the_wait(
+        ctx, tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng (1).zip"
+    )
+    image(ctx)
+    assert ctx.need_robot().state_has("image")
+
+
+def test_a_zip_already_staged_for_another_robot_is_refused(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True, False])  # open, accepted, decline the reuse
+    built = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, built)
+    sibling = ctx.ws.robots_dir / "r9316-other" / "state"
+    sibling.mkdir(parents=True)
+    (sibling / "image").write_text(f"from {built} sha256=deadbeef\n")
+    with pytest.raises(Die, match="Refused"):
+        image(ctx)
+    assert not ctx.need_robot().state_has("image")
+
+
+def test_the_staged_marker_records_the_full_path_and_digest(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """Identical filenames across robots are the norm, so the basename alone cannot identify a
+    build after the fact."""
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True])
+    built = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, built)
+    image(ctx)
+    marker = (ctx.need_robot().state_dir / "image").read_text()
+    assert str(built) in marker
+    assert sha256_of(built) in marker
+
+
+_FEL = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
+
+
+def _two_build_responder(
+    second_members: tuple[str, ...], second_rc: int
+) -> Callable[[tuple[str, ...]], Result]:
+    """Serves a complete 'build A' to the first unzip and a chosen 'build B' to the second."""
+    seen = {"unzips": 0}
+
+    def r(argv: tuple[str, ...]) -> Result:
+        if argv and argv[0] == "curl":
+            return _curl_only(argv)
+        if argv and argv[0] == "unzip":
+            seen["unzips"] += 1
+            dest = Path(argv[argv.index("-d") + 1])
+            dest.mkdir(parents=True, exist_ok=True)
+            if seen["unzips"] == 1:
+                for f in _FEL:
+                    (dest / f).write_text("build A")
+                return Result(argv, 0, "", "")
+            for f in second_members:
+                (dest / f).write_text("build B")
+            return Result(argv, second_rc, "", "")
+        return Result(argv, 0, "OKAY", "")
+
+    return r
+
+
+def _restage_ctx(
+    make_ctx: CtxFactory, tmp_path: Path, responder: Callable[[tuple[str, ...]], Result]
+) -> Context:
+    # open, accepted (first run); then open, accepted, and accept the now-stale zip (force run)
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False,
+                      confirms=[True, True, True, True, True], responder=responder)
+    (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
+    _lands_during_the_wait(
+        ctx, tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    )
+    image(ctx)  # build A staged
+    assert ctx.need_robot().state_has("image")
+    return ctx
+
+
+def test_a_short_rezip_cannot_inherit_the_previous_builds_files(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """`unzip -o -j` leaves whatever the new zip lacks in place, so extracting over fw_dir let
+    build A's files satisfy the completeness check for build B."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(("boot.img", "rootfs.img"), 0))
+    robot = ctx.need_robot()
+    with pytest.raises(Die, match="didn't contain the expected files"):
+        image(ctx, force=True)
+    assert not robot.state_has("image")  # root() must re-stage, never flash what is there
+    assert (robot.fw_dir / "boot.img").read_text() == "build A"  # no mixture reached fw_dir
+    assert (robot.fw_dir / "toc1.img").read_text() == "build A"
+
+
+def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """A member that fails CRC is written to disk before unzip reports the failure."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(_FEL, 2))
+    robot = ctx.need_robot()
+    with pytest.raises(Die, match="unzip failed"):
+        image(ctx, force=True)
+    assert not robot.state_has("image")
+    assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)

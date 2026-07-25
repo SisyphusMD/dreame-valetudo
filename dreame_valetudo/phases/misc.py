@@ -71,7 +71,17 @@ def _summary(base: Path) -> str:
         if (d / "state" / s).is_file():
             last = s
             break
-    return f"{model}  config={cfg}  furthest={last}"
+    summary = f"{model}  config={cfg}  furthest={last}"
+    # Only ever present when a run was interrupted while waiting on an answer — "furthest" says
+    # what finished, which is not the same as what it was in the middle of asking. Kept on one
+    # line: an embedded newline fights the console's hanging indent and renders ragged.
+    asked = ""
+    pending = d / "state" / "pending"
+    if pending.is_file():
+        asked = " ".join(pending.read_text().split())
+    if asked:
+        summary += f"  paused at: \"{asked[:70]}{'…' if len(asked) > 70 else ''}\""
+    return summary
 
 
 def status(ctx: Context) -> None:

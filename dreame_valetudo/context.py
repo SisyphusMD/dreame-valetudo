@@ -8,6 +8,7 @@ them off it.
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import sys
@@ -49,6 +50,10 @@ class Context:
     interactive: bool = field(default_factory=_stdin_isatty)
     # The host OS (platform.system()); injectable so Linux-vs-macOS behavior is testable off a Mac.
     system: str = field(default_factory=platform.system)
+    # Whether this process is already root — injectable for the same reason: CI containers run as
+    # root, so anything keyed on ambient privilege passes locally and fails there (or worse, the
+    # reverse). Nothing may read os.geteuid() directly.
+    is_root: bool = field(default_factory=lambda: os.geteuid() == 0)
     # The human name typed at the naming prompt (may have spaces), carried to recon to save as the
     # robot's display name once its dir is finalized. The dir itself is a filesystem-safe slug.
     pending_name: str | None = None

@@ -22,14 +22,31 @@ from .doctor import _is_exe, doctor
 from .image import image
 
 _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
+# The dustbuilder derives check.txt as hex8(config[0:4] XOR this), so the token carries the
+# identity of the config the image was built for (see log.py's redact_dust_token).
+_DUST_XOR = 0xC9ACBCC6
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+# Every signal the kernel delivers to the whole foreground process group that would otherwise end
+# or freeze the flash. HUP (closing the terminal, quitting the terminal app, an SSH session
+# dropping — a Pi driven over SSH is a supported setup) terminates by default; TSTP is Ctrl+Z, the
+# key next to the one the user has just been told not to press, and STOP is worse than death here
+# because the robot's ~160s watchdog keeps counting while the process is frozen mid-write.
+# Dispositions survive exec, so SIG_IGN also covers the fastboot child doing the bulk USB writes.
+_FLASH_WINDOW_SIGNALS = (
+    signal.SIGINT, signal.SIGTERM, signal.SIGQUIT,
+    signal.SIGHUP, signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU,
+)
 
 
 @contextmanager
 def _mask_interrupts() -> Iterator[None]:
-    """Ignore INT/TERM/QUIT for the destructive sequence only (a stray Ctrl+C mid-flash can
-    brick). Restored on exit. A no-op off the main thread (tests) rather than an error."""
+    """Ignore the terminating and stopping signals for the destructive sequence only (a stray
+    Ctrl+C or a closed terminal mid-flash can brick). Restored on exit. A no-op off the main
+    thread (tests) rather than an error."""
     handlers = {}
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
+    for sig in _FLASH_WINDOW_SIGNALS:
         try:  # noqa: SIM105 - brick-gate code kept explicit; contextlib.suppress here would obscure it
             handlers[sig] = signal.signal(sig, signal.SIG_IGN)
         except (ValueError, OSError):
@@ -42,6 +59,23 @@ def _mask_interrupts() -> Iterator[None]:
                 signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass
+
+
+def _check_image_built_for(dust: str, expect_cfg: str) -> None:
+    """Refuse a staged image that was built for a different robot.
+
+    The check.txt token is the only identity the staged image carries, and the config cross-check
+    below it cannot see the image at all — both of its operands come from the connected robot.
+    FAILS OPEN on anything that is not an 8-hex token: a future dustbuilder format must never
+    block a legitimate flash.
+    """
+    if len(dust) != 8 or not _HEX_DIGITS.issuperset(dust) or len(expect_cfg) < 8:
+        return
+    built_for = int(dust, 16) ^ _DUST_XOR
+    if built_for != int(expect_cfg[:8], 16):
+        die(f"SAFETY STOP: the staged image was built for config {built_for:08x}… but this robot's "
+            f"recon identity is {expect_cfg[:8].lower()}…. Wrong image for this robot — refusing "
+            "to flash. Re-run 'image --force' to stage this robot's own build.")
 
 
 def root(ctx: Context, *, force: bool = False) -> None:
@@ -67,6 +101,17 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not dust:
         die("check.txt is empty.")
 
+    # Neither identity check here needs the device, so both run before the user accepts brick risk
+    # or performs the FEL button sequence. FAIL CLOSED: no recorded identity => refuse.
+    expect_cfg = robot.config(
+        robot_env=ctx.env.get("DREAME_ROBOT"), config_env=ctx.env.get("DREAME_CONFIG")
+    )
+    if not expect_cfg:
+        die(f"SAFETY STOP: no recorded config value to verify the connected robot against "
+            f"(missing/unreadable {robot.recon_dir / 'config.txt'}). Refusing to flash blind — "
+            "re-run recon for this robot first.")
+    _check_image_built_for(dust, expect_cfg)
+
     ctx.console.warn("Once the payload boots, a 160s watchdog starts. This runs the flash "
                      "sequence back-to-back and STOPS on the first non-OKAY. If anything is not "
                      "OKAY, power off and start over — do not improvise.")
@@ -84,21 +129,13 @@ def root(ctx: Context, *, force: bool = False) -> None:
         robot.fw_dir, "fsbl.bin", "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
     )
 
-    # SAFETY: the loaded image was built for ONE robot's config. Confirm the connected robot IS
-    # that robot before writing anything. FAIL CLOSED: no recorded identity => refuse.
-    # Merged streams, like recon: the libusb client answers on stdout ('OKAY <hex>'), Google's
-    # fastboot on stderr ('config: <hex>') — either transport must satisfy the gate.
+    # SAFETY: the connected robot must be the one the recon identity (and so the staged image,
+    # checked above) belongs to. Merged streams, like recon: the libusb client answers on stdout
+    # ('OKAY <hex>'), Google's fastboot on stderr ('config: <hex>') — either must satisfy the gate.
     res = ctx.fastboot.fbt("getvar", "config", check=False)
     live_cfg = parse_config(res.stdout + res.stderr)
-    expect_cfg = robot.config(
-        robot_env=ctx.env.get("DREAME_ROBOT"), config_env=ctx.env.get("DREAME_CONFIG")
-    )
     if not live_cfg:
         die("Couldn't read the connected robot's config value — aborting before any write.")
-    if not expect_cfg:
-        die(f"SAFETY STOP: no recorded config value to verify the connected robot against "
-            f"(missing/unreadable {robot.recon_dir / 'config.txt'}). Refusing to flash blind — "
-            "re-run recon for this robot first.")
     if live_cfg != expect_cfg:
         die(f"SAFETY STOP: connected robot config={live_cfg} but this image was built for "
             f"{expect_cfg}. Wrong robot or wrong image — refusing to flash. (Different robot? Use "

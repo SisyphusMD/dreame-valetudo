@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.console import Console, warn_if_low_disk
+from dreame_valetudo.console import (
+    Console,
+    bookmark_prompts_in,
+    next_deadline,
+    warn_if_low_disk,
+)
 
 
 def _console() -> Console:
@@ -211,3 +216,87 @@ def test_warn_if_low_disk_stays_quiet_with_ample_space(tmp_path: Path, capsys: p
 def test_warn_if_low_disk_warns_when_short(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     warn_if_low_disk(_console(), tmp_path, need_bytes=1 << 60)
     assert "Low disk space" in capsys.readouterr().out
+
+
+def test_output_survives_a_dead_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ignoring SIGHUP keeps the process alive through a closed terminal, but the tty is gone —
+    an unguarded print would then raise OSError between two partition writes and abort the flash
+    that the signal mask exists to protect."""
+    class DeadStream:
+        def isatty(self) -> bool:
+            return False
+
+        def write(self, _s: str) -> int:
+            raise OSError(5, "Input/output error")
+
+        def flush(self) -> None:
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("sys.stdout", DeadStream())
+    monkeypatch.setattr("sys.stderr", DeadStream())
+    c = _console()
+    c.say("this must not raise")
+    c.warn("nor this")
+    c.err("nor this")
+
+
+def test_an_open_question_is_bookmarked_and_cleared(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """The marker exists only while the tool is waiting on a person: written when the question is
+    asked, gone the moment it is answered. Its presence is what says 'interrupted mid-question'."""
+    state = tmp_path / "state"
+    bookmark_prompts_in(state)
+    seen = {}
+
+    def answer(_p: str) -> str:
+        seen["during"] = (state / "pending").read_text().strip()
+        return "y"
+
+    monkeypatch.setattr("builtins.input", answer)
+    assert _console().confirm("Flash X40 Ultra now?") is True
+    assert seen["during"] == "Flash X40 Ultra now?"      # readable text, no ANSI or '??' prefix
+    assert not (state / "pending").exists()              # cleared once answered
+
+
+def test_the_bookmark_survives_an_unanswered_question(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run killed at a prompt must leave the marker behind — that is the whole point."""
+    state = tmp_path / "state"
+    bookmark_prompts_in(state)
+
+    def die(_p: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", die)
+    with pytest.raises(KeyboardInterrupt):
+        _console().confirm("Flash X40 Ultra now?")
+    assert (state / "pending").read_text().strip() == "Flash X40 Ultra now?"
+
+
+# --- the idle clock: driven by attachment, never by how long the question has been open --------
+def test_a_watched_question_never_expires() -> None:
+    assert next_deadline(True, None, now=100.0, timeout=60.0) is None
+    assert next_deadline(True, 150.0, now=100.0, timeout=60.0) is None   # reattaching clears it
+
+
+def test_an_unknowable_attachment_never_expires() -> None:
+    """No tmux, no session, a failed query — abandoning a run on a failed probe would be strictly
+    worse than waiting, so only a definite 'nobody is watching' starts the clock."""
+    assert next_deadline(None, None, now=100.0, timeout=60.0) is None
+
+
+def test_detaching_starts_the_clock_and_keeps_it_running() -> None:
+    first = next_deadline(False, None, now=100.0, timeout=60.0)
+    assert first == 160.0
+    # ten seconds later it must be the SAME deadline, not a fresh 60s from now
+    assert next_deadline(False, first, now=110.0, timeout=60.0) == 160.0
+
+
+def test_reattaching_then_detaching_again_starts_over() -> None:
+    d = next_deadline(False, None, now=100.0, timeout=60.0)
+    assert next_deadline(True, d, now=110.0, timeout=60.0) is None       # came back: clock cleared
+    assert next_deadline(False, None, now=200.0, timeout=60.0) == 260.0  # left again: fresh clock
+
+
+def test_a_zero_timeout_disables_the_clock() -> None:
+    assert next_deadline(False, None, now=100.0, timeout=0.0) is None

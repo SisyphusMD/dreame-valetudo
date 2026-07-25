@@ -12,6 +12,7 @@ message, and wording assertions never couple to presentation.
 from __future__ import annotations
 
 import os
+import select
 import shutil
 import sys
 import textwrap
@@ -50,6 +51,62 @@ def warn_if_low_disk(console: Console, dest: Path, need_bytes: int) -> None:
 def _fmt_elapsed(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+# Where to bookmark an open question, once a robot is known. A prompt is the one place a run can
+# sit indefinitely, so its PRESENCE is what carries meaning: it exists only while the tool is
+# waiting on a person, and is cleared the moment they answer. Written here rather than at each
+# call site because every prompt funnels through this module — nothing can forget to record.
+# A list, not a rebindable global; empty until a robot is bound (early commands have none).
+_BOOKMARK: list[Path] = []
+
+
+def bookmark_prompts_in(state_dir: Path) -> None:
+    """Record open questions for this robot from now on."""
+    _BOOKMARK[:] = [state_dir]
+
+
+def _bookmark(question: str | None) -> None:
+    if not _BOOKMARK:
+        return
+    f = _BOOKMARK[0] / "pending"
+    try:
+        if question is None:
+            f.unlink(missing_ok=True)
+        else:
+            _BOOKMARK[0].mkdir(parents=True, exist_ok=True)
+            f.write_text(question.strip() + "\n")
+    except OSError:
+        pass  # a bookmark is a convenience; never fail a run over one
+
+
+# How long an unwatched question may sit before the run gives up, and how to tell whether anyone
+# is watching. Bound by cli when a session is in play; without them a prompt waits forever, which
+# is the right default for a terminal with a human in front of it.
+_IDLE_TIMEOUT: list[float] = []
+_IDLE_PROBE: list[Callable[[], bool | None]] = []
+
+
+def idle_timeout(seconds: float, probe: Callable[[], bool | None]) -> None:
+    """Give up on an unanswered question after `seconds` of nobody watching."""
+    _IDLE_TIMEOUT[:], _IDLE_PROBE[:] = [seconds], [probe]
+
+
+def next_deadline(
+    attached: bool | None, deadline: float | None, now: float, timeout: float
+) -> float | None:
+    """The deadline to enforce, or None while there is nothing to count down.
+
+    The clock is driven by ATTACHMENT, not by when the question was asked: a question nobody has
+    seen yet should not expire just because it was asked an hour ago, and one being read right now
+    should never expire at all. Detaching starts it; reattaching clears it.
+
+    Only a definite False starts the clock. Unknown (None) means never time out — abandoning a run
+    on a failed probe would be strictly worse than waiting.
+    """
+    if timeout <= 0 or attached is not False:
+        return None
+    return now + timeout if deadline is None else deadline
 
 
 class Console:
@@ -150,11 +207,19 @@ class Console:
 
     def confirm(self, prompt: str) -> bool:
         self._suspend_progress()
-        return self._prompt(self._c("1;35", f"?? {prompt} [y/N] ")).strip().lower() in ("y", "yes")
+        _bookmark(prompt)
+        answer = self._prompt(self._c("1;35", f"?? {prompt} [y/N] "))
+        # Cleared only on a real answer. NOT in a finally: an interrupt, a kill or a timeout must
+        # leave the marker behind — a question nobody answered is exactly what it exists to record.
+        _bookmark(None)
+        return answer.strip().lower() in ("y", "yes")
 
     def ask(self, prompt: str) -> str:
         self._suspend_progress()
-        return self._prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(prompt)
+        answer = self._prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(None)  # see confirm(): deliberately not a finally
+        return answer
 
     # -- the funnel and rendering -----------------------------------------------------------
 
@@ -164,15 +229,22 @@ class Console:
         (tests) or mirror (run log) the raw message. `lead`/`trail` are the element's collapsing
         block margins (one blank line, never doubled)."""
         with self._lock:
-            if self._active is not None:
-                self._active.clear_line()
             stream = sys.stderr if kind == "err" else sys.stdout
-            if (lead or kind in self._SELF_LEADING) and not self._last_line_blank:
-                print(file=stream)
-            for line in self._render(kind, message, wrap=wrap, hang=hang):
-                print(line, file=stream)
-            if trail:
-                print(file=stream)
+            try:
+                if self._active is not None:
+                    self._active.clear_line()
+                if (lead or kind in self._SELF_LEADING) and not self._last_line_blank:
+                    print(file=stream)
+                for line in self._render(kind, message, wrap=wrap, hang=hang):
+                    print(line, file=stream)
+                if trail:
+                    print(file=stream)
+            except OSError:
+                # The tty can go away mid-run (terminal closed, SSH dropped). Losing console output
+                # must never propagate: inside the flash window an OSError here would abort the
+                # sequence between two partition writes. Subclasses log before delegating, so the
+                # run log — a separate handle — still has the line.
+                pass
             self._last_line_blank = trail
 
     def _render(self, kind: str, message: str, *, wrap: bool, hang: int | None) -> list[str]:
@@ -240,11 +312,44 @@ class Console:
 
     def _prompt(self, rendered: str) -> str:
         self._last_line_blank = False  # the prompt + echoed answer occupy the current line
-        try:
-            return input(rendered)
-        except EOFError:
-            print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
-            return ""
+        probe = _IDLE_PROBE[0] if _IDLE_PROBE else None
+        timeout = _IDLE_TIMEOUT[0] if _IDLE_TIMEOUT else 0.0
+        if probe is None or timeout <= 0 or not sys.stdin.isatty():
+            try:
+                return input(rendered)
+            except EOFError:
+                print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
+                return ""
+        return self._prompt_until_idle(rendered, probe, timeout)
+
+    def _prompt_until_idle(
+        self, rendered: str, probe: Callable[[], bool | None], timeout: float
+    ) -> str:
+        """input(), but giving up once nobody has been watching for `timeout`.
+
+        Detached, the pty stays open, so a plain input() would block forever holding the workspace
+        — the very thing surviving the terminal was supposed to buy. The question is already
+        bookmarked, so giving up here costs nothing but the wait.
+        """
+        print(rendered, end="", flush=True)
+        deadline: float | None = None
+        last_probe = 0.0
+        attached: bool | None = None
+        while True:
+            if select.select([sys.stdin], [], [], 2.0)[0]:
+                line = sys.stdin.readline()
+                if not line:
+                    print()
+                    return ""
+                return line.rstrip("\n")
+            now = time.monotonic()
+            if now - last_probe >= 15.0:   # spawning tmux every loop would be gratuitous
+                attached, last_probe = probe(), now
+            deadline = next_deadline(attached, deadline, now, timeout)
+            if deadline is not None and now >= deadline:
+                print()
+                raise Die("No answer, and this window has been closed for a while — stopping here. "
+                          "Your place is saved; re-run and pick this robot to carry on.")
 
 
 class Progress:

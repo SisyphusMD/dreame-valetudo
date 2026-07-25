@@ -26,6 +26,7 @@ class DreameValetudo < Formula
   depends_on "dtc"          # libfdt (sunxi-fel is built from source on first run)
   depends_on "zlib"         # sunxi-fel's fel.c needs zlib.h (system on macOS, explicit for Linux)
   depends_on "pkg-config"
+  depends_on "tmux"         # every run is wrapped in a session so a lost terminal can't end it
 
   def install
     # Install the package (with its bundled libexec data — the fastboot client + form baseline)
