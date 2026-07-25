@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **fix**: re-staging a build is now all-or-nothing. `image --force` extracted over the existing
+  files, so a short or failed unzip left a mixture of two builds that the next flash accepted.
 - **fix**: `image` no longer silently stages another robot's build — a zip that predates the build
   order or is already staged elsewhere must be confirmed, and browser-renamed `... (1).zip`
   downloads are now found instead of skipped.

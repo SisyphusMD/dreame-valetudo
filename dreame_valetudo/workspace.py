@@ -95,6 +95,11 @@ class Robot:
     def state_has(self, name: str) -> bool:
         return (self.state_dir / name).is_file()
 
+    def state_clear(self, name: str) -> None:
+        """Drop a marker so the phase re-runs. Used before a destructive re-stage, so a failure
+        part-way through can never leave a later phase believing the old marker still holds."""
+        (self.state_dir / name).unlink(missing_ok=True)
+
     def display_name(self) -> str:
         """The human name the user chose (may contain spaces / capitals), saved in state/name — or
         the dir slug if none was recorded. The dir slug and `config` remain the identifiers; this is

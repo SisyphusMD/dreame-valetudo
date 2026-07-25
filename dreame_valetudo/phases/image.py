@@ -233,6 +233,9 @@ def image(ctx: Context, *, force: bool = False) -> None:
         return
     if force:
         (robot.recon_dir / ".submitted").unlink(missing_ok=True)
+        # Dropped up front, not after a successful re-stage: any die between here and the swap
+        # below must leave root() re-running this phase, never flashing a half-replaced fw dir.
+        robot.state_clear("image")
 
     unsup = ctx.runner.run(
         ["curl", "-fsSL", "-m", "10", "https://builder.dontvacuum.me/unsupported.txt"], check=False
@@ -289,15 +292,25 @@ def image(ctx: Context, *, force: bool = False) -> None:
 
     ctx.console.say(f"Found: {zip_path} (downloaded "
                     f"{_when(Path(zip_path).stat().st_mtime)}) — unpacking into {robot.fw_dir}")
-    robot.fw_dir.mkdir(parents=True, exist_ok=True)
-    if not ctx.runner.run(
-        ["unzip", "-o", "-j", zip_path, "-d", str(robot.fw_dir)], check=False
-    ).ok:
+    # Extract into a fresh sibling and swap, rather than over fw_dir. `unzip -o -j` leaves any
+    # file the new zip lacks untouched, and a member that fails CRC is written before unzip reports
+    # the failure — either way fw_dir becomes a MIXTURE of two builds that every later is_file()
+    # check happily accepts, and root() would flash one build's toc1 beside another's kernel.
+    staging = robot.work / "fw.new"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    if not ctx.runner.run(["unzip", "-o", "-j", zip_path, "-d", str(staging)], check=False).ok:
         die("unzip failed")
-    missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]
+    missing = [f for f in FEL_IMAGE_FILES if not (staging / f).is_file()]
     if missing:
         die(f"The zip didn't contain the expected files (missing: {', '.join(missing)}) — wrong "
             "build type? Rebuild as 'FEL image'.")
+    zp = Path(zip_path)
+    if zp.parent == robot.fw_dir:  # a zip staged from the robot's own fw dir must survive the swap
+        zp.rename(staging / zp.name)
+        zip_path = str(robot.fw_dir / zp.name)
+    shutil.rmtree(robot.fw_dir, ignore_errors=True)
+    staging.rename(robot.fw_dir)
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
     robot.state_set("image", f"from {zip_path} sha256={digest}")

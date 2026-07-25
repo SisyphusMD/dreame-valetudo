@@ -205,3 +205,72 @@ def test_the_staged_marker_records_the_full_path_and_digest(
     marker = (ctx.need_robot().state_dir / "image").read_text()
     assert str(built) in marker
     assert sha256_of(built) in marker
+
+
+_FEL = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
+
+
+def _two_build_responder(
+    second_members: tuple[str, ...], second_rc: int
+) -> Callable[[tuple[str, ...]], Result]:
+    """Serves a complete 'build A' to the first unzip and a chosen 'build B' to the second."""
+    seen = {"unzips": 0}
+
+    def r(argv: tuple[str, ...]) -> Result:
+        if argv and argv[0] == "curl":
+            return _curl_only(argv)
+        if argv and argv[0] == "unzip":
+            seen["unzips"] += 1
+            dest = Path(argv[argv.index("-d") + 1])
+            dest.mkdir(parents=True, exist_ok=True)
+            if seen["unzips"] == 1:
+                for f in _FEL:
+                    (dest / f).write_text("build A")
+                return Result(argv, 0, "", "")
+            for f in second_members:
+                (dest / f).write_text("build B")
+            return Result(argv, second_rc, "", "")
+        return Result(argv, 0, "OKAY", "")
+
+    return r
+
+
+def _restage_ctx(
+    make_ctx: CtxFactory, tmp_path: Path, responder: Callable[[tuple[str, ...]], Result]
+) -> Context:
+    # open, accepted (first run); then open, accepted, and accept the now-stale zip (force run)
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False,
+                      confirms=[True, True, True, True, True], responder=responder)
+    (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
+    _lands_during_the_wait(
+        ctx, tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    )
+    image(ctx)  # build A staged
+    assert ctx.need_robot().state_has("image")
+    return ctx
+
+
+def test_a_short_rezip_cannot_inherit_the_previous_builds_files(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """`unzip -o -j` leaves whatever the new zip lacks in place, so extracting over fw_dir let
+    build A's files satisfy the completeness check for build B."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(("boot.img", "rootfs.img"), 0))
+    robot = ctx.need_robot()
+    with pytest.raises(Die, match="didn't contain the expected files"):
+        image(ctx, force=True)
+    assert not robot.state_has("image")  # root() must re-stage, never flash what is there
+    assert (robot.fw_dir / "boot.img").read_text() == "build A"  # no mixture reached fw_dir
+    assert (robot.fw_dir / "toc1.img").read_text() == "build A"
+
+
+def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    """A member that fails CRC is written to disk before unzip reports the failure."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(_FEL, 2))
+    robot = ctx.need_robot()
+    with pytest.raises(Die, match="unzip failed"):
+        image(ctx, force=True)
+    assert not robot.state_has("image")
+    assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)
