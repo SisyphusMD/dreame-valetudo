@@ -20,6 +20,11 @@ SUNXI_TOOLS_REF = "d7bbd172a5da601a08f94479de308c6fb714a19a"
 # renovate: datasource=pypi depName=pyusb
 PYUSB_VERSION = "1.3.1"
 
+# Every run is wrapped in a tmux session. The deb/rpm/brew channels get tmux from their package
+# manager; a .pkg install has none, so the release build bundles this version.
+# renovate: datasource=github-releases depName=tmux/tmux
+TMUX_VERSION = "3.5a"
+
 # The robot's own Wi-Fi AP address (also, on a home LAN, usually the user's router — hence the
 # is_dreame_ap guard before any AP-side command).
 ROBOT_AP_IP = "192.168.5.1"

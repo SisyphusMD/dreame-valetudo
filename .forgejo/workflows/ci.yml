@@ -34,7 +34,7 @@ jobs:
             packaging/changelog-section.sh
             packaging/forgejo-release.sh packaging/github-release.sh packaging/release-common.sh
             packaging/reconcile-releases.sh
-            packaging/update-tap.sh packaging/deb-postinstall.sh
+            packaging/update-tap.sh packaging/deb-postinstall.sh packaging/bundle-macos-dylibs.sh
             tests/integration/release-scripts.sh tests/integration/reconcile.sh
 
   python:

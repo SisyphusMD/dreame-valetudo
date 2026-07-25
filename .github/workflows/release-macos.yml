@@ -58,7 +58,7 @@ jobs:
           # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
           # call; we install only homebrew-core formulae, so drop the stray tap instead.
           brew untap aws/tap 2>/dev/null || true
-          brew install libusb dtc pkg-config
+          brew install libusb dtc pkg-config libevent
           # sunxi-fel (pin must match SUNXI_TOOLS_REF in the main script). Builds native to the runner.
           git clone https://github.com/linux-sunxi/sunxi-tools.git /tmp/sunxi-tools
           # renovate: datasource=git-refs depName=https://github.com/linux-sunxi/sunxi-tools
@@ -75,6 +75,14 @@ jobs:
           bash packaging/build-bundle.sh "$PWD/dist"           # main tool bundle (Python frozen in)
           bash packaging/build-fastboot-client.sh "$PWD/dist"  # dreame-fastboot client (pyusb frozen in)
           cp dist/dreame-valetudo dist/dreame-fastboot .
+          # tmux: every run is wrapped in a session, and a .pkg install has no package manager to
+          # supply one. Built against the SYSTEM ncurses (every Mac has it, and its terminfo), so
+          # only libevent has to travel with the bundle.
+          TMUX="$(python3 -c "import re; print(re.search(r'TMUX_VERSION = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))")"
+          curl -fsSL "https://github.com/tmux/tmux/releases/download/${TMUX}/tmux-${TMUX}.tar.gz" -o /tmp/tmux.tgz
+          tar -xzf /tmp/tmux.tgz -C /tmp
+          (cd "/tmp/tmux-${TMUX}" && ./configure >/dev/null && make -j3 >/dev/null)
+          cp "/tmp/tmux-${TMUX}/tmux" .
 
       - name: Bundle libusb next to the native binaries
         run: |
@@ -88,6 +96,9 @@ jobs:
           OLD="$(otool -L sunxi-fel | awk '/libusb-1.0/{print $1; exit}')"
           install_name_tool -change "$OLD" "@loader_path/libusb-1.0.0.dylib" sunxi-fel
           install_name_tool -id "@loader_path/libusb-1.0.0.dylib" ./libusb-1.0.0.dylib
+          # tmux drags libevent (and whatever libevent itself pulls) in from Homebrew; the helper
+          # walks the chain so every non-system library travels beside the binary.
+          bash packaging/bundle-macos-dylibs.sh ./tmux .
 
       - name: Import signing certificates
         run: |
@@ -107,7 +118,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           PKG="dreame-valetudo-macos-${{ matrix.arch }}.pkg"
           # Sign the native Mach-O bits with the hardened runtime (required for notarization).
-          for f in libusb-1.0.0.dylib sunxi-fel dreame-fastboot dreame-valetudo; do
+          for f in ./*.dylib tmux sunxi-fel dreame-fastboot dreame-valetudo; do
             codesign --force --options runtime --timestamp \
               --entitlements packaging/entitlements.plist --sign "$APP_IDENTITY" "$f"
           done
@@ -116,7 +127,7 @@ jobs:
           # only needs the native helpers + the co-located libusb.
           LX=root/usr/local/libexec/dreame-valetudo
           mkdir -p "$LX" root/usr/local/bin
-          cp dreame-valetudo dreame-fastboot sunxi-fel libusb-1.0.0.dylib "$LX/"
+          cp dreame-valetudo dreame-fastboot sunxi-fel tmux ./*.dylib "$LX/"
           cat > root/usr/local/bin/dreame-valetudo <<'SH'
           #!/bin/bash
           export DREAME_LIBEXEC="/usr/local/libexec/dreame-valetudo"
