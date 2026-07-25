@@ -19,7 +19,10 @@ The decisions are pure functions so they are testable; only the exec itself live
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import json
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -58,7 +61,7 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     if command in PURE_COMMANDS:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    fh = path.open("w")
+    fh = path.open("w+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -71,7 +74,46 @@ def hold_workspace_lock(path: Path, command: str) -> None:
             "once against the same robot risks bricking it. Wait for it to finish, or re-run "
             "this from a terminal to rejoin it."
         ) from None
-    _HELD.append(fh)
+    # Replace, not append: a process holds at most one workspace lock, so _HELD[0] must always be
+    # the current one — describe_run writes through it.
+    _HELD[:] = [fh]
+    describe_run(command=command)
+
+
+def describe_run(**fields: object) -> None:
+    """Record what this run is doing, in the lock file it already holds.
+
+    flock guards writing, not reading, so a second invocation can read this to say WHICH robot is
+    busy instead of an anonymous refusal — without ever taking the lock itself.
+    """
+    if not _HELD:
+        return
+    fh = _HELD[0]
+    current = _read_json(fh)
+    current.update({k: v for k, v in fields.items() if v is not None})
+    current.setdefault("pid", os.getpid())
+    fh.seek(0)
+    fh.truncate()
+    json.dump(current, fh)
+    fh.flush()
+
+
+def _read_json(fh: IO[str]) -> dict[str, object]:
+    fh.seek(0)
+    try:
+        loaded = json.loads(fh.read() or "{}")
+    except ValueError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def running_run(path: Path) -> dict[str, object]:
+    """What the run holding this workspace is doing — empty if there is nothing readable."""
+    try:
+        with path.open() as fh:
+            return _read_json(fh)
+    except OSError:
+        return {}
 
 
 def tmux_runs(tmux: Path) -> bool:
@@ -123,3 +165,34 @@ def tmux_plan(
             [t, "switch-client", "-t", SESSION],
         ]
     return [[t, "new-session", "-A", "-s", SESSION, "--", *self_cmd]]
+
+
+def tmux_session_exists(tmux: Path) -> bool:
+    """Whether our session is live. Because an abandoned run is reaped, this is a usable proxy for
+    'someone is mid-run' — but never assumed to be the CURRENT user's run, which is why the caller
+    asks rather than attaching silently."""
+    try:
+        return subprocess.run(
+            [str(tmux), "has-session", "-t", SESSION], capture_output=True, timeout=5, check=False
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def kill_session(tmux: Path) -> None:
+    """End the session. Safe at any moment: the run bookmarks its position when a prompt opens, so
+    there is nothing to flush on the way out."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([str(tmux), "kill-session", "-t", SESSION],
+                       capture_output=True, timeout=5, check=False)
+
+
+def lock_free(path: Path) -> bool:
+    """Whether the workspace lock can be taken right now (without keeping it)."""
+    try:
+        with path.open("a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return True
+    except OSError:
+        return False

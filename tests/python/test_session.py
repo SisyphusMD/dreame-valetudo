@@ -12,7 +12,10 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.session import (
     PURE_COMMANDS,
     SESSION,
+    describe_run,
     hold_workspace_lock,
+    lock_free,
+    running_run,
     tmux_plan,
     tmux_runs,
 )
@@ -143,3 +146,40 @@ def test_no_user_facing_message_mentions_tmux(tmp_path: Path) -> None:
     with pytest.raises(Die) as exc:
         hold_workspace_lock(lock, "root")
     assert "tmux" not in str(exc.value).lower()
+
+
+def test_the_run_records_which_robot_it_is_on(tmp_path: Path) -> None:
+    """A second invocation must be able to name the robot that is busy, so it reads the record out
+    of the lock file — flock guards writing, not reading."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    describe_run(robot="Downstairs Vacuum")
+    assert running_run(lock)["robot"] == "Downstairs Vacuum"
+    assert running_run(lock)["command"] == "root"
+
+
+def test_running_run_is_empty_when_there_is_no_record(tmp_path: Path) -> None:
+    assert running_run(tmp_path / "absent") == {}
+    (tmp_path / "junk").write_text("not json")
+    assert running_run(tmp_path / "junk") == {}
+
+
+def test_lock_free_reports_the_truth(tmp_path: Path) -> None:
+    lock = tmp_path / ".lock"
+    assert lock_free(lock) is True
+    rival = tmp_path / "rival.py"
+    rival.write_text(
+        "import fcntl, sys, time\n"
+        f"f = open({str(lock)!r}, 'w')\n"
+        "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print('held', flush=True)\n"
+        "time.sleep(10)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(rival)], stdout=subprocess.PIPE)
+    assert proc.stdout is not None
+    proc.stdout.readline()                      # wait until it really holds the lock
+    try:
+        assert lock_free(lock) is False
+    finally:
+        proc.kill()
+        proc.wait()

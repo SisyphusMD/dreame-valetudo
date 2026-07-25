@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,17 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .session import PURE_COMMANDS, hold_workspace_lock, tmux_plan, tmux_runs
+from .session import (
+    PURE_COMMANDS,
+    describe_run,
+    hold_workspace_lock,
+    kill_session,
+    lock_free,
+    running_run,
+    tmux_plan,
+    tmux_runs,
+    tmux_session_exists,
+)
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -75,6 +86,18 @@ def select_model(ctx: Context) -> None:
     ctx.profile = load_profile(SUPPORTED_MODELS[int(choice) - 1])
     ctx.console.info(f"Model: {ctx.profile.model}")
     model_hazard_check(ctx)
+
+
+def _bind_robot(ctx: Context) -> None:
+    """Resolve the profile, then record which robot this run is on.
+
+    Recorded as early as the robot is known, so a second invocation can say WHICH robot is busy
+    rather than refusing anonymously. The blank-name path has no robot until recon reads the device
+    id, so recon records it again once it does.
+    """
+    _profile_for_work(ctx)
+    if ctx.robot is not None:
+        describe_run(robot=ctx.robot.display_name())
 
 
 def _profile_for_work(ctx: Context) -> None:
@@ -125,7 +148,7 @@ def select_robot(ctx: Context) -> None:
     if named:
         ctx.robot = Robot(ctx.ws.robots_dir / named)
         ctx.console.info(f"Robot: {named} (from DREAME_ROBOT)")
-        _profile_for_work(ctx)
+        _bind_robot(ctx)
         return
 
     # Skip dot-directories; only real robot dirs count.
@@ -134,7 +157,7 @@ def select_robot(ctx: Context) -> None:
     if not dirs:
         ctx.console.say("No prior robots — setting up your first one.")
         _name_new_robot(ctx)  # nameable here too, so the first device needn't be a throwaway
-        _profile_for_work(ctx)
+        _bind_robot(ctx)
         return
     if not ctx.interactive:
         raise Die("Multiple robots exist and stdin isn't a terminal — set DREAME_ROBOT=<name>.")
@@ -153,7 +176,7 @@ def select_robot(ctx: Context) -> None:
         _name_new_robot(ctx)
     else:
         raise Die(f"Invalid choice: {choice}")
-    _profile_for_work(ctx)
+    _bind_robot(ctx)
 
 
 def _pcb_help(ctx: Context) -> None:
@@ -393,11 +416,39 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     return 0
 
 
-def _reexec_under_tmux(args: list[str], env: dict[str, str]) -> None:
+def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
+    """Ask before joining a run already in progress. True = go back to it.
+
+    Joining silently would be wrong as often as it is right: someone who gave up on one robot and
+    came back to start another would be dropped into the old run with no way out that does not
+    involve knowing about tmux. Closing is safe at any moment — a run bookmarks its position when
+    it starts waiting, so nothing is lost by ending it here.
+    """
+    who = running_run(lock)
+    robot = who.get("robot")
+    subject = f"'{robot}'" if isinstance(robot, str) and robot else "a robot"
+    con.say(f"A run for {subject} is already in progress.")
+    con.info("   1) Go back to it")
+    con.info("   2) Close it and start something else (its place is saved)")
+    return con.ask("Which [1-2]?").strip() != "2"
+
+
+def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
     """Replace this process with one inside the tmux session, when that applies."""
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
     if found is not None and not tmux_runs(Path(found)):
         found = None  # a broken tmux must not replace the run — exec would succeed and then fail
+    if found is not None and tmux_session_exists(Path(found)) and sys.stdin.isatty():
+        if _offer_existing_run(con, Path(found), lock):
+            pass  # fall through: the plan below attaches to it
+        else:
+            kill_session(Path(found))
+            # The dying run releases the flock as it goes; give the kernel a moment to catch up
+            # rather than racing it and refusing the user's own fresh start.
+            for _ in range(20):
+                if lock_free(lock):
+                    break
+                time.sleep(0.1)
     plan = tmux_plan(
         [sys.argv[0], *args], env, Path(found) if found else None,
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
@@ -440,7 +491,7 @@ def main(
             # the run outlives its terminal, and so a second invocation rejoins it instead of
             # starting a rival process against the same robot. Replaces this process when it
             # applies; an exec failure just falls through and runs inline.
-            _reexec_under_tmux(args, resolved_env)
+            _reexec_under_tmux(args, resolved_env, con, ws.base / ".lock")
             # One run per workspace. The tmux wrapper above already makes a second invocation
             # attach instead of starting a rival, but it never nests — so a user inside their own
             # tmux, or a piped/opted-out run, reaches here unprotected.
