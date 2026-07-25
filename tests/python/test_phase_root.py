@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+from pathlib import Path
 
 import pytest
 from conftest import FB, CtxFactory
@@ -42,8 +43,14 @@ def _ok_responder(live_cfg: str = _CFG) -> object:
     return responder
 
 
-def _flash_ops(ctx: Context) -> list[tuple[str, str]]:
-    return [(c[2], c[3]) for c in ctx.runner.calls  # type: ignore[attr-defined]
+def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
+    """Verb, partition, and the basename of the image written.
+
+    The image argument must stay in the projection: transposing the boot/rootfs payloads is a
+    brick that every OKAY-checked gate still waves through, so it can only be caught here.
+    """
+    return [(c[2], c[3]) + ((Path(c[4]).name,) if len(c) > 4 else ())
+            for c in ctx.runner.calls  # type: ignore[attr-defined]
             if c[:2] == FB and len(c) > 3 and c[2] in ("oem", "flash")]
 
 
@@ -54,9 +61,10 @@ def test_root_happy_path_flashes_in_order_and_marks_rooted(make_ctx: CtxFactory)
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
     assert _flash_ops(ctx) == [
-        ("oem", "dust"), ("oem", "prep"),
-        ("flash", "toc1"), ("flash", "boot1"), ("flash", "rootfs1"),
-        ("flash", "boot2"), ("flash", "rootfs2"),
+        ("oem", "dust", "DUSTTOKEN"), ("oem", "prep"),
+        ("flash", "toc1", "toc1.img"),
+        ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
+        ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
     ]
 
 
@@ -144,7 +152,7 @@ def test_root_hard_stops_on_non_okay_flash(make_ctx: CtxFactory) -> None:
         root(ctx)
     assert not ctx.need_robot().state_has("rooted")
     # stopped at toc1: no boot/rootfs flashes issued
-    assert ("flash", "boot1") not in _flash_ops(ctx)
+    assert ("flash", "boot1", "boot.img") not in _flash_ops(ctx)
 
 
 def test_root_flash_window_ignores_sigint_until_the_sequence_completes(
@@ -168,7 +176,7 @@ def test_root_flash_window_ignores_sigint_until_the_sequence_completes(
     root(ctx)  # must complete without KeyboardInterrupt escaping
     assert fired["count"] == 1
     assert ctx.need_robot().state_has("rooted")
-    assert ("flash", "rootfs2") in _flash_ops(ctx)  # the whole sequence ran to the end
+    assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)  # sequence ran to the end
 
 
 def test_root_aborts_when_live_config_unreadable(make_ctx: CtxFactory) -> None:

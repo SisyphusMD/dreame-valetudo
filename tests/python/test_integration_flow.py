@@ -62,13 +62,16 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     # 3) root: flashes the same robot (identity cross-check passes: device == recon record)
     root(ctx)
     assert robot.state_has("rooted")
-    flash_ops = [(c[2], c[3]) for c in ctx.runner.calls
+    # the image argument is part of the assertion: a transposed boot/rootfs payload flashes OKAY
+    flash_ops = [(c[2], c[3]) + ((Path(c[4]).name,) if len(c) > 4 else ())
+                 for c in ctx.runner.calls
                  if c[:2] == ("python3", "/x/fastboot-libusb.py") and len(c) > 3
                  and c[2] in ("oem", "flash")]
     assert flash_ops == [
-        ("oem", "dust"), ("oem", "prep"),
-        ("flash", "toc1"), ("flash", "boot1"), ("flash", "rootfs1"),
-        ("flash", "boot2"), ("flash", "rootfs2"),
+        ("oem", "dust", "DUST"), ("oem", "prep"),
+        ("flash", "toc1", "toc1.img"),
+        ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
+        ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
     ]
 
     # SAFETY REGRESSION: no progress display may ever be live inside the signal-masked flash
