@@ -139,6 +139,7 @@ def tmux_plan(
     tmux: Path | None,
     *,
     interactive: bool,
+    session_exists: bool = False,
 ) -> list[list[str]] | None:
     """How to put `self_cmd` in the session: commands to run, last one to exec. None = run inline.
 
@@ -158,13 +159,19 @@ def tmux_plan(
     if cmd in PURE_COMMANDS:
         return None
     t = str(tmux)
-    # -A is join-or-start: attach to the session if it exists, otherwise create it.
-    if env.get("TMUX"):
-        return [
-            [t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd],
-            [t, "switch-client", "-t", SESSION],
-        ]
-    return [[t, "new-session", "-A", "-s", SESSION, "--", *self_cmd]]
+    if not env.get("TMUX"):
+        # -A is join-or-start: attaches if the session exists, creates and attaches if not.
+        return [[t, "new-session", "-A", "-s", SESSION, "--", *self_cmd]]
+    # Inside another session, attaching is refused, so the client is moved instead. Creating is
+    # SKIPPED when the session already exists: with -A, new-session behaves like attach-session,
+    # where -d means "detach other clients" rather than "do not attach" — so it tries to attach
+    # and fails, which would drop the user out to an inline run and a lock refusal.
+    if session_exists:
+        return [[t, "switch-client", "-t", SESSION]]
+    return [
+        [t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd],
+        [t, "switch-client", "-t", SESSION],
+    ]
 
 
 def tmux_session_exists(tmux: Path) -> bool:

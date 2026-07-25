@@ -466,6 +466,7 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
     plan = tmux_plan(
         [sys.argv[0], *args], env, Path(found) if found else None,
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        session_exists=found is not None and tmux_session_exists(Path(found)),
     )
     if plan is None:
         return

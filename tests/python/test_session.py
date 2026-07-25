@@ -60,7 +60,7 @@ def test_no_bare_invocation_left_unwrapped() -> None:
     assert tmux_plan(("/usr/bin/dreame-valetudo",), {}, _TMUX, interactive=True) is not None
 
 
-def test_inside_another_tmux_it_creates_detached_then_switches_the_client() -> None:
+def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches() -> None:
     """tmux refuses to attach a session from inside another, so the run cannot simply be wrapped.
     Doing nothing was the old behaviour and it left the remote/Pi user — the one most likely to be
     inside tmux already — with no session at all, and no way to rejoin."""
@@ -183,3 +183,19 @@ def test_lock_free_reports_the_truth(tmp_path: Path) -> None:
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
+    """Verified against real tmux: `new-session -A -d` on an existing session behaves like
+    attach-session (where -d means "detach other clients"), tries to attach, and FAILS — which
+    would drop the user to an inline run and a lock refusal instead of back into their run."""
+    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
+                     interactive=True, session_exists=True)
+    assert plan == [[str(_TMUX), "switch-client", "-t", SESSION]]
+
+
+def test_outside_tmux_join_or_start_is_used_either_way() -> None:
+    """-A handles both cases in one call when there is a terminal to attach to."""
+    for exists in (True, False):
+        plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=exists)
+        assert plan == [[str(_TMUX), "new-session", "-A", "-s", SESSION, "--", *_SELF]]
