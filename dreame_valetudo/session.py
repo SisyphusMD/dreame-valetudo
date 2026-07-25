@@ -159,19 +159,49 @@ def tmux_plan(
     if cmd in PURE_COMMANDS:
         return None
     t = str(tmux)
-    if not env.get("TMUX"):
-        # -A is join-or-start: attaches if the session exists, creates and attaches if not.
-        return [[t, "new-session", "-A", "-s", SESSION, "--", *self_cmd]]
-    # Inside another session, attaching is refused, so the client is moved instead. Creating is
-    # SKIPPED when the session already exists: with -A, new-session behaves like attach-session,
-    # where -d means "detach other clients" rather than "do not attach" — so it tries to attach
-    # and fails, which would drop the user out to an inline run and a lock refusal.
+    colour = not env.get("NO_COLOR")
     if session_exists:
-        return [[t, "switch-client", "-t", SESSION]]
+        # Already dressed and running: just go to it.
+        verb = "switch-client" if env.get("TMUX") else "attach-session"
+        return [[t, verb, "-t", SESSION]]
+    create = [[t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd]]
+    create += [[t, *opt] for opt in status_bar_options(colour=colour)]
+    create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
+    return create
+
+
+def status_bar_options(*, colour: bool) -> list[list[str]]:
+    """Replace tmux's status line with one line of ours.
+
+    tmux's default is a green strip carrying a session name and window list the user never asked
+    for — unmistakably tmux, which is the one thing this is meant not to be. Turning it off instead
+    would hide the only fact worth showing: that closing the window is safe. So: no fill, dim text,
+    no window list, and copy that answers the question rather than naming the tool.
+    """
+    style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
-        [t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd],
-        [t, "switch-client", "-t", SESSION],
+        ["set-option", "-t", SESSION, "status", "on"],
+        ["set-option", "-t", SESSION, "status-style", style],
+        ["set-option", "-t", SESSION, "status-justify", "left"],
+        ["set-option", "-t", SESSION, "status-left", "dreame-valetudo"],
+        ["set-option", "-t", SESSION, "status-left-length", "60"],
+        ["set-option", "-t", SESSION, "status-right",
+         "closing this window is safe — re-run to come back "],
+        ["set-option", "-t", SESSION, "status-right-length", "60"],
+        # tmux's window list is furniture for a tool the user is not supposed to be aware of.
+        ["set-option", "-t", SESSION, "window-status-format", ""],
+        ["set-option", "-t", SESSION, "window-status-current-format", ""],
     ]
+
+
+def name_the_robot_on_the_bar(tmux: Path, robot: str) -> None:
+    """Add the robot to the bar once it is known — it is chosen after the session is created."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([str(tmux), "set-option", "-t", SESSION, "status-left",
+                        f"dreame-valetudo · {robot}"],
+                       capture_output=True, timeout=5, check=False)
+
+
 
 
 def tmux_session_exists(tmux: Path) -> bool:

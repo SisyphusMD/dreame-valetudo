@@ -16,6 +16,7 @@ from dreame_valetudo.session import (
     hold_workspace_lock,
     lock_free,
     running_run,
+    status_bar_options,
     tmux_plan,
     tmux_runs,
 )
@@ -24,17 +25,17 @@ _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
 _SELF = ("/usr/bin/dreame-valetudo", "root")
 
 
-def test_wraps_a_destructive_command_with_attach_or_create() -> None:
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True)
-    assert plan == [[str(_TMUX), "new-session", "-A", "-s", SESSION, "--", *_SELF]]
-
-
-def test_new_session_dash_A_is_what_makes_a_second_run_rejoin() -> None:
-    """-A attaches to an existing session instead of creating a second one, so re-running after a
-    lost terminal joins the live run rather than driving the same robot over USB twice."""
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True)
+def test_a_fresh_run_is_created_detached_then_attached() -> None:
+    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[-1][1:4] == ["new-session", "-A", "-s"]
+    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", SESSION, "--", *_SELF]
+    assert plan[-1] == [str(_TMUX), "attach-session", "-t", SESSION]
+
+
+def test_a_second_run_rejoins_rather_than_starting_another() -> None:
+    """Re-running lands the user back in the live run instead of driving the same robot twice."""
+    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=True)
+    assert plan == [[str(_TMUX), "attach-session", "-t", SESSION]]
 
 
 @pytest.mark.parametrize(
@@ -64,11 +65,11 @@ def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches()
     """tmux refuses to attach a session from inside another, so the run cannot simply be wrapped.
     Doing nothing was the old behaviour and it left the remote/Pi user — the one most likely to be
     inside tmux already — with no session at all, and no way to rejoin."""
-    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX, interactive=True)
-    assert plan == [
-        [str(_TMUX), "new-session", "-A", "-d", "-s", SESSION, "--", *_SELF],
-        [str(_TMUX), "switch-client", "-t", SESSION],
-    ]
+    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
+                     interactive=True, session_exists=False)
+    assert plan is not None
+    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", SESSION]
+    assert plan[-1] == [str(_TMUX), "switch-client", "-t", SESSION]
 
 
 def test_runs_inline_when_the_escape_hatch_is_set() -> None:
@@ -185,6 +186,29 @@ def test_lock_free_reports_the_truth(tmp_path: Path) -> None:
         proc.wait()
 
 
+def test_the_bar_is_ours_not_tmuxs() -> None:
+    """No window list, no fill, and copy that answers the question instead of naming the tool."""
+    opts = [" ".join(o) for o in status_bar_options(colour=True)]
+    assert any("closing this window is safe" in o for o in opts)
+    assert any(o.rstrip().endswith("window-status-format") for o in opts)
+    assert any("bg=default" in o for o in opts)          # unfilled: no coloured strip
+    assert not any("green" in o for o in opts)
+
+
+def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
+    plain = [" ".join(o) for o in status_bar_options(colour=False)]
+    assert not any("colour244" in o for o in plain)
+
+
+def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
+    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
+    assert plan is not None
+    verbs = [c[1] for c in plan]
+    assert verbs[0] == "new-session"
+    assert verbs[-1] == "attach-session"          # attach LAST, so the bar is set before it shows
+    assert verbs.count("set-option") == len(status_bar_options(colour=True))
+
+
 def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
     """Verified against real tmux: `new-session -A -d` on an existing session behaves like
     attach-session (where -d means "detach other clients"), tries to attach, and FAILS — which
@@ -194,8 +218,6 @@ def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
     assert plan == [[str(_TMUX), "switch-client", "-t", SESSION]]
 
 
-def test_outside_tmux_join_or_start_is_used_either_way() -> None:
-    """-A handles both cases in one call when there is a terminal to attach to."""
-    for exists in (True, False):
-        plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=exists)
-        assert plan == [[str(_TMUX), "new-session", "-A", "-s", SESSION, "--", *_SELF]]
+def test_outside_tmux_an_existing_session_is_attached_not_recreated() -> None:
+    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=True)
+    assert plan == [[str(_TMUX), "attach-session", "-t", SESSION]]

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **new**: a single dim line at the bottom of the terminal names the robot and notes that closing
+  the window is safe.
 - **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a
   dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
   starting a second one — including when you are already working in your own tmux. Set

@@ -46,6 +46,7 @@ from .session import (
     hold_workspace_lock,
     kill_session,
     lock_free,
+    name_the_robot_on_the_bar,
     running_run,
     tmux_plan,
     tmux_runs,
@@ -100,6 +101,9 @@ def _bind_robot(ctx: Context) -> None:
     if ctx.robot is not None:
         describe_run(robot=ctx.robot.display_name())
         bookmark_prompts_in(ctx.robot.state_dir)
+        tmux = find_helper("tmux", dict(ctx.env)) or shutil.which("tmux")
+        if tmux and ctx.env.get("TMUX"):
+            name_the_robot_on_the_bar(Path(tmux), ctx.robot.display_name())
 
 
 def _profile_for_work(ctx: Context) -> None:
