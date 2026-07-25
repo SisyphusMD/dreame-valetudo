@@ -32,6 +32,7 @@ depends:
   - unzip                # the image phase unpacks the dustbuilder FEL zip
   - zip                  # recon archives the pre-root recovery backup (recon.py's `zip -q -j`)
   - openssh-client       # phase 3 push + the fix-*/diagnose helpers run ssh
+  - tmux                 # every run is wrapped in a session so a lost terminal can't end it
 
 contents:
   - src: ./dist/dreame-valetudo              # self-contained main bundle (Python frozen in)
@@ -66,3 +67,4 @@ overrides:
       - /usr/bin/unzip
       - /usr/bin/zip
       - /usr/bin/ssh
+      - /usr/bin/tmux

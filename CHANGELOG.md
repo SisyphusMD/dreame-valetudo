@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-- **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or dropped SSH doesn't
-  end the run — re-running the same command rejoins it instead of starting a second one. Set
-  `DREAME_NO_TMUX=1` to opt out.
+- **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a
+  dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
+  starting a second one. Set `DREAME_NO_TMUX=1` to opt out.
 - **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no
   longer kills or freezes it mid-write.
 - **fix**: re-staging a build is now all-or-nothing. `image --force` extracted over the existing
