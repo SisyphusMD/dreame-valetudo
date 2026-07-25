@@ -8,6 +8,9 @@
   `DREAME_NO_TMUX=1` to opt out.
 - **fix**: downloads and robot SSH can no longer hang indefinitely — a stalled transfer is given
   up on, and ssh never falls back to its own password prompt.
+- **new**: a run interrupted while waiting on an answer now records the question, and the robot
+  list shows it — so coming back days later tells you what you were being asked, not just which
+  phases finished.
 - **new**: starting dreame-valetudo while a run is already in progress now offers to go back to it
   or close it and start something else, naming the robot involved, instead of silently joining.
 - **new**: a second run against the same workspace is refused instead of racing the first — the

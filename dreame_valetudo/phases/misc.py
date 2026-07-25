@@ -71,7 +71,15 @@ def _summary(base: Path) -> str:
         if (d / "state" / s).is_file():
             last = s
             break
-    return f"{model}  config={cfg}  furthest={last}"
+    summary = f"{model}  config={cfg}  furthest={last}"
+    # Only ever present when a run was interrupted while waiting on an answer — "furthest" says
+    # what finished, which is not the same as what you were in the middle of being asked.
+    pending = d / "state" / "pending"
+    if pending.is_file():
+        asked = pending.read_text().strip()
+        if asked:
+            summary += f"\n      was asked: {asked}"
+    return summary
 
 
 def status(ctx: Context) -> None:

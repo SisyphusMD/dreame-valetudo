@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die
+from .console import Console, Die, bookmark_prompts_in
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import find_helper, resolve_libexec
@@ -98,6 +98,7 @@ def _bind_robot(ctx: Context) -> None:
     _profile_for_work(ctx)
     if ctx.robot is not None:
         describe_run(robot=ctx.robot.display_name())
+        bookmark_prompts_in(ctx.robot.state_dir)
 
 
 def _profile_for_work(ctx: Context) -> None:

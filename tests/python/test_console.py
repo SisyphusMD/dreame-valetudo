@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.console import Console, warn_if_low_disk
+from dreame_valetudo.console import Console, bookmark_prompts_in, warn_if_low_disk
 
 
 def _console() -> Console:
@@ -233,3 +233,36 @@ def test_output_survives_a_dead_tty(monkeypatch: pytest.MonkeyPatch) -> None:
     c.say("this must not raise")
     c.warn("nor this")
     c.err("nor this")
+
+
+def test_an_open_question_is_bookmarked_and_cleared(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """The marker exists only while the tool is waiting on a person: written when the question is
+    asked, gone the moment it is answered. Its presence is what says 'interrupted mid-question'."""
+    state = tmp_path / "state"
+    bookmark_prompts_in(state)
+    seen = {}
+
+    def answer(_p: str) -> str:
+        seen["during"] = (state / "pending").read_text().strip()
+        return "y"
+
+    monkeypatch.setattr("builtins.input", answer)
+    assert _console().confirm("Flash X40 Ultra now?") is True
+    assert seen["during"] == "Flash X40 Ultra now?"      # readable text, no ANSI or '??' prefix
+    assert not (state / "pending").exists()              # cleared once answered
+
+
+def test_the_bookmark_survives_an_unanswered_question(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run killed at a prompt must leave the marker behind — that is the whole point."""
+    state = tmp_path / "state"
+    bookmark_prompts_in(state)
+
+    def die(_p: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", die)
+    with pytest.raises(KeyboardInterrupt):
+        _console().confirm("Flash X40 Ultra now?")
+    assert (state / "pending").read_text().strip() == "Flash X40 Ultra now?"

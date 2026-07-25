@@ -52,6 +52,33 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
 
 
+# Where to bookmark an open question, once a robot is known. A prompt is the one place a run can
+# sit indefinitely, so its PRESENCE is what carries meaning: it exists only while the tool is
+# waiting on a person, and is cleared the moment they answer. Written here rather than at each
+# call site because every prompt funnels through this module — nothing can forget to record.
+# A list, not a rebindable global; empty until a robot is bound (early commands have none).
+_BOOKMARK: list[Path] = []
+
+
+def bookmark_prompts_in(state_dir: Path) -> None:
+    """Record open questions for this robot from now on."""
+    _BOOKMARK[:] = [state_dir]
+
+
+def _bookmark(question: str | None) -> None:
+    if not _BOOKMARK:
+        return
+    f = _BOOKMARK[0] / "pending"
+    try:
+        if question is None:
+            f.unlink(missing_ok=True)
+        else:
+            _BOOKMARK[0].mkdir(parents=True, exist_ok=True)
+            f.write_text(question.strip() + "\n")
+    except OSError:
+        pass  # a bookmark is a convenience; never fail a run over one
+
+
 class Console:
     """Human-facing IO. Subclass to script prompts / capture output in tests."""
 
@@ -150,11 +177,19 @@ class Console:
 
     def confirm(self, prompt: str) -> bool:
         self._suspend_progress()
-        return self._prompt(self._c("1;35", f"?? {prompt} [y/N] ")).strip().lower() in ("y", "yes")
+        _bookmark(prompt)
+        answer = self._prompt(self._c("1;35", f"?? {prompt} [y/N] "))
+        # Cleared only on a real answer. NOT in a finally: an interrupt, a kill or a timeout must
+        # leave the marker behind — a question nobody answered is exactly what it exists to record.
+        _bookmark(None)
+        return answer.strip().lower() in ("y", "yes")
 
     def ask(self, prompt: str) -> str:
         self._suspend_progress()
-        return self._prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(prompt)
+        answer = self._prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(None)  # see confirm(): deliberately not a finally
+        return answer
 
     # -- the funnel and rendering -----------------------------------------------------------
 
