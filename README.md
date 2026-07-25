@@ -296,6 +296,8 @@ There is no config or secrets file; every knob is an optional environment variab
 | `VALETUDO_VERSION` | Valetudo release to install (a pinned known-good version by default; `latest` tracks upstream) |
 | `DREAME_PYTHON` | Which python runs the libusb fastboot client (auto-detected) |
 | `DREAME_NO_LOG` | Set `1` to turn off the run log |
+| `DREAME_NO_TMUX` | Set `1` to run in the terminal directly, instead of in a session that survives it closing |
+| `DREAME_IDLE_TIMEOUT` | Seconds an unanswered question waits once nobody is watching (default `3600`, `0` to wait forever) |
 
 How the tool handles your SSH key and the scrubbed run log is in [How it works](docs/DESIGN.md).
 

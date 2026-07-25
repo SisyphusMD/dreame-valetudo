@@ -439,6 +439,11 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     return con.ask("Which [1-2]?").strip() != "2"
 
 
+def cmd_of(args: Sequence[str]) -> str:
+    """The subcommand these args select — bare invocation means the auto chain."""
+    return args[0] if args else "auto"
+
+
 def _idle_seconds(env: Mapping[str, str]) -> float:
     """How long an unwatched question may sit. An hour by default — long enough that stepping away
     mid-flash costs nothing, short enough that a forgotten run frees the workspace the same day."""
@@ -473,6 +478,13 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
         session_exists=found is not None and tmux_session_exists(Path(found)),
     )
     if plan is None:
+        # Say so when the reason is a MISSING tmux rather than a deliberate choice: every package
+        # channel installs one, but the source tarball cannot ship a native binary without becoming
+        # per-architecture, so this is the one install where a closed terminal still ends the run.
+        if (found is None and sys.stdin.isatty()
+                and not env.get("DREAME_NO_TMUX") and cmd_of(args) not in PURE_COMMANDS):
+            con.info("No tmux found, so this run will end if its terminal closes. Installing tmux "
+                     "lets it survive that, and lets you rejoin by re-running this command.")
         return
     # Setup steps first (creating the session detached when already inside another). If one fails
     # there is no session to move to, so fall through and run inline rather than strand the user.
