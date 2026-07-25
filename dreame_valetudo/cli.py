@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die, bookmark_prompts_in
+from .console import Console, Die, bookmark_prompts_in, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import find_helper, resolve_libexec
@@ -41,6 +41,7 @@ from .profiles import (
 from .run import RunError, Runner, SubprocessRunner
 from .session import (
     PURE_COMMANDS,
+    client_attached,
     describe_run,
     hold_workspace_lock,
     kill_session,
@@ -434,6 +435,18 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     return con.ask("Which [1-2]?").strip() != "2"
 
 
+def _idle_seconds(env: Mapping[str, str]) -> float:
+    """How long an unwatched question may sit. An hour by default — long enough that stepping away
+    mid-flash costs nothing, short enough that a forgotten run frees the workspace the same day."""
+    raw = env.get("DREAME_IDLE_TIMEOUT")
+    if raw is None:
+        return 3600.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 3600.0
+
+
 def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
     """Replace this process with one inside the tmux session, when that applies."""
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
@@ -493,6 +506,14 @@ def main(
             # starting a rival process against the same robot. Replaces this process when it
             # applies; an exec failure just falls through and runs inline.
             _reexec_under_tmux(args, resolved_env, con, ws.base / ".lock")
+            # An unanswered question inside a session would otherwise block forever: tmux keeps
+            # the pty open when the client detaches, so input() never sees EOF. Default an hour;
+            # DREAME_IDLE_TIMEOUT overrides it, 0 disables.
+            tmux_for_idle = find_helper("tmux", resolved_env) or shutil.which("tmux")
+            if tmux_for_idle:
+                seconds = _idle_seconds(resolved_env)
+                if seconds > 0:
+                    idle_timeout(seconds, lambda: client_attached(Path(tmux_for_idle)))
             # One run per workspace. The tmux wrapper above already makes a second invocation
             # attach instead of starting a rival, but it never nests — so a user inside their own
             # tmux, or a piped/opted-out run, reaches here unprotected.

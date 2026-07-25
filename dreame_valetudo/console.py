@@ -12,6 +12,7 @@ message, and wording assertions never couple to presentation.
 from __future__ import annotations
 
 import os
+import select
 import shutil
 import sys
 import textwrap
@@ -77,6 +78,35 @@ def _bookmark(question: str | None) -> None:
             f.write_text(question.strip() + "\n")
     except OSError:
         pass  # a bookmark is a convenience; never fail a run over one
+
+
+# How long an unwatched question may sit before the run gives up, and how to tell whether anyone
+# is watching. Bound by cli when a session is in play; without them a prompt waits forever, which
+# is the right default for a terminal with a human in front of it.
+_IDLE_TIMEOUT: list[float] = []
+_IDLE_PROBE: list[Callable[[], bool | None]] = []
+
+
+def idle_timeout(seconds: float, probe: Callable[[], bool | None]) -> None:
+    """Give up on an unanswered question after `seconds` of nobody watching."""
+    _IDLE_TIMEOUT[:], _IDLE_PROBE[:] = [seconds], [probe]
+
+
+def next_deadline(
+    attached: bool | None, deadline: float | None, now: float, timeout: float
+) -> float | None:
+    """The deadline to enforce, or None while there is nothing to count down.
+
+    The clock is driven by ATTACHMENT, not by when the question was asked: a question nobody has
+    seen yet should not expire just because it was asked an hour ago, and one being read right now
+    should never expire at all. Detaching starts it; reattaching clears it.
+
+    Only a definite False starts the clock. Unknown (None) means never time out — abandoning a run
+    on a failed probe would be strictly worse than waiting.
+    """
+    if timeout <= 0 or attached is not False:
+        return None
+    return now + timeout if deadline is None else deadline
 
 
 class Console:
@@ -282,11 +312,44 @@ class Console:
 
     def _prompt(self, rendered: str) -> str:
         self._last_line_blank = False  # the prompt + echoed answer occupy the current line
-        try:
-            return input(rendered)
-        except EOFError:
-            print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
-            return ""
+        probe = _IDLE_PROBE[0] if _IDLE_PROBE else None
+        timeout = _IDLE_TIMEOUT[0] if _IDLE_TIMEOUT else 0.0
+        if probe is None or timeout <= 0 or not sys.stdin.isatty():
+            try:
+                return input(rendered)
+            except EOFError:
+                print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
+                return ""
+        return self._prompt_until_idle(rendered, probe, timeout)
+
+    def _prompt_until_idle(
+        self, rendered: str, probe: Callable[[], bool | None], timeout: float
+    ) -> str:
+        """input(), but giving up once nobody has been watching for `timeout`.
+
+        Detached, the pty stays open, so a plain input() would block forever holding the workspace
+        — the very thing surviving the terminal was supposed to buy. The question is already
+        bookmarked, so giving up here costs nothing but the wait.
+        """
+        print(rendered, end="", flush=True)
+        deadline: float | None = None
+        last_probe = 0.0
+        attached: bool | None = None
+        while True:
+            if select.select([sys.stdin], [], [], 2.0)[0]:
+                line = sys.stdin.readline()
+                if not line:
+                    print()
+                    return ""
+                return line.rstrip("\n")
+            now = time.monotonic()
+            if now - last_probe >= 15.0:   # spawning tmux every loop would be gratuitous
+                attached, last_probe = probe(), now
+            deadline = next_deadline(attached, deadline, now, timeout)
+            if deadline is not None and now >= deadline:
+                print()
+                raise Die("No answer, and this window has been closed for a while — stopping here. "
+                          "Your place is saved; re-run and pick this robot to carry on.")
 
 
 class Progress:

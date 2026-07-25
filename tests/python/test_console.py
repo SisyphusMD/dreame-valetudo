@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.console import Console, bookmark_prompts_in, warn_if_low_disk
+from dreame_valetudo.console import (
+    Console,
+    bookmark_prompts_in,
+    next_deadline,
+    warn_if_low_disk,
+)
 
 
 def _console() -> Console:
@@ -266,3 +271,32 @@ def test_the_bookmark_survives_an_unanswered_question(tmp_path: Path,
     with pytest.raises(KeyboardInterrupt):
         _console().confirm("Flash X40 Ultra now?")
     assert (state / "pending").read_text().strip() == "Flash X40 Ultra now?"
+
+
+# --- the idle clock: driven by attachment, never by how long the question has been open --------
+def test_a_watched_question_never_expires() -> None:
+    assert next_deadline(True, None, now=100.0, timeout=60.0) is None
+    assert next_deadline(True, 150.0, now=100.0, timeout=60.0) is None   # reattaching clears it
+
+
+def test_an_unknowable_attachment_never_expires() -> None:
+    """No tmux, no session, a failed query — abandoning a run on a failed probe would be strictly
+    worse than waiting, so only a definite 'nobody is watching' starts the clock."""
+    assert next_deadline(None, None, now=100.0, timeout=60.0) is None
+
+
+def test_detaching_starts_the_clock_and_keeps_it_running() -> None:
+    first = next_deadline(False, None, now=100.0, timeout=60.0)
+    assert first == 160.0
+    # ten seconds later it must be the SAME deadline, not a fresh 60s from now
+    assert next_deadline(False, first, now=110.0, timeout=60.0) == 160.0
+
+
+def test_reattaching_then_detaching_again_starts_over() -> None:
+    d = next_deadline(False, None, now=100.0, timeout=60.0)
+    assert next_deadline(True, d, now=110.0, timeout=60.0) is None       # came back: clock cleared
+    assert next_deadline(False, None, now=200.0, timeout=60.0) == 260.0  # left again: fresh clock
+
+
+def test_a_zero_timeout_disables_the_clock() -> None:
+    assert next_deadline(False, None, now=100.0, timeout=0.0) is None

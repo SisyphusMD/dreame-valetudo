@@ -8,6 +8,9 @@
   `DREAME_NO_TMUX=1` to opt out.
 - **fix**: downloads and robot SSH can no longer hang indefinitely — a stalled transfer is given
   up on, and ssh never falls back to its own password prompt.
+- **new**: a question left unanswered with the window closed now gives up after an hour instead of
+  waiting forever, freeing the workspace for the next run. It never times out while you are looking
+  at it. Set `DREAME_IDLE_TIMEOUT` (seconds, 0 to disable) to change it.
 - **new**: a run interrupted while waiting on an answer now records the question, and the robot
   list shows it — so coming back days later tells you what you were being asked, not just which
   phases finished.

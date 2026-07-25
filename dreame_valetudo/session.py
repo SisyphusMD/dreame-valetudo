@@ -196,3 +196,22 @@ def lock_free(path: Path) -> bool:
             return True
     except OSError:
         return False
+
+
+def client_attached(tmux: Path) -> bool | None:
+    """Is anyone actually looking at the session? None when that is unknowable.
+
+    None is the safe answer — no tmux, no session, a query that failed — and it means "never time
+    out". A run must only ever be abandoned on positive evidence that nobody is watching.
+    """
+    try:
+        res = subprocess.run(
+            [str(tmux), "display-message", "-p", "-t", SESSION, "#{session_attached}"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    answer = res.stdout.strip()
+    return answer == "1" if answer in ("0", "1") else None
