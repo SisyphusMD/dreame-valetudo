@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.session import PURE_COMMANDS, SESSION, tmux_argv, tmux_runs
+from dreame_valetudo.session import (
+    PURE_COMMANDS,
+    SESSION,
+    hold_workspace_lock,
+    tmux_argv,
+    tmux_runs,
+)
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
 _SELF = ("/usr/bin/dreame-valetudo", "root")
@@ -83,3 +91,30 @@ def test_tmux_runs_rejects_one_that_cannot_start(tmp_path: Path) -> None:
 
 def test_tmux_runs_rejects_a_missing_binary(tmp_path: Path) -> None:
     assert tmux_runs(tmp_path / "not-here") is False
+
+
+def test_the_lock_refuses_a_second_run(tmp_path: Path) -> None:
+    """Proven against a real second process: an in-process check would pass trivially, because
+    flock is held per open file description and this process already owns it."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    rival = tmp_path / "rival.py"
+    rival.write_text(
+        "import fcntl, sys\n"
+        f"f = open({str(lock)!r}, 'w')\n"
+        "try:\n"
+        "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except OSError:\n"
+        "    sys.exit(3)\n"
+        "sys.exit(0)\n"
+    )
+    out = subprocess.run([sys.executable, str(rival)], capture_output=True, check=False)
+    assert out.returncode == 3  # the rival could not take the lock
+
+
+@pytest.mark.parametrize("cmd", ["status", "help", "--version", "install-udev"])
+def test_read_only_and_pure_commands_take_no_lock(tmp_path: Path, cmd: str) -> None:
+    """Refusing `status` while a run is in progress would hide exactly what the user asked for."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")          # a run is in progress
+    hold_workspace_lock(lock, cmd)             # must not raise

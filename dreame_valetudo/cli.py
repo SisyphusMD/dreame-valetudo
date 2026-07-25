@@ -37,7 +37,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .session import PURE_COMMANDS, tmux_argv, tmux_runs
+from .session import PURE_COMMANDS, hold_workspace_lock, tmux_argv, tmux_runs
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -435,6 +435,10 @@ def main(
             # starting a rival process against the same robot. Replaces this process when it
             # applies; an exec failure just falls through and runs inline.
             _reexec_under_tmux(args, resolved_env)
+            # One run per workspace. The tmux wrapper above already makes a second invocation
+            # attach instead of starting a rival, but it never nests — so a user inside their own
+            # tmux, or a piped/opted-out run, reaches here unprotected.
+            hold_workspace_lock(ws.base / ".lock", cmd)
             # Help the fastboot client + sunxi-fel find libusb.
             apply_library_path(resolve_libexec(resolved_env))
             if cmd not in _NO_WORKSPACE:

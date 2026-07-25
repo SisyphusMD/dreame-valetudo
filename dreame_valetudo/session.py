@@ -1,4 +1,4 @@
-"""Run the long phases inside a tmux session.
+"""How a run relates to other runs: the tmux session it lives in, and the workspace lock.
 
 A flash must not die with its terminal. The signal mask in the root phase stops the signals that
 reach the process, but nothing inside the process can survive the terminal itself going away for
@@ -10,14 +10,22 @@ same command rejoins it. `new-session -A` is exactly that contract — attach if
 otherwise create it — which also means a second invocation joins the first rather than driving the
 same robot over USB twice.
 
-The decision is a pure function so it is testable; only the exec itself lives in cli.
+The tmux wrapper deliberately does not nest, so it cannot protect someone already working inside
+their own tmux — the remote/Pi case. The workspace lock covers that gap, and the piped and
+opted-out paths with it.
+
+The decisions are pure functions so they are testable; only the exec itself lives in cli.
 """
 
 from __future__ import annotations
 
+import fcntl
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import IO
+
+from .console import Die
 
 SESSION = "dreame-valetudo"
 
@@ -31,6 +39,40 @@ SESSION = "dreame-valetudo"
 PURE_COMMANDS = frozenset(
     {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
 )
+
+# Read-only: safe to run while another run holds the workspace, and refusing them would only hide
+# the very information the user is asking for.
+READ_ONLY_COMMANDS = frozenset({"status"})
+
+# Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
+# loss — so there is never a stale lock to detect, and never a judgement call for the user about
+# whether some recorded pid is still alive. Module-level purely to keep the handle from being
+# garbage collected, which would release the lock early. A list so the handle is appended rather
+# than rebound — same lifetime, without a module-level `global`.
+_HELD: list[IO[str]] = []
+
+
+def hold_workspace_lock(path: Path, command: str) -> None:
+    """Refuse to start when another run already owns this workspace.
+
+    The tmux wrapper already prevents most double-runs by attaching instead of starting a second
+    process — but it deliberately does not nest, so anyone working inside their own tmux (the
+    remote/Pi case) is not covered by it, and neither is a piped or opted-out run.
+    """
+    if command in PURE_COMMANDS or command in READ_ONLY_COMMANDS:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise Die(
+            "Another dreame-valetudo run is already working in this workspace. Rejoin it with "
+            "'tmux attach -t dreame-valetudo', or wait for it to finish — running two at once "
+            "against the same robot risks bricking it."
+        ) from None
+    _HELD.append(fh)
 
 
 def tmux_runs(tmux: Path) -> bool:
