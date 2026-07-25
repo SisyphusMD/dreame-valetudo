@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **new**: the macOS `.pkg` now ships an uninstaller (`sudo /usr/local/libexec/dreame-valetudo/uninstall.sh`)
+  — macOS has no way to uninstall a `.pkg`, so removal was a hand-typed `rm -rf`. Your backups are
+  untouched.
 - **new**: a single dim line at the bottom of the terminal names the robot and notes that closing
   the window is safe.
 - **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a

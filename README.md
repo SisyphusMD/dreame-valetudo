@@ -90,8 +90,10 @@ git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo    # or th
 cd dreame-valetudo && uv run dreame-valetudo
 ```
 [`uv`](https://docs.astral.sh/uv/) handles the interpreter and the on-demand `pyusb`. Or install it as
-a tool: `uv tool install .` (or `pipx install .`). You also need **libusb** and **curl** at runtime
-(macOS: `brew install libusb`; Linux: `sudo apt install libusb-1.0-0 curl`), plus a toolchain to build
+a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl** and **tmux** at
+runtime (macOS: `brew install libusb tmux`; Linux: `sudo apt install libusb-1.0-0 curl tmux`) — every
+packaged install pulls tmux in for you, but a source checkout can't, and without it a run ends when
+its terminal closes instead of surviving to be rejoined. Plus a toolchain to build
 `sunxi-fel` on the first run (`git make pkg-config libusb-1.0-0-dev libfdt-dev`, or a system
 `sunxi-tools`). On Linux, install the udev rule from `packaging/udev/`.
 
@@ -234,8 +236,7 @@ longer need to un-brick or restore any robot.
 ```bash
 brew uninstall dreame-valetudo                       # Homebrew (or dreame-valetudo-rc)
 sudo apt remove dreame-valetudo                      # Debian/Ubuntu (.deb), incl. its udev rule
-sudo rm -rf /usr/local/bin/dreame-valetudo /usr/local/libexec/dreame-valetudo   # macOS .pkg files
-sudo pkgutil --forget com.sisyphusmd.dreame-valetudo                            # macOS .pkg receipt
+sudo /usr/local/libexec/dreame-valetudo/uninstall.sh  # macOS .pkg (removes its files + receipt)
 uv tool uninstall dreame-valetudo                    # from source (uv tool); or `pipx uninstall`, or rm the clone
 ```
 

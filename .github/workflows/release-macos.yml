@@ -128,6 +128,8 @@ jobs:
           LX=root/usr/local/libexec/dreame-valetudo
           mkdir -p "$LX" root/usr/local/bin
           cp dreame-valetudo dreame-fastboot sunxi-fel tmux ./*.dylib "$LX/"
+          # macOS cannot uninstall a .pkg; ship the remover beside what it removes.
+          install -m 0755 packaging/uninstall-macos.sh "$LX/uninstall.sh"
           cat > root/usr/local/bin/dreame-valetudo <<'SH'
           #!/bin/bash
           export DREAME_LIBEXEC="/usr/local/libexec/dreame-valetudo"
