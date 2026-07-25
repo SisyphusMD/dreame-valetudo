@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- **new**: long phases now run inside a tmux session, so a closed terminal or dropped SSH doesn't
+- **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or dropped SSH doesn't
   end the run — re-running the same command rejoins it instead of starting a second one. Set
   `DREAME_NO_TMUX=1` to opt out.
 - **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no

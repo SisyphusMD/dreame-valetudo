@@ -20,9 +20,16 @@ from pathlib import Path
 
 SESSION = "dreame-valetudo"
 
-# Only the commands that can reach the destructive flash or a long transfer. Wrapping a quick
-# read-only command would leave a session behind for no benefit.
-_WRAPPED = frozenset({"auto", "root", "image", "recon", "push", "uart"})
+# Pure commands: they answer and exit without touching the workspace or the robot. Everything else
+# is wrapped, including anything added later — a denylist keeps a new command protected by default,
+# where an allowlist would silently leave it exposed.
+#
+# These must stay OUT because `new-session -A` attaches to a live session: asking for --version
+# while a flash is running should print a version, not drop the user into the flash. install-udev
+# runs under sudo, which has no business inside the user's session either.
+PURE_COMMANDS = frozenset(
+    {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
+)
 
 
 def tmux_argv(
@@ -43,6 +50,6 @@ def tmux_argv(
     if env.get("TMUX") or env.get("DREAME_NO_TMUX"):
         return None
     cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
-    if cmd not in _WRAPPED:
+    if cmd in PURE_COMMANDS:
         return None
     return [str(tmux), "new-session", "-A", "-s", SESSION, "--", *self_cmd]

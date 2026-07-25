@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.session import SESSION, tmux_argv
+from dreame_valetudo.session import PURE_COMMANDS, SESSION, tmux_argv
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
 _SELF = ("/usr/bin/dreame-valetudo", "root")
@@ -25,14 +25,21 @@ def test_new_session_dash_A_is_what_makes_a_second_run_rejoin() -> None:
     assert argv[1:4] == ["new-session", "-A", "-s"]
 
 
-@pytest.mark.parametrize("cmd", ["auto", "root", "image", "recon", "push", "uart"])
-def test_the_long_commands_are_wrapped(cmd: str) -> None:
+@pytest.mark.parametrize(
+    "cmd",
+    ["auto", "root", "image", "recon", "push", "uart", "status", "doctor", "fetch", "clean",
+     "diagnose", "sshkey", "forget", "rename", "ui", "valetudo", "fix-wifi", "verify-form",
+     "a-command-added-next-year"],
+)
+def test_everything_is_wrapped_by_default(cmd: str) -> None:
+    """A denylist, so a command added later is protected without anyone remembering to list it."""
     assert tmux_argv(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, interactive=True) is not None
 
 
-@pytest.mark.parametrize("cmd", ["status", "doctor", "--help", "sshkey", "forget"])
-def test_short_commands_run_inline(cmd: str) -> None:
-    """A quick read-only command would leave a session behind for nothing."""
+@pytest.mark.parametrize("cmd", sorted(PURE_COMMANDS))
+def test_pure_commands_run_inline(cmd: str) -> None:
+    """`new-session -A` ATTACHES to a live session, so asking for --version mid-flash must not
+    drop the user into the flash."""
     assert tmux_argv(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, interactive=True) is None
 
 

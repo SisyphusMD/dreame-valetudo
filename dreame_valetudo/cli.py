@@ -37,7 +37,7 @@ from .profiles import (
     model_key_for_dir,
 )
 from .run import RunError, Runner, SubprocessRunner
-from .session import tmux_argv
+from .session import PURE_COMMANDS, tmux_argv
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
 from .whatsnew import show_whats_new
@@ -48,9 +48,9 @@ _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"}
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
 # install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
-_NO_WORKSPACE = frozenset(
-    {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
-)
+# Shared with the tmux wrapper, which excludes exactly the same set for the same reason: one list,
+# so a command can't end up pure for one purpose and not the other.
+_NO_WORKSPACE = PURE_COMMANDS
 
 
 def select_model(ctx: Context) -> None:
