@@ -24,7 +24,7 @@ from .recon import read_identity_from_robot
 
 def verify_form(ctx: Context) -> bool:
     ctx.console.say("Checking the dustbuilder form for drift...")
-    res = ctx.runner.run(["curl", "-fsSL", ctx.dustbuilder_page], check=False)
+    res = ctx.runner.run(["curl", "-fsSL", "-m", "15", ctx.dustbuilder_page], check=False)
     if not res.ok or not res.stdout.strip():
         die(f"couldn't fetch/parse {ctx.dustbuilder_page}")
     cur = form_signature(res.stdout)

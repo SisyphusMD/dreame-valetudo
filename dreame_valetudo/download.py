@@ -33,7 +33,11 @@ def download(runner: Runner, console: Console, url: str, dest: str | Path) -> No
         # -sS: the runner captures curl's output anyway, so the progress meter would only pollute
         # the error text on failure; liveness comes from the console's own progress display.
         with console.progress(f"Downloading {dest.name}"):
-            runner.run(["curl", "-fsSL", "-o", str(part), url])
+            # A large file can legitimately take minutes, so bound the STALL, not the total: give
+            # up if the transfer sits under 1 KB/s for a minute. An unbounded curl here hangs the
+            # process forever on a half-open connection, with nothing to time it out.
+            runner.run(["curl", "-fsSL", "--connect-timeout", "15",
+                        "--speed-limit", "1024", "--speed-time", "60", "-o", str(part), url])
     except RunError:
         part.unlink(missing_ok=True)
         die(f"download failed: {url}")
@@ -64,7 +68,7 @@ def valetudo_published_sha256(runner: Runner, version: str, arch: str) -> str | 
     """
     ref = "latest" if version == "latest" else f"tags/{version}"
     url = f"https://api.github.com/repos/Hypfer/Valetudo/releases/{ref}"
-    res = runner.run(["curl", "-fsSL", url], check=False)
+    res = runner.run(["curl", "-fsSL", "-m", "20", url], check=False)
     if not res.ok:
         return None
     try:

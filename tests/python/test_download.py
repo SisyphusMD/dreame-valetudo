@@ -44,7 +44,7 @@ def test_published_digest_uses_tags_ref_for_a_version() -> None:
     rr = RecordingRunner(_gh)
     D.valetudo_published_sha256(rr, "2026.05.0", "aarch64")
     assert rr.calls[0] == (
-        "curl", "-fsSL",
+        "curl", "-fsSL", "-m", "20",
         "https://api.github.com/repos/Hypfer/Valetudo/releases/tags/2026.05.0",
     )
 
@@ -52,7 +52,7 @@ def test_published_digest_uses_tags_ref_for_a_version() -> None:
 def test_published_digest_uses_latest_ref() -> None:
     rr = RecordingRunner(_gh)
     D.valetudo_published_sha256(rr, "latest", "aarch64")
-    assert rr.calls[0][2].endswith("/releases/latest")
+    assert rr.calls[0][-1].endswith("/releases/latest")
 
 
 def test_published_digest_none_on_curl_failure() -> None:
@@ -96,7 +96,10 @@ def test_download_fetches_then_atomically_renames(tmp_path: Path) -> None:
     D.download(rr, Console(color=False), "https://example/blob", dest)
     assert dest.read_text() == "payload"
     assert not Path(f"{dest}.part").exists()
-    assert rr.calls[0] == ("curl", "-fsSL", "-o", f"{dest}.part", "https://example/blob")
+    # the stall guard is part of the transcript: an unbounded curl hangs the process forever
+    assert rr.calls[0] == ("curl", "-fsSL", "--connect-timeout", "15",
+                           "--speed-limit", "1024", "--speed-time", "60",
+                           "-o", f"{dest}.part", "https://example/blob")
 
 
 def test_download_cleans_up_part_and_dies_on_failure(tmp_path: Path) -> None:

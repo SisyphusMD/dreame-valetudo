@@ -6,6 +6,8 @@
   dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
   starting a second one — including when you are already working in your own tmux. Set
   `DREAME_NO_TMUX=1` to opt out.
+- **fix**: downloads and robot SSH can no longer hang indefinitely — a stalled transfer is given
+  up on, and ssh never falls back to its own password prompt.
 - **new**: a second run against the same workspace is refused instead of racing the first — the
   session wrapper can't cover a user already inside their own tmux, so a lock does.
 - **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no

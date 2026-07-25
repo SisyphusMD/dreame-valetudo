@@ -40,4 +40,7 @@ ROBOT_SSH_OPTS = (
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
     "-o", "ConnectTimeout=8",
+    # Never let ssh fall back to its own interactive password prompt: that is a prompt this tool
+    # does not own and cannot time out, so on a detached terminal it blocks forever.
+    "-o", "BatchMode=yes",
 )
