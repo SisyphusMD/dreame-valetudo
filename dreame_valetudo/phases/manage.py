@@ -10,6 +10,7 @@ from pathlib import Path
 from .. import manifest
 from ..console import die
 from ..context import Context
+from ..installs import find_installs
 from ..workspace import Robot, slugify
 from .misc import _summary
 
@@ -129,3 +130,45 @@ def clean(ctx: Context, rest: Sequence[str]) -> None:
             return
     shutil.rmtree(target)
     ctx.console.say("Done." + (" Backups kept." if everything else ""))
+
+
+def uninstall(ctx: Context) -> None:
+    """Remove this tool, whichever way it was installed.
+
+    One command instead of a table the user has to match themselves — most people do not remember
+    whether they used brew or the .pkg a year later, and on macOS the .pkg has no uninstaller of
+    its own to find. Never touches ~/dreame-valetudo/: the factory backups there are what un-brick
+    a robot, and outliving the program is the point of them.
+    """
+    found = find_installs(ctx.env)
+    if not found:
+        ctx.console.say("No installs of dreame-valetudo found to remove.")
+        return
+
+    ctx.console.say("Found these installs:")
+    for i in found:
+        ctx.console.info(f"   {i.kind}  ({i.marker})")
+        ctx.console.detail(f"      {' '.join(i.removal) if i.removal else i.note}")
+    ctx.console.info(f"Your robots' backups in {ctx.backups_dir} are NOT touched.")
+
+    removable = [i for i in found if i.removal]
+    if not removable:
+        ctx.console.say("Nothing here can be removed automatically.")
+        return
+    needs_root = any(i.removal[0] == "sudo" for i in removable)
+    if needs_root:
+        ctx.console.info("Some of these need root — sudo will ask for your password.")
+    plural = "install" if len(removable) == 1 else f"{len(removable)} installs"
+    if not ctx.console.confirm(f"Remove {plural} now?"):
+        die("Aborted — nothing was removed.")
+
+    failed = []
+    for i in removable:
+        ctx.console.say(f"Removing the {i.kind} install...")
+        if not ctx.runner.run(i.removal, check=False).ok:
+            failed.append(i)
+    for i in failed:
+        ctx.console.err(f"Couldn't remove the {i.kind} install — run it yourself: "
+                        f"{' '.join(i.removal)}")
+    if not failed:
+        ctx.console.say(f"Removed. Your robot backups are still in {ctx.backups_dir}.")

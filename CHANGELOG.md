@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **new**: `dreame-valetudo uninstall` removes the tool whichever way it was installed, and warns
+  when more than one install is present (Homebrew and the `.pkg` both provide the command, and
+  which one runs comes down to your PATH). Your backups are never touched.
 - **new**: the macOS `.pkg` now ships an uninstaller (`sudo /usr/local/libexec/dreame-valetudo/uninstall.sh`)
   — macOS has no way to uninstall a `.pkg`, so removal was a hand-typed `rm -rf`. Your backups are
   untouched.

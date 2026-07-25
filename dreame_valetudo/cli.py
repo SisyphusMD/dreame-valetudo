@@ -20,13 +20,14 @@ from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import find_helper, resolve_libexec
 from .hazards import model_hazard_check
+from .installs import find_installs
 from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
 from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image, verify_form
-from .phases.manage import clean, forget, rename
+from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
 from .phases.recon import recon
@@ -359,6 +360,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd in ("version", "--version", "-V"):
         ctx.console.info(f"dreame-valetudo {__version__}")
         return 0
+    if cmd == "uninstall":
+        uninstall(ctx)
+        return 0
     if cmd == "install-udev":
         return install_udev(ctx)
     if cmd == "status":
@@ -437,6 +441,25 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     con.info("   1) Go back to it")
     con.info("   2) Close it and start something else (its place is saved)")
     return con.ask("Which [1-2]?").strip() != "2"
+
+
+def _warn_on_multiple_installs(con: Console, env: Mapping[str, str]) -> None:
+    """Say so when more than one copy is installed.
+
+    Which one runs is decided by PATH order, and the .pkg wrapper exports DREAME_LIBEXEC — so the
+    losing install's native helpers can end up driving the winning install's Python. Nothing has
+    ever surfaced this, and no installer can gate every combination (a .deb cannot see Homebrew).
+    """
+    # A source checkout puts nothing on PATH, so it never competes — counting it would warn on
+    # every run for anyone with a clone AND a released copy, which is most contributors.
+    found = [i for i in find_installs(env) if i.kind != "source checkout"]
+    if len(found) < 2:
+        return
+    con.warn(f"{len(found)} installs of dreame-valetudo are present — which one runs depends on "
+             "your PATH, and they can disagree about their bundled helpers.")
+    for i in found:
+        con.info(f"   {i.kind}: {i.marker}")
+    con.info("   Remove the ones you don't want with: dreame-valetudo uninstall")
 
 
 def cmd_of(args: Sequence[str]) -> str:
@@ -531,6 +554,8 @@ def main(
                 seconds = _idle_seconds(resolved_env)
                 if seconds > 0:
                     idle_timeout(seconds, lambda: client_attached(Path(tmux_for_idle)))
+            if cmd not in PURE_COMMANDS:
+                _warn_on_multiple_installs(con, resolved_env)
             # One run per workspace. The tmux wrapper above already makes a second invocation
             # attach instead of starting a rival, but it never nests — so a user inside their own
             # tmux, or a piped/opted-out run, reaches here unprotected.

@@ -234,6 +234,13 @@ under `~/dreame-valetudo/backups/` survive. Delete that folder by hand only when
 longer need to un-brick or restore any robot.
 
 ```bash
+dreame-valetudo uninstall                            # finds how it was installed and removes it
+```
+
+It reports every install it finds (you can have more than one — Homebrew and the `.pkg` both provide
+the command), says what will be removed, and asks before doing anything. Or remove it by hand:
+
+```bash
 brew uninstall dreame-valetudo                       # Homebrew (or dreame-valetudo-rc)
 sudo apt remove dreame-valetudo                      # Debian/Ubuntu (.deb), incl. its udev rule
 sudo /usr/local/libexec/dreame-valetudo/uninstall.sh  # macOS .pkg (removes its files + receipt)

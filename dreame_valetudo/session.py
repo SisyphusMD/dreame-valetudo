@@ -38,9 +38,12 @@ SESSION = "dreame-valetudo"
 #
 # These must stay OUT because `new-session -A` attaches to a live session: asking for --version
 # while a flash is running should print a version, not drop the user into the flash. install-udev
-# runs under sudo, which has no business inside the user's session either.
+# runs under sudo, which has no business inside the user's session either. `uninstall` must stay
+# out for a sharper reason: the .pkg bundles the very tmux the session would be running under, so
+# wrapping it would have the run delete its own terminal multiplexer — and it would create a
+# workspace and take a lock moments before removing the program that owns them.
 PURE_COMMANDS = frozenset(
-    {"help", "-h", "--help", "version", "--version", "-V", "install-udev"}
+    {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall"}
 )
 
 # Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
