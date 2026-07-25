@@ -211,3 +211,25 @@ def test_warn_if_low_disk_stays_quiet_with_ample_space(tmp_path: Path, capsys: p
 def test_warn_if_low_disk_warns_when_short(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     warn_if_low_disk(_console(), tmp_path, need_bytes=1 << 60)
     assert "Low disk space" in capsys.readouterr().out
+
+
+def test_output_survives_a_dead_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ignoring SIGHUP keeps the process alive through a closed terminal, but the tty is gone —
+    an unguarded print would then raise OSError between two partition writes and abort the flash
+    that the signal mask exists to protect."""
+    class DeadStream:
+        def isatty(self) -> bool:
+            return False
+
+        def write(self, _s: str) -> int:
+            raise OSError(5, "Input/output error")
+
+        def flush(self) -> None:
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("sys.stdout", DeadStream())
+    monkeypatch.setattr("sys.stderr", DeadStream())
+    c = _console()
+    c.say("this must not raise")
+    c.warn("nor this")
+    c.err("nor this")

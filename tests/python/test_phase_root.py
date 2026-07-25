@@ -11,7 +11,7 @@ from conftest import FB, CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
-from dreame_valetudo.phases.root import root
+from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
 from dreame_valetudo.run import Result
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
@@ -186,11 +186,32 @@ def test_root_hard_stops_on_non_okay_flash(make_ctx: CtxFactory) -> None:
     assert ("flash", "boot1", "boot.img") not in _flash_ops(ctx)
 
 
+# Pinned as a literal, NOT read from the module under test: deriving the expectation from
+# _FLASH_WINDOW_SIGNALS would let a signal drop out of the mask and its own test together.
+_MUST_MASK = {"SIGINT", "SIGTERM", "SIGQUIT", "SIGHUP", "SIGTSTP", "SIGTTIN", "SIGTTOU"}
+
+
+def test_flash_window_masks_every_signal_that_would_end_or_freeze_the_write() -> None:
+    """SIGHUP is a closed terminal or a dropped SSH session (a Pi over SSH is supported); SIGTSTP
+    is Ctrl+Z, next to the key the user was just told not to press — and a stopped process is
+    worse than a dead one here, because the robot's watchdog keeps counting while it is frozen.
+
+    Asserted on the dispositions rather than by delivering the signals: an unmasked SIGTERM would
+    kill the test run and an unmasked SIGTSTP would hang CI, so a regression must fail cleanly.
+    """
+    assert {s.name for s in _FLASH_WINDOW_SIGNALS} == _MUST_MASK
+    before = {s: signal.getsignal(s) for s in _FLASH_WINDOW_SIGNALS}
+    with _mask_interrupts():
+        assert all(signal.getsignal(s) is signal.SIG_IGN for s in _FLASH_WINDOW_SIGNALS)
+    assert {s: signal.getsignal(s) for s in _FLASH_WINDOW_SIGNALS} == before  # restored
+
+
 def test_root_flash_window_ignores_sigint_until_the_sequence_completes(
     make_ctx: CtxFactory,
 ) -> None:
-    """A SIGINT delivered while the flash sequence runs must NOT interrupt it — the mask holds
-    until the last flash + reboot are issued. (Runs on the main thread so the mask is real.)"""
+    """The mask holds through the real phase until the last flash + reboot are issued. SIGINT is
+    the one that fails cleanly if the mask breaks, so it is the one delivered for real.
+    (Runs on the main thread so the mask is real.)"""
     fired = {"count": 0}
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -204,10 +225,12 @@ def test_root_flash_window_ignores_sigint_until_the_sequence_completes(
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
-    root(ctx)  # must complete without KeyboardInterrupt escaping
+    root(ctx)  # must complete without the signal escaping
     assert fired["count"] == 1
     assert ctx.need_robot().state_has("rooted")
     assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)  # sequence ran to the end
+
+
 
 
 def test_root_aborts_when_live_config_unreadable(make_ctx: CtxFactory) -> None:

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no
+  longer kills or freezes it mid-write.
 - **fix**: re-staging a build is now all-or-nothing. `image --force` extracted over the existing
   files, so a short or failed unzip left a mixture of two builds that the next flash accepted.
 - **fix**: `image` no longer silently stages another robot's build — a zip that predates the build

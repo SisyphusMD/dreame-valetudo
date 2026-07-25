@@ -28,12 +28,25 @@ _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
+# Every signal the kernel delivers to the whole foreground process group that would otherwise end
+# or freeze the flash. HUP (closing the terminal, quitting the terminal app, an SSH session
+# dropping — a Pi driven over SSH is a supported setup) terminates by default; TSTP is Ctrl+Z, the
+# key next to the one the user has just been told not to press, and STOP is worse than death here
+# because the robot's ~160s watchdog keeps counting while the process is frozen mid-write.
+# Dispositions survive exec, so SIG_IGN also covers the fastboot child doing the bulk USB writes.
+_FLASH_WINDOW_SIGNALS = (
+    signal.SIGINT, signal.SIGTERM, signal.SIGQUIT,
+    signal.SIGHUP, signal.SIGTSTP, signal.SIGTTIN, signal.SIGTTOU,
+)
+
+
 @contextmanager
 def _mask_interrupts() -> Iterator[None]:
-    """Ignore INT/TERM/QUIT for the destructive sequence only (a stray Ctrl+C mid-flash can
-    brick). Restored on exit. A no-op off the main thread (tests) rather than an error."""
+    """Ignore the terminating and stopping signals for the destructive sequence only (a stray
+    Ctrl+C or a closed terminal mid-flash can brick). Restored on exit. A no-op off the main
+    thread (tests) rather than an error."""
     handlers = {}
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
+    for sig in _FLASH_WINDOW_SIGNALS:
         try:  # noqa: SIM105 - brick-gate code kept explicit; contextlib.suppress here would obscure it
             handlers[sig] = signal.signal(sig, signal.SIG_IGN)
         except (ValueError, OSError):

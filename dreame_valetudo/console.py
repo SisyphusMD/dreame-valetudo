@@ -164,15 +164,22 @@ class Console:
         (tests) or mirror (run log) the raw message. `lead`/`trail` are the element's collapsing
         block margins (one blank line, never doubled)."""
         with self._lock:
-            if self._active is not None:
-                self._active.clear_line()
             stream = sys.stderr if kind == "err" else sys.stdout
-            if (lead or kind in self._SELF_LEADING) and not self._last_line_blank:
-                print(file=stream)
-            for line in self._render(kind, message, wrap=wrap, hang=hang):
-                print(line, file=stream)
-            if trail:
-                print(file=stream)
+            try:
+                if self._active is not None:
+                    self._active.clear_line()
+                if (lead or kind in self._SELF_LEADING) and not self._last_line_blank:
+                    print(file=stream)
+                for line in self._render(kind, message, wrap=wrap, hang=hang):
+                    print(line, file=stream)
+                if trail:
+                    print(file=stream)
+            except OSError:
+                # The tty can go away mid-run (terminal closed, SSH dropped). Losing console output
+                # must never propagate: inside the flash window an OSError here would abort the
+                # sequence between two partition writes. Subclasses log before delegating, so the
+                # run log — a separate handle — still has the line.
+                pass
             self._last_line_blank = trail
 
     def _render(self, kind: str, message: str, *, wrap: bool, hang: int | None) -> list[str]:
