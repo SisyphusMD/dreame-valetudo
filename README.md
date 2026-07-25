@@ -42,7 +42,7 @@ One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi
 helper that drives the robot's FEL mode) once.
 
 > [!NOTE]
-> **Linux, one-time:** grant sudo-less USB access with `sudo dreame-valetudo install-udev` (macOS
+> **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev` (it asks for your password) (macOS
 > needs nothing). If you forget, any rooting command stops with this exact reminder. The `.deb` and
 > `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
 
