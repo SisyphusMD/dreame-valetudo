@@ -13,7 +13,6 @@ the embedded copy and the packaged file can never drift.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -73,7 +72,7 @@ def install_udev(ctx: Context) -> int:
     The privileged file write goes through the runner (`install`) rather than an in-process write,
     so it stays on the transcript seam and is proven off-hardware like every other side effect.
     """
-    sudo = [] if os.geteuid() == 0 else ["sudo"]
+    sudo = [] if ctx.is_root else ["sudo"]
     if ctx.system != "Linux":
         ctx.console.info("udev rules are only used on Linux — nothing to do on macOS.")
         return 0

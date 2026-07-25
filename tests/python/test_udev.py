@@ -73,3 +73,13 @@ def test_guard_blocks_every_command_on_linux_without_the_rule_bar_escape_hatches
     (tmp_path / udev.RULE_NAME).write_text(udev.UDEV_RULE)
     assert not udev.guard_blocks("Linux", "recon", {}, [tmp_path])
     assert not udev.guard_blocks("Linux", "recon", {"DREAME_NO_UDEV_CHECK": "1"}, missing)
+
+
+def test_install_udev_skips_sudo_when_already_root(make_ctx: CtxFactory) -> None:
+    """The .deb/.rpm postinstall path is already root — asking sudo for a password there would be
+    absurd. Keyed on an injected flag, never on the process's own euid: CI runs as root, so a test
+    that read geteuid() would pass locally and fail there."""
+    ctx = make_ctx(system="Linux", is_root=True)
+    assert udev.install_udev(ctx) == 0
+    assert ctx.runner.calls[0][0] == "install"  # type: ignore[attr-defined]
+    assert all(c[0] != "sudo" for c in ctx.runner.calls)  # type: ignore[attr-defined]
