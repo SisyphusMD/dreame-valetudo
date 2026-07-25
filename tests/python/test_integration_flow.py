@@ -22,8 +22,7 @@ _FW = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.t
 def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / "Downloads").mkdir(parents=True)
-    # The built dustbuilder zip lands in ~/Downloads, named for THIS model code.
-    (home / "Downloads" / "dreame.vacuum.r2416_fel_ng.zip").write_text("zip")
+    built_zip = home / "Downloads" / "dreame.vacuum.r2416_fel_ng.zip"
 
     def responder(argv: tuple[str, ...]) -> Result:
         joined = " ".join(argv)
@@ -54,7 +53,13 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     assert robot.work.name == f"r2416-{_CFG[:12]}"
     assert robot.state_has("recon")
 
-    # 2) image: stages the built zip into THIS robot's fw dir
+    # 2) image: stages the built zip into THIS robot's fw dir. The zip lands WHILE the phase waits,
+    # which is what marks it as this robot's build — one that predates the build order is treated
+    # as another robot's and is never staged silently.
+    def _build_lands(_seconds: float) -> None:
+        built_zip.write_text("zip")
+
+    ctx.sleep = _build_lands
     image(ctx)
     assert robot.state_has("image")
     assert all((robot.fw_dir / f).is_file() for f in _FW)

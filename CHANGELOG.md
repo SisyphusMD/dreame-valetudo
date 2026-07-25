@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: `image` no longer silently stages another robot's build — a zip that predates the build
+  order or is already staged elsewhere must be confirmed, and browser-renamed `... (1).zip`
+  downloads are now found instead of skipped.
 - **fix**: the flash now refuses an image built for a different robot, and reports a missing recon
   record before the FEL button sequence instead of after it.
 
