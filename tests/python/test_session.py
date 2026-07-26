@@ -24,11 +24,12 @@ from dreame_valetudo.session import (
     describe_run,
     hold_workspace_lock,
     lock_free,
+    name_the_robot_on_the_bar,
     read_outcome,
     record_outcome,
     running_run,
     session_env,
-    status_bar_options,
+    session_options,
     tmux_plan,
     tmux_runs,
 )
@@ -211,7 +212,7 @@ def test_lock_free_reports_the_truth(tmp_path: Path) -> None:
 
 def test_the_bar_is_ours_not_tmuxs() -> None:
     """No window list, no fill, and copy that answers the question instead of naming the tool."""
-    opts = [" ".join(o) for o in status_bar_options(colour=True)]
+    opts = [" ".join(o) for o in session_options(colour=True)]
     assert any("closing this window is safe" in o for o in opts)
     assert any(o.rstrip().endswith("window-status-format") for o in opts)
     assert any("bg=default" in o for o in opts)          # unfilled: no coloured strip
@@ -219,7 +220,7 @@ def test_the_bar_is_ours_not_tmuxs() -> None:
 
 
 def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
-    plain = [" ".join(o) for o in status_bar_options(colour=False)]
+    plain = [" ".join(o) for o in session_options(colour=False)]
     assert not any("colour244" in o for o in plain)
 
 
@@ -229,7 +230,7 @@ def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
     verbs = [c[1] for c in plan]
     assert verbs[0] == "new-session"
     assert verbs[-1] == "attach-session"          # attach LAST, so the bar is set before it shows
-    assert verbs.count("set-option") == len(status_bar_options(colour=True))
+    assert verbs.count("set-option") == 10
 
 
 def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
@@ -494,3 +495,33 @@ def test_a_detached_run_is_reported_as_still_going(
         _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
     assert exc.value.code == 0
     assert "Still running" in con.text()
+
+
+def test_the_session_options_are_pinned_to_a_literal_list() -> None:
+    """Asserted against a literal, not against the function under test: a count derived from
+    session_options() deletes its own assertion along with the option it was meant to protect."""
+    assert [o[3] for o in session_options(colour=True)] == [
+        "remain-on-exit", "status", "status-style", "status-justify", "status-left",
+        "status-left-length", "status-right", "status-right-length",
+        "window-status-format", "window-status-current-format",
+    ]
+    assert all(o[:3] == ["set-option", "-t", SESSION] for o in session_options(colour=True))
+
+
+def test_the_session_is_not_allowed_to_outlive_its_run() -> None:
+    """Verified against real tmux 3.7b: with `remain-on-exit on` in the user's own ~/.tmux.conf
+    (which IS sourced) the session survives a finished run, so every later invocation is told a run
+    that ended hours ago is still in progress. Everything here reads a live session as a live run."""
+    assert ["set-option", "-t", SESSION, "remain-on-exit", "off"] in session_options(colour=True)
+
+
+def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
+    """tmux re-expands the status line as a FORMAT, so an unescaped `#` eats what follows: `Vac
+    #Hallway` renders as the hostname, `#S` as the session name. The one line saying which robot is
+    being flashed has to say the right one."""
+    recorder = tmp_path / "tmux"
+    seen = tmp_path / "args.txt"
+    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$5" > {seen}\n')
+    recorder.chmod(0o755)
+    name_the_robot_on_the_bar(recorder, "Vac #Hallway #S")
+    assert seen.read_text().strip() == "dreame-valetudo · Vac ##Hallway ##S"

@@ -242,21 +242,28 @@ def tmux_plan(
     # exec; line above already reads a bare invocation as `auto`, so this only makes it explicit.
     argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
     create = [[t, "new-session", "-A", "-d", *session_env(env), "-s", SESSION, "--", *argv]]
-    create += [[t, *opt] for opt in status_bar_options(colour=colour)]
+    create += [[t, *opt] for opt in session_options(colour=colour)]
     create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
     return create
 
 
-def status_bar_options(*, colour: bool) -> list[list[str]]:
-    """Replace tmux's status line with one line of ours.
+def session_options(*, colour: bool) -> list[list[str]]:
+    """How the session is dressed, and how it is allowed to end.
 
-    tmux's default is a green strip carrying a session name and window list the user never asked
-    for — unmistakably tmux, which is the one thing this is meant not to be. Turning it off instead
-    would hide the only fact worth showing: that closing the window is safe. So: no fill, dim text,
-    no window list, and copy that answers the question rather than naming the tool.
+    The status line replaces tmux's default green strip carrying a session name and window list the
+    user never asked for — unmistakably tmux, which is the one thing this is meant not to be.
+    Turning it off instead would hide the only fact worth showing: that closing the window is safe.
+    So: no fill, dim text, no window list, and copy that answers the question rather than naming
+    the tool.
+
+    `remain-on-exit off` is not decoration. The user's own ~/.tmux.conf is sourced, and with that
+    option set globally the session outlives the run that ended — so every later invocation is told
+    a finished run is still in progress, and the only way out is to "close" a run from hours ago.
+    Everything here reads "is the session alive?" as "is a run in progress", so that has to be true.
     """
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
+        ["set-option", "-t", SESSION, "remain-on-exit", "off"],
         ["set-option", "-t", SESSION, "status", "on"],
         ["set-option", "-t", SESSION, "status-style", style],
         ["set-option", "-t", SESSION, "status-justify", "left"],
@@ -272,10 +279,16 @@ def status_bar_options(*, colour: bool) -> list[list[str]]:
 
 
 def name_the_robot_on_the_bar(tmux: Path, robot: str) -> None:
-    """Add the robot to the bar once it is known — it is chosen after the session is created."""
+    """Add the robot to the bar once it is known — it is chosen after the session is created.
+
+    The name is escaped because tmux re-expands a status line as a FORMAT: an unescaped `#` eats
+    what follows it, so `Vac #Hallway` renders as the hostname and `#S` as the session name. The
+    one line of UI saying which robot is being flashed must say the right one. (`##` is tmux's own
+    literal-`#`.) Not a security boundary — the name is the local operator's own typed input.
+    """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run([str(tmux), "set-option", "-t", SESSION, "status-left",
-                        f"dreame-valetudo · {robot}"],
+                        f"dreame-valetudo · {robot.replace('#', '##')}"],
                        capture_output=True, timeout=5, check=False)
 
 
