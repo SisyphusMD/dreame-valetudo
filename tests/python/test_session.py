@@ -277,26 +277,40 @@ def test_the_run_inside_the_session_is_never_wrapped_again() -> None:
     assert tmux_plan(_SELF, inside, _TMUX, _SESSION, interactive=True, session_exists=False) is None
 
 
-def _stub_tmux(tmp_path: Path, *, session_exists: bool,
-               ends_with: str | None = None) -> tuple[Path, Path]:
+def _stub_tmux(tmp_path: Path, *, session_exists: bool, ends_with: str | None = None,
+               fail_verb: str | None = None, dies_on_attach: bool = False,
+               outcome_on_create: str | None = None) -> tuple[Path, Path]:
     """A tmux that records how it was called, for tests that compose the real startup path.
 
-    `ends_with` is JSON the stub drops as the run's outcome when it is asked to attach, standing in
-    for a run inside the session finishing while the user watched it.
+    STATEFUL, because the code under test asks "does the session exist?" both before creating one
+    and after the attach returns, and those two answers are different facts. A marker file stands
+    in for the session: new-session creates it, kill-session removes it, has-session reports it.
+
+    `ends_with` is JSON the stub drops as the run's outcome when asked to attach, standing in for a
+    run finishing while the user watched. `dies_on_attach` also clears the marker, standing in for a
+    session that ended without leaving a record. `fail_verb` makes one subcommand fail.
     """
     libexec = tmp_path / "libexec"
     libexec.mkdir()
     calls = tmp_path / "tmux-calls.log"
-    finish = (f"      printf '%s' '{ends_with}' > {tmp_path / OUTCOME}\n"
-              if ends_with else "")
+    marker = tmp_path / "session-alive"
+    if session_exists:
+        marker.write_text("1")
+    finish = (f"      printf '%s' '{ends_with}' > {tmp_path / OUTCOME}\n" if ends_with else "")
+    die = f"      rm -f {marker}\n" if dies_on_attach else ""
+    created = (f"printf '%s' '{outcome_on_create}' > {tmp_path / OUTCOME}; "
+               if outcome_on_create else "")
     stub = libexec / "tmux"
     stub.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" >> {calls}\n'
-        'case "$1" in\n'
+        + (f'case "$1" in {fail_verb}) exit 1 ;; esac\n' if fail_verb else "")
+        + 'case "$1" in\n'
         '  -V) echo "tmux 3.5a"; exit 0 ;;\n'
-        f'  has-session) exit {0 if session_exists else 1} ;;\n'
-        f'  attach-session|switch-client)\n{finish}      exit 0 ;;\n'
+        f'  has-session) [ -f {marker} ]; exit $? ;;\n'
+        f'  new-session) : > {marker}; {created}exit 0 ;;\n'
+        f'  kill-session) rm -f {marker}; exit 0 ;;\n'
+        f'  attach-session|switch-client)\n{finish}{die}      exit 0 ;;\n'
         "esac\n"
         "exit 0\n"
     )
@@ -493,7 +507,9 @@ def test_the_outcome_is_reported_once_the_session_has_gone(
     assert exc.value.code == 3                       # the RUN's status, not the tmux client's
     said = con.text()
     assert "Open http://192.168.5.1" in said         # what the wiped screen had said
-    assert str(log) in said                          # and where to find the rest of it
+    # NOT the log path as well: a real failing run prints that itself, so it is already in the
+    # transcript being replayed, and printing it again showed it twice in two different forms.
+    assert said.count("run.log") <= 1
 
 
 def test_a_detached_run_is_reported_as_still_going(
@@ -603,3 +619,164 @@ def test_the_environment_is_carried_without_a_tmux_flag_that_needs_3_2() -> None
     cmd = plan[0][plan[0].index("--") + 1:]
     assert cmd[0] == "env"
     assert "DREAME_WORK=/mnt/ssd/work" in cmd
+
+
+def test_a_failed_dressing_step_does_not_start_the_command_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """new-session succeeds — so the command is ALREADY RUNNING in the session — and a later
+    set-option fails. Falling through to inline would run the whole auto chain a second time, in a
+    bare terminal, racing the run just started. Going to the undressed session is the only safe
+    answer."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False, fail_verb="set-option",
+                                ends_with=json.dumps({"rc": 0, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit):          # handled in the session, NOT returned for inline
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    ran = calls.read_text()
+    assert "new-session" in ran and "attach-session" in ran
+
+
+def test_a_failure_before_the_session_exists_still_falls_back_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of it: nothing was started, so running inline is the honest fallback rather
+    than leaving the user with no run at all."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False, fail_verb="new-session")
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)  # returns = inline
+    assert "attach-session" not in calls.read_text()
+
+
+def test_a_run_that_ended_without_a_record_is_not_called_still_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No record has two very different causes. Killed from another terminal, crashed, or an attach
+    that never happened all leave none — and reporting those as "Still running" with exit 0 tells
+    the user their robot is being worked on when nothing is. The session is asked, not assumed."""
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False, dies_on_attach=True)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 1                      # not 0
+    assert "Still running" not in con.text()
+    assert "without recording how it went" in con.text()
+
+
+def test_a_fast_run_keeps_the_outcome_it_already_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short run finishes before this process reaches the attach. Clearing the record there would
+    delete what the run had already written, and the finished run would be reported as still going.
+    The stub writes its outcome at new-session time — exactly that race."""
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False,
+                            outcome_on_create=json.dumps({"rc": 7, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 7          # the run's own status, not a wiped-record 0
+
+
+def test_a_run_with_no_log_still_says_how_it_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DREAME_NO_LOG=1, an unwritable logs dir, or any failure before the log opened leaves nothing
+    to replay. The screen has just been wiped by the session ending, so printing nothing leaves the
+    user staring at a bare shell prompt with no idea what happened."""
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False,
+                            ends_with=json.dumps({"rc": 4, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 4
+    assert "exit status 4" in con.text()
+
+
+
+
+def test_a_failed_switch_never_starts_the_command_a_second_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside the user's own tmux the session is created detached and the client is then moved to
+    it. If only the MOVE fails the command is already running in there, so falling through to an
+    inline run would put a second auto chain — flash included — beside the first."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False, fail_verb="switch-client")
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:      # NOT a return, which would mean "run it inline"
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec),
+                                      "TMUX": "/tmp/tmux-501/default,1,0"}, con, tmp_path)
+    assert exc.value.code == 0
+    assert "Still running" in con.text()
+    assert "new-session" in calls.read_text()
+
+
+def test_a_client_that_died_does_not_condemn_a_live_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped SSH connection or a signal ends the attach client non-zero while the run it was
+    watching carries on. Session liveness is the fact that matters, not the client's exit code."""
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False, fail_verb="attach-session")
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 0
+    assert "Still running" in con.text()
+
+
+def test_a_plain_failure_still_says_where_the_log_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the exception path inside _run prints the log path itself. A plain non-zero return — a
+    guard refusing, a phase reporting failure — writes a transcript that never mentions it, and
+    that is exactly the case where the user needs it."""
+    log = tmp_path / "run.log"
+    log.write_text("[+   0.2s] XX USB access isn't set up on this Linux machine yet.\n")
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False,
+                            ends_with=json.dumps({"rc": 1, "log": str(log)}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit):
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert str(log) in con.text()
+
+
+def test_the_log_path_is_never_shown_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that died on an exception already printed the path, and that line is in the transcript
+    being replayed — printing it again showed the same log twice in two different renderings."""
+    log = tmp_path / "run.log"
+    log.write_text(f"[+   0.2s] XX something broke\n"
+                   f"[+   0.2s]    A scrubbed log of this run was saved to {log}\n")
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False,
+                            ends_with=json.dumps({"rc": 1, "log": str(log)}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit):
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert con.text().count(str(log)) == 1

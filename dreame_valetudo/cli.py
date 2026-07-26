@@ -545,32 +545,70 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     # there is no session to move to, so fall through and run inline rather than strand the user.
     # Output captured: a failed step falls through to an inline run, which is fine, but its raw
     # tmux diagnostic on the user's terminal is the one thing this wrapper must never show.
+    # Cleared BEFORE the session is created, never after. A short run can finish before this process
+    # even reaches the attach, and clearing it there would delete the record the run had already
+    # written — leaving this process to report a finished run as still going.
+    clear_outcome(base)
+    started = False
     for step in plan[:-1]:
-        if subprocess.run(step, check=False, capture_output=True).returncode != 0:
+        if subprocess.run(step, check=False, capture_output=True).returncode == 0:
+            started = started or step[1] == "new-session"
+            continue
+        # WHICH step failed decides everything. Before the session exists, running inline is the
+        # honest fallback. After it exists the command is ALREADY RUNNING in there, so falling
+        # through would start the whole thing a second time — the auto chain, flash included — in
+        # a bare terminal, racing the run it just started. Go to that run instead, undressed.
+        if not started:
             return
+        break
     # switch-client moves the caller's EXISTING client and returns at once (measured: ~12ms); only
     # attach-session blocks until the run ends. So after a switch there is nobody left watching this
     # pane — the user is looking at the session — and nothing here could report an outcome to them.
     if plan[-1][1] != "attach-session":
-        subprocess.run(plan[-1], check=False, capture_output=True)
+        if subprocess.run(plan[-1], check=False, capture_output=True).returncode != 0:
+            # The client never moved. Whether that matters depends on the session, NOT on the
+            # failure: if the run is going in there, falling through would start the whole command
+            # a second time — flash included — beside the one already running.
+            if found is not None and tmux_session_exists(Path(found), session):
+                con.say("Still running. Re-run this command to come back to it.")
+                raise SystemExit(0)
+            return  # nothing is running anywhere: inline is the honest fallback
         raise SystemExit(0)
     # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
     # the session ends the terminal is restored and every line the run printed is erased with it —
     # the address to open, the error, the path to the log. Staying alive leaves someone to report.
-    clear_outcome(base)
     try:
         subprocess.run(plan[-1], check=False)
     except OSError:
         return  # could not attach at all: run inline rather than fail the whole run
     ended = read_outcome(base)
     if ended is None:
-        # The client went away while the run kept going — the whole point of the session.
-        con.say("Still running. Re-run this command to come back to it.")
-        raise SystemExit(0)
+        # No record means one of two very different things, and the difference matters: ASK, do not
+        # assume. A live session is the user detaching from a run that is still going — the whole
+        # point of the wrapper. A dead one is a run that ended without saying how (killed from
+        # another terminal, crashed, or an attach that never happened), and calling that "still
+        # running" with exit 0 tells the user their robot is being worked on when nothing is.
+        # Whether the session is ALIVE is the authoritative distinction, not how the client
+        # exited: a dropped connection or a signal ends the client non-zero while the run it was
+        # watching carries on, and calling that "stopped" would be the same lie in reverse.
+        if found is not None and tmux_session_exists(Path(found), session):
+            con.say("Still running. Re-run this command to come back to it.")
+            raise SystemExit(0)
+        con.err("The run stopped without recording how it went. Re-run to pick it back up; "
+                f"logs are under {base / 'logs'}.")
+        raise SystemExit(1)
     rc, log_path = ended
-    for line in tail_transcript(log_path) if log_path else []:
+    said = tail_transcript(log_path) if log_path is not None else []
+    for line in said:
         con.info(line)
-    if rc != 0 and log_path is not None:
+    if not said:
+        # A run with no log (DREAME_NO_LOG=1, an unwritable logs dir, a failure before the log
+        # opened) would otherwise end on a wiped screen with nothing at all on it.
+        con.info(f"The run finished with exit status {rc}. It kept no log to show here.")
+    # Where to find the rest — but never twice. A run that died on an exception printed this line
+    # itself, so it is already in the transcript just replayed; a plain non-zero return (a guard, a
+    # phase result) never printed it at all, and that is the case that most needs it.
+    if rc != 0 and log_path is not None and not any(str(log_path) in line for line in said):
         con.info(f"A scrubbed log of this run was saved to {log_path}")
     raise SystemExit(rc)
 
