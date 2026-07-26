@@ -64,7 +64,7 @@ pid, fd = pty.fork()
 if pid == 0:
     os.execvp(argv[0], argv)
 
-buf, deadline, status = bytearray(), time.time() + timeout, None
+buf, deadline, status, timed_out = bytearray(), time.time() + timeout, None, False
 while time.time() < deadline:
     if select.select([fd], [], [], 0.5)[0]:
         try:
@@ -86,11 +86,27 @@ while time.time() < deadline:
             buf += chunk
         break
 if status is None:
-    os.kill(pid, 9)
-    os.waitpid(pid, 0)
-    rc = "TIMEOUT after %.1fs (wall %.1fs)" % (timeout, time.time() - (deadline - timeout))
-else:
-    rc = str(os.waitstatus_to_exitcode(status))
+    # The loop also leaves here on EOF, which a short run reaches before waitpid was ever polled —
+    # mislabelling that as a 120s timeout sent one diagnosis entirely the wrong way. EOF can also
+    # arrive while the child is still tearing down, so keep reaping until the REAL deadline rather
+    # than letting one empty poll stand for "still running".
+    while time.time() < deadline:
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            status = st
+            break
+        time.sleep(0.05)
+if status is None:
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        pass                      # it exited between the last poll and the kill
+    try:
+        _, status = os.waitpid(pid, 0)
+    except ChildProcessError:
+        status = 0
+    timed_out = True
+rc = "TIMEOUT after %.1fs" % timeout if timed_out else str(os.waitstatus_to_exitcode(status))
 with open(out_path, "wb") as fh:
     fh.write((rc + "\n").encode() + bytes(buf))
 PYEOF
@@ -102,7 +118,7 @@ drive() {
   while [ "$1" != "--" ]; do envs+=("$1"); shift; done
   shift
   env "${envs[@]}" HOME="$HOME_DIR" TMUX_TMPDIR="$TMUX_TMPDIR" TERM=xterm-256color \
-      DREAME_NO_UPDATE_CHECK=1 \
+      DREAME_NO_UPDATE_CHECK=1 DREAME_NO_UDEV_CHECK=1 \
       python3 "$RUNDIR/drive.py" "$RUNDIR/$name.out" "$timeout" -- "$@" >/dev/null 2>&1
 }
 rc_of()   { head -1 "$RUNDIR/$1.out"; }
