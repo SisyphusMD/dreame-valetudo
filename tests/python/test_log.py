@@ -291,3 +291,18 @@ def test_the_transcript_tail_is_bounded_and_survives_a_missing_log(tmp_path: Pat
     tail = tail_transcript(log, keep=5)
     assert tail == [f"line {i}" for i in range(35, 40)]
     assert tail_transcript(tmp_path / "absent.log") == []
+
+
+def test_a_repeated_line_is_collapsed_rather_than_filling_the_tail(tmp_path: Path) -> None:
+    """The FEL wait polls once a second for up to 180s. Every failed poll logs the same line, so
+    the reprint after the session ended was 11 copies of it and the outcome was pushed off the
+    top — the user saw a wall of identical errors instead of what happened."""
+    log = tmp_path / "run.log"
+    log.write_text(
+        "".join(f"[+   {i}.0s] !! ERROR: Allwinner USB FEL device not found!\n" for i in range(11))
+        + "[+  11.0s]    Interrupted — nothing is lost; re-run to resume.\n"
+    )
+    tail = tail_transcript(log)
+    assert len(tail) == 2
+    assert tail[0] == "ERROR: Allwinner USB FEL device not found!   (repeated 11 times)"
+    assert "Interrupted" in tail[1]

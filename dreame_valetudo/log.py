@@ -120,7 +120,18 @@ def tail_transcript(path: Path, keep: int = 12) -> list[str]:
                 said = said[len(prefix) + 1:]
                 break
         out.append(said)
-    return out[-keep:]
+    # Collapse consecutive repeats BEFORE taking the tail. A poll that retries once a second (the
+    # FEL wait is up to 180) otherwise fills the whole window with one identical line and pushes
+    # the only thing worth reading — how the run ended — off the top.
+    runs: list[list[object]] = []
+    for said in out:
+        if runs and runs[-1][0] == said:
+            runs[-1][1] = int(runs[-1][1]) + 1      # type: ignore[call-overload]
+        else:
+            runs.append([said, 1])
+    shown = [str(text) if count == 1 else f"{text}   (repeated {count} times)"
+             for text, count in runs]
+    return shown[-keep:]
 
 
 def _prune(logs_dir: Path, keep: int) -> None:
