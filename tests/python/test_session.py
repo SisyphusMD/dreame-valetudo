@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 from conftest import ScriptedConsole
 
-from dreame_valetudo.cli import _reexec_under_tmux
+from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux
 from dreame_valetudo.console import Die
+from dreame_valetudo.phases.root import _mask_interrupts
 from dreame_valetudo.session import (
     IN_SESSION,
     PURE_COMMANDS,
@@ -321,3 +322,37 @@ def test_the_offer_is_not_made_where_the_answer_could_not_be_seen(
     con, ran = _reexec_with(tmp_path, monkeypatch, ["root"], stdout=False)
     assert "kill-session" not in ran
     assert con.lines == []
+
+
+def test_the_flash_window_is_published_in_the_run_record(tmp_path: Path) -> None:
+    """The mask is what makes this window dangerous from outside: signals that would end the run
+    are ignored, so a second invocation must be able to see that closing it would not stop it."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    assert not running_run(lock).get("uninterruptible")
+    with _mask_interrupts():
+        assert running_run(lock)["uninterruptible"] is True
+    assert running_run(lock)["uninterruptible"] is False
+
+
+def test_a_run_mid_flash_is_never_offered_the_close_option(tmp_path: Path) -> None:
+    """Closing cannot stop a flash — it only removes the window onto one that keeps writing. The
+    console answers '2' (CLOSE), which must be neither asked for nor honoured here."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    describe_run(robot="Kitchen Vacuum", uninterruptible=True)
+    con = ScriptedConsole(asks=["2"])
+    assert _offer_existing_run(con, Path("/unused/tmux"), lock) is True   # rejoined, not killed
+    said = con.text()
+    assert "Kitchen Vacuum" in said
+    assert "Close it" not in said
+
+
+def test_a_run_between_phases_can_still_be_closed(tmp_path: Path) -> None:
+    """The guard is the flash window specifically, not any live run — otherwise 'close it and start
+    something else' could never be chosen at all."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    describe_run(robot="Kitchen Vacuum", uninterruptible=False)
+    con = ScriptedConsole(asks=["2"])
+    assert _offer_existing_run(con, Path("/unused/tmux"), lock) is False  # close is honoured

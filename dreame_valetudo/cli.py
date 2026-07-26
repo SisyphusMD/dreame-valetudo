@@ -439,6 +439,14 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     who = running_run(lock)
     robot = who.get("robot")
     subject = f"'{robot}'" if isinstance(robot, str) and robot else "a robot"
+    # Mid-flash there is no honest "close it": the flash ignores the signals that ending the session
+    # would send, so the write carries on either way — closing would only take away the one window
+    # onto it, while telling the user their place is saved. Someone who believes that may unplug the
+    # cable. The lock check keeps a record left behind by a killed run from speaking for a dead one.
+    if who.get("uninterruptible") and not lock_free(lock):
+        con.say(f"The run for {subject} is part-way through writing to the robot, which must not be "
+                "interrupted — going back to it.")
+        return True
     con.say(f"A run for {subject} is already in progress.")
     con.info("   1) Go back to it")
     con.info("   2) Close it and start something else (its place is saved)")
