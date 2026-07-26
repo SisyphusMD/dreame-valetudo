@@ -30,6 +30,9 @@ class ScriptedConsole(Console):
               lead: bool = False, trail: bool = False) -> None:
         self.lines.append((kind, message))
 
+    def erase_line(self) -> None:
+        """Inert: this console captures lines, so raw cursor control has nothing to act on."""
+
     def progress(self, label: str) -> Progress:
         self.lines.append(("progress", label))
         return Progress()  # inert: no thread, no output

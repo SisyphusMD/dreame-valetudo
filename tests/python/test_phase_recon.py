@@ -312,3 +312,33 @@ def test_an_adopted_robot_bookmarks_the_dir_that_was_adopted(make_ctx: CtxFactor
     assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
     assert [adopted.state_dir] == console._BOOKMARK
     assert not (ctx.ws.robots_dir / "picked-a-different-one").exists()
+
+
+def test_the_typed_name_is_what_the_bar_and_run_record_show(make_ctx: CtxFactory) -> None:
+    """The typed name only reaches disk once recon has an identity to attach it to, so before that
+    display_name() has nothing but the folder slug — and someone who typed 'Test Bench #1' was
+    shown 'Test-Bench-1' on the bar and in the notice naming the busy robot."""
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    ctx.robot = Robot(ctx.ws.robots_dir / "Test-Bench-1")
+    ctx.pending_name = "Test Bench #1"
+    assert ctx.robot_label() == "Test Bench #1"
+
+
+def test_an_adopted_robot_keeps_its_own_name(make_ctx: CtxFactory) -> None:
+    """The typed name described the directory recon walked away from. Letting it keep speaking
+    would relabel a robot the user never meant to rename."""
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    adopted = Robot(ctx.ws.robots_dir / "kitchen")
+    adopted.recon_dir.mkdir(parents=True, exist_ok=True)
+    (adopted.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    adopted.state_dir.mkdir(parents=True, exist_ok=True)
+    (adopted.state_dir / "name").write_text("Kitchen Vacuum\n")
+    ctx.robot = Robot(ctx.ws.robots_dir / "Test-Bench-1")
+    ctx.pending_name = "Test Bench #1"
+
+    recon(ctx, recovery_backup=False)
+
+    assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
+    assert ctx.pending_name is None
+    assert ctx.robot_label() == "Kitchen Vacuum"

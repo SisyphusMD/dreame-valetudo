@@ -3,6 +3,7 @@ rules (wrapping, the output vocabulary), and the progress-display lifecycle."""
 
 from __future__ import annotations
 
+import io
 import itertools
 import sys
 from pathlib import Path
@@ -80,6 +81,24 @@ def test_action_is_plain_when_color_off(capsys: pytest.CaptureFixture[str]) -> N
     out = capsys.readouterr().out
     assert "ACTION" in out and "Power the robot OFF" in out
     assert "\033[" not in out  # no escape codes on a non-tty / redirected stream
+
+
+@pytest.mark.parametrize(
+    "tty, color, expected",
+    # NO_COLOR asks for no styling, not for no cursor control: the marker must still go.
+    [(True, True, "\033[1A\033[2K"), (False, True, ""), (True, False, "\033[1A\033[2K")],
+)
+def test_erase_line_emits_only_on_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, tty: bool, color: bool, expected: str
+) -> None:
+    class Stream(io.StringIO):
+        def isatty(self) -> bool:
+            return tty
+
+    stream = Stream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    Console(color=color).erase_line()
+    assert stream.getvalue() == expected
 
 
 # --- rendering: wrapping rules + the output vocabulary ----------------------------------------

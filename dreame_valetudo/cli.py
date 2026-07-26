@@ -271,7 +271,7 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming: "
                         "every remaining phase runs guided, in order.")
     else:
-        named = f" '{ctx.robot.display_name()}'" if ctx.robot is not None else ""
+        named = f" '{ctx.robot_label()}'" if ctx.robot is not None else ""
         ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every phase is "
                         "guided and resumable):")
         ctx.console.steps([
@@ -606,6 +606,9 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         subprocess.run(plan[-1], check=False)
     except OSError:
         return  # could not attach at all: run inline rather than fail the whole run
+    # The client writes its exit marker to stdout, the same stream it needs to draw the terminal,
+    # so it cannot be filtered or redirected away. Remove it before replaying the run's output.
+    con.erase_line()
     ended = read_outcome(base)
     if ended is None:
         # No record means one of two very different things, and the difference matters: ASK, do not

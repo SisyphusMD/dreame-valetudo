@@ -103,6 +103,18 @@ class Context:
             die("No robot yet — run recon first; it reads the device and creates it.")
         return self.robot
 
+    def robot_label(self) -> str:
+        """What to CALL this robot on screen and in the run record, before and after recon.
+
+        A typed name only reaches disk once recon has a device identity to attach it to — the robot
+        directory deliberately does not exist before then, so an abandoned run leaves nothing
+        behind. Until it does, display_name() has only the folder slug to fall back on, and someone
+        who typed 'Test Bench #1' was shown 'Test-Bench-1' on the bar and in the busy-robot notice.
+        """
+        if self.pending_name:
+            return self.pending_name
+        return self.robot.display_name() if self.robot is not None else ""
+
     def bind_robot(self) -> None:
         """Tie this run to its robot everywhere that has to know: the run record a second
         invocation reads, the bar, and where an interrupted question is bookmarked.
@@ -116,11 +128,12 @@ class Context:
         robot = self.robot
         if robot is None:
             return
-        describe_run(robot=robot.display_name())
+        label = self.robot_label()
+        describe_run(robot=label)
         bookmark_prompts_in(robot.state_dir)
         tmux = working_tmux(self.env)
         if tmux and self.env.get("TMUX"):
-            name_the_robot_on_the_bar(Path(tmux), session_name(self.ws.base), robot.display_name())
+            name_the_robot_on_the_bar(Path(tmux), session_name(self.ws.base), label)
 
     @property
     def home(self) -> Path:

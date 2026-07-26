@@ -132,6 +132,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if ctx.robot is None:
         if existing is not None:
             ctx.robot = existing
+            ctx.pending_name = None       # it named the directory we just walked away from
             ctx.console.say(f"This robot is already set up as '{existing.display_name()}' — "
                             "resuming it.")
         else:
@@ -147,6 +148,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
             ctx.console.warn(f"This robot is already set up as '{existing.display_name()}' — using "
                              f"that instead of a duplicate '{ctx.robot.display_name()}'.")
             ctx.robot = existing
+            ctx.pending_name = None       # ditto: never relabel the robot that was adopted
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)

@@ -187,6 +187,24 @@ class Console:
     def err(self, message: str, *, wrap: bool = True) -> None:
         self._emit("err", message, wrap=wrap)
 
+    def erase_line(self) -> None:
+        """Remove the terminal's preceding physical line.
+
+        Gated on being a terminal ONLY, deliberately not on `color`: NO_COLOR asks for no styling,
+        not for no cursor control, and honouring it here would leave the stray `[exited]` that tmux
+        writes on the exact terminals of the people most likely to notice it.
+        """
+        if not self._tty:
+            return
+        with self._lock:
+            try:
+                sys.stdout.write("\033[1A\033[2K")
+                sys.stdout.flush()
+            except OSError:
+                # The tty can disappear between the capability check and the write; cosmetic
+                # cleanup must never turn that into a failed run.
+                pass
+
     def block(self, lines: Sequence[str] | str, *, title: str | None = None) -> None:
         """Captured tool/log output, gutter-marked so it reads as evidence rather than the tool's
         own narration. Never wrapped — tool output is preformatted and wrapping would corrupt its

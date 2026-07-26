@@ -174,9 +174,18 @@ python3 - "$RUNDIR/one.out" <<'PYEOF' || fail "the run's output did not survive 
 import sys
 raw = open(sys.argv[1], "rb").read()
 after = raw.rsplit(b"\x1b[?1049l", 1)          # everything after the LAST alternate-screen exit
-sys.exit(0 if len(after) == 2 and b"No robots yet" in after[1] else 1)
+if len(after) != 2 or b"No robots yet" not in after[1]:
+    sys.exit(1)                                    # the output did not survive at all
+# tmux writes "[exited]" to STDOUT when the session it is attached to is destroyed, and it cannot
+# be filtered without taking away the stdout the client draws on — so it is ERASED afterwards.
+# The bytes therefore still contain it; what matters is that the erase follows, so the terminal
+# never shows it. Asserting its absence could never pass.
+tail = after[1]
+if b"[exited]" in tail:
+    sys.exit(0 if b"\x1b[1A\x1b[2K" in tail[tail.index(b"[exited]"):] else 1)
+sys.exit(0)
 PYEOF
-pass "the run's output is still on the screen after the session ends"
+pass "the run's output survives the session ending without a client exit marker"
 
 # --- 3. the exit status is the RUN's, not the tmux client's ---------------------------------
 drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" status
