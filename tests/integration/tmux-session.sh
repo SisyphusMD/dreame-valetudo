@@ -93,7 +93,38 @@ rc_of()   { head -1 "$RUNDIR/$1.out"; }
 text_of() { tail -n +2 "$RUNDIR/$1.out"; }
 sessions() { tmux ls 2>/dev/null | grep -c dreame-valetudo || true; }
 
-TOOL=(uv run dreame-valetudo)
+# How to invoke the tool — and it must be THIS TREE, not whatever is on PATH. A released copy
+# installed by Homebrew or the .pkg shadows the source, and the suite would then quietly certify a
+# build that does not contain the code under test. `uv run` is project-scoped by construction, so
+# it wins; the bare console script is for CI, where it is an editable install of this tree.
+# `python -m dreame_valetudo` is deliberately not an option: its argv[0] is a non-executable
+# __main__.py, which tmux could never exec.
+tree_of_installed_script() {
+  # Ask the script's OWN interpreter where it imports the package from. A frozen release binary
+  # (.pkg/brew) has no usable shebang, so this prints nothing and the caller rejects it.
+  local script interp
+  script="$(command -v dreame-valetudo)" || return 1
+  interp="$(head -1 "$script")"
+  interp="${interp#\#!}"
+  [ -x "${interp%% *}" ] || return 1
+  # From / and with -P, so the current directory is NOT on sys.path. Probing from the repo made
+  # every interpreter "find" the tree and the check passed for a release install it should reject.
+  (cd / && "${interp%% *}" -P -c 'import dreame_valetudo, pathlib
+print(pathlib.Path(dreame_valetudo.__file__).resolve().parent.parent)' 2>/dev/null)
+}
+
+if command -v uv >/dev/null 2>&1; then
+  TOOL=(uv run dreame-valetudo)
+elif command -v dreame-valetudo >/dev/null 2>&1; then
+  installed_tree="$(tree_of_installed_script || true)"
+  [ "$installed_tree" = "$PWD" ] ||
+    fail "the dreame-valetudo on PATH is not this checkout (it resolves to '${installed_tree:-a frozen release}'), so this suite would certify code that is not under test — install this tree with 'pip install -e .' or make uv available"
+  TOOL=(dreame-valetudo)
+else
+  # Deliberately a failure, not a skip: skipping here would hide a broken wrapper behind a missing
+  # toolchain, which is exactly how this feature stayed broken through 473 green tests.
+  fail "neither an installed dreame-valetudo nor uv is available to run the tool"
+fi
 
 # --- 1. a wrapped run really executes, in the workspace it was told to use ------------------
 W1="$RUNDIR/work1"
@@ -128,7 +159,7 @@ SPACED="$RUNDIR/robot stuff"
 mkdir -p "$SPACED"
 cat > "$SPACED/dreame-valetudo" <<EOF
 #!/usr/bin/env bash
-exec $(command -v uv) run --project "$PWD" dreame-valetudo "\$@"
+exec ${TOOL[*]} "\$@"
 EOF
 chmod +x "$SPACED/dreame-valetudo"
 drive spaced 120 "DREAME_WORK=$RUNDIR/work-sp" -- "$SPACED/dreame-valetudo" status

@@ -127,6 +127,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # renovate: datasource=github-tags depName=python/cpython versioning=pep440
+          python-version: "3.14.6"   # exact pin (repo convention); Renovate bumps the patch
+      - name: install the session wrapper's own dependency
+        run: |
+          # Without a real tmux the session suite SKIPS, and a skip in CI reads exactly like a
+          # pass — which is how this feature stayed broken through 473 green tests. Install it so
+          # the suite actually runs, and install the tool so argv[0] is a real executable (tmux
+          # has to exec it; `python -m` gives a non-executable __main__.py).
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          python -m pip install --upgrade pip
+          pip install -e .
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
           for t in tests/integration/release-scripts.sh tests/integration/reconcile.sh tests/integration/tmux-session.sh; do echo "== $t =="; bash "$t"; done
