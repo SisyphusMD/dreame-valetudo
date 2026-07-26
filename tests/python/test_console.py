@@ -3,12 +3,16 @@ rules (wrapping, the output vocabulary), and the progress-display lifecycle."""
 
 from __future__ import annotations
 
+import itertools
+import sys
 from pathlib import Path
 
 import pytest
 
+from dreame_valetudo import console
 from dreame_valetudo.console import (
     Console,
+    Die,
     bookmark_prompts_in,
     next_deadline,
     warn_if_low_disk,
@@ -300,3 +304,67 @@ def test_reattaching_then_detaching_again_starts_over() -> None:
 
 def test_a_zero_timeout_disables_the_clock() -> None:
     assert next_deadline(False, None, now=100.0, timeout=0.0) is None
+
+
+class _FakeStdin:
+    """A terminal that hands over pre-set lines. `_prompt_until_idle` is only entered when stdin
+    is a tty, so a pipe cannot exercise it."""
+
+    def __init__(self, lines: list[str] | None = None) -> None:
+        self.lines = list(lines or [])
+
+    def isatty(self) -> bool:
+        return True
+
+    def readline(self) -> str:
+        return self.lines.pop(0) if self.lines else ""
+
+
+def test_an_unwatched_question_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Detached, the pty stays open, so a plain input() would block forever holding the workspace
+    lock — the very thing surviving the terminal was supposed to buy. Nothing entered this function
+    before: it could be replaced with `raise AssertionError` and the whole suite stayed green."""
+    monkeypatch.setattr(console.select, "select", lambda *_a: ([], [], []))
+    ticks = itertools.count(1000.0, 3600.0)
+    monkeypatch.setattr(console.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin())
+    console.idle_timeout(3600.0, lambda: False)          # nobody is watching
+    try:
+        with pytest.raises(Die) as exc:
+            Console(color=False).confirm("Flash now?")
+        assert "place is saved" in str(exc.value)
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()
+
+
+def test_a_question_someone_is_watching_never_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A person sitting in front of the terminal must never have the question taken away — the
+    clock only runs while nobody is attached."""
+    reads = iter([([], [], []), ([], [], []), ([True], [], [])])
+    monkeypatch.setattr(console.select, "select", lambda *_a: next(reads))
+    ticks = itertools.count(1000.0, 3600.0)
+    monkeypatch.setattr(console.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(["y\n"]))
+    console.idle_timeout(1.0, lambda: True)              # attached the whole time
+    try:
+        assert Console(color=False).confirm("Flash now?") is True
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()
+
+
+def test_an_unknowable_attachment_never_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """None means the question could not be answered — no tmux, a failed query. A run may only be
+    abandoned on positive evidence that nobody is there."""
+    reads = iter([([], [], []), ([], [], []), ([True], [], [])])
+    monkeypatch.setattr(console.select, "select", lambda *_a: next(reads))
+    ticks = itertools.count(1000.0, 3600.0)
+    monkeypatch.setattr(console.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(["n\n"]))
+    console.idle_timeout(1.0, lambda: None)
+    try:
+        assert Console(color=False).confirm("Flash now?") is False
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()

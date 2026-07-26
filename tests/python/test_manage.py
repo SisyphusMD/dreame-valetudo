@@ -10,7 +10,9 @@ from conftest import CtxFactory
 
 from dreame_valetudo import manifest
 from dreame_valetudo.console import Die
-from dreame_valetudo.phases.manage import clean, forget, rename
+from dreame_valetudo.installs import Install
+from dreame_valetudo.phases import manage
+from dreame_valetudo.phases.manage import clean, forget, rename, uninstall
 from dreame_valetudo.workspace import Robot
 
 
@@ -164,3 +166,45 @@ def test_clean_all_refuses_non_interactive(make_ctx: CtxFactory) -> None:
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
     with pytest.raises(Die, match="non-interactively"):
         clean(ctx, ["--all"])
+
+
+def _one_install() -> list[Install]:
+    return [Install("Homebrew", Path("/opt/homebrew/Cellar/dreame-valetudo"),
+                    ["brew", "uninstall", "dreame-valetudo"])]
+
+
+def test_uninstall_removes_nothing_without_a_yes(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate on a command that deletes the program. Nothing exercised this phase at all, so the
+    confirm could be INVERTED — answering "y" aborting, anything else removing — with 500 tests
+    still green."""
+    monkeypatch.setattr(manage, "find_installs", lambda _env: _one_install())
+    ctx = make_ctx(confirms=[False])
+    with pytest.raises(Die):
+        uninstall(ctx)
+    assert ctx.runner.transcript() == []          # type: ignore[attr-defined]
+
+
+def test_uninstall_runs_the_removal_after_a_yes(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(manage, "find_installs", lambda _env: _one_install())
+    ctx = make_ctx(confirms=[True])
+    uninstall(ctx)
+    assert ctx.runner.transcript() == ["brew uninstall dreame-valetudo"]  # type: ignore[attr-defined]
+
+
+def test_uninstall_never_touches_the_backups(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The factory backups are what un-brick a robot; outliving the program is the point of them."""
+    monkeypatch.setattr(manage, "find_installs", lambda _env: _one_install())
+    ctx = make_ctx(confirms=[True])
+    ctx.backups_dir.mkdir(parents=True, exist_ok=True)
+    keep = ctx.backups_dir / "dreame-r2416-kitchen-abc.zip"
+    keep.write_text("irreplaceable")
+    uninstall(ctx)
+    assert keep.read_text() == "irreplaceable"
+    assert not any("rm" in c or str(ctx.backups_dir) in c
+                   for c in ctx.runner.transcript())   # type: ignore[attr-defined]
