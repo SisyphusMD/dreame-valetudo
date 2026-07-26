@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: the macOS `.pkg`'s `sunxi-fel` was missing a library on a Mac without Homebrew, so
+  FEL never worked there — and the tool reported "FEL up" anyway instead of saying so.
+
 - **new**: `dreame-valetudo uninstall` removes the tool whichever way it was installed, and warns
   when more than one install is present (Homebrew and the `.pkg` both provide the command, and
   which one runs comes down to your PATH). Your backups are never touched.

@@ -17,6 +17,12 @@ from .console import Console, die
 from .fastboot import Fastboot
 from .run import Runner
 
+# A dynamic-loader failure, from either platform's loader: macOS dyld ("Library not loaded", "no
+# such file"), Linux ld.so ("error while loading shared libraries").
+_LOADER_FAILED = re.compile(
+    r"dyld|library not loaded|image not found|error while loading shared libraries", re.IGNORECASE
+)
+
 
 def print_fel_entry(console: Console, host: str = "computer") -> None:
     """The FEL button sequence — the one step no script can do."""
@@ -56,6 +62,13 @@ class Fel:
             for _ in range(secs):
                 res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
                 out = res.stdout + res.stderr
+                # A sunxi-fel that cannot load is not a robot that has not appeared yet. Its loader
+                # error says nothing about "not found", so it read as a live device: the tool
+                # announced "FEL up" and then failed at the first real command, with the robot open
+                # and the button sequence already done. Retrying it 180 times cannot help either.
+                if _LOADER_FAILED.search(out):
+                    die("sunxi-fel is present but cannot start — it is missing a library it was "
+                        f"built against, so FEL cannot be reached:\n{out.strip()}")
                 if "not found" not in out.lower():
                     first = out.splitlines()[0] if out.strip() else ""
                     self.console.info(f"FEL up: {first}")

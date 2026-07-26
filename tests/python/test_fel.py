@@ -77,3 +77,24 @@ def test_wait_fastboot_uses_libusb_client_not_google_fastboot() -> None:
     assert fel.wait_fastboot(secs=30) is True
     # It waits via the libusb client (python3 ... wait 30), never Google's `fastboot devices`.
     assert calls == [("python3", "/x/fastboot-libusb.py", "wait", "30")]
+
+
+def test_a_sunxi_fel_that_cannot_load_is_not_a_live_device() -> None:
+    """The .pkg shipped a sunxi-fel missing a library. Its loader error says nothing about "not
+    found", so the poll read it as a device that had appeared: "FEL up", then an unexplained
+    failure at the first real command — with the robot open and the button sequence done."""
+    dyld = ("dyld[47458]: Library not loaded: /opt/homebrew/opt/dtc/lib/libfdt.1.dylib\n"
+            "  Referenced from: /usr/local/libexec/dreame-valetudo/sunxi-fel\n"
+            "  Reason: tried: '/opt/homebrew/opt/dtc/lib/libfdt.1.dylib' (no such file)")
+    fel, _ = _fel(lambda a: Result(a, 133, "", dyld))
+    with pytest.raises(Die) as exc:
+        fel.poll_fel(secs=5)
+    assert "libfdt" in str(exc.value)
+    assert "cannot start" in str(exc.value)
+
+
+def test_a_linux_loader_failure_is_caught_too() -> None:
+    ldso = "sunxi-fel: error while loading shared libraries: libfdt.so.1: cannot open shared object file"
+    fel, _ = _fel(lambda a: Result(a, 127, "", ldso))
+    with pytest.raises(Die):
+        fel.poll_fel(secs=5)
