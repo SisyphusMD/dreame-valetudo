@@ -13,6 +13,7 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases.recon import read_identity_from_robot, recon
 from dreame_valetudo.run import Result
+from dreame_valetudo.session import hold_workspace_lock, running_run
 from dreame_valetudo.workspace import Robot
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
@@ -169,6 +170,39 @@ def test_recon_adopts_the_existing_robot_for_the_same_config(make_ctx: CtxFactor
     recon(ctx, recovery_backup=False)
     assert ctx.robot is not None and ctx.robot.work.name == "1st-floor"
     assert not (ctx.ws.robots_dir / f"r2416-{_CFG[:12]}").exists()  # no duplicate dir
+
+
+def test_recon_binds_a_new_robots_final_human_name(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = make_ctx(model="x40-ultra", robot_name="living-room", responder=_responder())
+    ctx.pending_name = "Living Room"
+    _dist_ready(ctx)
+    hold_workspace_lock(ctx.ws.base / ".lock", "recon")
+    bars: list[str] = []
+    monkeypatch.setattr("dreame_valetudo.context.working_tmux", lambda _env: "/fake/tmux")
+    monkeypatch.setattr(
+        "dreame_valetudo.context.name_the_robot_on_the_bar",
+        lambda _tmux, _session, robot: bars.append(robot),
+    )
+    ctx.env = {**ctx.env, "TMUX": "inside"}
+    recon(ctx, recovery_backup=False)
+    assert ctx.need_robot().display_name() == "Living Room"
+    assert running_run(ctx.ws.base / ".lock")["robot"] == "Living Room"
+    assert bars == ["Living Room"]
+
+
+def test_recon_does_not_apply_a_pending_name_to_an_adopted_robot(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="x40-ultra", robot_name="living-room", responder=_responder())
+    ctx.pending_name = "Living Room"
+    _dist_ready(ctx)
+    prior = Robot(ctx.ws.robots_dir / "established")
+    prior.recon_dir.mkdir(parents=True)
+    (prior.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    prior.set_display_name("Upstairs Original")
+    recon(ctx, recovery_backup=False)
+    assert ctx.robot == prior
+    assert prior.display_name() == "Upstairs Original"
 
 
 def test_recon_redirects_a_new_named_robot_to_the_existing_one(make_ctx: CtxFactory) -> None:

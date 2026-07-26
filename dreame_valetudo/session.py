@@ -319,6 +319,9 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
         ["set-option", "-t", session, "remain-on-exit", "off"],
+        # Measured with a second session on tmux 3.7b: `on` detaches the client when this session
+        # is destroyed and leaves the other session/server alive; `previous` destroyed the server.
+        ["set-option", "-t", session, "detach-on-destroy", "on"],
         ["set-option", "-t", session, "status", "on"],
         ["set-option", "-t", session, "status-style", style],
         ["set-option", "-t", session, "status-justify", "left"],
@@ -339,11 +342,12 @@ def name_the_robot_on_the_bar(tmux: Path, session: str, robot: str) -> None:
     The name is escaped because tmux re-expands a status line as a FORMAT: an unescaped `#` eats
     what follows it, so `Vac #Hallway` renders as the hostname and `#S` as the session name. The
     one line of UI saying which robot is being flashed must say the right one. (`##` is tmux's own
-    literal-`#`.) Not a security boundary — the name is the local operator's own typed input.
+    literal-`#`.) It then runs the result through strftime, where `%%` is the literal `%`.
+    Not a security boundary — the name is the local operator's own typed input.
     """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run([str(tmux), "set-option", "-t", session, "status-left",
-                        f"dreame-valetudo · {robot.replace('#', '##')}"],
+                        f"dreame-valetudo · {robot.replace('#', '##').replace('%', '%%')}"],
                        capture_output=True, timeout=5, check=False)
 
 
@@ -359,6 +363,21 @@ def tmux_session_exists(tmux: Path, session: str) -> bool:
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def session_pane_dead(tmux: Path, session: str) -> bool | None:
+    """Whether the session's command has already exited. None means the query was inconclusive."""
+    try:
+        res = subprocess.run(
+            [str(tmux), "display-message", "-p", "-t", session, "#{pane_dead}"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    answer = res.stdout.strip()
+    return answer == "1" if answer in ("0", "1") else None
 
 
 def kill_session(tmux: Path, session: str) -> None:

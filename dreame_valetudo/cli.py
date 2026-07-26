@@ -51,6 +51,7 @@ from .session import (
     record_outcome,
     running_run,
     session_name,
+    session_pane_dead,
     tmux_plan,
     tmux_session_exists,
     working_tmux,
@@ -551,6 +552,9 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         # per-architecture, so this is the one install where a closed terminal still ends the run.
         if (found is None and sys.stdin.isatty()
                 and not env.get("DREAME_NO_TMUX") and cmd_of(args) not in PURE_COMMANDS):
+            # The one place naming tmux is right: this is a MISSING DEPENDENCY the user can go and
+            # install, not the mechanism behind a run in progress. "A terminal-session helper" is
+            # invisible in the wrong way — it hides the one word that makes the advice actionable.
             con.info("No tmux found, so this run will end if its terminal closes. Installing tmux "
                      "lets it survive that, and lets you rejoin by re-running this command.")
         return
@@ -574,6 +578,14 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         if not started:
             return
         break
+    # A user's remain-on-exit setting can preserve a pane whose command failed at exec before our
+    # per-session override landed. Never attach to that corpse: there is no process that can write
+    # an outcome or make the client return.
+    if started and found is not None and session_pane_dead(Path(found), session):
+        kill_session(Path(found), session)
+        con.err("The run stopped without recording how it went. Re-run to pick it back up; "
+                f"logs are under {base / 'logs'}.")
+        raise SystemExit(1)
     # switch-client moves the caller's EXISTING client and returns at once (measured: ~12ms); only
     # attach-session blocks until the run ends. So after a switch there is nobody left watching this
     # pane — the user is looking at the session — and nothing here could report an outcome to them.
@@ -673,7 +685,7 @@ def _run(
             # the pty open when the client detaches, so input() never sees EOF. Default an hour;
             # DREAME_IDLE_TIMEOUT overrides it, 0 disables.
             tmux_for_idle = working_tmux(resolved_env)
-            if tmux_for_idle:
+            if resolved_env.get(IN_SESSION) and tmux_for_idle:
                 seconds = _idle_seconds(resolved_env)
                 if seconds > 0:
                     session = session_name(ws.base)

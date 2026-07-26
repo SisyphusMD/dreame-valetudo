@@ -266,13 +266,28 @@ def test_the_transcript_tail_is_what_was_on_the_screen(tmp_path: Path) -> None:
         "\n"
         "# exit 0 after 1.3s total\n"
     )
-    assert tail_transcript(log) == [">> Valetudo is up.",
-                                    "   Open http://192.168.5.1 in your browser."]
+    assert tail_transcript(log) == ["Valetudo is up.",
+                                    "Open http://192.168.5.1 in your browser."]
+
+
+def test_the_transcript_tail_removes_internal_prefixes_prompts_and_answers(tmp_path: Path) -> None:
+    log = tmp_path / "run.log"
+    log.write_text(
+        "[+   0.1s] == Recon\n"
+        "[+   0.2s] ?? Continue?\n"
+        "[+   0.3s] -> yes\n"
+        "[+   0.4s] !! Keep the robot powered.\n"
+        "[+   0.5s]  | Important detail\n"
+        "[+   0.6s] XX Failed safely.\n"
+    )
+    assert tail_transcript(log) == [
+        "Recon", "Keep the robot powered.", "Important detail", "Failed safely."
+    ]
 
 
 def test_the_transcript_tail_is_bounded_and_survives_a_missing_log(tmp_path: Path) -> None:
     log = tmp_path / "long.log"
     log.write_text("".join(f"[+   {i}.0s]    line {i}\n" for i in range(40)))
     tail = tail_transcript(log, keep=5)
-    assert tail == [f"   line {i}" for i in range(35, 40)]
+    assert tail == [f"line {i}" for i in range(35, 40)]
     assert tail_transcript(tmp_path / "absent.log") == []
