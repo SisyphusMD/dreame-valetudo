@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -31,6 +32,24 @@ from typing import IO
 from .console import Die
 
 SESSION = "dreame-valetudo"
+
+
+def session_name(base: Path) -> str:
+    """The session for THIS workspace.
+
+    Scoped rather than one global name, because everything the session layer decides is
+    cross-checked against the workspace lock — and the lock is per-workspace. A single shared name
+    meant two terminals with different DREAME_WORK saw each other's session while reading their own
+    lock file, so the guard that refuses to close a run mid-flash could not see that run at all: it
+    offered "close it and start something else" for a robot part-way through being written.
+
+    Resolved so a symlinked path and the real one are the same workspace, not two.
+
+    Note the guarantee this gives and the one it does not: one run per WORKSPACE, not one per
+    robot. Two workspaces pointed at the same physical robot are still two independent runs — the
+    lock has never covered that, and the session name cannot either.
+    """
+    return f"{SESSION}-{hashlib.sha256(str(base.resolve()).encode()).hexdigest()[:8]}"
 
 # Set on the process tmux starts inside the session, so it can tell "the run is in there" from "I
 # AM the run". Without it the wrapped copy asks tmux whether a session exists, finds its own, and
@@ -227,6 +246,7 @@ def tmux_plan(
     self_cmd: Sequence[str],
     env: Mapping[str, str],
     tmux: Path | None,
+    session: str,
     *,
     interactive: bool,
     session_exists: bool = False,
@@ -248,19 +268,19 @@ def tmux_plan(
     if session_exists:
         # Already dressed and running: just go to it.
         verb = "switch-client" if env.get("TMUX") else "attach-session"
-        return [[t, verb, "-t", SESSION]]
+        return [[t, verb, "-t", session]]
     # tmux runs a SINGLE trailing argument through /bin/sh instead of exec'ing it, so an install
     # path containing a space (a checkout under "Robot Stuff", an iCloud clone) would never start.
     # The env prefix already guarantees several arguments; naming the default subcommand keeps
     # that true independently of it, and the line above already reads a bare invocation as `auto`.
     argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
-    create = [[t, "new-session", "-A", "-d", "-s", SESSION, "--", *env_prefix(env), *argv]]
-    create += [[t, *opt] for opt in session_options(colour=colour)]
-    create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
+    create = [[t, "new-session", "-A", "-d", "-s", session, "--", *env_prefix(env), *argv]]
+    create += [[t, *opt] for opt in session_options(session, colour=colour)]
+    create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", session])
     return create
 
 
-def session_options(*, colour: bool) -> list[list[str]]:
+def session_options(session: str, *, colour: bool) -> list[list[str]]:
     """How the session is dressed, and how it is allowed to end.
 
     The status line replaces tmux's default green strip carrying a session name and window list the
@@ -276,22 +296,22 @@ def session_options(*, colour: bool) -> list[list[str]]:
     """
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
-        ["set-option", "-t", SESSION, "remain-on-exit", "off"],
-        ["set-option", "-t", SESSION, "status", "on"],
-        ["set-option", "-t", SESSION, "status-style", style],
-        ["set-option", "-t", SESSION, "status-justify", "left"],
-        ["set-option", "-t", SESSION, "status-left", "dreame-valetudo"],
-        ["set-option", "-t", SESSION, "status-left-length", "60"],
-        ["set-option", "-t", SESSION, "status-right",
+        ["set-option", "-t", session, "remain-on-exit", "off"],
+        ["set-option", "-t", session, "status", "on"],
+        ["set-option", "-t", session, "status-style", style],
+        ["set-option", "-t", session, "status-justify", "left"],
+        ["set-option", "-t", session, "status-left", "dreame-valetudo"],
+        ["set-option", "-t", session, "status-left-length", "60"],
+        ["set-option", "-t", session, "status-right",
          "closing this window is safe — re-run to come back "],
-        ["set-option", "-t", SESSION, "status-right-length", "60"],
+        ["set-option", "-t", session, "status-right-length", "60"],
         # tmux's window list is furniture for a tool the user is not supposed to be aware of.
-        ["set-option", "-t", SESSION, "window-status-format", ""],
-        ["set-option", "-t", SESSION, "window-status-current-format", ""],
+        ["set-option", "-t", session, "window-status-format", ""],
+        ["set-option", "-t", session, "window-status-current-format", ""],
     ]
 
 
-def name_the_robot_on_the_bar(tmux: Path, robot: str) -> None:
+def name_the_robot_on_the_bar(tmux: Path, session: str, robot: str) -> None:
     """Add the robot to the bar once it is known — it is chosen after the session is created.
 
     The name is escaped because tmux re-expands a status line as a FORMAT: an unescaped `#` eats
@@ -300,30 +320,30 @@ def name_the_robot_on_the_bar(tmux: Path, robot: str) -> None:
     literal-`#`.) Not a security boundary — the name is the local operator's own typed input.
     """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([str(tmux), "set-option", "-t", SESSION, "status-left",
+        subprocess.run([str(tmux), "set-option", "-t", session, "status-left",
                         f"dreame-valetudo · {robot.replace('#', '##')}"],
                        capture_output=True, timeout=5, check=False)
 
 
 
 
-def tmux_session_exists(tmux: Path) -> bool:
+def tmux_session_exists(tmux: Path, session: str) -> bool:
     """Whether our session is live. Because an abandoned run is reaped, this is a usable proxy for
     'someone is mid-run' — but never assumed to be the CURRENT user's run, which is why the caller
     asks rather than attaching silently."""
     try:
         return subprocess.run(
-            [str(tmux), "has-session", "-t", SESSION], capture_output=True, timeout=5, check=False
+            [str(tmux), "has-session", "-t", session], capture_output=True, timeout=5, check=False
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def kill_session(tmux: Path) -> None:
+def kill_session(tmux: Path, session: str) -> None:
     """End the session. Safe at any moment: the run bookmarks its position when a prompt opens, so
     there is nothing to flush on the way out."""
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([str(tmux), "kill-session", "-t", SESSION],
+        subprocess.run([str(tmux), "kill-session", "-t", session],
                        capture_output=True, timeout=5, check=False)
 
 
@@ -338,7 +358,7 @@ def lock_free(path: Path) -> bool:
         return False
 
 
-def client_attached(tmux: Path) -> bool | None:
+def client_attached(tmux: Path, session: str) -> bool | None:
     """Is anyone actually looking at the session? None when that is unknowable.
 
     None is the safe answer — no tmux, no session, a query that failed — and it means "never time
@@ -346,7 +366,7 @@ def client_attached(tmux: Path) -> bool | None:
     """
     try:
         res = subprocess.run(
-            [str(tmux), "display-message", "-p", "-t", SESSION, "#{session_attached}"],
+            [str(tmux), "display-message", "-p", "-t", session, "#{session_attached}"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):

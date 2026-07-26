@@ -24,7 +24,7 @@ from .fastboot import Fastboot, find_helper, resolve_libexec, resolve_transport
 from .fel import Fel
 from .profiles import Profile
 from .run import Runner
-from .session import describe_run, name_the_robot_on_the_bar
+from .session import describe_run, name_the_robot_on_the_bar, session_name
 from .workspace import WORKSPACE_SUBDIR, Robot, Workspace
 
 
@@ -120,7 +120,7 @@ class Context:
         bookmark_prompts_in(robot.state_dir)
         tmux = find_helper("tmux", self.env) or shutil.which("tmux")
         if tmux and self.env.get("TMUX"):
-            name_the_robot_on_the_bar(Path(tmux), robot.display_name())
+            name_the_robot_on_the_bar(Path(tmux), session_name(self.ws.base), robot.display_name())
 
     @property
     def home(self) -> Path:

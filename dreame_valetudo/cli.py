@@ -51,6 +51,7 @@ from .session import (
     read_outcome,
     record_outcome,
     running_run,
+    session_name,
     tmux_plan,
     tmux_runs,
     tmux_session_exists,
@@ -424,8 +425,11 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     return 0
 
 
-def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
-    """Ask before joining a run already in progress. True = go back to it.
+def _offer_existing_run(con: Console, tmux: Path, session: str, lock: Path) -> bool:
+    """Ask before joining a run already in progress. True = go back to it; False = it was CLOSED.
+
+    Closing happens here rather than in the caller so the answer and the act cannot come apart —
+    the caller only waits for the lock to come free afterwards.
 
     Joining silently would be wrong as often as it is right: someone who gave up on one robot and
     came back to start another would be dropped into the old run with no way out that does not
@@ -446,7 +450,10 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     con.say(f"A run for {subject} is already in progress.")
     con.info("   1) Go back to it")
     con.info("   2) Close it and start something else (its place is saved)")
-    return con.ask("Which [1-2]?").strip() != "2"
+    rejoin = con.ask("Which [1-2]?").strip() != "2"
+    if not rejoin:
+        kill_session(tmux, session)
+    return rejoin
 
 
 def _warn_on_multiple_installs(con: Console, env: Mapping[str, str]) -> None:
@@ -491,6 +498,7 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     Exits the process when the run happened in a session; returns when it must run inline.
     """
     lock = base / ".lock"
+    session = session_name(base)
     # This process IS the run tmux started, so there is no session to join and nobody to ask about
     # one. Checked before the probe below, which would otherwise find this run's own session.
     if env.get(IN_SESSION):
@@ -505,11 +513,10 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     # a pipe is invisible and unanswerable.
     applies = (found is not None
                and wraps_this_run(self_cmd, env, Path(found), interactive=interactive))
-    if found is not None and applies and tmux_session_exists(Path(found)):
-        if _offer_existing_run(con, Path(found), lock):
+    if found is not None and applies and tmux_session_exists(Path(found), session):
+        if _offer_existing_run(con, Path(found), session, lock):
             pass  # fall through: the plan below attaches to it
         else:
-            kill_session(Path(found))
             # The dying run releases the flock as it goes; give the kernel a moment to catch up
             # rather than racing it and refusing the user's own fresh start.
             for _ in range(20):
@@ -517,11 +524,13 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
                     break
                 time.sleep(0.1)
     plan = tmux_plan(
-        self_cmd, env, Path(found) if found else None,
+        self_cmd, env, Path(found) if found else None, session,
         interactive=interactive,
         # Re-probed, not reused: the branch above may just have killed the session. Short-circuited
         # on `applies` so a pure command never asks tmux anything at all.
-        session_exists=found is not None and applies and tmux_session_exists(Path(found)),
+        session_exists=(
+            found is not None and applies and tmux_session_exists(Path(found), session)
+        ),
     )
     if plan is None:
         # Say so when the reason is a MISSING tmux rather than a deliberate choice: every package
@@ -616,7 +625,10 @@ def _run(
             if tmux_for_idle:
                 seconds = _idle_seconds(resolved_env)
                 if seconds > 0:
-                    idle_timeout(seconds, lambda: client_attached(Path(tmux_for_idle)))
+                    session = session_name(ws.base)
+                    idle_timeout(
+                        seconds, lambda: client_attached(Path(tmux_for_idle), session)
+                    )
             if cmd not in PURE_COMMANDS:
                 _warn_on_multiple_installs(con, resolved_env)
             # One run per workspace. The tmux wrapper above already makes a second invocation

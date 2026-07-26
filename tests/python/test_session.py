@@ -19,7 +19,6 @@ from dreame_valetudo.session import (
     IN_SESSION,
     OUTCOME,
     PURE_COMMANDS,
-    SESSION,
     clear_outcome,
     describe_run,
     env_prefix,
@@ -29,6 +28,7 @@ from dreame_valetudo.session import (
     read_outcome,
     record_outcome,
     running_run,
+    session_name,
     session_options,
     tmux_plan,
     tmux_runs,
@@ -36,20 +36,34 @@ from dreame_valetudo.session import (
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
 _SELF = ("/usr/bin/dreame-valetudo", "root")
+_SESSION = "test-session"
+
+
+def test_session_identity_is_per_workspace_and_resolves_symlinks(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(first)
+
+    assert session_name(first).startswith("dreame-valetudo-")
+    assert session_name(alias) == session_name(first)
+    assert session_name(second) != session_name(first)
 
 
 def test_a_fresh_run_is_created_detached_then_attached() -> None:
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", SESSION, "--",
+    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", _SESSION, "--",
                        "env", f"{IN_SESSION}=1", *_SELF]
-    assert plan[-1] == [str(_TMUX), "attach-session", "-t", SESSION]
+    assert plan[-1] == [str(_TMUX), "attach-session", "-t", _SESSION]
 
 
 def test_a_second_run_rejoins_rather_than_starting_another() -> None:
     """Re-running lands the user back in the live run instead of driving the same robot twice."""
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "attach-session", "-t", SESSION]]
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=True)
+    assert plan == [[str(_TMUX), "attach-session", "-t", _SESSION]]
 
 
 @pytest.mark.parametrize(
@@ -60,26 +74,26 @@ def test_a_second_run_rejoins_rather_than_starting_another() -> None:
 )
 def test_everything_is_wrapped_by_default(cmd: str) -> None:
     """A denylist, so a command added later is protected without anyone remembering to list it."""
-    assert tmux_plan(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, interactive=True) is not None
+    assert tmux_plan(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, _SESSION, interactive=True) is not None
 
 
 @pytest.mark.parametrize("cmd", sorted(PURE_COMMANDS))
 def test_pure_commands_run_inline(cmd: str) -> None:
     """`new-session -A` ATTACHES to a live session, so asking for --version mid-flash must not
     drop the user into the flash."""
-    assert tmux_plan(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, interactive=True) is None
+    assert tmux_plan(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, _SESSION, interactive=True) is None
 
 
 def test_no_bare_invocation_left_unwrapped() -> None:
     """No subcommand means the auto chain, which ends in the flash."""
-    assert tmux_plan(("/usr/bin/dreame-valetudo",), {}, _TMUX, interactive=True) is not None
+    assert tmux_plan(("/usr/bin/dreame-valetudo",), {}, _TMUX, _SESSION, interactive=True) is not None
 
 
 def test_a_bare_invocation_is_never_handed_to_tmux_as_one_argument() -> None:
     """Verified against real tmux 3.7b: a SINGLE trailing argument is run through /bin/sh, so from
     an install path containing a space the binary never starts and the session dies — silently
     losing the terminal-survival the wrapper exists for. Two arguments exec correctly."""
-    plan = tmux_plan(("/home/pi/Robot Stuff/dreame-valetudo",), {}, _TMUX, interactive=True)
+    plan = tmux_plan(("/home/pi/Robot Stuff/dreame-valetudo",), {}, _TMUX, _SESSION, interactive=True)
     assert plan is not None
     after = plan[0][plan[0].index("--") + 1:]
     assert after[-2:] == ["/home/pi/Robot Stuff/dreame-valetudo", "auto"]
@@ -90,24 +104,24 @@ def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches()
     """tmux refuses to attach a session from inside another, so the run cannot simply be wrapped.
     Doing nothing was the old behaviour and it left the remote/Pi user — the one most likely to be
     inside tmux already — with no session at all, and no way to rejoin."""
-    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
+    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX, _SESSION,
                      interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", SESSION]
-    assert plan[-1] == [str(_TMUX), "switch-client", "-t", SESSION]
+    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", _SESSION]
+    assert plan[-1] == [str(_TMUX), "switch-client", "-t", _SESSION]
 
 
 def test_runs_inline_when_the_escape_hatch_is_set() -> None:
-    assert tmux_plan(_SELF, {"DREAME_NO_TMUX": "1"}, _TMUX, interactive=True) is None
+    assert tmux_plan(_SELF, {"DREAME_NO_TMUX": "1"}, _TMUX, _SESSION, interactive=True) is None
 
 
 def test_runs_inline_without_a_terminal() -> None:
     """Piped or scripted output has nothing to reattach to, and tmux needs a tty."""
-    assert tmux_plan(_SELF, {}, _TMUX, interactive=False) is None
+    assert tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=False) is None
 
 
 def test_runs_inline_when_no_tmux_is_available() -> None:
-    assert tmux_plan(_SELF, {}, None, interactive=True) is None
+    assert tmux_plan(_SELF, {}, None, _SESSION, interactive=True) is None
 
 
 def test_tmux_runs_accepts_a_working_binary(tmp_path: Path) -> None:
@@ -213,7 +227,7 @@ def test_lock_free_reports_the_truth(tmp_path: Path) -> None:
 
 def test_the_bar_is_ours_not_tmuxs() -> None:
     """No window list, no fill, and copy that answers the question instead of naming the tool."""
-    opts = [" ".join(o) for o in session_options(colour=True)]
+    opts = [" ".join(o) for o in session_options(_SESSION, colour=True)]
     assert any("closing this window is safe" in o for o in opts)
     assert any(o.rstrip().endswith("window-status-format") for o in opts)
     assert any("bg=default" in o for o in opts)          # unfilled: no coloured strip
@@ -221,12 +235,12 @@ def test_the_bar_is_ours_not_tmuxs() -> None:
 
 
 def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
-    plain = [" ".join(o) for o in session_options(colour=False)]
+    plain = [" ".join(o) for o in session_options(_SESSION, colour=False)]
     assert not any("colour244" in o for o in plain)
 
 
 def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
     assert plan is not None
     verbs = [c[1] for c in plan]
     assert verbs[0] == "new-session"
@@ -238,19 +252,19 @@ def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
     """Verified against real tmux: `new-session -A -d` on an existing session behaves like
     attach-session (where -d means "detach other clients"), tries to attach, and FAILS — which
     would drop the user to an inline run and a lock refusal instead of back into their run."""
-    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
+    plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX, _SESSION,
                      interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "switch-client", "-t", SESSION]]
+    assert plan == [[str(_TMUX), "switch-client", "-t", _SESSION]]
 
 
 def test_outside_tmux_an_existing_session_is_attached_not_recreated() -> None:
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "attach-session", "-t", SESSION]]
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=True)
+    assert plan == [[str(_TMUX), "attach-session", "-t", _SESSION]]
 
 
 def test_the_created_session_marks_the_process_it_starts() -> None:
     """The marker rides on the create step, so the copy tmux runs can tell it IS the run."""
-    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
     assert plan is not None
     assert "env" in plan[0] and f"{IN_SESSION}=1" in plan[0]
 
@@ -259,8 +273,8 @@ def test_the_run_inside_the_session_is_never_wrapped_again() -> None:
     """Without this the wrapped copy finds its OWN session, offers to rejoin or close it, and does
     one of those to itself — so the run never happens at all."""
     inside = {IN_SESSION: "1"}
-    assert tmux_plan(_SELF, inside, _TMUX, interactive=True, session_exists=True) is None
-    assert tmux_plan(_SELF, inside, _TMUX, interactive=True, session_exists=False) is None
+    assert tmux_plan(_SELF, inside, _TMUX, _SESSION, interactive=True, session_exists=True) is None
+    assert tmux_plan(_SELF, inside, _TMUX, _SESSION, interactive=True, session_exists=False) is None
 
 
 def _stub_tmux(tmp_path: Path, *, session_exists: bool,
@@ -369,7 +383,7 @@ def test_a_run_mid_flash_is_never_offered_the_close_option(tmp_path: Path) -> No
     hold_workspace_lock(lock, "root")
     describe_run(robot="Kitchen Vacuum", uninterruptible=True)
     con = ScriptedConsole(asks=["2"])
-    assert _offer_existing_run(con, Path("/unused/tmux"), lock) is True   # rejoined, not killed
+    assert _offer_existing_run(con, Path("/unused/tmux"), _SESSION, lock) is True   # rejoined, not killed
     said = con.text()
     assert "Kitchen Vacuum" in said
     assert "Close it" not in said
@@ -382,7 +396,7 @@ def test_a_run_between_phases_can_still_be_closed(tmp_path: Path) -> None:
     hold_workspace_lock(lock, "root")
     describe_run(robot="Kitchen Vacuum", uninterruptible=False)
     con = ScriptedConsole(asks=["2"])
-    assert _offer_existing_run(con, Path("/unused/tmux"), lock) is False  # close is honoured
+    assert _offer_existing_run(con, Path("/unused/tmux"), _SESSION, lock) is False  # close is honoured
 
 
 def test_the_session_carries_this_runs_settings_across() -> None:
@@ -414,7 +428,7 @@ def test_every_documented_override_reaches_the_session() -> None:
 def test_the_create_step_actually_carries_the_environment() -> None:
     """Wiring, not the helper: asserting session_env() alone leaves the plan free to stop calling
     it, which is how a correct helper ships with the bug still in place."""
-    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX,
+    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX, _SESSION,
                      interactive=True, session_exists=False)
     assert plan is not None
     assert "DREAME_WORK=/mnt/ssd/work" in plan[0]
@@ -501,19 +515,19 @@ def test_a_detached_run_is_reported_as_still_going(
 def test_the_session_options_are_pinned_to_a_literal_list() -> None:
     """Asserted against a literal, not against the function under test: a count derived from
     session_options() deletes its own assertion along with the option it was meant to protect."""
-    assert [o[3] for o in session_options(colour=True)] == [
+    assert [o[3] for o in session_options(_SESSION, colour=True)] == [
         "remain-on-exit", "status", "status-style", "status-justify", "status-left",
         "status-left-length", "status-right", "status-right-length",
         "window-status-format", "window-status-current-format",
     ]
-    assert all(o[:3] == ["set-option", "-t", SESSION] for o in session_options(colour=True))
+    assert all(o[:3] == ["set-option", "-t", _SESSION] for o in session_options(_SESSION, colour=True))
 
 
 def test_the_session_is_not_allowed_to_outlive_its_run() -> None:
     """Verified against real tmux 3.7b: with `remain-on-exit on` in the user's own ~/.tmux.conf
     (which IS sourced) the session survives a finished run, so every later invocation is told a run
     that ended hours ago is still in progress. Everything here reads a live session as a live run."""
-    assert ["set-option", "-t", SESSION, "remain-on-exit", "off"] in session_options(colour=True)
+    assert ["set-option", "-t", _SESSION, "remain-on-exit", "off"] in session_options(_SESSION, colour=True)
 
 
 def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
@@ -524,7 +538,7 @@ def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
     seen = tmp_path / "args.txt"
     recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$5" > {seen}\n')
     recorder.chmod(0o755)
-    name_the_robot_on_the_bar(recorder, "Vac #Hallway #S")
+    name_the_robot_on_the_bar(recorder, _SESSION, "Vac #Hallway #S")
     assert seen.read_text().strip() == "dreame-valetudo · Vac ##Hallway ##S"
 
 
@@ -582,7 +596,7 @@ def test_the_environment_is_carried_without_a_tmux_flag_that_needs_3_2() -> None
     """`new-session -e` only arrived in tmux 3.2, and an unknown flag makes new-session FAIL — which
     drops the whole wrapper silently. Debian 11, Pi OS bullseye and Ubuntu 20.04 all ship older
     tmux, and the Pi is a first-class target. `env` is POSIX and asks nothing of tmux."""
-    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX,
+    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX, _SESSION,
                      interactive=True, session_exists=False)
     assert plan is not None
     assert "-e" not in plan[0]
