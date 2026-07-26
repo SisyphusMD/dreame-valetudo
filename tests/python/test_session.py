@@ -74,6 +74,16 @@ def test_no_bare_invocation_left_unwrapped() -> None:
     assert tmux_plan(("/usr/bin/dreame-valetudo",), {}, _TMUX, interactive=True) is not None
 
 
+def test_a_bare_invocation_is_never_handed_to_tmux_as_one_argument() -> None:
+    """Verified against real tmux 3.7b: a SINGLE trailing argument is run through /bin/sh, so from
+    an install path containing a space the binary never starts and the session dies — silently
+    losing the terminal-survival the wrapper exists for. Two arguments exec correctly."""
+    plan = tmux_plan(("/home/pi/Robot Stuff/dreame-valetudo",), {}, _TMUX, interactive=True)
+    assert plan is not None
+    after = plan[0][plan[0].index("--") + 1:]
+    assert after == ["/home/pi/Robot Stuff/dreame-valetudo", "auto"]
+
+
 def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches() -> None:
     """tmux refuses to attach a session from inside another, so the run cannot simply be wrapped.
     Doing nothing was the old behaviour and it left the remote/Pi user — the one most likely to be

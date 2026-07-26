@@ -235,7 +235,13 @@ def tmux_plan(
         # Already dressed and running: just go to it.
         verb = "switch-client" if env.get("TMUX") else "attach-session"
         return [[t, verb, "-t", SESSION]]
-    create = [[t, "new-session", "-A", "-d", *session_env(env), "-s", SESSION, "--", *self_cmd]]
+    # tmux runs a SINGLE trailing argument through /bin/sh instead of exec'ing it, and a bare
+    # invocation — the documented primary usage — is the one form that produces exactly one. From
+    # any install path containing a space (a checkout under "Robot Stuff", an iCloud clone) the
+    # binary then never starts and the session dies. Naming the default subcommand keeps it an
+    # exec; line above already reads a bare invocation as `auto`, so this only makes it explicit.
+    argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
+    create = [[t, "new-session", "-A", "-d", *session_env(env), "-s", SESSION, "--", *argv]]
     create += [[t, *opt] for opt in status_bar_options(colour=colour)]
     create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
     return create

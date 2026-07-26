@@ -541,8 +541,10 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         return
     # Setup steps first (creating the session detached when already inside another). If one fails
     # there is no session to move to, so fall through and run inline rather than strand the user.
+    # Output captured: a failed step falls through to an inline run, which is fine, but its raw
+    # tmux diagnostic on the user's terminal is the one thing this wrapper must never show.
     for step in plan[:-1]:
-        if subprocess.run(step, check=False).returncode != 0:
+        if subprocess.run(step, check=False, capture_output=True).returncode != 0:
             return
     # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
     # the session ends the terminal is restored and every line the run printed is erased with it —
