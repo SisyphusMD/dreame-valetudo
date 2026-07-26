@@ -35,8 +35,9 @@ SESSION = "dreame-valetudo"
 # Set on the process tmux starts inside the session, so it can tell "the run is in there" from "I
 # AM the run". Without it the wrapped copy asks tmux whether a session exists, finds its own, and
 # offers to rejoin or close it — then does one of those to itself, and the run never happens.
-# Carried by `new-session -e` rather than inherited: once a tmux server is already up it builds a
-# new session's environment from its own snapshot, so an exported variable would not survive.
+# Carried by an `env` prefix on the command rather than inherited: once a tmux server is already
+# up it builds a new session's environment from its own snapshot, so an exported variable would
+# not survive. (See env_prefix for why not tmux's own -e.)
 IN_SESSION = "DREAME_IN_SESSION"
 
 # Pure commands: they answer and exit without touching the workspace or the robot. Everything else
@@ -185,18 +186,23 @@ def tmux_runs(tmux: Path) -> bool:
         return False
 
 
-def session_env(env: Mapping[str, str]) -> list[str]:
-    """The `-e` flags carrying this run's settings into the session.
+def env_prefix(env: Mapping[str, str]) -> list[str]:
+    """An `env NAME=VALUE …` prefix carrying this run's settings into the session.
 
     Once a tmux server is already running, it builds a new session's environment from its OWN
     snapshot rather than from whoever ran the command, so anything exported for this run is
     otherwise dropped. That silently rewrites where a run puts its data: a Pi user's
     `DREAME_WORK=/mnt/ssd/work DREAME_BACKUPS=/mnt/ssd/backups` reverts to the SD card the moment
     the run moves into the session, taking the irreplaceable factory backup with it.
+
+    Carried by prefixing the command with `env` rather than by tmux's own `-e`, which only reached
+    new-session in tmux 3.2 — and unknown flags make new-session fail, which silently drops the
+    whole wrapper. Debian 11, Raspberry Pi OS bullseye and Ubuntu 20.04 all ship older tmux, and
+    the Pi is a first-class target here. `env` is POSIX and needs nothing of tmux at all.
     """
     carried = {k: v for k, v in env.items() if k.startswith("DREAME_") or k == "NO_COLOR"}
     carried[IN_SESSION] = "1"
-    return [flag for k in sorted(carried) for flag in ("-e", f"{k}={carried[k]}")]
+    return ["env", *(f"{k}={carried[k]}" for k in sorted(carried))]
 
 
 def wraps_this_run(
@@ -243,13 +249,12 @@ def tmux_plan(
         # Already dressed and running: just go to it.
         verb = "switch-client" if env.get("TMUX") else "attach-session"
         return [[t, verb, "-t", SESSION]]
-    # tmux runs a SINGLE trailing argument through /bin/sh instead of exec'ing it, and a bare
-    # invocation — the documented primary usage — is the one form that produces exactly one. From
-    # any install path containing a space (a checkout under "Robot Stuff", an iCloud clone) the
-    # binary then never starts and the session dies. Naming the default subcommand keeps it an
-    # exec; line above already reads a bare invocation as `auto`, so this only makes it explicit.
+    # tmux runs a SINGLE trailing argument through /bin/sh instead of exec'ing it, so an install
+    # path containing a space (a checkout under "Robot Stuff", an iCloud clone) would never start.
+    # The env prefix already guarantees several arguments; naming the default subcommand keeps
+    # that true independently of it, and the line above already reads a bare invocation as `auto`.
     argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
-    create = [[t, "new-session", "-A", "-d", *session_env(env), "-s", SESSION, "--", *argv]]
+    create = [[t, "new-session", "-A", "-d", "-s", SESSION, "--", *env_prefix(env), *argv]]
     create += [[t, *opt] for opt in session_options(colour=colour)]
     create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
     return create

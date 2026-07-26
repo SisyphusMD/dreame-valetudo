@@ -22,13 +22,13 @@ from dreame_valetudo.session import (
     SESSION,
     clear_outcome,
     describe_run,
+    env_prefix,
     hold_workspace_lock,
     lock_free,
     name_the_robot_on_the_bar,
     read_outcome,
     record_outcome,
     running_run,
-    session_env,
     session_options,
     tmux_plan,
     tmux_runs,
@@ -41,8 +41,8 @@ _SELF = ("/usr/bin/dreame-valetudo", "root")
 def test_a_fresh_run_is_created_detached_then_attached() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-e", f"{IN_SESSION}=1",
-                       "-s", SESSION, "--", *_SELF]
+    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", SESSION, "--",
+                       "env", f"{IN_SESSION}=1", *_SELF]
     assert plan[-1] == [str(_TMUX), "attach-session", "-t", SESSION]
 
 
@@ -82,7 +82,8 @@ def test_a_bare_invocation_is_never_handed_to_tmux_as_one_argument() -> None:
     plan = tmux_plan(("/home/pi/Robot Stuff/dreame-valetudo",), {}, _TMUX, interactive=True)
     assert plan is not None
     after = plan[0][plan[0].index("--") + 1:]
-    assert after == ["/home/pi/Robot Stuff/dreame-valetudo", "auto"]
+    assert after[-2:] == ["/home/pi/Robot Stuff/dreame-valetudo", "auto"]
+    assert len(after) > 2      # never a single argument, which tmux would hand to /bin/sh
 
 
 def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches() -> None:
@@ -92,7 +93,7 @@ def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches()
     plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
                      interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0][1:8] == ["new-session", "-A", "-d", "-e", f"{IN_SESSION}=1", "-s", SESSION]
+    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", SESSION]
     assert plan[-1] == [str(_TMUX), "switch-client", "-t", SESSION]
 
 
@@ -251,7 +252,7 @@ def test_the_created_session_marks_the_process_it_starts() -> None:
     """The marker rides on the create step, so the copy tmux runs can tell it IS the run."""
     plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
     assert plan is not None
-    assert "-e" in plan[0] and f"{IN_SESSION}=1" in plan[0]
+    assert "env" in plan[0] and f"{IN_SESSION}=1" in plan[0]
 
 
 def test_the_run_inside_the_session_is_never_wrapped_again() -> None:
@@ -388,10 +389,10 @@ def test_the_session_carries_this_runs_settings_across() -> None:
     """Verified against real tmux 3.7b: with a server already running, a new session's environment
     comes from the SERVER's snapshot, so an exported DREAME_WORK is dropped — silently sending a
     Pi user's dumps and factory backup back to the SD card. Passed explicitly, it survives."""
-    flags = session_env({"DREAME_WORK": "/mnt/ssd/work", "DREAME_BACKUPS": "/mnt/ssd/backups",
-                         "NO_COLOR": "1", "PATH": "/usr/bin", "HOME": "/home/pi"})
-    pairs = [flags[i + 1] for i in range(0, len(flags), 2)]
-    assert flags[::2] == ["-e"] * len(pairs)
+    flags = env_prefix({"DREAME_WORK": "/mnt/ssd/work", "DREAME_BACKUPS": "/mnt/ssd/backups",
+                        "NO_COLOR": "1", "PATH": "/usr/bin", "HOME": "/home/pi"})
+    assert flags[0] == "env"
+    pairs = flags[1:]
     assert "DREAME_WORK=/mnt/ssd/work" in pairs
     assert "DREAME_BACKUPS=/mnt/ssd/backups" in pairs
     assert "NO_COLOR=1" in pairs
@@ -405,7 +406,7 @@ def test_every_documented_override_reaches_the_session() -> None:
     documented = ["DREAME_WORK", "DREAME_BACKUPS", "DREAME_MODEL", "DREAME_ROBOT", "DREAME_CONFIG",
                   "DREAME_LIBEXEC", "DREAME_IDLE_TIMEOUT", "DREAME_SSHKEY", "DREAME_NO_LOG",
                   "DREAME_NO_UPDATE_CHECK", "DREAME_NO_UDEV_CHECK", "DREAME_FASTBOOT"]
-    flags = session_env(dict.fromkeys(documented, "x"))
+    flags = env_prefix(dict.fromkeys(documented, "x"))
     for name in documented:
         assert f"{name}=x" in flags
 
@@ -417,7 +418,7 @@ def test_the_create_step_actually_carries_the_environment() -> None:
                      interactive=True, session_exists=False)
     assert plan is not None
     assert "DREAME_WORK=/mnt/ssd/work" in plan[0]
-    assert plan[0].index("-s") > plan[0].index("DREAME_WORK=/mnt/ssd/work")  # flags before -s
+    assert plan[0].index("env") < plan[0].index("DREAME_WORK=/mnt/ssd/work")  # env, then the vars
 
 
 def test_the_outcome_survives_the_session_it_was_produced_in(tmp_path: Path) -> None:
@@ -575,3 +576,16 @@ def test_the_pure_command_list_is_pinned_to_a_literal() -> None:
     assert frozenset(
         {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall"}
     ) == PURE_COMMANDS
+
+
+def test_the_environment_is_carried_without_a_tmux_flag_that_needs_3_2() -> None:
+    """`new-session -e` only arrived in tmux 3.2, and an unknown flag makes new-session FAIL — which
+    drops the whole wrapper silently. Debian 11, Pi OS bullseye and Ubuntu 20.04 all ship older
+    tmux, and the Pi is a first-class target. `env` is POSIX and asks nothing of tmux."""
+    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX,
+                     interactive=True, session_exists=False)
+    assert plan is not None
+    assert "-e" not in plan[0]
+    cmd = plan[0][plan[0].index("--") + 1:]
+    assert cmd[0] == "env"
+    assert "DREAME_WORK=/mnt/ssd/work" in cmd
