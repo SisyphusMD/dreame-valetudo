@@ -546,6 +546,12 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     for step in plan[:-1]:
         if subprocess.run(step, check=False, capture_output=True).returncode != 0:
             return
+    # switch-client moves the caller's EXISTING client and returns at once (measured: ~12ms); only
+    # attach-session blocks until the run ends. So after a switch there is nobody left watching this
+    # pane — the user is looking at the session — and nothing here could report an outcome to them.
+    if plan[-1][1] != "attach-session":
+        subprocess.run(plan[-1], check=False, capture_output=True)
+        raise SystemExit(0)
     # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
     # the session ends the terminal is restored and every line the run printed is erased with it —
     # the address to open, the error, the path to the log. Staying alive leaves someone to report.

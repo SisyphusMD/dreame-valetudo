@@ -71,7 +71,10 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     if command in PURE_COMMANDS:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    fh = path.open("w+")
+    # Opened WITHOUT truncating: "w" would empty the file before the lock is even attempted, so a
+    # run that is correctly refused would first erase the record of the run that beat it — and the
+    # refusal it then prints could no longer name the robot that is busy.
+    fh = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -87,6 +90,11 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     # Replace, not append: a process holds at most one workspace lock, so _HELD[0] must always be
     # the current one — describe_run writes through it.
     _HELD[:] = [fh]
+    # NOW that the lock is ours, start a fresh record. Not merely skipping the truncate above:
+    # describe_run merges onto whatever it reads, so this run would inherit the previous one's
+    # robot name and dead pid — naming the WRONG robot, which is worse than naming none.
+    fh.seek(0)
+    fh.truncate()
     describe_run(command=command)
 
 

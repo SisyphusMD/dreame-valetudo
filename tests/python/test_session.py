@@ -525,3 +525,45 @@ def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
     recorder.chmod(0o755)
     name_the_robot_on_the_bar(recorder, "Vac #Hallway #S")
     assert seen.read_text().strip() == "dreame-valetudo · Vac ##Hallway ##S"
+
+
+def test_a_refused_run_does_not_erase_the_live_runs_record(tmp_path: Path) -> None:
+    """Opening the lock file with "w" emptied it before the lock was even attempted, so the run
+    that lost first wiped the record of the run that won — and the refusal it printed could no
+    longer name the robot that was busy."""
+    lock = tmp_path / ".lock"
+    hold_workspace_lock(lock, "root")
+    describe_run(robot="Kitchen Vacuum")
+    with pytest.raises(Die):
+        hold_workspace_lock(lock, "root")          # a second run, correctly refused
+    assert running_run(lock)["robot"] == "Kitchen Vacuum"
+
+
+def test_a_new_run_never_inherits_the_previous_runs_record(tmp_path: Path) -> None:
+    """The other half: describe_run merges onto what it reads, so simply not truncating would let
+    a fresh run report the LAST run's robot — naming the wrong one, worse than naming none."""
+    lock = tmp_path / ".lock"
+    lock.write_text('{"robot": "Old Robot", "pid": 99999, "uninterruptible": true}')
+    hold_workspace_lock(lock, "status")
+    record = running_run(lock)
+    assert "robot" not in record
+    assert "uninterruptible" not in record
+    assert record["command"] == "status"
+
+
+def test_a_nested_client_is_not_told_anything_about_the_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """switch-client returns at once instead of blocking, so the user is looking at the session
+    while this pane is not — a report here would be printed where nobody is reading."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec),
+                                      "TMUX": "/tmp/tmux-501/default,1,0"}, con, tmp_path)
+    assert exc.value.code == 0
+    assert "switch-client" in calls.read_text()
+    assert "Still running" not in con.text()
