@@ -71,10 +71,14 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
         ws.sunxi_fel.write_text("#!/bin/sh\n")
         ws.sunxi_fel.chmod(0o755)
         robot = Robot(ws.robots_dir / robot_name) if robot_name else None
+        # HOME defaults to the tmp dir, never the real one. Context.backups_dir falls back to
+        # $HOME/dreame-valetudo/backups when DREAME_BACKUPS is unset, so a test that touched it
+        # without overriding HOME wrote into the developer's OWN factory backups — the one
+        # irreplaceable thing this project has. Caller-supplied env still wins.
         ctx = Context(
             runner=rr,
             console=console,
-            env=env or {},
+            env={"HOME": str(tmp_path / "home"), **(env or {})},
             ws=ws,
             profile=load_profile(model),
             robot=robot,
