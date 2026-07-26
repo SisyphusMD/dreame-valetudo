@@ -53,6 +53,7 @@ from .session import (
     tmux_plan,
     tmux_runs,
     tmux_session_exists,
+    wraps_this_run,
 )
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
@@ -489,7 +490,14 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
     if found is not None and not tmux_runs(Path(found)):
         found = None  # a broken tmux must not replace the run — exec would succeed and then fail
-    if found is not None and tmux_session_exists(Path(found)) and sys.stdin.isatty():
+    self_cmd = [sys.argv[0], *args]
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    # Gated on the same predicate as the plan below, never a looser one: a run this wrapper would
+    # not wrap must not be offered a keystroke that ends a different run, and a question asked down
+    # a pipe is invisible and unanswerable.
+    applies = (found is not None
+               and wraps_this_run(self_cmd, env, Path(found), interactive=interactive))
+    if found is not None and applies and tmux_session_exists(Path(found)):
         if _offer_existing_run(con, Path(found), lock):
             pass  # fall through: the plan below attaches to it
         else:
@@ -501,9 +509,11 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
                     break
                 time.sleep(0.1)
     plan = tmux_plan(
-        [sys.argv[0], *args], env, Path(found) if found else None,
-        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
-        session_exists=found is not None and tmux_session_exists(Path(found)),
+        self_cmd, env, Path(found) if found else None,
+        interactive=interactive,
+        # Re-probed, not reused: the branch above may just have killed the session. Short-circuited
+        # on `applies` so a pure command never asks tmux anything at all.
+        session_exists=found is not None and applies and tmux_session_exists(Path(found)),
     )
     if plan is None:
         # Say so when the reason is a MISSING tmux rather than a deliberate choice: every package

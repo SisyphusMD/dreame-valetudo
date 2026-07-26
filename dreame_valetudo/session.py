@@ -143,6 +143,24 @@ def tmux_runs(tmux: Path) -> bool:
         return False
 
 
+def wraps_this_run(
+    self_cmd: Sequence[str], env: Mapping[str, str], tmux: Path | None, *, interactive: bool
+) -> bool:
+    """Whether the session wrapper applies to this invocation at all.
+
+    The single source of that policy. The rejoin/close offer is gated on it too, because anything
+    the wrapper would not wrap must not be handed a keystroke that ends someone else's run: asking
+    for --version while a robot is being flashed should print a version, not offer to close the
+    flash. Held apart from the plan so the two can never drift.
+    """
+    if tmux is None or not interactive:
+        return False
+    if env.get(IN_SESSION) or env.get("DREAME_NO_TMUX"):
+        return False
+    cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
+    return cmd not in PURE_COMMANDS
+
+
 def tmux_plan(
     self_cmd: Sequence[str],
     env: Mapping[str, str],
@@ -161,15 +179,7 @@ def tmux_plan(
     user typed `dreame-valetudo` and lands in the run either way, which is the whole point. Doing
     nothing here would leave the people most likely to be working remotely with no session at all.
     """
-    if tmux is None or not interactive:
-        return None
-    # Already the run: wrapping again would attach this process to the session it is running in.
-    if env.get(IN_SESSION):
-        return None
-    if env.get("DREAME_NO_TMUX"):
-        return None
-    cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
-    if cmd in PURE_COMMANDS:
+    if tmux is None or not wraps_this_run(self_cmd, env, tmux, interactive=interactive):
         return None
     t = str(tmux)
     colour = not env.get("NO_COLOR")

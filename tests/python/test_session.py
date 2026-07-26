@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -271,3 +272,52 @@ def test_reexec_asks_tmux_nothing_at_all_from_inside_the_session(tmp_path: Path)
                        con, tmp_path / ".lock")
     assert not calls.exists(), f"tmux was invoked from inside the session: {calls.read_text()}"
     assert con.lines == []      # and the user was asked nothing
+
+
+class _Tty:
+    """Stands in for stdin/stdout so the composition tests can choose terminal-ness."""
+
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def _reexec_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str], *,
+                 stdin: bool = True, stdout: bool = True) -> tuple[ScriptedConsole, str]:
+    """Drive the real startup path against a stub tmux that says a session already exists.
+    The console answers '2' — CLOSE it — so a wrongly-offered choice leaves a visible kill.
+
+    execv is stubbed out because the last step of a plan REPLACES this process: without it a
+    regression here would exec the stub tmux over the test runner and report nothing at all.
+    """
+    libexec, calls = _stub_tmux(tmp_path, session_exists=True)
+    monkeypatch.setattr(sys, "stdin", _Tty(stdin))
+    monkeypatch.setattr(sys, "stdout", _Tty(stdout))
+    monkeypatch.setattr(os, "execv", lambda _p, _a: None)
+    con = ScriptedConsole(asks=["2"])
+    _reexec_under_tmux(args, {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path / ".lock")
+    return con, calls.read_text() if calls.exists() else ""
+
+
+@pytest.mark.parametrize("cmd", sorted(PURE_COMMANDS))
+def test_a_pure_command_is_never_offered_the_chance_to_end_a_live_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cmd: str
+) -> None:
+    """`dreame-valetudo --version` in a second terminal while a robot is being flashed must print a
+    version. It must not print a menu whose '2' kills the flash."""
+    con, ran = _reexec_with(tmp_path, monkeypatch, [cmd])
+    assert "kill-session" not in ran
+    assert "has-session" not in ran      # not even asked, so nothing to offer
+    assert con.lines == []
+
+
+def test_the_offer_is_not_made_where_the_answer_could_not_be_seen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dreame-valetudo status | grep ...` during a live run: the menu would go down the pipe while
+    the terminal showed nothing, leaving the user blocked on an invisible question."""
+    con, ran = _reexec_with(tmp_path, monkeypatch, ["root"], stdout=False)
+    assert "kill-session" not in ran
+    assert con.lines == []
