@@ -21,6 +21,7 @@ from dreame_valetudo.session import (
     hold_workspace_lock,
     lock_free,
     running_run,
+    session_env,
     status_bar_options,
     tmux_plan,
     tmux_runs,
@@ -356,3 +357,29 @@ def test_a_run_between_phases_can_still_be_closed(tmp_path: Path) -> None:
     describe_run(robot="Kitchen Vacuum", uninterruptible=False)
     con = ScriptedConsole(asks=["2"])
     assert _offer_existing_run(con, Path("/unused/tmux"), lock) is False  # close is honoured
+
+
+def test_the_session_carries_this_runs_settings_across() -> None:
+    """Verified against real tmux 3.7b: with a server already running, a new session's environment
+    comes from the SERVER's snapshot, so an exported DREAME_WORK is dropped — silently sending a
+    Pi user's dumps and factory backup back to the SD card. Passed explicitly, it survives."""
+    flags = session_env({"DREAME_WORK": "/mnt/ssd/work", "DREAME_BACKUPS": "/mnt/ssd/backups",
+                         "NO_COLOR": "1", "PATH": "/usr/bin", "HOME": "/home/pi"})
+    pairs = [flags[i + 1] for i in range(0, len(flags), 2)]
+    assert flags[::2] == ["-e"] * len(pairs)
+    assert "DREAME_WORK=/mnt/ssd/work" in pairs
+    assert "DREAME_BACKUPS=/mnt/ssd/backups" in pairs
+    assert "NO_COLOR=1" in pairs
+    assert f"{IN_SESSION}=1" in pairs                     # the marker rides along too
+    assert not any(p.startswith(("PATH=", "HOME=")) for p in pairs)   # tmux handles those
+
+
+def test_every_documented_override_reaches_the_session() -> None:
+    """A variable the tool reads but the wrapper forgets to carry changes behaviour mid-run, which
+    is worse than not supporting it. The prefix rule covers any added later."""
+    documented = ["DREAME_WORK", "DREAME_BACKUPS", "DREAME_MODEL", "DREAME_ROBOT", "DREAME_CONFIG",
+                  "DREAME_LIBEXEC", "DREAME_IDLE_TIMEOUT", "DREAME_SSHKEY", "DREAME_NO_LOG",
+                  "DREAME_NO_UPDATE_CHECK", "DREAME_NO_UDEV_CHECK", "DREAME_FASTBOOT"]
+    flags = session_env(dict.fromkeys(documented, "x"))
+    for name in documented:
+        assert f"{name}=x" in flags

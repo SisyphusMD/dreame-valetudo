@@ -143,6 +143,20 @@ def tmux_runs(tmux: Path) -> bool:
         return False
 
 
+def session_env(env: Mapping[str, str]) -> list[str]:
+    """The `-e` flags carrying this run's settings into the session.
+
+    Once a tmux server is already running, it builds a new session's environment from its OWN
+    snapshot rather than from whoever ran the command, so anything exported for this run is
+    otherwise dropped. That silently rewrites where a run puts its data: a Pi user's
+    `DREAME_WORK=/mnt/ssd/work DREAME_BACKUPS=/mnt/ssd/backups` reverts to the SD card the moment
+    the run moves into the session, taking the irreplaceable factory backup with it.
+    """
+    carried = {k: v for k, v in env.items() if k.startswith("DREAME_") or k == "NO_COLOR"}
+    carried[IN_SESSION] = "1"
+    return [flag for k in sorted(carried) for flag in ("-e", f"{k}={carried[k]}")]
+
+
 def wraps_this_run(
     self_cmd: Sequence[str], env: Mapping[str, str], tmux: Path | None, *, interactive: bool
 ) -> bool:
@@ -187,8 +201,7 @@ def tmux_plan(
         # Already dressed and running: just go to it.
         verb = "switch-client" if env.get("TMUX") else "attach-session"
         return [[t, verb, "-t", SESSION]]
-    create = [[t, "new-session", "-A", "-d", "-e", f"{IN_SESSION}=1",
-               "-s", SESSION, "--", *self_cmd]]
+    create = [[t, "new-session", "-A", "-d", *session_env(env), "-s", SESSION, "--", *self_cmd]]
     create += [[t, *opt] for opt in status_bar_options(colour=colour)]
     create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
     return create
