@@ -24,6 +24,17 @@ def test_main_version() -> None:
     assert _has(con, f"dreame-valetudo {__version__}")
 
 
+def test_inline_run_does_not_arm_the_session_only_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    armed: list[float] = []
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "working_tmux", lambda _env: "/fake/tmux")
+    monkeypatch.setattr(cli, "idle_timeout", lambda seconds, _watching: armed.append(seconds))
+    assert main(["version"], env={}, console=ScriptedConsole(), runner=SubprocessRunner()) == 0
+    assert armed == []
+
+
 def test_main_help() -> None:
     con = ScriptedConsole()
     assert main(["help"], env={}, console=con, runner=RecordingRunner()) == 0

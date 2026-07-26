@@ -13,6 +13,7 @@ from conftest import ScriptedConsole
 
 from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux, main
 from dreame_valetudo.console import Die
+from dreame_valetudo.phases import root as root_mod
 from dreame_valetudo.phases.root import _mask_interrupts
 from dreame_valetudo.run import RecordingRunner, Result
 from dreame_valetudo.session import (
@@ -32,6 +33,7 @@ from dreame_valetudo.session import (
     session_options,
     tmux_plan,
     tmux_runs,
+    working_tmux,
 )
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
@@ -245,7 +247,7 @@ def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
     verbs = [c[1] for c in plan]
     assert verbs[0] == "new-session"
     assert verbs[-1] == "attach-session"          # attach LAST, so the bar is set before it shows
-    assert verbs.count("set-option") == 10
+    assert verbs.count("set-option") == 11
 
 
 def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
@@ -279,7 +281,8 @@ def test_the_run_inside_the_session_is_never_wrapped_again() -> None:
 
 def _stub_tmux(tmp_path: Path, *, session_exists: bool, ends_with: str | None = None,
                fail_verb: str | None = None, dies_on_attach: bool = False,
-               outcome_on_create: str | None = None) -> tuple[Path, Path]:
+               outcome_on_create: str | None = None,
+               dead_on_create: bool = False) -> tuple[Path, Path]:
     """A tmux that records how it was called, for tests that compose the real startup path.
 
     STATEFUL, because the code under test asks "does the session exist?" both before creating one
@@ -310,12 +313,30 @@ def _stub_tmux(tmp_path: Path, *, session_exists: bool, ends_with: str | None = 
         f'  has-session) [ -f {marker} ]; exit $? ;;\n'
         f'  new-session) : > {marker}; {created}exit 0 ;;\n'
         f'  kill-session) rm -f {marker}; exit 0 ;;\n'
+        f'  display-message) echo {"1" if dead_on_create else "0"}; exit 0 ;;\n'
         f'  attach-session|switch-client)\n{finish}{die}      exit 0 ;;\n'
         "esac\n"
         "exit 0\n"
     )
     stub.chmod(0o755)
     return libexec, calls
+
+
+def test_a_command_that_died_at_exec_is_never_attached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False, dead_on_create=True)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 1
+    ran = calls.read_text()
+    assert "display-message -p" in ran
+    assert "kill-session" in ran
+    assert "attach-session" not in ran
+    assert "stopped without recording" in con.text()
 
 
 def test_reexec_asks_tmux_nothing_at_all_from_inside_the_session(tmp_path: Path) -> None:
@@ -532,7 +553,7 @@ def test_the_session_options_are_pinned_to_a_literal_list() -> None:
     """Asserted against a literal, not against the function under test: a count derived from
     session_options() deletes its own assertion along with the option it was meant to protect."""
     assert [o[3] for o in session_options(_SESSION, colour=True)] == [
-        "remain-on-exit", "status", "status-style", "status-justify", "status-left",
+        "remain-on-exit", "detach-on-destroy", "status", "status-style", "status-justify", "status-left",
         "status-left-length", "status-right", "status-right-length",
         "window-status-format", "window-status-current-format",
     ]
@@ -546,6 +567,12 @@ def test_the_session_is_not_allowed_to_outlive_its_run() -> None:
     assert ["set-option", "-t", _SESSION, "remain-on-exit", "off"] in session_options(_SESSION, colour=True)
 
 
+def test_destroying_our_session_must_detach_its_client() -> None:
+    assert ["set-option", "-t", _SESSION, "detach-on-destroy", "on"] in session_options(
+        _SESSION, colour=True
+    )
+
+
 def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
     """tmux re-expands the status line as a FORMAT, so an unescaped `#` eats what follows: `Vac
     #Hallway` renders as the hostname, `#S` as the session name. The one line saying which robot is
@@ -556,6 +583,15 @@ def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
     recorder.chmod(0o755)
     name_the_robot_on_the_bar(recorder, _SESSION, "Vac #Hallway #S")
     assert seen.read_text().strip() == "dreame-valetudo · Vac ##Hallway ##S"
+
+
+def test_a_percent_in_a_robot_name_survives_the_status_clock_pass(tmp_path: Path) -> None:
+    recorder = tmp_path / "tmux"
+    seen = tmp_path / "args.txt"
+    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$5" > {seen}\n')
+    recorder.chmod(0o755)
+    name_the_robot_on_the_bar(recorder, _SESSION, "100% Clean")
+    assert seen.read_text().strip() == "dreame-valetudo · 100%% Clean"
 
 
 def test_a_refused_run_does_not_erase_the_live_runs_record(tmp_path: Path) -> None:
@@ -780,3 +816,70 @@ def test_the_log_path_is_never_shown_twice(
     with pytest.raises(SystemExit):
         _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
     assert con.text().count(str(log)) == 1
+
+
+def test_go_back_never_becomes_start_it_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run can finish while the rejoin menu is on screen. The re-probe then says "no session",
+    and a plan built from that STARTS THE COMMAND AGAIN — a second `root --force` moments after the
+    first one finished. "Go back to it" is not permission to start anything."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=True)
+    marker = tmp_path / "session-alive"
+    # answering the menu is what ends the run, exactly the race
+    (tmp_path / OUTCOME).write_text(json.dumps({"rc": 0, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+
+    class _EndsTheRun(ScriptedConsole):
+        def ask(self, prompt: str) -> str:
+            marker.unlink(missing_ok=True)      # the run finishes as the user answers
+            return "1"                          # "go back to it"
+
+    con = _EndsTheRun()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 0                  # reported the finished run...
+    assert "new-session" not in calls.read_text()   # ...and started nothing
+
+
+def test_a_broken_bundled_tmux_falls_back_to_the_system_one(tmp_path: Path) -> None:
+    """A bundled binary can be present and executable yet unable to start — wrong architecture, a
+    half-finished install, a missing library. Rejecting it used to end the search, leaving the run
+    unprotected on a machine with a perfectly good tmux on PATH."""
+    libexec = tmp_path / "libexec"
+    libexec.mkdir()
+    broken = libexec / "tmux"
+    broken.write_text("#!/bin/sh\necho 'bad CPU type' >&2\nexit 1\n")
+    broken.chmod(0o755)
+    sysdir = tmp_path / "bin"
+    sysdir.mkdir()
+    good = sysdir / "tmux"
+    good.write_text("#!/bin/sh\necho 'tmux 3.5a'\n")
+    good.chmod(0o755)
+    env = {"DREAME_LIBEXEC": str(libexec), "PATH": f"{sysdir}:/usr/bin:/bin"}
+    assert working_tmux(env) == str(good)
+
+
+def test_no_tmux_anywhere_is_still_none(tmp_path: Path) -> None:
+    assert working_tmux({"DREAME_LIBEXEC": str(tmp_path), "PATH": str(tmp_path)}) is None
+
+
+def test_the_flash_window_is_published_before_any_signal_is_masked() -> None:
+    """Between masking SIGHUP and admitting to it, the run ignores the signal that closing sends
+    while still advertising itself as safe to close — so a second invocation would destroy the only
+    window onto a flash that carries on writing. The record must lead going in and trail coming
+    out; erring that way only forces a needless rejoin for a few microseconds."""
+    order: list[str] = []
+    real_signal, real_describe = root_mod.signal.signal, root_mod.describe_run
+    try:
+        root_mod.signal.signal = lambda s, h: (order.append("mask"), real_signal(s, h))[1]
+        root_mod.describe_run = lambda **kw: order.append(f"record={kw.get('uninterruptible')}")
+        with _mask_interrupts():
+            pass
+    finally:
+        root_mod.signal.signal, root_mod.describe_run = real_signal, real_describe
+    assert order[0] == "record=True", order
+    assert order[-1] == "record=False", order
+    assert "mask" in order

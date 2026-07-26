@@ -98,12 +98,27 @@ def tail_transcript(path: Path, keep: int = 12) -> list[str]:
     except OSError:
         return []
     out = []
+    prefixes = tuple(sorted(set(LoggingConsole._PREFIX.values()), key=len, reverse=True))
+    prompt = LoggingConsole._PREFIX["prompt"]
+    answer = LoggingConsole._PREFIX["answer"]
+    drop_answer = False
     for line in raw:
         if not line.strip() or line.startswith("#"):
             continue
         said = _STAMP.sub("", line)
         if said.startswith("$ "):
             continue
+        if said.startswith(prompt + " "):
+            drop_answer = True
+            continue
+        if drop_answer and said.startswith(answer + " "):
+            drop_answer = False
+            continue
+        drop_answer = False
+        for prefix in prefixes:
+            if said.startswith(prefix + " "):
+                said = said[len(prefix) + 1:]
+                break
         out.append(said)
     return out[-keep:]
 
@@ -195,6 +210,7 @@ class LoggingConsole(Console):
     _PREFIX: ClassVar[dict[str, str]] = {
         "say": ">>", "action": "=>", "info": "  ", "warn": "!!", "err": "XX", "phase": "==",
         "detail": "  ", "step": "  ", "block": " |", "block_title": " |", "progress_done": "->",
+        "prompt": "??", "answer": "->",
     }
 
     def __init__(self, log: RunLog, *, color: bool | None = None) -> None:
@@ -207,15 +223,15 @@ class LoggingConsole(Console):
         super()._emit(kind, message, wrap=wrap, hang=hang, lead=lead, trail=trail)
 
     def confirm(self, prompt: str) -> bool:
-        self._log.line("??", prompt)
+        self._log.line(self._PREFIX["prompt"], prompt)
         answer = super().confirm(prompt)
-        self._log.line("->", "yes" if answer else "no")
+        self._log.line(self._PREFIX["answer"], "yes" if answer else "no")
         return answer
 
     def ask(self, prompt: str) -> str:
-        self._log.line("??", prompt)
+        self._log.line(self._PREFIX["prompt"], prompt)
         answer = super().ask(prompt)
-        self._log.line("->", answer)
+        self._log.line(self._PREFIX["answer"], answer)
         return answer
 
 

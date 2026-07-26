@@ -24,12 +24,14 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
 from .console import Die
+from .fastboot import find_helper
 
 SESSION = "dreame-valetudo"
 
@@ -188,6 +190,26 @@ def read_outcome(base: Path) -> tuple[int, Path | None] | None:
     return rc, Path(log) if isinstance(log, str) and log else None
 
 
+def working_tmux(env: Mapping[str, str]) -> str | None:
+    """The first tmux that actually RUNS: the bundled one, else the system one.
+
+    Every candidate is probed, not just the first. A bundled binary can be present and executable
+    yet unable to start — wrong architecture after moving a machine, a half-finished package
+    install, a missing library — and rejecting it used to end the search, leaving a run unprotected
+    on a box with a perfectly good /usr/bin/tmux on PATH.
+    """
+    seen: set[str] = set()
+    # PATH comes from the env passed in, not the process: shutil.which defaults to os.environ,
+    # which would quietly ignore the environment this run was actually given.
+    for cand in (find_helper("tmux", env), shutil.which("tmux", path=env.get("PATH"))):
+        if cand is None or str(cand) in seen:
+            continue
+        seen.add(str(cand))
+        if tmux_runs(Path(cand)):
+            return str(cand)
+    return None
+
+
 def tmux_runs(tmux: Path) -> bool:
     """Whether this tmux can actually start.
 
@@ -297,6 +319,9 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
         ["set-option", "-t", session, "remain-on-exit", "off"],
+        # Measured with a second session on tmux 3.7b: `on` detaches the client when this session
+        # is destroyed and leaves the other session/server alive; `previous` destroyed the server.
+        ["set-option", "-t", session, "detach-on-destroy", "on"],
         ["set-option", "-t", session, "status", "on"],
         ["set-option", "-t", session, "status-style", style],
         ["set-option", "-t", session, "status-justify", "left"],
@@ -317,11 +342,12 @@ def name_the_robot_on_the_bar(tmux: Path, session: str, robot: str) -> None:
     The name is escaped because tmux re-expands a status line as a FORMAT: an unescaped `#` eats
     what follows it, so `Vac #Hallway` renders as the hostname and `#S` as the session name. The
     one line of UI saying which robot is being flashed must say the right one. (`##` is tmux's own
-    literal-`#`.) Not a security boundary — the name is the local operator's own typed input.
+    literal-`#`.) It then runs the result through strftime, where `%%` is the literal `%`.
+    Not a security boundary — the name is the local operator's own typed input.
     """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         subprocess.run([str(tmux), "set-option", "-t", session, "status-left",
-                        f"dreame-valetudo · {robot.replace('#', '##')}"],
+                        f"dreame-valetudo · {robot.replace('#', '##').replace('%', '%%')}"],
                        capture_output=True, timeout=5, check=False)
 
 
@@ -337,6 +363,21 @@ def tmux_session_exists(tmux: Path, session: str) -> bool:
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def session_pane_dead(tmux: Path, session: str) -> bool | None:
+    """Whether the session's command has already exited. None means the query was inconclusive."""
+    try:
+        res = subprocess.run(
+            [str(tmux), "display-message", "-p", "-t", session, "#{pane_dead}"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    answer = res.stdout.strip()
+    return answer == "1" if answer in ("0", "1") else None
 
 
 def kill_session(tmux: Path, session: str) -> None:

@@ -148,17 +148,19 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                              f"that instead of a duplicate '{ctx.robot.display_name()}'.")
             ctx.robot = existing
 
-    # Settled at last — including the branches that ADOPTED an existing dir, which the caller
-    # could not have known about when it picked one.
-    ctx.bind_robot()
-
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     robot.state_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
     (robot.state_dir / "model_key").write_text(f"{ctx.profile.key}\n")
-    if ctx.pending_name:  # save the exact human name the user typed (the dir stays a slug)
+    # A pending name describes the empty directory made by "start fresh", not the hardware:
+    # discovering that the hardware already belongs to another directory must not rename it.
+    if ctx.pending_name and existing is None:
         robot.set_display_name(ctx.pending_name)
+
+    # Bind only after the final human name is durable, so the lock record and bar agree with every
+    # later place that identifies this run. This is also after every adoption branch above.
+    ctx.bind_robot()
 
     # Also capture the extra fastboot identity vars the dustbuilder's manual checker
     # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
