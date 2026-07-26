@@ -9,6 +9,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo import udev
 from dreame_valetudo.run import Result
+from dreame_valetudo.session import PURE_COMMANDS
 
 _PACKAGED = Path(__file__).resolve().parents[2] / "packaging" / "udev" / udev.RULE_NAME
 
@@ -66,7 +67,7 @@ def test_guard_blocks_every_command_on_linux_without_the_rule_bar_escape_hatches
     for cmd in ("auto", "recon", "root", "push", "ui", "fix-wifi", "status"):
         assert udev.guard_blocks("Linux", cmd, {}, missing), cmd
     # ...except the escape hatches you'd need to recover (read help/version, run install-udev):
-    for cmd in ("help", "--help", "version", "install-udev"):
+    for cmd in ("help", "--help", "version", "install-udev", "uninstall"):
         assert not udev.guard_blocks("Linux", cmd, {}, missing), cmd
     # ...and not on macOS, not once the rule is present, not with the opt-out.
     assert not udev.guard_blocks("Darwin", "recon", {}, missing)
@@ -83,3 +84,10 @@ def test_install_udev_skips_sudo_when_already_root(make_ctx: CtxFactory) -> None
     assert udev.install_udev(ctx) == 0
     assert ctx.runner.calls[0][0] == "install"  # type: ignore[attr-defined]
     assert all(c[0] != "sudo" for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_the_guard_exempts_exactly_the_commands_that_touch_nothing() -> None:
+    """Kept as its own literal, this list fell behind: `uninstall` was added to the shared set and
+    not here, so a Linux user who had never run install-udev was told to install a USB rule in
+    order to DELETE the program. Deriving it is what stops the two drifting again."""
+    assert udev._EXEMPT == PURE_COMMANDS

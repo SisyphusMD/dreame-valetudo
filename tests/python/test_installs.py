@@ -35,8 +35,20 @@ def test_the_rc_formula_is_reported_separately(tmp_path: Path) -> None:
 
 def test_the_pkg_is_removed_by_its_own_bundled_uninstaller(tmp_path: Path) -> None:
     _mk(tmp_path, "usr/local/libexec/dreame-valetudo")
+    (tmp_path / "usr/local/libexec/dreame-valetudo/uninstall.sh").write_text("#!/bin/sh\n")
     i = next(i for i in find_installs({"HOME": str(tmp_path)}, tmp_path) if i.kind == "macOS .pkg")
     assert i.removal[0] == "sudo" and i.removal[1].endswith("uninstall.sh")
+
+
+def test_a_pkg_that_predates_the_uninstaller_says_so_instead_of_failing(tmp_path: Path) -> None:
+    """Every .pkg up to 0.2.1 shipped this directory with no uninstaller in it. Naming one asked
+    for a sudo password and then failed with "command not found", and the advice printed afterwards
+    pointed at the same missing script — on exactly the machine this is for, an old .pkg beside a
+    newer install."""
+    _mk(tmp_path, "usr/local/libexec/dreame-valetudo")            # no uninstall.sh
+    i = next(i for i in find_installs({"HOME": str(tmp_path)}, tmp_path) if i.kind == "macOS .pkg")
+    assert i.removal == []
+    assert "pkgutil --forget" in i.note
 
 
 def test_deb_and_rpm_share_a_path_so_the_remover_follows_the_system(tmp_path: Path) -> None:

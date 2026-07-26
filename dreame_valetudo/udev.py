@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .context import Context
+from .session import PURE_COMMANDS
 
 RULE_NAME = "99-dreame-valetudo.rules"
 RULE_DEST = f"/etc/udev/rules.d/{RULE_NAME}"
@@ -27,7 +28,11 @@ RULE_DIRS: tuple[str, ...] = ("/etc/udev/rules.d", "/usr/lib/udev/rules.d")
 # The guard fires for every invocation EXCEPT these — the commands you'd need to recover a missing
 # rule (help/version to read, install-udev to fix it). A run that only does Wi-Fi-side work
 # (push/ui/fix-*) on a box that never set up udev can opt out with DREAME_NO_UDEV_CHECK=1.
-_EXEMPT = frozenset({"help", "-h", "--help", "version", "--version", "-V", "install-udev"})
+#
+# Derived from the same list the session wrapper uses rather than repeated: kept as its own literal
+# it silently fell behind, so `uninstall` — added there and not here — told a Linux user to install
+# a USB rule in order to delete the program.
+_EXEMPT = PURE_COMMANDS
 
 UDEV_RULE = """\
 # USB access for dreame-valetudo on Linux, so rooting works WITHOUT sudo. Grants the logged-in
