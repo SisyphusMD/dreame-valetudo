@@ -13,6 +13,7 @@ from conftest import ScriptedConsole
 
 from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux, main
 from dreame_valetudo.console import Die
+from dreame_valetudo.phases import root as root_mod
 from dreame_valetudo.phases.root import _mask_interrupts
 from dreame_valetudo.run import RecordingRunner, Result
 from dreame_valetudo.session import (
@@ -32,6 +33,7 @@ from dreame_valetudo.session import (
     session_options,
     tmux_plan,
     tmux_runs,
+    working_tmux,
 )
 
 _TMUX = Path("/usr/lib/dreame-valetudo/tmux")
@@ -780,3 +782,70 @@ def test_the_log_path_is_never_shown_twice(
     with pytest.raises(SystemExit):
         _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
     assert con.text().count(str(log)) == 1
+
+
+def test_go_back_never_becomes_start_it_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run can finish while the rejoin menu is on screen. The re-probe then says "no session",
+    and a plan built from that STARTS THE COMMAND AGAIN — a second `root --force` moments after the
+    first one finished. "Go back to it" is not permission to start anything."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=True)
+    marker = tmp_path / "session-alive"
+    # answering the menu is what ends the run, exactly the race
+    (tmp_path / OUTCOME).write_text(json.dumps({"rc": 0, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+
+    class _EndsTheRun(ScriptedConsole):
+        def ask(self, prompt: str) -> str:
+            marker.unlink(missing_ok=True)      # the run finishes as the user answers
+            return "1"                          # "go back to it"
+
+    con = _EndsTheRun()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 0                  # reported the finished run...
+    assert "new-session" not in calls.read_text()   # ...and started nothing
+
+
+def test_a_broken_bundled_tmux_falls_back_to_the_system_one(tmp_path: Path) -> None:
+    """A bundled binary can be present and executable yet unable to start — wrong architecture, a
+    half-finished install, a missing library. Rejecting it used to end the search, leaving the run
+    unprotected on a machine with a perfectly good tmux on PATH."""
+    libexec = tmp_path / "libexec"
+    libexec.mkdir()
+    broken = libexec / "tmux"
+    broken.write_text("#!/bin/sh\necho 'bad CPU type' >&2\nexit 1\n")
+    broken.chmod(0o755)
+    sysdir = tmp_path / "bin"
+    sysdir.mkdir()
+    good = sysdir / "tmux"
+    good.write_text("#!/bin/sh\necho 'tmux 3.5a'\n")
+    good.chmod(0o755)
+    env = {"DREAME_LIBEXEC": str(libexec), "PATH": f"{sysdir}:/usr/bin:/bin"}
+    assert working_tmux(env) == str(good)
+
+
+def test_no_tmux_anywhere_is_still_none(tmp_path: Path) -> None:
+    assert working_tmux({"DREAME_LIBEXEC": str(tmp_path), "PATH": str(tmp_path)}) is None
+
+
+def test_the_flash_window_is_published_before_any_signal_is_masked() -> None:
+    """Between masking SIGHUP and admitting to it, the run ignores the signal that closing sends
+    while still advertising itself as safe to close — so a second invocation would destroy the only
+    window onto a flash that carries on writing. The record must lead going in and trail coming
+    out; erring that way only forces a needless rejoin for a few microseconds."""
+    order: list[str] = []
+    real_signal, real_describe = root_mod.signal.signal, root_mod.describe_run
+    try:
+        root_mod.signal.signal = lambda s, h: (order.append("mask"), real_signal(s, h))[1]
+        root_mod.describe_run = lambda **kw: order.append(f"record={kw.get('uninterruptible')}")
+        with _mask_interrupts():
+            pass
+    finally:
+        root_mod.signal.signal, root_mod.describe_run = real_signal, real_describe
+    assert order[0] == "record=True", order
+    assert order[-1] == "record=False", order
+    assert "mask" in order

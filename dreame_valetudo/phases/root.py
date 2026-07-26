@@ -51,22 +51,27 @@ def _mask_interrupts() -> Iterator[None]:
     dangerous from OUTSIDE: a second invocation offering to close the run would destroy the only
     window onto a flash that carries on writing partitions regardless.
     """
+    # Published BEFORE the first handler changes, and withdrawn only AFTER the last one is restored.
+    # Both orderings are load-bearing: between masking a signal and admitting to it, this process
+    # ignores SIGHUP while still advertising itself as safe to close — so a second invocation would
+    # offer "close it", destroy the only window, and leave a flash writing partitions invisibly.
+    # Erring the other way merely forces a rejoin for a few microseconds, which costs nothing.
+    describe_run(uninterruptible=True)
     handlers = {}
     for sig in _FLASH_WINDOW_SIGNALS:
         try:  # noqa: SIM105 - brick-gate code kept explicit; contextlib.suppress here would obscure it
             handlers[sig] = signal.signal(sig, signal.SIG_IGN)
         except (ValueError, OSError):
             pass
-    describe_run(uninterruptible=True)
     try:
         yield
     finally:
-        describe_run(uninterruptible=False)
         for sig, handler in handlers.items():
             try:  # noqa: SIM105 - see above; this restore path is equally load-bearing
                 signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass
+        describe_run(uninterruptible=False)
 
 
 def _check_image_built_for(dust: str, expect_cfg: str) -> None:

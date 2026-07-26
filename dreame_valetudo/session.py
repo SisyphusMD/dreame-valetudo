@@ -24,12 +24,14 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
 from .console import Die
+from .fastboot import find_helper
 
 SESSION = "dreame-valetudo"
 
@@ -186,6 +188,26 @@ def read_outcome(base: Path) -> tuple[int, Path | None] | None:
         return None
     log = data.get("log")
     return rc, Path(log) if isinstance(log, str) and log else None
+
+
+def working_tmux(env: Mapping[str, str]) -> str | None:
+    """The first tmux that actually RUNS: the bundled one, else the system one.
+
+    Every candidate is probed, not just the first. A bundled binary can be present and executable
+    yet unable to start — wrong architecture after moving a machine, a half-finished package
+    install, a missing library — and rejecting it used to end the search, leaving a run unprotected
+    on a box with a perfectly good /usr/bin/tmux on PATH.
+    """
+    seen: set[str] = set()
+    # PATH comes from the env passed in, not the process: shutil.which defaults to os.environ,
+    # which would quietly ignore the environment this run was actually given.
+    for cand in (find_helper("tmux", env), shutil.which("tmux", path=env.get("PATH"))):
+        if cand is None or str(cand) in seen:
+            continue
+        seen.add(str(cand))
+        if tmux_runs(Path(cand)):
+            return str(cand)
+    return None
 
 
 def tmux_runs(tmux: Path) -> bool:
