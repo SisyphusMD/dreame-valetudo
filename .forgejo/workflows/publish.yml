@@ -10,8 +10,6 @@ on:
     # the hyphenated ones as prereleases, and the tap job writes them to the separate -rc formula.
     tags: ["v*.*.*", "v*.*.*-*"]
 
-permissions:
-  contents: read
 
 jobs:
   releases:
