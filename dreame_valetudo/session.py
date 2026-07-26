@@ -319,6 +319,12 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     return [
         ["set-option", "-t", session, "remain-on-exit", "off"],
+        # Inside a pane the terminal's own scrollback is gone, and tmux's replacement is reached by
+        # a prefix key the user is deliberately never told about — so a long phase (the 180s FEL
+        # wait, with the button sequence printed above it) simply could not be scrolled back to.
+        # Mouse mode restores the wheel. It does mean a drag selects into tmux rather than the
+        # terminal; holding Option (iTerm) or Fn (Terminal.app) still selects natively.
+        ["set-option", "-t", session, "mouse", "on"],
         # Measured with a second session on tmux 3.7b: `on` detaches the client when this session
         # is destroyed and leaves the other session/server alive; `previous` destroyed the server.
         ["set-option", "-t", session, "detach-on-destroy", "on"],

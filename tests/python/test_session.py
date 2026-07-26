@@ -247,7 +247,7 @@ def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
     verbs = [c[1] for c in plan]
     assert verbs[0] == "new-session"
     assert verbs[-1] == "attach-session"          # attach LAST, so the bar is set before it shows
-    assert verbs.count("set-option") == 11
+    assert verbs.count("set-option") == 12
 
 
 def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
@@ -553,7 +553,8 @@ def test_the_session_options_are_pinned_to_a_literal_list() -> None:
     """Asserted against a literal, not against the function under test: a count derived from
     session_options() deletes its own assertion along with the option it was meant to protect."""
     assert [o[3] for o in session_options(_SESSION, colour=True)] == [
-        "remain-on-exit", "detach-on-destroy", "status", "status-style", "status-justify", "status-left",
+        "remain-on-exit", "mouse", "detach-on-destroy", "status", "status-style",
+        "status-justify", "status-left",
         "status-left-length", "status-right", "status-right-length",
         "window-status-format", "window-status-current-format",
     ]
