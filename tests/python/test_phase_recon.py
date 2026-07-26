@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import CtxFactory
 
+from dreame_valetudo import console
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases.recon import read_identity_from_robot, recon
@@ -243,3 +244,37 @@ def test_recon_self_provisions_stage1_via_fetch(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(responder=responder)  # dist empty
     with pytest.raises(Die, match="checksum mismatch"):
         recon(ctx, recovery_backup=False)
+
+
+def test_an_auto_named_first_run_still_bookmarks_its_prompts(make_ctx: CtxFactory) -> None:
+    """Pressing Enter at the name prompt — the offered default — left no robot until recon read
+    the device id, so the bookmark was never armed at all. That is the longest and most
+    interruptible run there is: it contains the image prompts and the flash confirmation, and
+    both "your place is saved" messages were only half true for it."""
+    console._BOOKMARK.clear()
+    ctx = make_ctx(model="x40-ultra", responder=_responder())     # blank name -> no robot yet
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=False)
+    robot = ctx.robot
+    assert robot is not None
+    assert [robot.state_dir] == console._BOOKMARK
+
+
+def test_an_adopted_robot_bookmarks_the_dir_that_was_adopted(make_ctx: CtxFactory) -> None:
+    """recon re-points ctx.robot when the device already has a directory. Bound before that, the
+    bookmark still named the abandoned one — which later prompts then CREATED, leaving a phantom
+    robot in the list falsely reporting an open flash confirmation."""
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    # the device's real dir already exists, under a name the user chose earlier
+    adopted = Robot(ctx.ws.robots_dir / "kitchen")
+    adopted.recon_dir.mkdir(parents=True, exist_ok=True)
+    (adopted.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    ctx.robot = Robot(ctx.ws.robots_dir / "picked-a-different-one")
+    console._BOOKMARK.clear()
+
+    recon(ctx, recovery_backup=False)
+
+    assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
+    assert [adopted.state_dir] == console._BOOKMARK
+    assert not (ctx.ws.robots_dir / "picked-a-different-one").exists()

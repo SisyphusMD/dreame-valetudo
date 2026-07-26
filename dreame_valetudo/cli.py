@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die, bookmark_prompts_in, idle_timeout
+from .console import Console, Die, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import find_helper, resolve_libexec
@@ -45,11 +45,9 @@ from .session import (
     PURE_COMMANDS,
     clear_outcome,
     client_attached,
-    describe_run,
     hold_workspace_lock,
     kill_session,
     lock_free,
-    name_the_robot_on_the_bar,
     read_outcome,
     record_outcome,
     running_run,
@@ -104,12 +102,7 @@ def _bind_robot(ctx: Context) -> None:
     id, so recon records it again once it does.
     """
     _profile_for_work(ctx)
-    if ctx.robot is not None:
-        describe_run(robot=ctx.robot.display_name())
-        bookmark_prompts_in(ctx.robot.state_dir)
-        tmux = find_helper("tmux", dict(ctx.env)) or shutil.which("tmux")
-        if tmux and ctx.env.get("TMUX"):
-            name_the_robot_on_the_bar(Path(tmux), ctx.robot.display_name())
+    ctx.bind_robot()
 
 
 def _profile_for_work(ctx: Context) -> None:
