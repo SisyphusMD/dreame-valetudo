@@ -7,9 +7,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import ScriptedConsole
 
+from dreame_valetudo.cli import _reexec_under_tmux
 from dreame_valetudo.console import Die
 from dreame_valetudo.session import (
+    IN_SESSION,
     PURE_COMMANDS,
     SESSION,
     describe_run,
@@ -28,7 +31,8 @@ _SELF = ("/usr/bin/dreame-valetudo", "root")
 def test_a_fresh_run_is_created_detached_then_attached() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", SESSION, "--", *_SELF]
+    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-e", f"{IN_SESSION}=1",
+                       "-s", SESSION, "--", *_SELF]
     assert plan[-1] == [str(_TMUX), "attach-session", "-t", SESSION]
 
 
@@ -68,7 +72,7 @@ def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches()
     plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX,
                      interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", SESSION]
+    assert plan[0][1:8] == ["new-session", "-A", "-d", "-e", f"{IN_SESSION}=1", "-s", SESSION]
     assert plan[-1] == [str(_TMUX), "switch-client", "-t", SESSION]
 
 
@@ -221,3 +225,49 @@ def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
 def test_outside_tmux_an_existing_session_is_attached_not_recreated() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=True)
     assert plan == [[str(_TMUX), "attach-session", "-t", SESSION]]
+
+
+def test_the_created_session_marks_the_process_it_starts() -> None:
+    """The marker rides on the create step, so the copy tmux runs can tell it IS the run."""
+    plan = tmux_plan(_SELF, {}, _TMUX, interactive=True, session_exists=False)
+    assert plan is not None
+    assert "-e" in plan[0] and f"{IN_SESSION}=1" in plan[0]
+
+
+def test_the_run_inside_the_session_is_never_wrapped_again() -> None:
+    """Without this the wrapped copy finds its OWN session, offers to rejoin or close it, and does
+    one of those to itself — so the run never happens at all."""
+    inside = {IN_SESSION: "1"}
+    assert tmux_plan(_SELF, inside, _TMUX, interactive=True, session_exists=True) is None
+    assert tmux_plan(_SELF, inside, _TMUX, interactive=True, session_exists=False) is None
+
+
+def _stub_tmux(tmp_path: Path, *, session_exists: bool) -> tuple[Path, Path]:
+    """A tmux that records how it was called, for tests that compose the real startup path."""
+    libexec = tmp_path / "libexec"
+    libexec.mkdir()
+    calls = tmp_path / "tmux-calls.log"
+    stub = libexec / "tmux"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {calls}\n'
+        'case "$1" in\n'
+        '  -V) echo "tmux 3.5a"; exit 0 ;;\n'
+        f'  has-session) exit {0 if session_exists else 1} ;;\n'
+        "esac\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    return libexec, calls
+
+
+def test_reexec_asks_tmux_nothing_at_all_from_inside_the_session(tmp_path: Path) -> None:
+    """Composition, not the pure planner: the guard has to come before the session PROBE, because
+    the probe is what finds this run's own session. A stub tmux that records every invocation
+    proves the real startup path never reaches it."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=True)
+    con = ScriptedConsole(asks=["1"])
+    _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec), IN_SESSION: "1"},
+                       con, tmp_path / ".lock")
+    assert not calls.exists(), f"tmux was invoked from inside the session: {calls.read_text()}"
+    assert con.lines == []      # and the user was asked nothing

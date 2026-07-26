@@ -41,6 +41,7 @@ from .profiles import (
 )
 from .run import RunError, Runner, SubprocessRunner
 from .session import (
+    IN_SESSION,
     PURE_COMMANDS,
     client_attached,
     describe_run,
@@ -481,6 +482,10 @@ def _idle_seconds(env: Mapping[str, str]) -> float:
 
 def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
     """Replace this process with one inside the tmux session, when that applies."""
+    # This process IS the run tmux started, so there is no session to join and nobody to ask about
+    # one. Checked before the probe below, which would otherwise find this run's own session.
+    if env.get(IN_SESSION):
+        return
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
     if found is not None and not tmux_runs(Path(found)):
         found = None  # a broken tmux must not replace the run — exec would succeed and then fail

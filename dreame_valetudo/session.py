@@ -32,6 +32,13 @@ from .console import Die
 
 SESSION = "dreame-valetudo"
 
+# Set on the process tmux starts inside the session, so it can tell "the run is in there" from "I
+# AM the run". Without it the wrapped copy asks tmux whether a session exists, finds its own, and
+# offers to rejoin or close it — then does one of those to itself, and the run never happens.
+# Carried by `new-session -e` rather than inherited: once a tmux server is already up it builds a
+# new session's environment from its own snapshot, so an exported variable would not survive.
+IN_SESSION = "DREAME_IN_SESSION"
+
 # Pure commands: they answer and exit without touching the workspace or the robot. Everything else
 # is wrapped, including anything added later — a denylist keeps a new command protected by default,
 # where an allowlist would silently leave it exposed.
@@ -156,6 +163,9 @@ def tmux_plan(
     """
     if tmux is None or not interactive:
         return None
+    # Already the run: wrapping again would attach this process to the session it is running in.
+    if env.get(IN_SESSION):
+        return None
     if env.get("DREAME_NO_TMUX"):
         return None
     cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
@@ -167,7 +177,8 @@ def tmux_plan(
         # Already dressed and running: just go to it.
         verb = "switch-client" if env.get("TMUX") else "attach-session"
         return [[t, verb, "-t", SESSION]]
-    create = [[t, "new-session", "-A", "-d", "-s", SESSION, "--", *self_cmd]]
+    create = [[t, "new-session", "-A", "-d", "-e", f"{IN_SESSION}=1",
+               "-s", SESSION, "--", *self_cmd]]
     create += [[t, *opt] for opt in status_bar_options(colour=colour)]
     create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", SESSION])
     return create
