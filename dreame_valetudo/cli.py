@@ -21,7 +21,7 @@ from .context import Context
 from .fastboot import find_helper, resolve_libexec
 from .hazards import model_hazard_check
 from .installs import find_installs
-from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
+from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog, tail_transcript
 from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
@@ -43,12 +43,15 @@ from .run import RunError, Runner, SubprocessRunner
 from .session import (
     IN_SESSION,
     PURE_COMMANDS,
+    clear_outcome,
     client_attached,
     describe_run,
     hold_workspace_lock,
     kill_session,
     lock_free,
     name_the_robot_on_the_bar,
+    read_outcome,
+    record_outcome,
     running_run,
     tmux_plan,
     tmux_runs,
@@ -489,8 +492,12 @@ def _idle_seconds(env: Mapping[str, str]) -> float:
         return 3600.0
 
 
-def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
-    """Replace this process with one inside the tmux session, when that applies."""
+def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base: Path) -> None:
+    """Move this run into the tmux session, when that applies, and report how it ended.
+
+    Exits the process when the run happened in a session; returns when it must run inline.
+    """
+    lock = base / ".lock"
     # This process IS the run tmux started, so there is no session to join and nobody to ask about
     # one. Checked before the probe below, which would otherwise find this run's own session.
     if env.get(IN_SESSION):
@@ -537,9 +544,25 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
     for step in plan[:-1]:
         if subprocess.run(step, check=False).returncode != 0:
             return
-    # An exec failure here is the same story: run inline rather than fail the whole run.
-    with contextlib.suppress(OSError):
-        os.execv(plan[-1][0], plan[-1])
+    # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
+    # the session ends the terminal is restored and every line the run printed is erased with it —
+    # the address to open, the error, the path to the log. Staying alive leaves someone to report.
+    clear_outcome(base)
+    try:
+        subprocess.run(plan[-1], check=False)
+    except OSError:
+        return  # could not attach at all: run inline rather than fail the whole run
+    ended = read_outcome(base)
+    if ended is None:
+        # The client went away while the run kept going — the whole point of the session.
+        con.say("Still running. Re-run this command to come back to it.")
+        raise SystemExit(0)
+    rc, log_path = ended
+    for line in tail_transcript(log_path) if log_path else []:
+        con.info(line)
+    if rc != 0 and log_path is not None:
+        con.info(f"A scrubbed log of this run was saved to {log_path}")
+    raise SystemExit(rc)
 
 
 def main(
@@ -549,6 +572,22 @@ def main(
     console: Console | None = None,
     runner: Runner | None = None,
 ) -> int:
+    rc, log_path = _run(argv, env=env, console=console, runner=runner)
+    # Inside the session, nobody will read this screen: it is erased the moment the session ends.
+    # Leave the outcome where the invocation that attached can find it and report it instead.
+    resolved = dict(os.environ if env is None else env)
+    if resolved.get(IN_SESSION):
+        record_outcome(Workspace.from_env(resolved).base, rc, log_path)
+    return rc
+
+
+def _run(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    console: Console | None = None,
+    runner: Runner | None = None,
+) -> tuple[int, Path | None]:
     args = list(sys.argv[1:] if argv is None else argv)
     resolved_env = dict(os.environ if env is None else env)
     con = console or Console()
@@ -568,7 +607,7 @@ def main(
             # the run outlives its terminal, and so a second invocation rejoins it instead of
             # starting a rival process against the same robot. Replaces this process when it
             # applies; an exec failure just falls through and runs inline.
-            _reexec_under_tmux(args, resolved_env, con, ws.base / ".lock")
+            _reexec_under_tmux(args, resolved_env, con, ws.base)
             # An unanswered question inside a session would otherwise block forever: tmux keeps
             # the pty open when the client detaches, so input() never sees EOF. Default an hour;
             # DREAME_IDLE_TIMEOUT overrides it, 0 disables.
@@ -625,12 +664,12 @@ def main(
             con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")
             if log is not None:
                 log.finish(1)
-            return 1
+            return 1, log.path if log else None
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:
             log.finish(rc)
-        return rc
+        return rc, log.path if log else None
     # A present-but-unreadable file (permission, non-UTF-8, etc.) or any checked command failure
     # must read as a clean error, not a raw traceback — the tool always fails before a write.
     # (UnicodeDecodeError is a ValueError; an unknown DREAME_MODEL raises ValueError too.)
@@ -641,12 +680,12 @@ def main(
             con.info("You can share it to report the problem: "
                      "https://github.com/SisyphusMD/dreame-valetudo/issues")
             log.finish(1)
-        return 1
+        return 1, log.path if log else None
     except KeyboardInterrupt:
         con.info("Interrupted — nothing is lost; re-run to resume.")
         if log is not None:
             log.finish(130)
-        return 130
+        return 130, log.path if log else None
     finally:
         if log is not None:
             log.close()

@@ -81,6 +81,33 @@ def redact_dust_token(args: Sequence[object]) -> list[str]:
     return out
 
 
+_STAMP = re.compile(r"^\[\+\s*[\d.]+s\] ")
+
+
+def tail_transcript(path: Path, keep: int = 12) -> list[str]:
+    """The last console lines of a finished run, for reprinting once its window has gone.
+
+    A tmux client draws on the terminal's alternate screen, so the moment the session ends the
+    terminal is restored and everything the run printed goes with it — the Valetudo address it just
+    told the user to open, the error it died on, the path to this very log. The log holds the same
+    transcript, so its tail is what was on the screen. Commands and headers are dropped: the point
+    is what the run SAID, not what it ran.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in raw:
+        if not line.strip() or line.startswith("#"):
+            continue
+        said = _STAMP.sub("", line)
+        if said.startswith("$ "):
+            continue
+        out.append(said)
+    return out[-keep:]
+
+
 def _prune(logs_dir: Path, keep: int) -> None:
     with contextlib.suppress(OSError):
         old = sorted(logs_dir.glob("run-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)

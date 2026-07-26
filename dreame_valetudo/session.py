@@ -126,6 +126,40 @@ def running_run(path: Path) -> dict[str, object]:
         return {}
 
 
+OUTCOME = ".last-run"
+
+
+def record_outcome(base: Path, rc: int, log: Path | None) -> None:
+    """Leave behind how the run ended, for the invocation that has to report it.
+
+    Written by the run INSIDE the session and read by the one that attached to it: the attaching
+    process cannot see the run's exit status (it gets the tmux client's) and cannot see its output
+    (the terminal is restored when the session ends).
+    """
+    with contextlib.suppress(OSError):
+        (base / OUTCOME).write_text(json.dumps({"rc": rc, "log": str(log) if log else ""}))
+
+
+def clear_outcome(base: Path) -> None:
+    """Drop any previous record, so a run that is still going is never reported as finished."""
+    with contextlib.suppress(OSError):
+        (base / OUTCOME).unlink(missing_ok=True)
+
+
+def read_outcome(base: Path) -> tuple[int, Path | None] | None:
+    """How the run ended, or None if it did not — meaning it is still going and the user detached."""
+    try:
+        with (base / OUTCOME).open() as fh:
+            data = _read_json(fh)
+    except OSError:
+        return None
+    rc = data.get("rc")
+    if not isinstance(rc, int):
+        return None
+    log = data.get("log")
+    return rc, Path(log) if isinstance(log, str) and log else None
+
+
 def tmux_runs(tmux: Path) -> bool:
     """Whether this tmux can actually start.
 

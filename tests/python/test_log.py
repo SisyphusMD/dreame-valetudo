@@ -14,6 +14,7 @@ from dreame_valetudo.log import (
     RunLog,
     redact_dust_token,
     scrub,
+    tail_transcript,
 )
 from dreame_valetudo.migrate import _RECON_DUMPS
 from dreame_valetudo.run import RecordingRunner, Result
@@ -249,3 +250,29 @@ def test_buffering_console_flush_is_idempotent(tmp_path: Path) -> None:
     buf.flush_into(log)  # second flush is a no-op: the buffer was cleared
     log.close()
     assert log.path.read_text().count(">> migrated") == 1
+
+
+def test_the_transcript_tail_is_what_was_on_the_screen(tmp_path: Path) -> None:
+    """After a session ends the terminal is restored and the run's output is gone, so the tail of
+    its log is reprinted in its place. Headers and commands are not what the run SAID."""
+    log = tmp_path / "run.log"
+    log.write_text(
+        "# dreame-valetudo 0.2.1   Sat Jul 25 19:32:46 PDT 2026\n"
+        "# command: ui\n"
+        "\n"
+        "[+   0.4s] $ curl -fsSL -m 3 https://example.invalid/x   (rc=0, 0.40s)\n"
+        "[+   1.2s] >> Valetudo is up.\n"
+        "[+   1.3s]    Open http://192.168.5.1 in your browser.\n"
+        "\n"
+        "# exit 0 after 1.3s total\n"
+    )
+    assert tail_transcript(log) == [">> Valetudo is up.",
+                                    "   Open http://192.168.5.1 in your browser."]
+
+
+def test_the_transcript_tail_is_bounded_and_survives_a_missing_log(tmp_path: Path) -> None:
+    log = tmp_path / "long.log"
+    log.write_text("".join(f"[+   {i}.0s]    line {i}\n" for i in range(40)))
+    tail = tail_transcript(log, keep=5)
+    assert tail == [f"   line {i}" for i in range(35, 40)]
+    assert tail_transcript(tmp_path / "absent.log") == []
