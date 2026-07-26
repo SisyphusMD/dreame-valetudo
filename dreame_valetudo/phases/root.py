@@ -17,6 +17,7 @@ from ..constants import FEL_IMAGE_FILES
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
+from ..session import describe_run
 from ..util import parse_config
 from .doctor import _is_exe, doctor
 from .image import image
@@ -44,16 +45,23 @@ _FLASH_WINDOW_SIGNALS = (
 def _mask_interrupts() -> Iterator[None]:
     """Ignore the terminating and stopping signals for the destructive sequence only (a stray
     Ctrl+C or a closed terminal mid-flash can brick). Restored on exit. A no-op off the main
-    thread (tests) rather than an error."""
+    thread (tests) rather than an error.
+
+    Also published in the run record, because masking the signals is exactly what makes this window
+    dangerous from OUTSIDE: a second invocation offering to close the run would destroy the only
+    window onto a flash that carries on writing partitions regardless.
+    """
     handlers = {}
     for sig in _FLASH_WINDOW_SIGNALS:
         try:  # noqa: SIM105 - brick-gate code kept explicit; contextlib.suppress here would obscure it
             handlers[sig] = signal.signal(sig, signal.SIG_IGN)
         except (ValueError, OSError):
             pass
+    describe_run(uninterruptible=True)
     try:
         yield
     finally:
+        describe_run(uninterruptible=False)
         for sig, handler in handlers.items():
             try:  # noqa: SIM105 - see above; this restore path is equally load-bearing
                 signal.signal(sig, handler)

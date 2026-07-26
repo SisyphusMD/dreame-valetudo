@@ -96,9 +96,19 @@ jobs:
           OLD="$(otool -L sunxi-fel | awk '/libusb-1.0/{print $1; exit}')"
           install_name_tool -change "$OLD" "@loader_path/libusb-1.0.0.dylib" sunxi-fel
           install_name_tool -id "@loader_path/libusb-1.0.0.dylib" ./libusb-1.0.0.dylib
-          # tmux drags libevent (and whatever libevent itself pulls) in from Homebrew; the helper
-          # walks the chain so every non-system library travels beside the binary.
+          # Every OTHER non-system dependency, for both native binaries: tmux drags in libevent,
+          # and sunxi-fel links libfdt from dtc. Hand-rewriting one reference per binary is what
+          # left sunxi-fel pointing at a Homebrew libfdt that does not exist on a user's Mac — the
+          # exact machine the .pkg is for. The helper walks the whole chain instead, and skips the
+          # @loader_path reference set just above.
           bash packaging/bundle-macos-dylibs.sh ./tmux .
+          bash packaging/bundle-macos-dylibs.sh ./sunxi-fel .
+          # Nothing may still point into Homebrew by the time this is packaged.
+          for b in ./tmux ./sunxi-fel ./*.dylib; do
+            if otool -L "$b" | tail -n +2 | grep -qE '^\s+(/opt/homebrew|/usr/local/(opt|Cellar))'; then
+              echo "::error::$b still references a Homebrew path:"; otool -L "$b"; exit 1
+            fi
+          done
 
       - name: Import signing certificates
         run: |

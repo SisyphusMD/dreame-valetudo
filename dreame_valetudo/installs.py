@@ -50,8 +50,18 @@ def find_installs(env: Mapping[str, str], root: Path = Path("/")) -> list[Instal
 
     pkg = root / "usr/local/libexec/dreame-valetudo"
     if pkg.is_dir():
-        found.append(Install("macOS .pkg", pkg,
-                             ["sudo", str(pkg / "uninstall.sh")]))
+        # The uninstaller is probed, not assumed: every .pkg up to and including 0.2.1 shipped this
+        # directory WITHOUT one, so naming it would prompt for a sudo password and then fail with
+        # "command not found" — and the advice printed afterwards could never work either. That is
+        # exactly the machine this matters on: an old .pkg alongside a newer install.
+        script = pkg / "uninstall.sh"
+        if script.is_file():
+            found.append(Install("macOS .pkg", pkg, ["sudo", str(script)]))
+        else:
+            found.append(Install(
+                "macOS .pkg", pkg, [],
+                "predates the uninstaller — remove /usr/local/bin/dreame-valetudo and this "
+                "folder, then run: sudo pkgutil --forget com.sisyphusmd.dreame-valetudo"))
 
     linux = root / "usr/lib/dreame-valetudo"
     if linux.is_dir():

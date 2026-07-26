@@ -15,13 +15,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die, bookmark_prompts_in, idle_timeout
+from .console import Console, Die, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .fastboot import find_helper, resolve_libexec
 from .hazards import model_hazard_check
 from .installs import find_installs
-from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog
+from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog, tail_transcript
 from .migrate import migrate, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
@@ -41,17 +41,21 @@ from .profiles import (
 )
 from .run import RunError, Runner, SubprocessRunner
 from .session import (
+    IN_SESSION,
     PURE_COMMANDS,
+    clear_outcome,
     client_attached,
-    describe_run,
     hold_workspace_lock,
     kill_session,
     lock_free,
-    name_the_robot_on_the_bar,
+    read_outcome,
+    record_outcome,
     running_run,
+    session_name,
     tmux_plan,
     tmux_runs,
     tmux_session_exists,
+    wraps_this_run,
 )
 from .udev import guard_blocks, install_udev
 from .update_check import check_for_update
@@ -99,12 +103,7 @@ def _bind_robot(ctx: Context) -> None:
     id, so recon records it again once it does.
     """
     _profile_for_work(ctx)
-    if ctx.robot is not None:
-        describe_run(robot=ctx.robot.display_name())
-        bookmark_prompts_in(ctx.robot.state_dir)
-        tmux = find_helper("tmux", dict(ctx.env)) or shutil.which("tmux")
-        if tmux and ctx.env.get("TMUX"):
-            name_the_robot_on_the_bar(Path(tmux), ctx.robot.display_name())
+    ctx.bind_robot()
 
 
 def _profile_for_work(ctx: Context) -> None:
@@ -426,8 +425,11 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     return 0
 
 
-def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
-    """Ask before joining a run already in progress. True = go back to it.
+def _offer_existing_run(con: Console, tmux: Path, session: str, lock: Path) -> bool:
+    """Ask before joining a run already in progress. True = go back to it; False = it was CLOSED.
+
+    Closing happens here rather than in the caller so the answer and the act cannot come apart —
+    the caller only waits for the lock to come free afterwards.
 
     Joining silently would be wrong as often as it is right: someone who gave up on one robot and
     came back to start another would be dropped into the old run with no way out that does not
@@ -437,10 +439,21 @@ def _offer_existing_run(con: Console, tmux: Path, lock: Path) -> bool:
     who = running_run(lock)
     robot = who.get("robot")
     subject = f"'{robot}'" if isinstance(robot, str) and robot else "a robot"
+    # Mid-flash there is no honest "close it": the flash ignores the signals that ending the session
+    # would send, so the write carries on either way — closing would only take away the one window
+    # onto it, while telling the user their place is saved. Someone who believes that may unplug the
+    # cable. The lock check keeps a record left behind by a killed run from speaking for a dead one.
+    if who.get("uninterruptible") and not lock_free(lock):
+        con.say(f"The run for {subject} is part-way through writing to the robot, which must not be "
+                "interrupted — going back to it.")
+        return True
     con.say(f"A run for {subject} is already in progress.")
     con.info("   1) Go back to it")
     con.info("   2) Close it and start something else (its place is saved)")
-    return con.ask("Which [1-2]?").strip() != "2"
+    rejoin = con.ask("Which [1-2]?").strip() != "2"
+    if not rejoin:
+        kill_session(tmux, session)
+    return rejoin
 
 
 def _warn_on_multiple_installs(con: Console, env: Mapping[str, str]) -> None:
@@ -479,16 +492,31 @@ def _idle_seconds(env: Mapping[str, str]) -> float:
         return 3600.0
 
 
-def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock: Path) -> None:
-    """Replace this process with one inside the tmux session, when that applies."""
+def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base: Path) -> None:
+    """Move this run into the tmux session, when that applies, and report how it ended.
+
+    Exits the process when the run happened in a session; returns when it must run inline.
+    """
+    lock = base / ".lock"
+    session = session_name(base)
+    # This process IS the run tmux started, so there is no session to join and nobody to ask about
+    # one. Checked before the probe below, which would otherwise find this run's own session.
+    if env.get(IN_SESSION):
+        return
     found = find_helper("tmux", env) or shutil.which("tmux")  # bundled first, then the system one
     if found is not None and not tmux_runs(Path(found)):
         found = None  # a broken tmux must not replace the run — exec would succeed and then fail
-    if found is not None and tmux_session_exists(Path(found)) and sys.stdin.isatty():
-        if _offer_existing_run(con, Path(found), lock):
+    self_cmd = [sys.argv[0], *args]
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    # Gated on the same predicate as the plan below, never a looser one: a run this wrapper would
+    # not wrap must not be offered a keystroke that ends a different run, and a question asked down
+    # a pipe is invisible and unanswerable.
+    applies = (found is not None
+               and wraps_this_run(self_cmd, env, Path(found), interactive=interactive))
+    if found is not None and applies and tmux_session_exists(Path(found), session):
+        if _offer_existing_run(con, Path(found), session, lock):
             pass  # fall through: the plan below attaches to it
         else:
-            kill_session(Path(found))
             # The dying run releases the flock as it goes; give the kernel a moment to catch up
             # rather than racing it and refusing the user's own fresh start.
             for _ in range(20):
@@ -496,9 +524,13 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
                     break
                 time.sleep(0.1)
     plan = tmux_plan(
-        [sys.argv[0], *args], env, Path(found) if found else None,
-        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
-        session_exists=found is not None and tmux_session_exists(Path(found)),
+        self_cmd, env, Path(found) if found else None, session,
+        interactive=interactive,
+        # Re-probed, not reused: the branch above may just have killed the session. Short-circuited
+        # on `applies` so a pure command never asks tmux anything at all.
+        session_exists=(
+            found is not None and applies and tmux_session_exists(Path(found), session)
+        ),
     )
     if plan is None:
         # Say so when the reason is a MISSING tmux rather than a deliberate choice: every package
@@ -511,12 +543,74 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, lock:
         return
     # Setup steps first (creating the session detached when already inside another). If one fails
     # there is no session to move to, so fall through and run inline rather than strand the user.
+    # Output captured: a failed step falls through to an inline run, which is fine, but its raw
+    # tmux diagnostic on the user's terminal is the one thing this wrapper must never show.
+    # Cleared BEFORE the session is created, never after. A short run can finish before this process
+    # even reaches the attach, and clearing it there would delete the record the run had already
+    # written — leaving this process to report a finished run as still going.
+    clear_outcome(base)
+    started = False
     for step in plan[:-1]:
-        if subprocess.run(step, check=False).returncode != 0:
+        if subprocess.run(step, check=False, capture_output=True).returncode == 0:
+            started = started or step[1] == "new-session"
+            continue
+        # WHICH step failed decides everything. Before the session exists, running inline is the
+        # honest fallback. After it exists the command is ALREADY RUNNING in there, so falling
+        # through would start the whole thing a second time — the auto chain, flash included — in
+        # a bare terminal, racing the run it just started. Go to that run instead, undressed.
+        if not started:
             return
-    # An exec failure here is the same story: run inline rather than fail the whole run.
-    with contextlib.suppress(OSError):
-        os.execv(plan[-1][0], plan[-1])
+        break
+    # switch-client moves the caller's EXISTING client and returns at once (measured: ~12ms); only
+    # attach-session blocks until the run ends. So after a switch there is nobody left watching this
+    # pane — the user is looking at the session — and nothing here could report an outcome to them.
+    if plan[-1][1] != "attach-session":
+        if subprocess.run(plan[-1], check=False, capture_output=True).returncode != 0:
+            # The client never moved. Whether that matters depends on the session, NOT on the
+            # failure: if the run is going in there, falling through would start the whole command
+            # a second time — flash included — beside the one already running.
+            if found is not None and tmux_session_exists(Path(found), session):
+                con.say("Still running. Re-run this command to come back to it.")
+                raise SystemExit(0)
+            return  # nothing is running anywhere: inline is the honest fallback
+        raise SystemExit(0)
+    # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
+    # the session ends the terminal is restored and every line the run printed is erased with it —
+    # the address to open, the error, the path to the log. Staying alive leaves someone to report.
+    try:
+        subprocess.run(plan[-1], check=False)
+    except OSError:
+        return  # could not attach at all: run inline rather than fail the whole run
+    ended = read_outcome(base)
+    if ended is None:
+        # No record means one of two very different things, and the difference matters: ASK, do not
+        # assume. A live session is the user detaching from a run that is still going — the whole
+        # point of the wrapper. A dead one is a run that ended without saying how (killed from
+        # another terminal, crashed, or an attach that never happened), and calling that "still
+        # running" with exit 0 tells the user their robot is being worked on when nothing is.
+        # Whether the session is ALIVE is the authoritative distinction, not how the client
+        # exited: a dropped connection or a signal ends the client non-zero while the run it was
+        # watching carries on, and calling that "stopped" would be the same lie in reverse.
+        if found is not None and tmux_session_exists(Path(found), session):
+            con.say("Still running. Re-run this command to come back to it.")
+            raise SystemExit(0)
+        con.err("The run stopped without recording how it went. Re-run to pick it back up; "
+                f"logs are under {base / 'logs'}.")
+        raise SystemExit(1)
+    rc, log_path = ended
+    said = tail_transcript(log_path) if log_path is not None else []
+    for line in said:
+        con.info(line)
+    if not said:
+        # A run with no log (DREAME_NO_LOG=1, an unwritable logs dir, a failure before the log
+        # opened) would otherwise end on a wiped screen with nothing at all on it.
+        con.info(f"The run finished with exit status {rc}. It kept no log to show here.")
+    # Where to find the rest — but never twice. A run that died on an exception printed this line
+    # itself, so it is already in the transcript just replayed; a plain non-zero return (a guard, a
+    # phase result) never printed it at all, and that is the case that most needs it.
+    if rc != 0 and log_path is not None and not any(str(log_path) in line for line in said):
+        con.info(f"A scrubbed log of this run was saved to {log_path}")
+    raise SystemExit(rc)
 
 
 def main(
@@ -526,6 +620,22 @@ def main(
     console: Console | None = None,
     runner: Runner | None = None,
 ) -> int:
+    rc, log_path = _run(argv, env=env, console=console, runner=runner)
+    # Inside the session, nobody will read this screen: it is erased the moment the session ends.
+    # Leave the outcome where the invocation that attached can find it and report it instead.
+    resolved = dict(os.environ if env is None else env)
+    if resolved.get(IN_SESSION):
+        record_outcome(Workspace.from_env(resolved).base, rc, log_path)
+    return rc
+
+
+def _run(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    console: Console | None = None,
+    runner: Runner | None = None,
+) -> tuple[int, Path | None]:
     args = list(sys.argv[1:] if argv is None else argv)
     resolved_env = dict(os.environ if env is None else env)
     con = console or Console()
@@ -545,7 +655,7 @@ def main(
             # the run outlives its terminal, and so a second invocation rejoins it instead of
             # starting a rival process against the same robot. Replaces this process when it
             # applies; an exec failure just falls through and runs inline.
-            _reexec_under_tmux(args, resolved_env, con, ws.base / ".lock")
+            _reexec_under_tmux(args, resolved_env, con, ws.base)
             # An unanswered question inside a session would otherwise block forever: tmux keeps
             # the pty open when the client detaches, so input() never sees EOF. Default an hour;
             # DREAME_IDLE_TIMEOUT overrides it, 0 disables.
@@ -553,7 +663,10 @@ def main(
             if tmux_for_idle:
                 seconds = _idle_seconds(resolved_env)
                 if seconds > 0:
-                    idle_timeout(seconds, lambda: client_attached(Path(tmux_for_idle)))
+                    session = session_name(ws.base)
+                    idle_timeout(
+                        seconds, lambda: client_attached(Path(tmux_for_idle), session)
+                    )
             if cmd not in PURE_COMMANDS:
                 _warn_on_multiple_installs(con, resolved_env)
             # One run per workspace. The tmux wrapper above already makes a second invocation
@@ -602,12 +715,12 @@ def main(
             con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")
             if log is not None:
                 log.finish(1)
-            return 1
+            return 1, log.path if log else None
 
         rc = _dispatch(cmd, args[1:], ctx)
         if log is not None:
             log.finish(rc)
-        return rc
+        return rc, log.path if log else None
     # A present-but-unreadable file (permission, non-UTF-8, etc.) or any checked command failure
     # must read as a clean error, not a raw traceback — the tool always fails before a write.
     # (UnicodeDecodeError is a ValueError; an unknown DREAME_MODEL raises ValueError too.)
@@ -618,12 +731,12 @@ def main(
             con.info("You can share it to report the problem: "
                      "https://github.com/SisyphusMD/dreame-valetudo/issues")
             log.finish(1)
-        return 1
+        return 1, log.path if log else None
     except KeyboardInterrupt:
         con.info("Interrupted — nothing is lost; re-run to resume.")
         if log is not None:
             log.finish(130)
-        return 130
+        return 130, log.path if log else None
     finally:
         if log is not None:
             log.close()

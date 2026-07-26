@@ -11,7 +11,6 @@ from ..console import Die, die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
 from ..migrate import decrypt_recovery_backup
-from ..session import describe_run
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace
 from .doctor import _is_exe, doctor
@@ -137,7 +136,6 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                             "resuming it.")
         else:
             ctx.robot = Robot(ctx.ws.robots_dir / f"{ctx.profile.model_code}-{cfg[:12]}")
-            describe_run(robot=ctx.robot.display_name())  # auto-named: only knowable now
             ctx.console.say(f"Robot identified — '{ctx.robot.display_name()}'.")
     else:
         prior_file = ctx.robot.recon_dir / "config.txt"
@@ -149,6 +147,10 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
             ctx.console.warn(f"This robot is already set up as '{existing.display_name()}' — using "
                              f"that instead of a duplicate '{ctx.robot.display_name()}'.")
             ctx.robot = existing
+
+    # Settled at last — including the branches that ADOPTED an existing dir, which the caller
+    # could not have known about when it picked one.
+    ctx.bind_robot()
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)

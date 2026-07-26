@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .console import Console, die
+from .console import Console, bookmark_prompts_in, die
 from .constants import VALETUDO_VERSION_DEFAULT
 from .fastboot import Fastboot, find_helper, resolve_libexec, resolve_transport
 from .fel import Fel
 from .profiles import Profile
 from .run import Runner
+from .session import describe_run, name_the_robot_on_the_bar, session_name
 from .workspace import WORKSPACE_SUBDIR, Robot, Workspace
 
 
@@ -101,6 +102,25 @@ class Context:
         if self.robot is None:
             die("No robot yet — run recon first; it reads the device and creates it.")
         return self.robot
+
+    def bind_robot(self) -> None:
+        """Tie this run to its robot everywhere that has to know: the run record a second
+        invocation reads, the bar, and where an interrupted question is bookmarked.
+
+        Called wherever the robot is SETTLED rather than once up front. On a first run there is no
+        robot until recon reads the device id — so arming this early recorded nothing at all, on the
+        longest and most interruptible run there is. And recon may adopt a different directory than
+        the one picked, which left the bookmark pointing at a dir that later prompts then created:
+        a phantom robot in the list, claiming an open flash confirmation nobody was being asked.
+        """
+        robot = self.robot
+        if robot is None:
+            return
+        describe_run(robot=robot.display_name())
+        bookmark_prompts_in(robot.state_dir)
+        tmux = find_helper("tmux", self.env) or shutil.which("tmux")
+        if tmux and self.env.get("TMUX"):
+            name_the_robot_on_the_bar(Path(tmux), session_name(self.ws.base), robot.display_name())
 
     @property
     def home(self) -> Path:
