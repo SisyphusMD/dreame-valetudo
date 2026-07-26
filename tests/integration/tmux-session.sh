@@ -32,7 +32,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fail() { echo "FAIL: $1"; exit 1; }
+TOOL=()
+fail() {
+  echo "FAIL: $1"
+  # A bare message is useless on a machine you cannot poke at. Dump enough to diagnose from a CI
+  # log alone: what the tool resolved to, and what the terminal actually showed.
+  echo "--- environment ---"
+  echo "tmux:  $(command -v tmux || echo MISSING) $(tmux -V 2>/dev/null || true)"
+  echo "uv:    $(command -v uv || echo MISSING)"
+  echo "tool:  ${TOOL[*]:-<unresolved>}"
+  echo "python: $(python3 -V 2>&1)"
+  for f in "$RUNDIR"/*.out; do
+    [ -e "$f" ] || continue
+    echo "--- $(basename "$f") (rc=$(head -1 "$f")) ---"
+    tail -n +2 "$f" | tr -d '\000' | tail -40
+  done
+  exit 1
+}
 pass() { echo "ok: $1"; }
 
 # Drive the real binary under a pty. Writes the child's exit status as the first line of the
@@ -72,7 +88,7 @@ while time.time() < deadline:
 if status is None:
     os.kill(pid, 9)
     os.waitpid(pid, 0)
-    rc = "TIMEOUT"
+    rc = "TIMEOUT after %.1fs (wall %.1fs)" % (timeout, time.time() - (deadline - timeout))
 else:
     rc = str(os.waitstatus_to_exitcode(status))
 with open(out_path, "wb") as fh:
