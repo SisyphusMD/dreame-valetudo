@@ -383,3 +383,13 @@ def test_every_documented_override_reaches_the_session() -> None:
     flags = session_env(dict.fromkeys(documented, "x"))
     for name in documented:
         assert f"{name}=x" in flags
+
+
+def test_the_create_step_actually_carries_the_environment() -> None:
+    """Wiring, not the helper: asserting session_env() alone leaves the plan free to stop calling
+    it, which is how a correct helper ships with the bug still in place."""
+    plan = tmux_plan(_SELF, {"DREAME_WORK": "/mnt/ssd/work"}, _TMUX,
+                     interactive=True, session_exists=False)
+    assert plan is not None
+    assert "DREAME_WORK=/mnt/ssd/work" in plan[0]
+    assert plan[0].index("-s") > plan[0].index("DREAME_WORK=/mnt/ssd/work")  # flags before -s
