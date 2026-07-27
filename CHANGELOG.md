@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: re-running recon after rooting can no longer overwrite the pre-root recovery capture.
+  Phase 3 now verifies every factory-backup gzip and its tar structure before writing a manifest,
+  and discards partial backups after an SSH connection failure.
 - **fix**: `clean --all` now removes only re-obtainable cache and staged firmware. It keeps each
   robot's recovery capture, identity and phase state, SSH keys, and logs. An empty `forget` name can
   no longer resolve to the entire robots directory.

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
+import random
+import tarfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -37,18 +42,49 @@ def _text(is_dreame: bool = True, did: str = "-117604433", key: str = "A1b2C3d4E
     return responder
 
 
-def _redirect(files_size: int = 2000) -> object:
+def _redirect(
+    files_size: int = 2000, failure: str | None = None,
+) -> Callable[[tuple[str, ...], str | None, str | None], Result]:
     def rr(argv: tuple[str, ...], stdout_path: str | None, stdin_path: str | None) -> Result:
         if stdout_path and "tar czf" in argv[-1]:
-            with Path(stdout_path).open("wb") as f:
-                f.write(b"x" * files_size)
+            path = Path(stdout_path)
+            if files_size <= 1000:
+                path.write_bytes(b"x" * files_size)
+            else:
+                payload = random.Random(1).randbytes(files_size)
+                with tarfile.open(path, "w:gz") as archive:
+                    member = tarfile.TarInfo("mnt/private/ULI/factory/config.txt")
+                    member.size = len(payload)
+                    archive.addfile(member, io.BytesIO(payload))
+                if failure == "files-corrupt":
+                    path.write_bytes(path.read_bytes()[:-8])
+                elif failure == "files-deflate-corrupt":
+                    # Valid gzip header, then DEFLATE's reserved BTYPE=3. Keep it over the size
+                    # floor so validation, not the older empty-backup gate, must reject it.
+                    path.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 6 + b"\x07"
+                                     + b"\x00" * 2048 + b"\x00" * 8)
+                elif failure == "files-not-tar":
+                    with gzip.open(path, "wb") as stream:
+                        stream.write(payload)
+            if failure == "files-transport":
+                return Result(argv, 255, "", "connection lost")
+            return Result(argv, 2 if failure == "files-tar-nonzero" else 0, "", "tar warning")
+        if stdout_path and "dd if=/dev/by-name/" in argv[-1]:
+            path = Path(stdout_path)
+            payload = random.Random(argv[-1]).randbytes(4096)
+            with gzip.open(path, "wb") as stream:
+                stream.write(payload)
+            if failure == "private-corrupt" and "by-name/private" in argv[-1]:
+                path.write_bytes(path.read_bytes()[:-8])
+            if failure == "private-transport" and "by-name/private" in argv[-1]:
+                return Result(argv, 255, "", "connection lost")
         return Result(argv, 0, "", "")
 
     return rr
 
 
 def _ctx(make_ctx: CtxFactory) -> Context:
-    return make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True], env={"HOME": "/tmp/none"})
+    return make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True])
 
 
 def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None:
@@ -80,6 +116,43 @@ def test_push_dies_on_empty_backup(make_ctx: CtxFactory) -> None:
         push(ctx)
 
 
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("files-corrupt", "files.tar.gz.*corrupt"),
+        ("files-deflate-corrupt", "files.tar.gz.*corrupt"),
+        ("files-not-tar", "files.tar.gz.*corrupt"),
+        ("private-corrupt", "private.dd.gz.*corrupt"),
+        ("files-transport", "connection.*backup"),
+        ("private-transport", "connection.*private.dd.gz"),
+    ],
+)
+def test_push_discards_an_unverifiable_backup_before_manifesting_it(
+    make_ctx: CtxFactory, failure: str, message: str,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(files_size=32 * 1024, failure=failure)  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match=message):
+        push(ctx)
+
+    assert not list(ctx.backups_dir.glob("*/manifest.json"))
+    assert not list(ctx.backups_dir.glob("*"))
+
+
+def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-tar-nonzero")  # type: ignore[attr-defined]
+    assert push(ctx) is True
+    assert list(ctx.backups_dir.glob("*/manifest.json"))
+
+
 def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
@@ -101,6 +174,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
     streamed: list[str] = []
+    backup_redirect = _redirect()
 
     def responder(argv: tuple[str, ...]) -> Result:
         cmd = argv[-1]
@@ -117,9 +191,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
     def redirect(argv: tuple[str, ...], stdout_path: str | None, stdin_path: str | None) -> Result:
         if stdin_path and Path(stdin_path).is_file():
             streamed.append(Path(stdin_path).read_text())
-        if stdout_path and "tar czf" in argv[-1]:
-            Path(stdout_path).write_bytes(b"x" * 2000)
-        return Result(argv, 0, "", "")
+        return backup_redirect(argv, stdout_path, stdin_path)
 
     ctx.runner._responder = responder  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]

@@ -143,6 +143,20 @@ def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:
     return None
 
 
+def _saved_backup_state(robot: Robot) -> str:
+    """Keep the prior recovery result when recon refreshes metadata without taking a new dump."""
+    marker = robot.state_get("recon") or ""
+    match = re.search(r"(?:^|\s)backup=([^\s]+)", marker)
+    if match:
+        return match.group(1)
+    archive = robot.recon_dir / RECOVERY_BACKUP_ZIP
+    dumps = tuple(robot.recon_dir / f"dustx10{i}.bin" for i in range(3))
+    if ((archive.is_file() and archive.stat().st_size > 0)
+            or all(path.is_file() and path.stat().st_size > 0 for path in dumps)):
+        return "obtained"
+    return "not-requested"
+
+
 @records_step("reconnaissance")
 def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
@@ -224,20 +238,26 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # robot's config isn't auto-recognized. The robot is already in fastboot here.
     capture_identity(ctx, robot)
 
-    backup_state = "not-requested"
+    backup_state = _saved_backup_state(robot)
     if recovery_backup:
-        warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
-        ctx.console.say("Pulling ~1.2GB flash disaster-recovery backup (slow; skip with "
-                        "--no-recovery-backup)...")
-        if _pull_recovery_backup(ctx, robot):
-            backup_state = "obtained"
-            # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch migration
-            # already ran), so the restorable image exists without waiting for the next launch.
-            decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console)
+        if robot.state_has("rooted"):
+            ctx.console.warn("This robot is already marked rooted, so its current flash is no "
+                             "longer a trustworthy factory source. Skipping the recovery pull and "
+                             "preserving any pre-root capture already on disk.")
         else:
-            backup_state = "missing"
-            ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no recovery "
-                             "backup was saved.")
+            warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
+            ctx.console.say("Pulling ~1.2GB flash disaster-recovery backup (slow; skip with "
+                            "--no-recovery-backup)...")
+            if _pull_recovery_backup(ctx, robot):
+                backup_state = "obtained"
+                # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch
+                # migration already ran), so the restorable image exists without waiting for the
+                # next launch.
+                decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console)
+            else:
+                backup_state = "missing"
+                ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
+                                 "recovery backup was saved.")
 
     robot.state_set("recon", f"config={cfg} backup={backup_state}")
     ctx.console.say("Phase 1 done.")
