@@ -293,9 +293,15 @@ INT_USB="$RUNDIR/pyusb-stub"
 mkdir -p "$INT_USB/usb"
 printf '' > "$INT_USB/usb/__init__.py"
 printf '' > "$INT_USB/usb/core.py"
-INT_PYTHON="$(command -v python3)"
+REAL_PYTHON="$(command -v python3)"
+INT_PYTHON="$RUNDIR/python-with-pyusb"
+cat > "$INT_PYTHON" <<EOF
+#!/bin/sh
+PYTHONPATH='$INT_USB' exec '$REAL_PYTHON' "\$@"
+EOF
+chmod +x "$INT_PYTHON"
 drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
-  "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" "PYTHONPATH=$INT_USB" \
+  "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" \
   -- "${TOOL[@]}" &
 INT_CLIENT=$!
 INT_SESSION="$(session_for_work "$W_INT")"
