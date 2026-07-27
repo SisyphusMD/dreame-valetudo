@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: SSH-key setup now refuses incomplete key pairs instead of invoking `ssh-keygen` over an
+  existing private key, reuses an unrecorded dedicated key, and disconnects key generation from
+  hidden input so an overwrite prompt can never hang the run or destroy the only robot credential.
 - **fix**: recovery-backup decryption now verifies the recovered transport keystream against its
   known digest, preventing a constant-XOR-offset key from passing the sparse-fill check and turning
   every restored slice into plausible garbage.

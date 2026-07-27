@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import CtxFactory
 
+from dreame_valetudo import ssh as ssh_mod
 from dreame_valetudo.console import Console, Die
 from dreame_valetudo.run import RecordingRunner, Result
 from dreame_valetudo.ssh import (
@@ -72,9 +74,8 @@ def test_discover_keys_empty_without_ssh_dir(tmp_path: Path) -> None:
 
 
 # --- ensure_sshkey: generate a dedicated ed25519 key on demand --------------------------------
-def test_ensure_sshkey_noop_when_pub_present(tmp_path: Path) -> None:
-    key = tmp_path / "id_dreame"
-    (tmp_path / "id_dreame.pub").write_text("pub")
+def test_ensure_sshkey_noop_when_pair_present(tmp_path: Path) -> None:
+    key = _keypair(tmp_path, "id_dreame")
     rr = RecordingRunner()
     ensure_sshkey(rr, Console(color=False), key)
     assert rr.calls == []  # no ssh-keygen issued
@@ -87,6 +88,45 @@ def test_ensure_sshkey_generates_when_absent(tmp_path: Path) -> None:
     assert rr.calls
     assert rr.calls[0][0] == "ssh-keygen"
     assert "ed25519" in rr.calls[0]
+
+
+def test_ensure_sshkey_closes_keygen_stdin(tmp_path: Path) -> None:
+    key = tmp_path / "id_dreame"
+    rr = RecordingRunner()
+    with patch.object(rr, "run", wraps=rr.run) as run:
+        ensure_sshkey(rr, Console(color=False), key)
+    assert run.call_args.kwargs["stdin"] == ""
+
+
+def test_keygen_rechecks_for_existing_material_before_subprocess(tmp_path: Path) -> None:
+    key = tmp_path / "id_dreame"
+    key.write_text("PRIVATE - CREATED AFTER MENU")
+    rr = RecordingRunner()
+    with pytest.raises(Die, match="Refusing to generate an SSH key over existing key material"):
+        ssh_mod._keygen(rr, Console(color=False), key, "valetudo-dreame")
+    assert key.read_text() == "PRIVATE - CREATED AFTER MENU"
+    assert rr.calls == []
+
+
+def test_ensure_sshkey_refuses_private_key_without_public_half(tmp_path: Path) -> None:
+    key = tmp_path / "id_dreame"
+    key.write_text("PRIVATE - MUST SURVIVE")
+    rr = RecordingRunner()
+    with pytest.raises(Die, match=r"already exists.*public half is missing"):
+        ensure_sshkey(rr, Console(color=False), key)
+    assert key.read_text() == "PRIVATE - MUST SURVIVE"
+    assert rr.calls == []
+
+
+def test_ensure_sshkey_refuses_public_key_without_private_half(tmp_path: Path) -> None:
+    key = tmp_path / "id_dreame"
+    pub = Path(f"{key}.pub")
+    pub.write_text("PUBLIC - MUST SURVIVE")
+    rr = RecordingRunner()
+    with pytest.raises(Die, match=r"public half exists.*private key is missing"):
+        ensure_sshkey(rr, Console(color=False), key)
+    assert pub.read_text() == "PUBLIC - MUST SURVIVE"
+    assert rr.calls == []
 
 
 def test_ensure_sshkey_dies_when_keygen_fails(tmp_path: Path) -> None:
@@ -111,6 +151,20 @@ def test_choose_sshkey_override_needs_no_prompt_but_persists(make_ctx: CtxFactor
     assert choose_sshkey(ctx) == key
     assert not _kg(ctx)
     assert _recorded(ctx) == str(key)  # recorded so a later push WITHOUT the env resolves the same key
+
+
+def test_choose_sshkey_override_never_replaces_private_only_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = tmp_path / "personal-id"
+    key.write_text("PRIVATE - MUST SURVIVE")
+    ctx = make_ctx(env={"DREAME_SSHKEY": str(key)})
+
+    with pytest.raises(Die, match=r"already exists.*public half is missing"):
+        choose_sshkey(ctx)
+    assert key.read_text() == "PRIVATE - MUST SURVIVE"
+    assert not _kg(ctx)
+    assert not (ctx.ws.base / "sshkey.path").exists()
 
 
 def test_choose_sshkey_rejects_an_invalid_menu_choice(make_ctx: CtxFactory, tmp_path: Path) -> None:
@@ -145,6 +199,57 @@ def test_choose_sshkey_interactive_generate_dedicated(make_ctx: CtxFactory, tmp_
     ctx = make_ctx(env={"HOME": str(home)}, asks=["2"])  # 1) use existing  2) generate dedicated
     assert choose_sshkey(ctx) == ctx.ws.base / "id_dreame"
     assert _kg(ctx)
+
+
+def test_choose_sshkey_reuses_unrecorded_dedicated_pair(make_ctx: CtxFactory, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _keypair(home / ".ssh", "id_ed25519")
+    ctx = make_ctx(env={"HOME": str(home)}, asks=["2"])
+    dedicated = _keypair(ctx.ws.base, "id_dreame")
+
+    assert choose_sshkey(ctx) == dedicated
+    assert not _kg(ctx)
+    assert _recorded(ctx) == str(dedicated)
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert f"use existing DEDICATED key -> {dedicated}" in text
+    assert "generate a DEDICATED key" not in text
+
+
+def test_choose_sshkey_never_offers_to_generate_over_partial_dedicated_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    personal = _keypair(home / ".ssh", "id_ed25519")
+    ctx = make_ctx(env={"HOME": str(home)}, asks=["1"])
+    dedicated = ctx.ws.base / "id_dreame"
+    dedicated.parent.mkdir(parents=True, exist_ok=True)
+    dedicated.write_text("PRIVATE - MUST SURVIVE")
+
+    assert choose_sshkey(ctx) == personal
+    assert dedicated.read_text() == "PRIVATE - MUST SURVIVE"
+    assert "generate a DEDICATED key" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_choose_sshkey_explains_when_every_candidate_is_incomplete(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    personal = home / ".ssh" / "id_ed25519"
+    personal.parent.mkdir(parents=True)
+    personal.write_text("PERSONAL PRIVATE - MUST SURVIVE")
+    ctx = make_ctx(env={"HOME": str(home)})
+    dedicated_pub = Path(f"{ctx.ws.base / 'id_dreame'}.pub")
+    dedicated_pub.parent.mkdir(parents=True, exist_ok=True)
+    dedicated_pub.write_text("DEDICATED PUBLIC - MUST SURVIVE")
+
+    with pytest.raises(Die, match="No complete SSH key pair is available") as exc:
+        choose_sshkey(ctx)
+    assert str(personal) in str(exc.value)
+    assert str(dedicated_pub) in str(exc.value)
+    assert "DREAME_SSHKEY" in str(exc.value)
+    assert personal.read_text() == "PERSONAL PRIVATE - MUST SURVIVE"
+    assert dedicated_pub.read_text() == "DEDICATED PUBLIC - MUST SURVIVE"
+    assert "Key [1-0]?" not in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_choose_sshkey_can_generate_a_new_personal_key(make_ctx: CtxFactory, tmp_path: Path) -> None:
