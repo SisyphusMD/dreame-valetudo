@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from conftest import ScriptedConsole
 
+from dreame_valetudo import cli as cli_mod
 from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux, main
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases import root as root_mod
@@ -20,19 +21,29 @@ from dreame_valetudo.session import (
     IN_SESSION,
     OUTCOME,
     PURE_COMMANDS,
+    SCREEN,
+    SOCKET,
+    capture_pane,
     clear_outcome,
+    client_attached,
     describe_run,
     env_prefix,
     hold_workspace_lock,
+    kill_session,
     lock_free,
     name_the_robot_on_the_bar,
+    read_captured_pane,
     read_outcome,
     record_outcome,
+    release_workspace_lock,
     running_run,
     session_name,
     session_options,
+    session_pane_dead,
+    tmux_argv,
     tmux_plan,
     tmux_runs,
+    tmux_session_exists,
     working_tmux,
 )
 
@@ -57,15 +68,47 @@ def test_session_identity_is_per_workspace_and_resolves_symlinks(tmp_path: Path)
 def test_a_fresh_run_is_created_detached_then_attached() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0] == [str(_TMUX), "new-session", "-A", "-d", "-s", _SESSION, "--",
+    assert plan[0] == [str(_TMUX), "-L", SOCKET, "new-session", "-A", "-d", "-s", _SESSION, "--",
                        "env", f"{IN_SESSION}=1", *_SELF]
-    assert plan[-1] == [str(_TMUX), "attach-session", "-t", _SESSION]
+    assert plan[-1] == [str(_TMUX), "-L", SOCKET, "attach-session", "-t", _SESSION]
+
+
+def test_every_tmux_argv_names_the_private_socket() -> None:
+    plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
+    assert plan is not None
+    assert tmux_argv(_TMUX) == [str(_TMUX), "-L", "dreame-valetudo"]
+    assert all(argv[:3] == tmux_argv(_TMUX) for argv in plan)
+
+
+def test_every_direct_tmux_call_names_the_private_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "0\n"
+
+    def record(argv: list[str], **_kwargs: object) -> Completed:
+        calls.append(argv)
+        return Completed()
+
+    monkeypatch.setattr("dreame_valetudo.session.subprocess.run", record)
+    assert tmux_runs(_TMUX)
+    assert capture_pane(_TMUX, _SESSION, tmp_path)
+    name_the_robot_on_the_bar(_TMUX, _SESSION, "robot")
+    assert tmux_session_exists(_TMUX, _SESSION)
+    assert session_pane_dead(_TMUX, _SESSION) is False
+    kill_session(_TMUX, _SESSION)
+    assert client_attached(_TMUX, _SESSION) is False
+    assert calls
+    assert all(argv[:3] == tmux_argv(_TMUX) for argv in calls)
 
 
 def test_a_second_run_rejoins_rather_than_starting_another() -> None:
     """Re-running lands the user back in the live run instead of driving the same robot twice."""
     plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "attach-session", "-t", _SESSION]]
+    assert plan == [[str(_TMUX), "-L", SOCKET, "attach-session", "-t", _SESSION]]
 
 
 @pytest.mark.parametrize(
@@ -102,15 +145,16 @@ def test_a_bare_invocation_is_never_handed_to_tmux_as_one_argument() -> None:
     assert len(after) > 2      # never a single argument, which tmux would hand to /bin/sh
 
 
-def test_inside_another_tmux_with_no_session_it_creates_detached_then_switches() -> None:
-    """tmux refuses to attach a session from inside another, so the run cannot simply be wrapped.
-    Doing nothing was the old behaviour and it left the remote/Pi user — the one most likely to be
-    inside tmux already — with no session at all, and no way to rejoin."""
+def test_inside_another_tmux_with_no_session_creates_detached_dresses_then_attaches() -> None:
     plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX, _SESSION,
                      interactive=True, session_exists=False)
     assert plan is not None
-    assert plan[0][1:6] == ["new-session", "-A", "-d", "-s", _SESSION]
-    assert plan[-1] == [str(_TMUX), "switch-client", "-t", _SESSION]
+    assert plan[0][3:8] == ["new-session", "-A", "-d", "-s", _SESSION]
+    assert plan[1:-1] == [
+        [str(_TMUX), "-L", SOCKET, *option]
+        for option in session_options(_SESSION, colour=True)
+    ]
+    assert plan[-1] == [str(_TMUX), "-L", SOCKET, "attach-session", "-t", _SESSION]
 
 
 def test_runs_inline_when_the_escape_hatch_is_set() -> None:
@@ -241,27 +285,83 @@ def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
     assert not any("colour244" in o for o in plain)
 
 
+def test_mouse_selection_copies_to_the_macos_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "darwin")
+    binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
+    assert binds == [
+        ["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X",
+         "copy-pipe-no-clear", "pbcopy"]
+        for table in ("copy-mode", "copy-mode-vi")
+    ] + [
+        ["bind-key", "-T", table, "MouseDown1Pane", "send-keys", "-X",
+         "clear-selection"]
+        for table in ("copy-mode", "copy-mode-vi")
+    ]
+
+
+def test_mouse_selection_prefers_wayland_then_xclip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "linux")
+    found = {name: f"/bin/{name}" for name in ("wl-copy", "xclip")}
+    monkeypatch.setattr("dreame_valetudo.session.shutil.which", found.get)
+    binds = [o for o in session_options(_SESSION, colour=True)
+             if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
+    assert all(o[-2:] == ["copy-pipe-no-clear", "/bin/wl-copy"] for o in binds)
+
+    found.pop("wl-copy")
+    binds = [o for o in session_options(_SESSION, colour=True)
+             if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
+    assert all(o[-2:] == ["copy-pipe-no-clear", "/bin/xclip -selection clipboard"]
+               for o in binds)
+
+
+def test_mouse_selection_survives_without_a_clipboard_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "linux")
+    monkeypatch.setattr("dreame_valetudo.session.shutil.which", lambda _name: None)
+    binds = [o for o in session_options(_SESSION, colour=True)
+             if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
+    assert all(o[-1] == "copy-selection-no-clear" for o in binds)
+
+
+def test_mouse_selection_stays_for_cmd_c_until_the_next_plain_click(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "darwin")
+    binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
+    drag_end = [o for o in binds if o[3] == "MouseDragEnd1Pane"]
+    assert {o[2] for o in drag_end} == {"copy-mode", "copy-mode-vi"}
+    assert all(o[-2] in {"copy-pipe-no-clear", "copy-selection-no-clear"} for o in drag_end)
+    assert all("clear-selection" not in o for o in drag_end)
+    assert [o for o in binds if o[3] == "MouseDown1Pane"] == [
+        ["bind-key", "-T", table, "MouseDown1Pane", "send-keys", "-X",
+         "clear-selection"]
+        for table in ("copy-mode", "copy-mode-vi")
+    ]
+
+
 def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=False)
     assert plan is not None
-    verbs = [c[1] for c in plan]
+    verbs = [c[3] for c in plan]
     assert verbs[0] == "new-session"
     assert verbs[-1] == "attach-session"          # attach LAST, so the bar is set before it shows
-    assert verbs.count("set-option") == 11
+    assert verbs.count("set-option") == 12
 
 
-def test_inside_another_tmux_an_EXISTING_session_is_only_switched_to() -> None:
-    """Verified against real tmux: `new-session -A -d` on an existing session behaves like
-    attach-session (where -d means "detach other clients"), tries to attach, and FAILS — which
-    would drop the user to an inline run and a lock refusal instead of back into their run."""
+def test_inside_another_tmux_with_an_existing_session_only_attaches_to_it() -> None:
     plan = tmux_plan(_SELF, {"TMUX": "/tmp/tmux-501/default,123,0"}, _TMUX, _SESSION,
                      interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "switch-client", "-t", _SESSION]]
+    assert plan == [[str(_TMUX), "-L", SOCKET, "attach-session", "-t", _SESSION]]
 
 
 def test_outside_tmux_an_existing_session_is_attached_not_recreated() -> None:
     plan = tmux_plan(_SELF, {}, _TMUX, _SESSION, interactive=True, session_exists=True)
-    assert plan == [[str(_TMUX), "attach-session", "-t", _SESSION]]
+    assert plan == [[str(_TMUX), "-L", SOCKET, "attach-session", "-t", _SESSION]]
 
 
 def test_the_created_session_marks_the_process_it_starts() -> None:
@@ -307,6 +407,7 @@ def _stub_tmux(tmp_path: Path, *, session_exists: bool, ends_with: str | None = 
     stub.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" >> {calls}\n'
+        'if [ "$1" = "-L" ]; then shift 2; fi\n'
         + (f'case "$1" in {fail_verb}) exit 1 ;; esac\n' if fail_verb else "")
         + 'case "$1" in\n'
         '  -V) echo "tmux 3.5a"; exit 0 ;;\n'
@@ -314,7 +415,7 @@ def _stub_tmux(tmp_path: Path, *, session_exists: bool, ends_with: str | None = 
         f'  new-session) : > {marker}; {created}exit 0 ;;\n'
         f'  kill-session) rm -f {marker}; exit 0 ;;\n'
         f'  display-message) echo {"1" if dead_on_create else "0"}; exit 0 ;;\n'
-        f'  attach-session|switch-client)\n{finish}{die}      exit 0 ;;\n'
+        f'  attach-session)\n{finish}{die}      exit 0 ;;\n'
         "esac\n"
         "exit 0\n"
     )
@@ -480,6 +581,18 @@ def test_the_outcome_survives_the_session_it_was_produced_in(tmp_path: Path) -> 
     assert read_outcome(tmp_path) is None            # cleared, so a stale record can't be reported
 
 
+def test_capture_pane_keeps_terminal_bytes_and_clearing_an_outcome_clears_it(
+    tmp_path: Path,
+) -> None:
+    tmux = tmp_path / "tmux"
+    tmux.write_text("#!/bin/sh\nprintf '\\033[31mreal pane\\033[0m\\nanswer from user\\n'\n")
+    tmux.chmod(0o755)
+    assert capture_pane(tmux, _SESSION, tmp_path)
+    assert read_captured_pane(tmp_path) == b"\x1b[31mreal pane\x1b[0m\nanswer from user\n"
+    clear_outcome(tmp_path)
+    assert not (tmp_path / SCREEN).exists()
+
+
 def test_a_run_inside_the_session_leaves_its_outcome_behind(tmp_path: Path) -> None:
     """Composition: the record has to be written by main itself, or the attaching process has
     nothing to report and the run's exit status is lost."""
@@ -490,6 +603,225 @@ def test_a_run_inside_the_session_leaves_its_outcome_behind(tmp_path: Path) -> N
     assert rc == 0
     ended = read_outcome(work)
     assert ended is not None and ended[0] == 0
+
+
+def _record_bound_robot(work: Path) -> None:
+    work.mkdir(parents=True, exist_ok=True)
+    work.joinpath(".lock").write_text(json.dumps({
+        "robot": "Test Bench #1",
+        "robot_dir": "Test-Bench-1",
+    }))
+
+
+def test_an_interactive_run_inside_the_session_holds_its_final_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        _record_bound_robot(work)
+        return 0, None
+
+    class _RecordsPrompt(ScriptedConsole):
+        def confirm(self, prompt: str) -> bool:
+            self.lines.append(("confirm", prompt))
+            return False
+
+    con = _RecordsPrompt()
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    rc = main(["status"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                               "DREAME_WORK": str(work), "DREAME_MODEL": "x40-ultra"},
+              console=con)
+    assert rc == 0
+    assert con.lines[-1] == ("confirm", "Set up another robot?")
+
+
+@pytest.mark.parametrize(
+    ("rc", "prompt"),
+    [(0, "Set up another robot?"), (1, "Continue with 'Test Bench #1'?")],
+)
+def test_the_final_question_matches_the_run_outcome_and_no_does_not_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int, prompt: str
+) -> None:
+    calls = 0
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        nonlocal calls
+        calls += 1
+        _record_bound_robot(tmp_path / "work")
+        return rc, None
+
+    class _SaysNo(ScriptedConsole):
+        def confirm(self, asked: str) -> bool:
+            self.lines.append(("confirm", asked))
+            return False
+
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = _SaysNo()
+    assert main(
+        ["auto"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(tmp_path / "work")},
+        console=con,
+    ) == rc
+    assert con.lines == [("confirm", prompt)]
+    assert calls == 1
+
+
+def test_interrupting_the_final_question_is_clean_and_records_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        _record_bound_robot(work)
+        return 1, None
+
+    class _InterruptedPrompt(ScriptedConsole):
+        def confirm(self, asked: str) -> bool:
+            self.lines.append(("confirm", asked))
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = _InterruptedPrompt()
+    assert main(
+        ["auto"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(work)},
+        console=con,
+    ) == 130
+    assert con.lines == [
+        ("confirm", "Continue with 'Test Bench #1'?"),
+        ("info", "Interrupted — nothing is lost; re-run to resume."),
+    ]
+    ended = read_outcome(work)
+    assert ended is not None and ended[0] == 130
+
+
+@pytest.mark.parametrize("rc", [0, 7])
+def test_a_run_without_a_bound_robot_returns_without_a_question_or_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int
+) -> None:
+    calls = 0
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        nonlocal calls
+        calls += 1
+        return rc, None
+
+    class _RejectsPrompt(ScriptedConsole):
+        def confirm(self, prompt: str) -> bool:
+            raise AssertionError(f"unexpected prompt: {prompt}")
+
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    assert main(
+        ["auto"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(tmp_path / "work")},
+        console=_RejectsPrompt(),
+    ) == rc
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("step", "pending", "prompt"),
+    [
+        ("waiting for the robot to enter FEL mode", "", "Watch for the robot again?"),
+        ("building the rooted image", "Flash X40 Ultra now?", "Go back to: Flash X40 Ultra now?"),
+        ("reconnaissance", "", "Continue with 'Test Bench #1'?"),
+    ],
+)
+def test_interrupted_run_question_uses_saved_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+    pending: str,
+    prompt: str,
+) -> None:
+    work = tmp_path / "work"
+    robot = work / "robots" / "Test-Bench-1"
+    robot.joinpath("state").mkdir(parents=True)
+    if pending:
+        robot.joinpath("state", "pending").write_text(pending + "\n")
+    work.mkdir(parents=True, exist_ok=True)
+    work.joinpath(".lock").write_text(json.dumps({
+        "robot": "Test Bench #1", "robot_dir": "Test-Bench-1", "step": step,
+    }))
+
+    monkeypatch.setattr(cli_mod, "_run", lambda *_a, **_kw: (130, None))
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    class _RecordsNo(ScriptedConsole):
+        def confirm(self, asked: str) -> bool:
+            self.lines.append(("confirm", asked))
+            return False
+
+    con = _RecordsNo()
+    assert main(["auto"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                                "DREAME_WORK": str(work)}, console=con) == 130
+    assert con.lines == [("confirm", prompt)]
+
+
+def test_a_noninteractive_run_inside_the_session_does_not_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+
+    class _RejectsPrompt(ScriptedConsole):
+        def confirm(self, prompt: str) -> bool:
+            raise AssertionError(f"unexpected prompt: {prompt}")
+
+    con = _RejectsPrompt()
+    monkeypatch.setattr(sys, "stdout", _Tty(False))
+    main(["status"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                          "DREAME_WORK": str(work), "DREAME_MODEL": "x40-ultra"},
+         console=con, runner=RecordingRunner(lambda _a: Result((), 0, "", "")))
+    assert all(kind != "confirm" for kind, _ in con.lines)
+
+
+def test_the_workspace_lock_is_released_before_the_final_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    lock = work / ".lock"
+    hold_workspace_lock(lock, "status")
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    class _TakesLockAtPrompt(ScriptedConsole):
+        def confirm(self, prompt: str) -> bool:
+            hold_workspace_lock(lock, "status")
+            return super().confirm(prompt)
+
+    try:
+        main(["status"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                              "DREAME_WORK": str(work), "DREAME_MODEL": "x40-ultra"},
+             console=_TakesLockAtPrompt(),
+             runner=RecordingRunner(lambda _a: Result((), 0, "", "")))
+    finally:
+        release_workspace_lock()
+
+
+def test_idle_giveup_at_the_final_hold_preserves_the_run_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    class _IdleGiveup(ScriptedConsole):
+        def confirm(self, prompt: str) -> bool:
+            raise Die("idle")
+
+    rc = main(["status"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                               "DREAME_WORK": str(tmp_path / "work"),
+                               "DREAME_MODEL": "x40-ultra"},
+              console=_IdleGiveup(),
+              runner=RecordingRunner(lambda _a: Result((), 0, "", "")))
+    assert rc == 0
 
 
 def test_a_run_outside_a_session_records_nothing(tmp_path: Path) -> None:
@@ -533,6 +865,36 @@ def test_the_outcome_is_reported_once_the_session_has_gone(
     assert said.count("run.log") <= 1
 
 
+def test_the_captured_pane_is_replayed_verbatim_instead_of_rebuilding_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "run.log"
+    log.write_text("[+   1.3s]    reconstructed text\n")
+    pane = b"\x1b[35mactual screen\x1b[0m\nuser answer\n"
+    libexec, _ = _stub_tmux(
+        tmp_path, session_exists=False,
+        ends_with=json.dumps({"rc": 0, "log": str(log)}),
+    )
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    monkeypatch.setattr("dreame_valetudo.cli.read_captured_pane", lambda _base: pane)
+
+    class _CapturesReplay(ScriptedConsole):
+        def __init__(self) -> None:
+            super().__init__()
+            self.replayed: bytes | None = None
+
+        def replay(self, data: bytes) -> None:
+            self.replayed = data
+
+    con = _CapturesReplay()
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 0
+    assert con.replayed == pane
+    assert "reconstructed text" not in con.text()
+
+
 def test_a_detached_run_is_reported_as_still_going(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -552,12 +914,25 @@ def test_a_detached_run_is_reported_as_still_going(
 def test_the_session_options_are_pinned_to_a_literal_list() -> None:
     """Asserted against a literal, not against the function under test: a count derived from
     session_options() deletes its own assertion along with the option it was meant to protect."""
-    assert [o[3] for o in session_options(_SESSION, colour=True)] == [
-        "remain-on-exit", "detach-on-destroy", "status", "status-style", "status-justify", "status-left",
-        "status-left-length", "status-right", "status-right-length",
-        "window-status-format", "window-status-current-format",
+    assert [(o[0], (o[2], o[3]) if o[0] == "bind-key" else o[3])
+            for o in session_options(_SESSION, colour=True)] == [
+        ("set-option", "remain-on-exit"),
+        ("set-option", "mouse"),
+        ("bind-key", ("copy-mode", "MouseDragEnd1Pane")),
+        ("bind-key", ("copy-mode-vi", "MouseDragEnd1Pane")),
+        ("bind-key", ("copy-mode", "MouseDown1Pane")),
+        ("bind-key", ("copy-mode-vi", "MouseDown1Pane")),
+        ("set-option", "detach-on-destroy"),
+        ("set-option", "status"),
+        ("set-option", "status-style"),
+        ("set-option", "status-justify"),
+        ("set-option", "status-left"),
+        ("set-option", "status-left-length"),
+        ("set-option", "status-right"),
+        ("set-option", "status-right-length"),
+        ("set-option", "window-status-format"),
+        ("set-option", "window-status-current-format"),
     ]
-    assert all(o[:3] == ["set-option", "-t", _SESSION] for o in session_options(_SESSION, colour=True))
 
 
 def test_the_session_is_not_allowed_to_outlive_its_run() -> None:
@@ -579,7 +954,7 @@ def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
     being flashed has to say the right one."""
     recorder = tmp_path / "tmux"
     seen = tmp_path / "args.txt"
-    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$5" > {seen}\n')
+    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$7" > {seen}\n')
     recorder.chmod(0o755)
     name_the_robot_on_the_bar(recorder, _SESSION, "Vac #Hallway #S")
     assert seen.read_text().strip() == "dreame-valetudo · Vac ##Hallway ##S"
@@ -588,7 +963,7 @@ def test_a_hash_in_a_robot_name_cannot_rewrite_the_bar(tmp_path: Path) -> None:
 def test_a_percent_in_a_robot_name_survives_the_status_clock_pass(tmp_path: Path) -> None:
     recorder = tmp_path / "tmux"
     seen = tmp_path / "args.txt"
-    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$5" > {seen}\n')
+    recorder.write_text(f'#!/bin/sh\nprintf "%s\\n" "$7" > {seen}\n')
     recorder.chmod(0o755)
     name_the_robot_on_the_bar(recorder, _SESSION, "100% Clean")
     assert seen.read_text().strip() == "dreame-valetudo · 100%% Clean"
@@ -618,12 +993,16 @@ def test_a_new_run_never_inherits_the_previous_runs_record(tmp_path: Path) -> No
     assert record["command"] == "status"
 
 
-def test_a_nested_client_is_not_told_anything_about_the_outcome(
+def test_a_caller_inside_another_tmux_reports_the_outcome_after_attach_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """switch-client returns at once instead of blocking, so the user is looking at the session
-    while this pane is not — a report here would be printed where nobody is reading."""
-    libexec, calls = _stub_tmux(tmp_path, session_exists=False)
+    log = tmp_path / "run.log"
+    log.write_text("[+   1.3s]    Nested run finished.\n")
+    libexec, calls = _stub_tmux(
+        tmp_path,
+        session_exists=False,
+        ends_with=json.dumps({"rc": 3, "log": str(log)}),
+    )
     monkeypatch.setattr(sys, "stdin", _Tty(True))
     monkeypatch.setattr(sys, "stdout", _Tty(True))
     _no_exec(monkeypatch)
@@ -631,9 +1010,9 @@ def test_a_nested_client_is_not_told_anything_about_the_outcome(
     with pytest.raises(SystemExit) as exc:
         _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec),
                                       "TMUX": "/tmp/tmux-501/default,1,0"}, con, tmp_path)
-    assert exc.value.code == 0
-    assert "switch-client" in calls.read_text()
-    assert "Still running" not in con.text()
+    assert exc.value.code == 3
+    assert "attach-session" in calls.read_text()
+    assert "Nested run finished." in con.text()
 
 
 def test_the_pure_command_list_is_pinned_to_a_literal() -> None:
@@ -745,13 +1124,12 @@ def test_a_run_with_no_log_still_says_how_it_went(
 
 
 
-def test_a_failed_switch_never_starts_the_command_a_second_time(
+def test_a_failed_attach_never_starts_the_command_a_second_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Inside the user's own tmux the session is created detached and the client is then moved to
-    it. If only the MOVE fails the command is already running in there, so falling through to an
-    inline run would put a second auto chain — flash included — beside the first."""
-    libexec, calls = _stub_tmux(tmp_path, session_exists=False, fail_verb="switch-client")
+    """Once the detached session exists, an attach failure cannot fall through to an inline run
+    without putting a second auto chain — flash included — beside the first."""
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False, fail_verb="attach-session")
     monkeypatch.setattr(sys, "stdin", _Tty(True))
     monkeypatch.setattr(sys, "stdout", _Tty(True))
     _no_exec(monkeypatch)
@@ -844,6 +1222,21 @@ def test_go_back_never_becomes_start_it_again(
     assert "new-session" not in calls.read_text()   # ...and started nothing
 
 
+def test_rejoining_a_run_at_its_final_question_keeps_its_recorded_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outcome is written before the final question, while the session is intentionally live.
+    Rejoining that screen must not clear it as though a new run were about to start."""
+    libexec, _ = _stub_tmux(tmp_path, session_exists=True, dies_on_attach=True)
+    (tmp_path / OUTCOME).write_text(json.dumps({"rc": 7, "log": ""}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = ScriptedConsole(asks=["1"])
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert exc.value.code == 7
+
+
 def test_a_broken_bundled_tmux_falls_back_to_the_system_one(tmp_path: Path) -> None:
     """A bundled binary can be present and executable yet unable to start — wrong architecture, a
     half-finished install, a missing library. Rejecting it used to end the search, leaving the run
@@ -883,3 +1276,23 @@ def test_the_flash_window_is_published_before_any_signal_is_masked() -> None:
     assert order[0] == "record=True", order
     assert order[-1] == "record=False", order
     assert "mask" in order
+
+
+def test_a_scrubbed_log_path_still_counts_as_already_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy the run printed goes through scrub(), which rewrites the home directory to `~`.
+    Comparing absolute paths therefore saw two different strings and showed the user the same log
+    twice, in two different renderings."""
+    log = tmp_path / "run.log"
+    log.write_text("[+   0.2s] XX something broke\n"
+                   "[+   0.2s]    A scrubbed log of this run was saved to ~/rc-test/run.log\n")
+    libexec, _ = _stub_tmux(tmp_path, session_exists=False,
+                            ends_with=json.dumps({"rc": 1, "log": str(log)}))
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    _no_exec(monkeypatch)
+    con = ScriptedConsole()
+    with pytest.raises(SystemExit):
+        _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
+    assert con.text().count("log of this run was saved") == 1

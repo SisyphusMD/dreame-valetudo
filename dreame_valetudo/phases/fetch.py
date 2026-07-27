@@ -33,7 +33,9 @@ def fetch(ctx: Context) -> None:
         doctor(ctx)
     dist = ctx.ws.dist
     dist.mkdir(parents=True, exist_ok=True)
-    ctx.console.say("Fetching to the cache (skips anything already present)")
+    if (not ctx.stage1_tgz.is_file() or not ctx.valetudo_bin.is_file()
+            or not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file()):
+        ctx.console.say("Fetching to the cache (skips anything already present)")
 
     # Stage1 FEL package — verified before extraction, since it runs on the SoC.
     tgz = ctx.stage1_tgz

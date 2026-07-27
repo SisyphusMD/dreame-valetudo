@@ -11,12 +11,70 @@ from conftest import CtxFactory
 from dreame_valetudo import console
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
-from dreame_valetudo.phases.recon import read_identity_from_robot, recon
+from dreame_valetudo.phases.recon import (
+    _verify_reported_model,
+    _wait_for_fel,
+    read_identity_from_robot,
+    recon,
+)
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
 from dreame_valetudo.workspace import Robot
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
+
+
+def test_reported_model_is_confirmed(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="d10s-pro")
+    _verify_reported_model(ctx, {"product": "dreame_r2250"})
+    assert "Bootloader model verified: Dreame D10s Pro." in ctx.console.text()
+
+
+def test_reported_model_mismatch_stops_safely(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="x40-ultra")
+    with pytest.raises(Die, match=r"chosen model is Dreame X40 Ultra.*Choose Dreame D10s Pro"):
+        _verify_reported_model(ctx, {"model": "r2250"})
+
+
+def test_unreported_model_is_plainly_unverified(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="x40-ultra")
+    _verify_reported_model(ctx, {"version-bootloader": "1.0.3"})
+    assert "does not report a recognisable model" in ctx.console.text()
+
+
+def test_r2338h_report_stops_plain_r2338_choice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat")
+    with pytest.raises(
+        Die,
+        match=(r"chosen model is Dreame L10s Pro Ultra Heat, but the bootloader reports "
+               r"Dreame L10s Pro Ultra Heat \(R2338H hardware revision\)"),
+    ):
+        _verify_reported_model(ctx, {"model": "r2338h"})
+    assert "ambiguous model identifiers" not in ctx.console.text()
+
+
+def test_r2338h_report_confirms_r2338h_choice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat-h")
+    _verify_reported_model(ctx, {"model": "r2338h"})
+    assert ("Bootloader model verified: Dreame L10s Pro Ultra Heat "
+            "(R2338H hardware revision).") in ctx.console.text()
+
+
+def test_r2338_report_stops_r2338h_choice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat-h")
+    with pytest.raises(
+        Die,
+        match=(r"chosen model is Dreame L10s Pro Ultra Heat \(R2338H hardware revision\), "
+               r"but the bootloader reports Dreame L10s Pro Ultra Heat\."),
+    ):
+        _verify_reported_model(ctx, {"model": "r2338"})
+
+
+def test_model_code_inside_longer_token_is_unrecognised(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat-h")
+    _verify_reported_model(ctx, {"model": "xr2338h"})
+    assert "does not report a recognisable model" in ctx.console.text()
+    assert "Bootloader model verified" not in ctx.console.text()
 
 
 def _dist_ready(ctx: Context) -> None:
@@ -111,6 +169,70 @@ def test_read_identity_from_robot_brings_it_up_and_records(make_ctx: CtxFactory)
     _dist_ready(ctx)
     assert read_identity_from_robot(ctx) == vals
     assert ctx.need_robot().identity() == vals  # persisted for later runs
+
+
+def test_recon_waits_for_interactive_readiness_before_polling(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=_responder())
+    _dist_ready(ctx)
+    prompts: list[str] = []
+    ctx.console.ask = lambda prompt: prompts.append(prompt) or ""
+    recon(ctx, recovery_backup=False)
+    assert prompts == ["Ready to start watching for the robot? Press Enter when ready."]
+    assert any(call.endswith("sunxi-fel ver") for call in ctx.runner.transcript())
+
+
+def test_recon_intro_prints_only_once_per_process(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=_responder())
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=False)
+    recon(ctx, force=True, recovery_backup=False)
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert text.count("Reconnaissance — reads only") == 1
+    assert text.count("Validates the whole USB path") == 1
+    assert text.count("factory-reset it first") == 1
+
+
+def test_fel_readiness_prompt_is_not_asked_twice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    prompts: list[str] = []
+    ctx.console.ask = lambda prompt: prompts.append(prompt) or ""
+    ctx.fel.poll_fel = lambda: True  # type: ignore[method-assign]
+    assert _wait_for_fel(ctx)
+    assert _wait_for_fel(ctx)
+    assert prompts == ["Ready to start watching for the robot? Press Enter when ready."]
+
+
+def test_recon_does_not_prompt_for_readiness_non_interactively(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=_responder(), interactive=False)
+    _dist_ready(ctx)
+
+    def unexpected_prompt(_prompt: str) -> str:
+        raise AssertionError("non-interactive recon prompted for readiness")
+
+    ctx.console.ask = unexpected_prompt
+    recon(ctx, recovery_backup=False)
+    assert any(call.endswith("sunxi-fel ver") for call in ctx.runner.transcript())
+
+
+def test_recon_declined_fel_retry_still_dies(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 0, "", "usb device not found")
+
+    ctx = make_ctx(responder=responder, confirms=[False])
+    _dist_ready(ctx)
+    ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
+    with pytest.raises(Die, match="No FEL device"):
+        recon(ctx, recovery_backup=False)
+
+
+def test_identity_read_declined_fel_retry_still_returns_empty(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 0, "", "usb device not found")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[False])
+    _dist_ready(ctx)
+    ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
+    assert read_identity_from_robot(ctx) == {}
 
 
 def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:
@@ -253,6 +375,7 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert any("Backup:" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
+    assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
 
 
 def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: CtxFactory) -> None:
@@ -264,7 +387,14 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
     assert robot is not None
     assert not (robot.recon_dir / "dreame_recovery_backup.zip").exists()
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert robot.state_has("recon")  # sampling is best-effort; rooting still proceeds
+    assert robot.state_get("recon") == f"config={_CFG} backup=missing"
+
+
+def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=False)
+    assert ctx.need_robot().state_get("recon") == f"config={_CFG} backup=not-requested"
 
 
 def test_recon_self_provisions_stage1_via_fetch(make_ctx: CtxFactory) -> None:
@@ -312,3 +442,33 @@ def test_an_adopted_robot_bookmarks_the_dir_that_was_adopted(make_ctx: CtxFactor
     assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
     assert [adopted.state_dir] == console._BOOKMARK
     assert not (ctx.ws.robots_dir / "picked-a-different-one").exists()
+
+
+def test_the_typed_name_is_what_the_bar_and_run_record_show(make_ctx: CtxFactory) -> None:
+    """The typed name only reaches disk once recon has an identity to attach it to, so before that
+    display_name() has nothing but the folder slug — and someone who typed 'Test Bench #1' was
+    shown 'Test-Bench-1' on the bar and in the notice naming the busy robot."""
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    ctx.robot = Robot(ctx.ws.robots_dir / "Test-Bench-1")
+    ctx.pending_name = "Test Bench #1"
+    assert ctx.robot_label() == "Test Bench #1"
+
+
+def test_an_adopted_robot_keeps_its_own_name(make_ctx: CtxFactory) -> None:
+    """The typed name described the directory recon walked away from. Letting it keep speaking
+    would relabel a robot the user never meant to rename."""
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    adopted = Robot(ctx.ws.robots_dir / "kitchen")
+    adopted.recon_dir.mkdir(parents=True, exist_ok=True)
+    (adopted.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    adopted.state_dir.mkdir(parents=True, exist_ok=True)
+    (adopted.state_dir / "name").write_text("Kitchen Vacuum\n")
+    ctx.robot = Robot(ctx.ws.robots_dir / "Test-Bench-1")
+    ctx.pending_name = "Test Bench #1"
+
+    recon(ctx, recovery_backup=False)
+
+    assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
+    assert ctx.pending_name is None
+    assert ctx.robot_label() == "Kitchen Vacuum"

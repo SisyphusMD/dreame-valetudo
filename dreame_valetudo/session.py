@@ -26,14 +26,25 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from functools import wraps
 from pathlib import Path
-from typing import IO
+from typing import IO, ParamSpec, TypeVar
 
 from .console import Die
 from .fastboot import find_helper
 
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
 SESSION = "dreame-valetudo"
+SOCKET = "dreame-valetudo"
+
+
+def tmux_argv(tmux: Path | str) -> list[str]:
+    """Base argv for the tool's isolated tmux server."""
+    return [str(tmux), "-L", SOCKET]
 
 
 def session_name(base: Path) -> str:
@@ -53,8 +64,8 @@ def session_name(base: Path) -> str:
     """
     return f"{SESSION}-{hashlib.sha256(str(base.resolve()).encode()).hexdigest()[:8]}"
 
-# Set on the process tmux starts inside the session, so it can tell "the run is in there" from "I
-# AM the run". Without it the wrapped copy asks tmux whether a session exists, finds its own, and
+# Set on the process tmux starts inside the session, so it can tell "the run is in there" from
+# "this process is the run". Without it the wrapped copy finds its own session and
 # offers to rejoin or close it — then does one of those to itself, and the run never happens.
 # Carried by an `env` prefix on the command rather than inherited: once a tmux server is already
 # up it builds a new session's environment from its own snapshot, so an exported variable would
@@ -120,6 +131,13 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     describe_run(command=command)
 
 
+def release_workspace_lock() -> None:
+    """Release this process's workspace lock, if it holds one."""
+    for fh in _HELD:
+        fh.close()
+    _HELD.clear()
+
+
 def describe_run(**fields: object) -> None:
     """Record what this run is doing, in the lock file it already holds.
 
@@ -130,12 +148,31 @@ def describe_run(**fields: object) -> None:
         return
     fh = _HELD[0]
     current = _read_json(fh)
-    current.update({k: v for k, v in fields.items() if v is not None})
+    for key, value in fields.items():
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
     current.setdefault("pid", os.getpid())
     fh.seek(0)
     fh.truncate()
     json.dump(current, fh)
     fh.flush()
+
+
+def records_step(name: str) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
+    """Publish a resumable phase while it is active, including exceptional exits."""
+    def decorate(func: Callable[_P, _T]) -> Callable[_P, _T]:
+        @wraps(func)
+        def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+            describe_run(step=name)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                if not isinstance(sys.exception(), KeyboardInterrupt):
+                    describe_run(step=None)
+        return wrapped
+    return decorate
 
 
 def _read_json(fh: IO[str]) -> dict[str, object]:
@@ -157,6 +194,7 @@ def running_run(path: Path) -> dict[str, object]:
 
 
 OUTCOME = ".last-run"
+SCREEN = ".last-screen"
 
 
 def record_outcome(base: Path, rc: int, log: Path | None) -> None:
@@ -174,6 +212,31 @@ def clear_outcome(base: Path) -> None:
     """Drop any previous record, so a run that is still going is never reported as finished."""
     with contextlib.suppress(OSError):
         (base / OUTCOME).unlink(missing_ok=True)
+        (base / SCREEN).unlink(missing_ok=True)
+
+
+def capture_pane(tmux: Path, session: str, base: Path) -> bool:
+    """Save the pane exactly as the attached client rendered it."""
+    try:
+        with (base / SCREEN).open("wb") as screen:
+            res = subprocess.run(
+                [*tmux_argv(tmux), "capture-pane", "-p", "-e", "-S", "-", "-t", session],
+                stdout=screen, stderr=subprocess.DEVNULL, timeout=5, check=False,
+            )
+        if res.returncode == 0:
+            return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    with contextlib.suppress(OSError):
+        (base / SCREEN).unlink(missing_ok=True)
+    return False
+
+
+def read_captured_pane(base: Path) -> bytes | None:
+    try:
+        return (base / SCREEN).read_bytes()
+    except OSError:
+        return None
 
 
 def read_outcome(base: Path) -> tuple[int, Path | None] | None:
@@ -221,7 +284,7 @@ def tmux_runs(tmux: Path) -> bool:
     """
     try:
         return subprocess.run(
-            [str(tmux), "-V"], capture_output=True, timeout=5, check=False
+            [*tmux_argv(tmux), "-V"], capture_output=True, timeout=5, check=False
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -278,27 +341,28 @@ def tmux_plan(
     Runs inline when there is no tmux, when there is no terminal to attach to (piped or scripted
     output has nothing to reattach), and when DREAME_NO_TMUX is set as the escape hatch.
 
-    Being inside someone else's tmux is NOT one of those cases. tmux refuses to attach a session
-    from within another, so the session is created detached and this client is moved to it — the
-    user typed `dreame-valetudo` and lands in the run either way, which is the whole point. Doing
-    nothing here would leave the people most likely to be working remotely with no session at all.
+    Being inside someone else's tmux is NOT one of those cases. The refusal to attach from within
+    tmux only applies to a session on the SAME server, and the run lives on this tool's own — so
+    attaching is not nesting a session into itself and tmux allows it. Moving the caller's client
+    instead is not an option across servers: a client belongs to the server it connected to, and
+    tmux cannot hand it to another. Doing nothing here would leave the people most likely to be
+    working remotely with no session at all.
     """
     if tmux is None or not wraps_this_run(self_cmd, env, tmux, interactive=interactive):
         return None
-    t = str(tmux)
+    t = tmux_argv(tmux)
     colour = not env.get("NO_COLOR")
     if session_exists:
         # Already dressed and running: just go to it.
-        verb = "switch-client" if env.get("TMUX") else "attach-session"
-        return [[t, verb, "-t", session]]
+        return [[*t, "attach-session", "-t", session]]
     # tmux runs a SINGLE trailing argument through /bin/sh instead of exec'ing it, so an install
     # path containing a space (a checkout under "Robot Stuff", an iCloud clone) would never start.
     # The env prefix already guarantees several arguments; naming the default subcommand keeps
     # that true independently of it, and the line above already reads a bare invocation as `auto`.
     argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
-    create = [[t, "new-session", "-A", "-d", "-s", session, "--", *env_prefix(env), *argv]]
-    create += [[t, *opt] for opt in session_options(session, colour=colour)]
-    create.append([t, "switch-client" if env.get("TMUX") else "attach-session", "-t", session])
+    create = [[*t, "new-session", "-A", "-d", "-s", session, "--", *env_prefix(env), *argv]]
+    create += [[*t, *opt] for opt in session_options(session, colour=colour)]
+    create.append([*t, "attach-session", "-t", session])
     return create
 
 
@@ -317,8 +381,35 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
     Everything here reads "is the session alive?" as "is a run in progress", so that has to be true.
     """
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
+    if sys.platform == "darwin":
+        clipboard = ["copy-pipe-no-clear", "pbcopy"]
+    elif command := shutil.which("wl-copy"):
+        clipboard = ["copy-pipe-no-clear", command]
+    elif command := shutil.which("xclip"):
+        # One argument, not three: copy-pipe takes the whole shell command as a single word, so
+        # split flags would reach send-keys as literal keystrokes to type into the pane.
+        clipboard = ["copy-pipe-no-clear", f"{command} -selection clipboard"]
+    else:
+        clipboard = ["copy-selection-no-clear"]
     return [
         ["set-option", "-t", session, "remain-on-exit", "off"],
+        # Inside a pane the terminal's own scrollback is gone, and tmux's replacement is reached by
+        # a prefix key the user is deliberately never told about — so a long FEL wait, with the
+        # button sequence printed above it, simply could not be scrolled back to.
+        # Mouse mode restores the wheel. Since it also captures drag selection, ending a drag
+        # copies directly to the host clipboard; without a clipboard helper, keeping the selection
+        # visible at least leaves tmux's own copy buffer usable.
+        ["set-option", "-t", session, "mouse", "on"],
+        ["bind-key", "-T", "copy-mode", "MouseDragEnd1Pane",
+         "send-keys", "-X", *clipboard],
+        ["bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
+         "send-keys", "-X", *clipboard],
+        # Keeping the selection is what lets the copy land, but nothing then took it away: the
+        # highlight sat there through every later click. A plain click clears it and stays put —
+        # `cancel` would also leave copy mode and snap the view back to the bottom, throwing away
+        # the scroll position of someone who had scrolled up to read.
+        ["bind-key", "-T", "copy-mode", "MouseDown1Pane", "send-keys", "-X", "clear-selection"],
+        ["bind-key", "-T", "copy-mode-vi", "MouseDown1Pane", "send-keys", "-X", "clear-selection"],
         # Measured with a second session on tmux 3.7b: `on` detaches the client when this session
         # is destroyed and leaves the other session/server alive; `previous` destroyed the server.
         ["set-option", "-t", session, "detach-on-destroy", "on"],
@@ -346,7 +437,7 @@ def name_the_robot_on_the_bar(tmux: Path, session: str, robot: str) -> None:
     Not a security boundary — the name is the local operator's own typed input.
     """
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([str(tmux), "set-option", "-t", session, "status-left",
+        subprocess.run([*tmux_argv(tmux), "set-option", "-t", session, "status-left",
                         f"dreame-valetudo · {robot.replace('#', '##').replace('%', '%%')}"],
                        capture_output=True, timeout=5, check=False)
 
@@ -359,7 +450,8 @@ def tmux_session_exists(tmux: Path, session: str) -> bool:
     asks rather than attaching silently."""
     try:
         return subprocess.run(
-            [str(tmux), "has-session", "-t", session], capture_output=True, timeout=5, check=False
+            [*tmux_argv(tmux), "has-session", "-t", session],
+            capture_output=True, timeout=5, check=False
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -369,7 +461,7 @@ def session_pane_dead(tmux: Path, session: str) -> bool | None:
     """Whether the session's command has already exited. None means the query was inconclusive."""
     try:
         res = subprocess.run(
-            [str(tmux), "display-message", "-p", "-t", session, "#{pane_dead}"],
+            [*tmux_argv(tmux), "display-message", "-p", "-t", session, "#{pane_dead}"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -384,7 +476,7 @@ def kill_session(tmux: Path, session: str) -> None:
     """End the session. Safe at any moment: the run bookmarks its position when a prompt opens, so
     there is nothing to flush on the way out."""
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([str(tmux), "kill-session", "-t", session],
+        subprocess.run([*tmux_argv(tmux), "kill-session", "-t", session],
                        capture_output=True, timeout=5, check=False)
 
 
@@ -407,7 +499,7 @@ def client_attached(tmux: Path, session: str) -> bool | None:
     """
     try:
         res = subprocess.run(
-            [str(tmux), "display-message", "-p", "-t", session, "#{session_attached}"],
+            [*tmux_argv(tmux), "display-message", "-p", "-t", session, "#{session_attached}"],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):

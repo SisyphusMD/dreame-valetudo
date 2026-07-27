@@ -9,13 +9,15 @@ nothing written to flash), and it is the exact machinery the destructive flash r
 from __future__ import annotations
 
 import re
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .console import Console, die
+from .console import Console, die, next_idle_deadline
 from .fastboot import Fastboot
 from .run import Runner
+from .session import describe_run
 
 # A dynamic-loader failure, from either platform's loader: macOS dyld ("Library not loaded", "no
 # such file"), Linux ld.so ("error while loading shared libraries").
@@ -25,18 +27,28 @@ _LOADER_FAILED = re.compile(
 
 
 def print_fel_entry(console: Console, host: str = "computer") -> None:
-    """The FEL button sequence — the one step no script can do."""
-    console.action("Hands on the robot: put it into FEL mode (Breakout PCB)")
-    console.steps([
-        ("Robot powered OFF first (hold power ~15s until it fully shuts down); USB cable "
-         "unplugged."),
-        "PCB plugged into the robot; USB OTG ID jumper NOT connected.",
-        "Press and HOLD the PCB button.",
-        "Also press and HOLD the robot's power button (keep the PCB button held).",
-        "After ~5s release power; keep holding the PCB button ~3s more.",
-        f"LEDs pulse -> connect the USB cable to this {host}.",
-    ])
-    console.detail("(No key to press here — the script auto-detects the FEL device.)")
+    """The FEL button sequence — the one step no script can do.
+
+    The robot's power MCU cuts and restores the SoC rail roughly 210 seconds after the button
+    press regardless of USB activity, so connecting afterward takes time directly from the flash
+    budget.
+    """
+    def full() -> None:
+        console.action("Hands on the robot: put it into FEL mode (Breakout PCB)")
+        console.steps([
+            (f"Connect the USB cable to this {host} and leave it connected — do not unplug it at "
+             "any point."),
+            "Robot powered OFF (hold power ~15s until it fully shuts down).",
+            "PCB plugged into the robot; USB OTG ID jumper NOT connected.",
+            "Press and HOLD the PCB button.",
+            "Also press and HOLD the robot's power button (keep the PCB button held).",
+            "After ~5s release power; keep holding the PCB button ~3s more.",
+            "LEDs pulse — the robot is in FEL mode.",
+        ])
+        console.detail("(No key to press here — the script auto-detects the FEL device.)")
+
+    if not console.once("fel-entry", full):
+        console.action("Redo the PCB button sequence (steps above).")
 
 
 class Fel:
@@ -55,36 +67,48 @@ class Fel:
         self.fastboot = fastboot
         self.sleep = sleep
 
-    def poll_fel(self, secs: int = 180) -> bool:
-        """Wait until sunxi-fel sees the SoC (no user keypress needed)."""
-        self.console.say(f"Waiting up to {secs}s for the FEL device — do the button sequence now...")
-        with self.console.progress("Watching for the FEL device") as p:
-            for _ in range(secs):
-                res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
-                out = res.stdout + res.stderr
+    def poll_fel(self) -> bool:
+        """Wait until sunxi-fel sees the SoC or the run has been unwatched for its idle timeout."""
+        describe_run(step="waiting for the robot to enter FEL mode")
+        try:
+            self.console.say("Waiting for the FEL device — do the button sequence now. Ctrl+C stops "
+                             "waiting.")
+            deadline: float | None = None
+            with self.console.progress("Watching for the FEL device", timer=False) as p:
+                while True:
+                    res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
+                    out = res.stdout + res.stderr
                 # A sunxi-fel that cannot load is not a robot that has not appeared yet. Its loader
                 # error says nothing about "not found", so it read as a live device: the tool
                 # announced "FEL up" and then failed at the first real command, with the robot open
                 # and the button sequence already done. Retrying it 180 times cannot help either.
-                if _LOADER_FAILED.search(out):
-                    die("sunxi-fel is present but cannot start — it is missing a library it was "
-                        f"built against, so FEL cannot be reached:\n{out.strip()}")
-                if "not found" not in out.lower():
-                    first = out.splitlines()[0] if out.strip() else ""
-                    self.console.info(f"FEL up: {first}")
-                    if re.search(r"permission|access denied", out, re.IGNORECASE):
-                        self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
-                                          "this usually means the udev rule is missing — install "
-                                          "packaging/udev/99-dreame-valetudo.rules to "
-                                          "/etc/udev/rules.d/, run 'sudo udevadm control --reload "
-                                          "&& sudo udevadm trigger', and replug the cable; or "
-                                          "re-run with sudo.)")
-                    return True
-                self.sleep(1)
-            p.close(done=False)  # timed out: no completion line ahead of the error
-        self.console.err(f"No FEL device after {secs}s. Re-do the button sequence; try the other "
-                         "USB port / a data cable.")
-        return False
+                    if _LOADER_FAILED.search(out):
+                        die("sunxi-fel is present but cannot start — it is missing a library it was "
+                            f"built against, so FEL cannot be reached:\n{out.strip()}")
+                    if "not found" not in out.lower():
+                        first = out.splitlines()[0] if out.strip() else ""
+                        self.console.info(f"FEL up: {first}")
+                        if re.search(r"permission|access denied", out, re.IGNORECASE):
+                            self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
+                                              "this usually means the udev rule is missing — install "
+                                              "packaging/udev/99-dreame-valetudo.rules to "
+                                              "/etc/udev/rules.d/, run 'sudo udevadm control --reload "
+                                              "&& sudo udevadm trigger', and replug the cable; or "
+                                              "re-run with sudo.)")
+                        return True
+                    now = time.monotonic()
+                    deadline = next_idle_deadline(deadline, now)
+                    if deadline is not None and now >= deadline:
+                        p.close(done=False)
+                        break
+                    self.sleep(1)
+            self.console.err("No FEL device after the run was left unattended. Re-do the button "
+                             "sequence; try the other USB port / a data cable.")
+            return False
+        finally:
+            # The run-level recovery question still needs this exact bookmark after Ctrl+C.
+            if not isinstance(sys.exception(), KeyboardInterrupt):
+                describe_run(step=None)
 
     def wait_fastboot(self, secs: int = 90) -> bool:
         """Poll until the device re-enumerates as a fastboot device.

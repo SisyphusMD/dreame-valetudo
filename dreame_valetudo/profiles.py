@@ -261,12 +261,20 @@ def key_from_dirname(basename: str) -> str:
     return DEFAULT_MODEL_KEY
 
 
-def model_key_for_dir(dir_path: str | os.PathLike[str]) -> str:
-    """The saved state/model_key marker if present and non-empty, else inferred from the dir name."""
+def known_model_key_for_dir(dir_path: str | os.PathLike[str]) -> str | None:
+    """A recorded or inferable model key, without inventing a default for display."""
     d = Path(dir_path)
     marker = d / "state" / "model_key"
     if marker.is_file():
         saved = marker.read_text().strip()
         if saved:
             return saved
-    return key_from_dirname(d.name)
+    for prefix, key in _DIR_PREFIX_TO_KEY:
+        if d.name.startswith(prefix):
+            return key
+    return None
+
+
+def model_key_for_dir(dir_path: str | os.PathLike[str]) -> str:
+    """The saved state/model_key marker if present and non-empty, else inferred from the dir name."""
+    return known_model_key_for_dir(dir_path) or DEFAULT_MODEL_KEY

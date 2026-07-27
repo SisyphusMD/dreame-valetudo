@@ -37,9 +37,10 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
             return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")  # sunxi-fel, fastboot client, ssh-keygen, zip, ...
 
-    # confirms: [open dustbuilder?] [config accepted?] [flash now?]; asks: SSH key choice (1 = dedicated)
+    # confirms: [open dustbuilder?] [config accepted?] [flash now?];
+    # asks: [FEL readiness (Enter)] [SSH key choice (1 = dedicated)]
     ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[True, True, True],
-                   asks=["1"], env={"HOME": str(home)})
+                   asks=["", "1"], env={"HOME": str(home)})
     # stage1 present so recon proceeds
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text("p")
@@ -80,10 +81,10 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     ]
 
     # SAFETY REGRESSION: no progress display may ever be live inside the signal-masked flash
-    # window — its background thread has no place in the sequence between watchdog-live and
+    # window — its background thread has no place in the sequence between the clock warning and
     # all-flashes-OKAY.
     kinds_msgs = ctx.console.lines  # type: ignore[attr-defined]
-    start = next(i for i, (_k, m) in enumerate(kinds_msgs) if "WATCHDOG LIVE" in m)
+    start = next(i for i, (_k, m) in enumerate(kinds_msgs) if "POWER-CYCLE CLOCK LIVE" in m)
     end = next(i for i, (_k, m) in enumerate(kinds_msgs) if "All flashes OKAY" in m)
     assert start < end
     assert all(k != "progress" for k, _m in kinds_msgs[start:end])

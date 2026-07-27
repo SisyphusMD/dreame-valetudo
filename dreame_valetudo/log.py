@@ -120,7 +120,18 @@ def tail_transcript(path: Path, keep: int = 12) -> list[str]:
                 said = said[len(prefix) + 1:]
                 break
         out.append(said)
-    return out[-keep:]
+    # Collapse consecutive repeats BEFORE taking the tail. A poll that retries once a second (the
+    # FEL wait is up to 180) otherwise fills the whole window with one identical line and pushes
+    # the only thing worth reading — how the run ended — off the top.
+    runs: list[list[object]] = []
+    for said in out:
+        if runs and runs[-1][0] == said:
+            runs[-1][1] = int(runs[-1][1]) + 1      # type: ignore[call-overload]
+        else:
+            runs.append([said, 1])
+    shown = [str(text) if count == 1 else f"{text}   (repeated {count} times)"
+             for text, count in runs]
+    return shown[-keep:]
 
 
 def _prune(logs_dir: Path, keep: int) -> None:
@@ -135,7 +146,7 @@ class RunLog:
 
     Every message/command line carries an elapsed-since-start stamp (``[+  12.3s]``) and each
     command its own wall-clock duration, so a hardware run is self-documenting: the flash
-    sequence's margin against the robot's ~160s post-boot watchdog is readable straight off the
+    sequence's margin against the power MCU's fixed rail-cycle clock is readable straight off the
     log, not inferred from a "seemed to work"."""
 
     def __init__(self, path: Path, fh: TextIO, home: Path,
@@ -269,23 +280,31 @@ class _RecordingProgress(Progress):
     step that ran before the log opened still reaches it. Times with its own clock (created alongside
     the wrapped one, so the elapsed shown matches within milliseconds)."""
 
-    def __init__(self, inner: Progress, pending: list[tuple[str, str]], label: str,
+    def __init__(self, inner: Progress, pending: list[tuple[str, str]], label: str, *,
+                 timer: bool = True,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self._inner = inner
         self._pending = pending
         self._label = label
+        self._timer = timer
         self._clock = clock
         self._t0 = clock()
+        self._closed = False
 
     def __enter__(self) -> Progress:
         self._inner.__enter__()
         return self
 
     def close(self, *, done: bool = False) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._inner.close(done=done)
         if done:
-            elapsed = _fmt_elapsed(self._clock() - self._t0)
-            self._pending.append(("->", f"{self._label} — done ({elapsed})"))
+            tail = (
+                f" ({_fmt_elapsed(self._clock() - self._t0)})" if self._timer else ""
+            )
+            self._pending.append(("->", f"{self._label} — done{tail}"))
 
     def clear_line(self) -> None:
         self._inner.clear_line()
@@ -323,8 +342,10 @@ class BufferingConsole(Console):
         self._pending.append(("->", answer))
         return answer
 
-    def progress(self, label: str) -> Progress:
-        return _RecordingProgress(self._inner.progress(label), self._pending, label)
+    def progress(self, label: str, *, timer: bool = True) -> Progress:
+        return _RecordingProgress(
+            self._inner.progress(label, timer=timer), self._pending, label, timer=timer
+        )
 
     def flush_into(self, log: RunLog) -> None:
         """Replay the buffered pre-log output into ``log`` (file only — the terminal already showed it

@@ -37,6 +37,19 @@ def test_auto_runs_the_fastboot_phases_in_order(
     assert any("new robot" in msg for _k, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_auto_intro_prints_only_once_per_process(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record_phases(monkeypatch)
+    ctx = make_ctx(robot_name="Bot")
+    cli.auto(ctx, [])
+    cli.auto(ctx, [])
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert text.count("The road ahead") == 1
+    assert text.count("The one piece of hardware you must have") == 1
+    assert text.count("flashing always carries some risk") == 1
+
+
 def test_auto_propagates_flags_and_shows_resume(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

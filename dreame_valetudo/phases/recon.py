@@ -7,10 +7,14 @@ disaster-recovery backup.
 
 from __future__ import annotations
 
+import re
+
 from ..console import Die, die, warn_if_low_disk
 from ..context import Context
 from ..fel import print_fel_entry
 from ..migrate import decrypt_recovery_backup
+from ..profiles import SUPPORTED_MODELS, Profile, load_profile
+from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace
 from .doctor import _is_exe, doctor
@@ -18,7 +22,36 @@ from .fetch import fetch
 
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
 # asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
-_IDENTITY_VARS = ("serialno", "toc0hash", "toc1hash")
+_IDENTITY_VARS = (
+    "serialno", "toc0hash", "toc1hash", "product", "model", "variant", "hw-revision",
+    "version-bootloader",
+)
+
+
+def _wait_for_fel(ctx: Context) -> bool:
+    if ctx.interactive:
+        ctx.console.once(
+            "fel-readiness",
+            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
+        )
+    # Attachment — not an arbitrary USB allowance — decides how long this safe, read-only wait
+    # may remain alive. If the external rail-cycle clock expires, another button sequence can
+    # satisfy the same wait.
+    return ctx.fel.poll_fel()
+
+
+def _print_intro(ctx: Context) -> None:
+    def full() -> None:
+        ctx.console.phase("Reconnaissance — reads only, writes NOTHING to the robot",
+                          index=1, total=3)
+        ctx.console.info("Validates the whole USB path with zero brick risk and records the "
+                         "'config' value that identifies the robot + drives the dustbuilder.")
+        ctx.console.action("BEFORE you start: if this robot was EVER set up in the Mi Home / "
+                           "Dreame Home app, factory-reset it first (Settings -> Reset).")
+        ctx.console.info("The rooting guides assume a factory-new robot never connected to the "
+                         "vendor cloud.")
+
+    ctx.console.once("recon-intro", full)
 
 
 def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
@@ -36,7 +69,35 @@ def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in captured.items())
         )
+    _verify_reported_model(ctx, captured)
     return captured
+
+
+def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
+    """Cross-check recognisable bootloader model codes without treating absence as identity."""
+    values = "\n".join(captured.values()).lower()
+    found: dict[str, Profile] = {}
+    for key in SUPPORTED_MODELS:
+        profile = load_profile(key)
+        # Whole identifiers, not substrings. r2338 sits inside r2338h, and those two revisions take
+        # incompatible firmware — a plain `in` matches both, and two matches read as "ambiguous",
+        # which silently skips the stop for the one pair where a wrong choice bricks the robot.
+        if any(re.search(rf"(?<![0-9a-z]){re.escape(code.lower())}(?![0-9a-z])", values)
+               for code in {profile.model_code, profile.dust_code}):
+            found[profile.key] = profile
+    if not found:
+        ctx.console.info("This bootloader does not report a recognisable model, so the chosen "
+                         "model could not be verified.")
+        return
+    if len(found) != 1:
+        ctx.console.info("This bootloader reports ambiguous model identifiers, so the chosen "
+                         "model could not be verified.")
+        return
+    reported = next(iter(found.values()))
+    if reported.key != ctx.profile.key:
+        die(f"SAFETY STOP: the chosen model is {ctx.profile.model}, but the bootloader reports "
+            f"{reported.model}. Choose {reported.model} to fix the mismatch.")
+    ctx.console.info(f"Bootloader model verified: {ctx.profile.model}.")
 
 
 def read_identity_from_robot(ctx: Context) -> dict[str, str]:
@@ -50,7 +111,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         fetch(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    if not ctx.fel.poll_fel(180):
+    if not _wait_for_fel(ctx):
         ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
                          "connected to try again.")
         return {}
@@ -82,6 +143,7 @@ def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:
     return None
 
 
+@records_step("reconnaissance")
 def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
     # Self-provision before the already-done check: toolchain, then stage1.
@@ -104,16 +166,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
-    ctx.console.phase("Reconnaissance — reads only, writes NOTHING to the robot",
-                      index=1, total=3)
-    ctx.console.info("Validates the whole USB path with zero brick risk and records the 'config' "
-                     "value that identifies the robot + drives the dustbuilder.")
-    ctx.console.action("BEFORE you start: if this robot was EVER set up in the Mi Home / Dreame "
-                       "Home app, factory-reset it first (Settings -> Reset).")
-    ctx.console.info("The rooting guides assume a factory-new robot never connected to the vendor "
-                     "cloud.")
+    _print_intro(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    if not ctx.fel.poll_fel(180):
+    if not _wait_for_fel(ctx):
         die("No FEL device — aborting recon.")
     ctx.fel.fel_boot_fastboot(
         ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
@@ -132,6 +187,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if ctx.robot is None:
         if existing is not None:
             ctx.robot = existing
+            ctx.pending_name = None       # it named the directory abandoned by the adoption
             ctx.console.say(f"This robot is already set up as '{existing.display_name()}' — "
                             "resuming it.")
         else:
@@ -147,6 +203,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
             ctx.console.warn(f"This robot is already set up as '{existing.display_name()}' — using "
                              f"that instead of a duplicate '{ctx.robot.display_name()}'.")
             ctx.robot = existing
+            ctx.pending_name = None       # ditto: never relabel the robot that was adopted
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
@@ -167,19 +224,22 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # robot's config isn't auto-recognized. The robot is already in fastboot here.
     capture_identity(ctx, robot)
 
+    backup_state = "not-requested"
     if recovery_backup:
         warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
         ctx.console.say("Pulling ~1.2GB flash disaster-recovery backup (slow; skip with "
                         "--no-recovery-backup)...")
         if _pull_recovery_backup(ctx, robot):
+            backup_state = "obtained"
             # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch migration
             # already ran), so the restorable image exists without waiting for the next launch.
             decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console)
         else:
+            backup_state = "missing"
             ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no recovery "
                              "backup was saved.")
 
-    robot.state_set("recon", f"config={cfg}")
+    robot.state_set("recon", f"config={cfg} backup={backup_state}")
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")

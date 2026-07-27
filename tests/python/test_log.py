@@ -135,12 +135,12 @@ def test_run_log_writes_a_shareable_file(tmp_path: Path) -> None:
 
 def test_run_log_stamps_elapsed_time_and_command_duration(tmp_path: Path) -> None:
     # A hardware run must be self-documenting: the flash sequence's margin against the robot's
-    # ~160s post-boot watchdog has to be readable straight off the log, not inferred.
+    # The power MCU's fixed rail-cycle clock has to be readable straight off the log, not inferred.
     clk = _FakeClock()
     log = RunLog.open(tmp_path, tmp_path / "home", ["root"], "0.1.0",
                       stamp="20260717-120000", when="Thu Jul 17 12:00:00 2026", clock=clk)
     clk.t = 2.5
-    log.line(">>", ">>> WATCHDOG LIVE — flashing now <<<")
+    log.line(">>", ">>> POWER-CYCLE CLOCK LIVE — flashing now <<<")
     clk.t = 5.0
     log.command(Result(("fb", "flash", "rootfs1"), 0, "OKAY", ""), duration=40.0)
     clk.t = 6.0
@@ -149,7 +149,7 @@ def test_run_log_stamps_elapsed_time_and_command_duration(tmp_path: Path) -> Non
     log.finish(0)
     log.close()
     text = log.path.read_text()
-    assert "2.5s]" in text                # elapsed stamp when the watchdog went live
+    assert "2.5s]" in text                # elapsed stamp when the rail-cycle clock went live
     assert "40.00s)" in text              # the flash command's own duration
     assert "6.0s]" in text                # sequence finished ~3.5s after going live — huge margin
     assert "after 148.0s total" in text   # footer: total wall time for the whole run
@@ -225,6 +225,18 @@ def test_buffering_console_forwards_to_the_inner_console(tmp_path: Path) -> None
     assert ("progress", "moving") in inner.lines  # progress forwarded to the inner console
 
 
+def test_buffered_progress_without_a_timer_is_idempotent_and_records_no_elapsed() -> None:
+    inner = ScriptedConsole()
+    buf = BufferingConsole(inner)
+    with buf.progress("Watching", timer=False) as progress:
+        progress.close(done=False)
+    assert buf._pending == []
+
+    with buf.progress("Watching", timer=False):
+        pass
+    assert buf._pending == [("->", "Watching — done")]
+
+
 def test_buffering_console_replays_pre_log_output_into_the_log(tmp_path: Path) -> None:
     inner = ScriptedConsole()
     buf = BufferingConsole(inner)
@@ -291,3 +303,18 @@ def test_the_transcript_tail_is_bounded_and_survives_a_missing_log(tmp_path: Pat
     tail = tail_transcript(log, keep=5)
     assert tail == [f"line {i}" for i in range(35, 40)]
     assert tail_transcript(tmp_path / "absent.log") == []
+
+
+def test_a_repeated_line_is_collapsed_rather_than_filling_the_tail(tmp_path: Path) -> None:
+    """The FEL wait polls once a second for up to 180s. Every failed poll logs the same line, so
+    the reprint after the session ended was 11 copies of it and the outcome was pushed off the
+    top — the user saw a wall of identical errors instead of what happened."""
+    log = tmp_path / "run.log"
+    log.write_text(
+        "".join(f"[+   {i}.0s] !! ERROR: Allwinner USB FEL device not found!\n" for i in range(11))
+        + "[+  11.0s]    Interrupted — nothing is lost; re-run to resume.\n"
+    )
+    tail = tail_transcript(log)
+    assert len(tail) == 2
+    assert tail[0] == "ERROR: Allwinner USB FEL device not found!   (repeated 11 times)"
+    assert "Interrupted" in tail[1]

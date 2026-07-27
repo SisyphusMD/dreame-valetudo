@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dreame_valetudo.console import Console, Progress
+from dreame_valetudo.console import Console, Progress, reset_print_once
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.profiles import load_profile
@@ -30,7 +30,10 @@ class ScriptedConsole(Console):
               lead: bool = False, trail: bool = False) -> None:
         self.lines.append((kind, message))
 
-    def progress(self, label: str) -> Progress:
+    def erase_line(self) -> None:
+        """Inert: this console captures lines, so raw cursor control has nothing to act on."""
+
+    def progress(self, label: str, *, timer: bool = True) -> Progress:
         self.lines.append(("progress", label))
         return Progress()  # inert: no thread, no output
 
@@ -45,6 +48,11 @@ class ScriptedConsole(Console):
 
 
 CtxFactory = Callable[..., Context]
+
+
+@pytest.fixture(autouse=True)
+def _isolated_print_once_state() -> None:
+    reset_print_once()
 
 
 @pytest.fixture

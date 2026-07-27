@@ -18,7 +18,7 @@
 <rect x="26.0" y="405.0" width="597.8" height="20.0" fill="#f2c14e"/>
 <text xml:space="preserve" x="26" y="70.0" font-size="14.0"><tspan fill="#82869a">── </tspan><tspan fill="#5ad4dc">Phase 2 of 3 · Flash the rooted image — DESTRUCTIVE</tspan><tspan fill="#82869a"> ──────────────────────</tspan></text>
 <text xml:space="preserve" x="26" y="92.0" font-size="14.0"><tspan fill="#d6d8e0">   Robot identity confirmed (config=d97c4de6…).</tspan></text>
-<text xml:space="preserve" x="26" y="136.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; &gt;&gt;&gt; WATCHDOG LIVE — flashing now &lt;&lt;&lt;</tspan></text>
+<text xml:space="preserve" x="26" y="136.0" font-size="14.0"><tspan fill="#5ad4dc">&gt;&gt; &gt;&gt;&gt; POWER-CYCLE CLOCK LIVE — flashing now &lt;&lt;&lt;</tspan></text>
 <text xml:space="preserve" x="26" y="158.0" font-size="14.0"><tspan fill="#e4c275">!! Do NOT press Ctrl+C or unplug USB until you see &#x27;All flashes OKAY&#x27; —</tspan></text>
 <text xml:space="preserve" x="26" y="180.0" font-size="14.0"><tspan fill="#e4c275">   interrupting a flash in progress can PERMANENTLY brick the robot.</tspan></text>
 <text xml:space="preserve" x="26" y="202.0" font-size="14.0"><tspan fill="#d6d8e0">   fastboot oem dust &lt;redacted-id&gt;</tspan></text>

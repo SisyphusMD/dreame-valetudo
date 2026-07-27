@@ -37,10 +37,12 @@ def _check_external_tools(ctx: Context) -> None:
 
 
 def doctor(ctx: Context) -> None:
-    ctx.console.say(
-        f"Toolchain cache — {ctx.profile.model} (code={ctx.profile.model_code}, "
-        f"arch={ctx.profile.arch}, dram={ctx.profile.dram})"
-    )
+    needs_build = not _is_exe(ctx.sunxi_fel)
+    if needs_build:
+        ctx.console.say(
+            f"Toolchain cache — {ctx.profile.model} (code={ctx.profile.model_code}, "
+            f"arch={ctx.profile.arch}, dram={ctx.profile.dram})"
+        )
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     _check_external_tools(ctx)
@@ -54,7 +56,7 @@ def doctor(ctx: Context) -> None:
     # Resolve (and report) the fastboot transport — dies with install guidance if none is usable.
     ctx.console.info(f"fastboot transport: {ctx.fastboot.transport.mode} (libusb client)")
 
-    if _is_exe(ctx.sunxi_fel):
+    if not needs_build:
         ctx.console.info(f"sunxi-fel: present ({ctx.sunxi_fel})")
     else:
         _build_sunxi(ctx)

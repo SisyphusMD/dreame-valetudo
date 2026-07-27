@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 from conftest import CtxFactory
 
-from dreame_valetudo.cli import select_model, select_robot
-from dreame_valetudo.console import Die
+from dreame_valetudo.cli import _dispatch, select_model, select_robot
+from dreame_valetudo.console import Die, reset_print_once
+from dreame_valetudo.phases.misc import _summary
 from dreame_valetudo.workspace import Robot
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
@@ -22,6 +23,97 @@ def test_select_model_picks_by_menu_number(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["1"], confirms=[])  # first entry is x40-ultra
     select_model(ctx)
     assert ctx.profile.key == "x40-ultra"
+
+
+def test_name_and_model_are_saved_before_recon(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["Test Bench #1", "9"])
+    select_robot(ctx)
+    assert ctx.robot is not None
+    assert ctx.robot.display_name() == "Test Bench #1"
+    assert ctx.robot.state_get("model_key") == "d10s-pro"
+
+
+def test_declined_hazard_is_not_saved_and_is_gated_on_retry(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["bench", "5"], confirms=[False])
+    with pytest.raises(Die, match="Verify the model code"):
+        select_robot(ctx)
+    assert ctx.robot is not None
+    assert ctx.robot.state_get("model_key") is None
+
+    reset_print_once()
+    retry = make_ctx(asks=["5"], confirms=[False], robot_name="bench")
+    with pytest.raises(Die, match="Verify the model code"):
+        select_model(retry)
+
+
+def test_saved_hazardous_model_is_checked_once_per_process(make_ctx: CtxFactory) -> None:
+    robot = Robot(make_ctx().ws.robots_dir / "bench")
+    robot.state_set("model_key", "l20-ultra")
+    ctx = make_ctx(env={"DREAME_ROBOT": "bench"}, confirms=[True, False])
+    select_robot(ctx)
+    select_robot(ctx)
+    assert ctx.console._confirms == [False]
+
+
+def test_summary_does_not_invent_a_model(make_ctx: CtxFactory) -> None:
+    robot = make_ctx().ws.robots_dir / "Test-Bench-1"
+    robot.mkdir(parents=True)
+    assert _summary(robot).startswith("model not chosen yet")
+
+
+def test_back_from_name_returns_to_robot_picker(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["2", "b", "1"])
+    prior = Robot(ctx.ws.robots_dir / "prior")
+    prior.state_set("model_key", "x40-ultra")
+    select_robot(ctx)
+    assert ctx.robot == prior
+
+
+def test_back_from_model_returns_to_robot_picker(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["2", "fresh", "b", "2", "fresh", "9"])
+    Robot(ctx.ws.robots_dir / "prior").state_dir.mkdir(parents=True)
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "fresh"
+    assert ctx.profile.key == "d10s-pro"
+
+
+def test_first_robot_back_restarts_selection_without_using_default(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["abandoned", "b", "chosen", "9"])
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "chosen"
+    assert ctx.profile.key == "d10s-pro"
+    assert not (ctx.ws.robots_dir / "abandoned").exists()
+
+
+def test_env_robot_back_aborts_without_using_default(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(env={"DREAME_ROBOT": "bench"}, asks=["b"])
+    existing = Robot(ctx.ws.robots_dir / "bench")
+    existing.set_display_name("Bench")
+    with pytest.raises(Die, match="Model selection cancelled"):
+        select_robot(ctx)
+    assert ctx.robot is not None
+    assert ctx.robot.state_get("model_key") is None
+    assert existing.display_name() == "Bench"
+
+
+def test_back_removes_only_the_directory_created_by_this_run(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["2", "temporary", "b", "1"])
+    prior = Robot(ctx.ws.robots_dir / "prior")
+    prior.state_set("model_key", "x40-ultra")
+    prior.state_set("recon")
+    select_robot(ctx)
+    assert ctx.robot == prior
+    assert prior.state_has("recon")
+    assert not (ctx.ws.robots_dir / "temporary").exists()
+
+
+def test_model_command_refuses_after_rooting(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(env={"DREAME_ROBOT": "bench"})
+    robot = Robot(ctx.ws.robots_dir / "bench")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("rooted")
+    with pytest.raises(Die, match="cannot be changed after rooting"):
+        _dispatch("model", [], ctx)
 
 
 def test_select_model_rejects_unicode_digits(make_ctx: CtxFactory) -> None:

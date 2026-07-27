@@ -16,6 +16,7 @@ from ..console import die
 from ..constants import FEL_IMAGE_FILES
 from ..context import Context
 from ..dustbuilder import form_signature
+from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot
@@ -226,6 +227,7 @@ def _watch_for_zip(ctx: Context, floor: float, tries: int = 720) -> str | None:
     return None
 
 
+@records_step("building the rooted image")
 def image(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
     if robot.state_has("image") and not force:

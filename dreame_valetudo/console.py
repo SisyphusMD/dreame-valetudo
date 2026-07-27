@@ -60,6 +60,15 @@ def _fmt_elapsed(seconds: float) -> str:
 # A list, not a rebindable global; empty until a robot is bound (early commands have none).
 _BOOKMARK: list[Path] = []
 
+# Recursive resumes and backtracking stay in the same terminal, so process lifetime exactly
+# matches the lifetime of narrative that remains visible above the current prompt.
+_PRINTED_ONCE: set[str] = set()
+
+
+def reset_print_once() -> None:
+    """Clear process-local presentation state for isolated test cases."""
+    _PRINTED_ONCE.clear()
+
 
 def bookmark_prompts_in(state_dir: Path) -> None:
     """Record open questions for this robot from now on."""
@@ -109,6 +118,18 @@ def next_deadline(
     return now + timeout if deadline is None else deadline
 
 
+def next_idle_deadline(deadline: float | None, now: float) -> float | None:
+    """Apply the configured attachment rule to a wait outside a prompt.
+
+    Keeping this beside the prompt machinery is deliberate: FEL and questions must agree about
+    what "unwatched" means, including the safe unknown state.
+    """
+    probe = _IDLE_PROBE[0] if _IDLE_PROBE else None
+    timeout = _IDLE_TIMEOUT[0] if _IDLE_TIMEOUT else 0.0
+    attached = probe() if probe is not None else None
+    return next_deadline(attached, deadline, now, timeout)
+
+
 class Console:
     """Human-facing IO. Subclass to script prompts / capture output in tests."""
 
@@ -150,6 +171,14 @@ class Console:
     def say(self, message: str, *, wrap: bool = True) -> None:
         self._emit("say", message, wrap=wrap)
 
+    def once(self, key: str, emit: Callable[[], object]) -> bool:
+        """Run a console interaction only on its first request in this process."""
+        if key in _PRINTED_ONCE:
+            return False
+        _PRINTED_ONCE.add(key)
+        emit()
+        return True
+
     def action(self, message: str) -> None:
         """A hands-on step the user must physically perform (PCB buttons, cables, power). Rendered
         as a high-visibility banner (bold black-on-yellow) so the one thing a script can't do
@@ -187,6 +216,24 @@ class Console:
     def err(self, message: str, *, wrap: bool = True) -> None:
         self._emit("err", message, wrap=wrap)
 
+    def erase_line(self) -> None:
+        """Remove the terminal's preceding physical line.
+
+        Gated on being a terminal ONLY, deliberately not on `color`: NO_COLOR asks for no styling,
+        not for no cursor control, and honouring it here would leave the stray `[exited]` that tmux
+        writes on the exact terminals of the people most likely to notice it.
+        """
+        if not self._tty:
+            return
+        with self._lock:
+            try:
+                sys.stdout.write("\033[1A\033[2K")
+                sys.stdout.flush()
+            except OSError:
+                # The tty can disappear between the capability check and the write; cosmetic
+                # cleanup must never turn that into a failed run.
+                pass
+
     def block(self, lines: Sequence[str] | str, *, title: str | None = None) -> None:
         """Captured tool/log output, gutter-marked so it reads as evidence rather than the tool's
         own narration. Never wrapped — tool output is preformatted and wrapping would corrupt its
@@ -198,12 +245,13 @@ class Console:
         else:
             self._emit("block", text, wrap=False, lead=True, trail=True)
 
-    def progress(self, label: str) -> Progress:
+    def progress(self, label: str, *, timer: bool = True) -> Progress:
         """Liveness for any operation that can exceed a few seconds. On a TTY: one in-place
-        spinner+elapsed row, erased on exit and replaced by a dim done-line. Piped: a start line
-        and a heartbeat line every ~60s. Use as a context manager; never hold one across a
-        prompt (confirm/ask force-close it) or the flash window."""
-        return _LiveProgress(self, label)
+        spinner row, erased on exit and replaced by a dim done-line. Piped: a start line and a
+        heartbeat line every ~60s. Elapsed time is included unless `timer` is false. Use as a
+        context manager; never hold one across a prompt (confirm/ask force-close it) or the flash
+        window."""
+        return _LiveProgress(self, label, timer=timer)
 
     def confirm(self, prompt: str) -> bool:
         self._suspend_progress()
@@ -322,6 +370,16 @@ class Console:
                 return ""
         return self._prompt_until_idle(rendered, probe, timeout)
 
+    def replay(self, data: bytes) -> None:
+        """Write a previously captured terminal screen without re-rendering it."""
+        stream = getattr(sys.stdout, "buffer", None)
+        if stream is not None:
+            stream.write(data)
+            stream.flush()
+        else:
+            sys.stdout.write(data.decode(errors="replace"))
+            sys.stdout.flush()
+
     def _prompt_until_idle(
         self, rendered: str, probe: Callable[[], bool | None], timeout: float
     ) -> str:
@@ -380,10 +438,12 @@ class _LiveProgress(Progress):
     heartbeats are display chrome and bypass ``_emit``; only the final done-line goes through
     it (and thus reaches the run log, once)."""
 
-    def __init__(self, console: Console, label: str,
+    def __init__(self, console: Console, label: str, *,
+                 timer: bool = True,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self._console = console
         self._label = label
+        self._timer = timer
         self._clock = clock
         self._t0 = clock()
         self._stop = threading.Event()
@@ -416,15 +476,21 @@ class _LiveProgress(Progress):
                 with con._lock:
                     if self._stop.is_set():  # re-check under the lock: no frame after close
                         break
-                    elapsed = _fmt_elapsed(self._clock() - self._t0)
                     if con._tty:
                         glyph = con._c("1;36", _FRAMES[frame % len(_FRAMES)])
                         frame += 1
-                        tail = con._c("2", f"({elapsed})")
-                        sys.stdout.write(f"\r\033[2K   {glyph} {self._label} {tail}")
+                        tail = (
+                            " " + con._c("2", f"({_fmt_elapsed(self._clock() - self._t0)})")
+                            if self._timer else ""
+                        )
+                        sys.stdout.write(f"\r\033[2K   {glyph} {self._label}{tail}")
                         sys.stdout.flush()
                     else:
-                        print(f"   ... {self._label} ({elapsed})")
+                        tail = (
+                            f" ({_fmt_elapsed(self._clock() - self._t0)})"
+                            if self._timer else ""
+                        )
+                        print(f"   ... {self._label}{tail}")
                         con._last_line_blank = False
         except Exception:  # a display thread must never take down a run (e.g. BrokenPipe)
             return
@@ -447,5 +513,7 @@ class _LiveProgress(Progress):
             if con._active is self:
                 con._active = None
         if done:
-            con._emit("progress_done",
-                      f"{self._label} — done ({_fmt_elapsed(self._clock() - self._t0)})")
+            tail = (
+                f" ({_fmt_elapsed(self._clock() - self._t0)})" if self._timer else ""
+            )
+            con._emit("progress_done", f"{self._label} — done{tail}")
