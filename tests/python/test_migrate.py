@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import errno
 import json
-import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,6 +23,15 @@ _BK1 = f"dreame-r2416-{_CFG}-20200101-000000"                 # consolidated: co
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
     return {"HOME": str(home), **extra}
+
+
+def _cross_device_then_publish(src: Path, dst: Path) -> None:
+    staged = src.name.startswith(f".{dst.name}.migration-") and src.name.endswith(".payload")
+    if not staged:
+        raise OSError(errno.EXDEV, "cross-device link")
+    if dst.exists() or dst.is_symlink():
+        raise FileExistsError(errno.EEXIST, "already exists", dst)
+    src.rename(dst)
 
 
 # --- per-version seeds: build a representative workspace AT layout vN, carrying sentinel data -----
@@ -133,6 +141,38 @@ def test_merge_keeps_both_on_a_file_collision(tmp_path: Path) -> None:
     assert any(".pre-migration.bak" in msg for _k, msg in con.lines)
 
 
+def test_merge_preserves_the_canonical_lock_inode(tmp_path: Path) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.mkdir()
+    dst.mkdir()
+    (src / ".lock").write_text("stale legacy run record")
+    (dst / ".lock").write_text("held canonical run record")
+    before = (dst / ".lock").stat()
+
+    assert M._safe_merge(src, dst, ScriptedConsole(), preserve_destination_lock=True) is True
+
+    current = dst / ".lock"
+    assert current.read_text() == "held canonical run record"
+    assert (current.stat().st_dev, current.stat().st_ino) == (before.st_dev, before.st_ino)
+    assert not (dst / ".lock.pre-migration.bak").exists()
+    assert not src.exists()
+
+
+def test_merge_keeps_both_copies_of_a_nested_file_named_lock(tmp_path: Path) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    (src / "nested").mkdir(parents=True)
+    (dst / "nested").mkdir(parents=True)
+    (src / "nested" / ".lock").write_text("legacy data")
+    (dst / "nested" / ".lock").write_text("current data")
+
+    assert M._safe_merge(src, dst, ScriptedConsole(), preserve_destination_lock=True) is True
+
+    assert (dst / "nested" / ".lock").read_text() == "legacy data"
+    assert (dst / "nested" / ".lock.pre-migration.bak").read_text() == "current data"
+
+
 def test_merge_retries_when_even_the_bak_slot_is_taken(tmp_path: Path) -> None:
     # Pathological double-collision: the file AND its .pre-migration.bak already exist at the
     # destination. Refuse to touch either (never overwrite), leave the source in place, and DON'T
@@ -164,16 +204,242 @@ def test_refuses_a_newer_on_disk_layout(tmp_path: Path) -> None:
 
 def test_respects_dreame_work_but_still_consolidates_backups(tmp_path: Path) -> None:
     _seed_v0(tmp_path)
-    M.migrate(_env(tmp_path, DREAME_WORK=str(tmp_path / "custom")), ScriptedConsole())
+    con = ScriptedConsole()
+    M.migrate(_env(tmp_path, DREAME_WORK=str(tmp_path / "custom")), con)
     old = tmp_path / "dreame-valetudo-work"
     assert old.is_dir() and not old.is_symlink()  # custom work dir set -> NOT moved
     assert any((tmp_path / "dreame-valetudo" / "backups").glob("*"))  # backups still consolidated
+    assert not (tmp_path / "dreame-valetudo" / ".layout").exists()  # skipped data must retry later
+    assert str(old) in con.text()
+
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    assert not old.exists()
+    assert (tmp_path / "dreame-valetudo" / ".layout").is_file()
 
 
 def test_respects_dreame_backups(tmp_path: Path) -> None:
     _seed_v0(tmp_path)
-    M.migrate(_env(tmp_path, DREAME_BACKUPS=str(tmp_path / "elsewhere")), ScriptedConsole())
+    con = ScriptedConsole()
+    M.migrate(_env(tmp_path, DREAME_BACKUPS=str(tmp_path / "elsewhere")), con)
     assert (tmp_path / _BK0).is_dir()  # left in place
+    assert not (tmp_path / "dreame-valetudo" / ".layout").exists()
+    assert str(tmp_path / _BK0) in con.text()
+
+    M.migrate(_env(tmp_path), ScriptedConsole())
+    assert not (tmp_path / _BK0).exists()
+    assert (tmp_path / "dreame-valetudo" / ".layout").is_file()
+
+
+def test_explicit_canonical_backups_still_migrates_legacy_backups(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)
+    canonical = tmp_path / "dreame-valetudo" / "backups"
+
+    M.migrate(_env(tmp_path, DREAME_BACKUPS=str(canonical)), ScriptedConsole())
+
+    assert not (tmp_path / _BK0).exists()
+    assert (canonical / _BK1 / "files.tar.gz").read_bytes() == SENTINEL
+    assert (tmp_path / "dreame-valetudo" / ".layout").is_file()
+
+
+def test_legacy_work_symlink_moves_without_dereferencing_target(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)
+    old = tmp_path / "dreame-valetudo-work"
+    external = tmp_path / "external-work"
+    old.rename(external)
+    old.symlink_to("external-work", target_is_directory=True)  # relative to the legacy location
+    con = ScriptedConsole()
+
+    M.migrate(_env(tmp_path), con)
+
+    current = tmp_path / "dreame-valetudo" / "work"
+    assert not old.exists() and not old.is_symlink()
+    assert current.is_symlink()
+    assert current.resolve() == external.resolve()
+    assert (external / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
+    assert (tmp_path / "dreame-valetudo" / ".layout").is_file()
+
+
+def test_legacy_symlink_to_current_work_is_removed_without_moving_current(tmp_path: Path) -> None:
+    base = tmp_path / "dreame-valetudo"
+    current = base / "work"
+    current.mkdir(parents=True)
+    (current / "sentinel").write_bytes(SENTINEL)
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(current, target_is_directory=True)
+
+    M.migrate(_env(tmp_path), ScriptedConsole())
+
+    assert not old.exists() and not old.is_symlink()
+    assert current.is_dir() and not current.is_symlink()
+    assert (current / "sentinel").read_bytes() == SENTINEL
+    assert not (base / "work.pre-migration.bak").exists()
+    assert (base / ".layout").is_file()
+
+
+def test_legacy_work_symlink_conflict_leaves_both_trees_unstamped(tmp_path: Path) -> None:
+    external = tmp_path / "external-work"
+    external.mkdir()
+    (external / "sentinel").write_bytes(b"legacy")
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(external, target_is_directory=True)
+    base = tmp_path / "dreame-valetudo"
+    current = base / "work"
+    current.mkdir(parents=True)
+    (current / "sentinel").write_bytes(b"current")
+    con = ScriptedConsole()
+
+    M.migrate(_env(tmp_path), con)
+
+    assert old.is_symlink() and old.resolve() == external.resolve()
+    assert (external / "sentinel").read_bytes() == b"legacy"
+    assert (current / "sentinel").read_bytes() == b"current"
+    assert not (base / "work.pre-migration.bak").exists()
+    assert not (base / ".layout").exists()
+    assert str(old) in con.text() and str(current) in con.text()
+
+
+def test_broken_legacy_work_symlink_is_left_unstamped(tmp_path: Path) -> None:
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(tmp_path / "missing-work", target_is_directory=True)
+    con = ScriptedConsole()
+
+    M.migrate(_env(tmp_path), con)
+
+    assert old.is_symlink()
+    assert not (tmp_path / "dreame-valetudo" / "work").exists()
+    assert not (tmp_path / "dreame-valetudo" / ".layout").exists()
+    assert "target is unusable" in con.text()
+
+
+def test_temporarily_broken_work_symlink_retries_past_its_fallback_lock(tmp_path: Path) -> None:
+    target = tmp_path / "external-work"
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(target, target_is_directory=True)
+    current = tmp_path / "dreame-valetudo" / "work"
+    env = _env(tmp_path)
+    fallback_lock = M.pre_migration_lock_path(env, current)
+    fallback_lock.parent.mkdir(parents=True)
+    fallback_lock.write_text("fallback run")
+    M.migrate(env, ScriptedConsole())
+    assert old.is_symlink() and current.is_dir() and not current.is_symlink()
+
+    target.mkdir()
+    (target / "sentinel").write_bytes(SENTINEL)
+    assert M.pre_migration_session_path(env, current) == target
+    locked_before_publish: list[Path] = []
+    M.migrate(env, ScriptedConsole(), locked_before_publish.append)
+
+    assert locked_before_publish == [target]
+    assert not old.exists() and not old.is_symlink()
+    assert current.is_symlink() and current.resolve() == target
+    assert (current / "sentinel").read_bytes() == SENTINEL
+
+
+def test_pre_migration_lock_follows_valid_legacy_work_symlink(tmp_path: Path) -> None:
+    external = tmp_path / "external-work"
+    external.mkdir()
+    (external / "sentinel").write_bytes(SENTINEL)
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to("external-work", target_is_directory=True)
+    current = tmp_path / "dreame-valetudo" / "work"
+    env = _env(tmp_path)
+
+    lock = M.pre_migration_lock_path(env, current)
+    assert lock == external / ".lock"
+    lock.write_text("held before migrate")
+    M.migrate(env, ScriptedConsole())
+
+    assert current.is_symlink() and current.resolve() == external.resolve()
+    assert (current / ".lock").samefile(lock)
+    assert (current / "sentinel").read_bytes() == SENTINEL
+
+
+def test_pre_migration_lock_moves_with_a_regular_legacy_workspace(tmp_path: Path) -> None:
+    old = tmp_path / "dreame-valetudo-work"
+    old.mkdir()
+    legacy_lock = old / ".lock"
+    legacy_lock.write_text("held before migrate")
+    before = legacy_lock.stat()
+    current = tmp_path / "dreame-valetudo" / "work"
+    env = _env(tmp_path)
+
+    assert M.pre_migration_lock_path(env, current) == legacy_lock
+    assert M.pre_migration_session_path(env, current) == current
+    M.migrate(env, ScriptedConsole())
+
+    current_lock = current / ".lock"
+    assert current_lock.read_text() == "held before migrate"
+    assert (current_lock.stat().st_dev, current_lock.stat().st_ino) == (before.st_dev, before.st_ino)
+
+
+def test_explicit_canonical_work_uses_the_same_legacy_lock_and_migrates(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)
+    old = tmp_path / "dreame-valetudo-work"
+    current = tmp_path / "dreame-valetudo" / "work"
+    env = _env(tmp_path, DREAME_WORK=str(current))
+
+    assert M.pre_migration_lock_path(env, current) == old / ".lock"
+    M.migrate(env, ScriptedConsole())
+
+    assert not old.exists()
+    assert (current / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
+
+
+def test_repairs_legacy_data_stranded_by_an_existing_v1_stamp(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)
+    base = tmp_path / "dreame-valetudo"
+    base.mkdir()
+    (base / ".layout").write_text(json.dumps({"layout_version": 1, "min_tool_version": "0.2.0"}))
+
+    M.migrate(_env(tmp_path), ScriptedConsole())
+
+    assert not (tmp_path / "dreame-valetudo-work").exists()
+    assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
+    assert (base / "backups" / _BK1 / "files.tar.gz").read_bytes() == SENTINEL
+
+
+def test_stamped_layout_reports_an_incomplete_repair(tmp_path: Path) -> None:
+    _seed_v1(tmp_path)
+    old = tmp_path / "dreame-valetudo-work"
+    (old / "state").mkdir(parents=True)
+    (old / "state" / "sentinel").write_bytes(SENTINEL)
+    con = ScriptedConsole()
+
+    M.report(_env(tmp_path, DREAME_WORK=str(tmp_path / "custom")), con)
+
+    assert (old / "state" / "sentinel").read_bytes() == SENTINEL
+    assert "incomplete" in con.text().lower()
+    assert "Up to date" not in con.text()
+
+
+def test_unreadable_legacy_backup_candidate_does_not_abort_other_repairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v1(tmp_path)
+    blocked = tmp_path / "dreame-r2416-blocked-backup-20200101-000001"
+    blocked.mkdir()
+    healthy_name = f"dreame-r2416-kitchen-{_CFG}-backup-20200102-000000"
+    healthy = tmp_path / healthy_name
+    healthy.mkdir()
+    (healthy / "files.tar.gz").write_bytes(SENTINEL)
+    original = M.manifest.looks_like_backup
+
+    def fail_one(candidate: Path) -> bool:
+        if candidate == blocked:
+            raise PermissionError("unreadable backup")
+        return original(candidate)
+
+    monkeypatch.setattr(M.manifest, "looks_like_backup", fail_one)
+    con = ScriptedConsole()
+
+    assert M.migrate(_env(tmp_path), con) is False
+
+    assert blocked.is_dir()
+    assert not healthy.exists()
+    moved = tmp_path / "dreame-valetudo" / "backups" / f"dreame-r2416-{_CFG}-20200102-000000"
+    assert (moved / "files.tar.gz").read_bytes() == SENTINEL
+    assert str(blocked) in con.text()
+    assert "incomplete" in con.text().lower()
 
 
 def test_leaves_non_backup_dirs_alone(tmp_path: Path) -> None:
@@ -189,14 +455,188 @@ def test_exdev_falls_back_to_a_verified_copy(
 ) -> None:
     _seed_v0(tmp_path)
 
-    def fake_rename(src: object, dst: object, **_kw: object) -> None:
-        raise OSError(errno.EXDEV, "cross-device link")
-
-    monkeypatch.setattr(os, "rename", fake_rename)
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
     M.migrate(_env(tmp_path), ScriptedConsole())
     base = tmp_path / "dreame-valetudo"
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
     assert (base / "backups" / _BK1 / "files.tar.gz").read_bytes() == SENTINEL
+
+
+def test_exdev_work_copy_is_locked_while_still_hidden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v0(tmp_path)
+    old = tmp_path / "dreame-valetudo-work"
+    (old / ".lock").write_text("held")
+    current = tmp_path / "dreame-valetudo" / "work"
+
+    staged_paths: list[Path] = []
+
+    def before_publish(staged: Path) -> None:
+        assert not current.exists()
+        assert staged.name.startswith(".work.migration-")
+        assert staged.name.endswith(".payload")
+        assert (staged / ".lock").read_text() == "held"
+        staged_paths.append(staged)
+
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    M.migrate(_env(tmp_path), ScriptedConsole(), before_publish)
+
+    assert len(staged_paths) == 1
+    assert current.is_dir()
+    assert not old.exists()
+
+
+def test_exdev_merge_copies_and_verifies_regular_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy" / "state"
+    dst = tmp_path / "current" / "state"
+    src.mkdir(parents=True)
+    dst.mkdir(parents=True)
+    (src / "recon").write_bytes(SENTINEL)
+
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    assert M._safe_merge(src, dst, ScriptedConsole()) is True
+    assert (dst / "recon").read_bytes() == SENTINEL
+    assert not src.exists()
+
+
+def test_exdev_file_copy_keeps_source_and_removes_unverified_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy" / "recon"
+    dst = tmp_path / "current" / "recon"
+    src.parent.mkdir()
+    src.write_bytes(SENTINEL)
+
+    def corrupt_copy(_src: object, target: object, **_kw: object) -> None:
+        Path(target).write_bytes(b"corrupt")
+
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M.shutil, "copy2", corrupt_copy)
+    with pytest.raises(Die, match="did not verify"):
+        M._safe_move(src, dst, ScriptedConsole())
+    assert src.read_bytes() == SENTINEL
+    assert not dst.exists()
+
+
+def test_exdev_publish_never_clobbers_a_destination_that_appeared_during_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_bytes(SENTINEL)
+    calls = 0
+
+    def destination_appears(_src: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.EXDEV, "cross-device link")
+        target.write_bytes(b"late arrival")
+        raise FileExistsError(errno.EEXIST, "already exists", target)
+
+    monkeypatch.setattr(M, "_rename_no_replace", destination_appears)
+
+    assert M._safe_move(src, dst, ScriptedConsole()) is False
+    assert src.read_bytes() == SENTINEL
+    assert dst.read_bytes() == b"late arrival"
+    assert not list(tmp_path.glob(".current.migration-*"))
+
+
+def test_exclusive_rename_does_not_replace_an_existing_path(tmp_path: Path) -> None:
+    src = tmp_path / "source"
+    dst = tmp_path / "destination"
+    src.write_bytes(SENTINEL)
+    dst.write_bytes(b"keep me")
+
+    with pytest.raises(FileExistsError):
+        M._rename_no_replace(src, dst)
+
+    assert src.read_bytes() == SENTINEL
+    assert dst.read_bytes() == b"keep me"
+
+
+def test_exdev_retry_removes_an_interrupted_staging_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_bytes(SENTINEL)
+    staging = tmp_path / ".current.migration-abandoned.payload"
+    staging.mkdir()
+    (staging / "large-partial-copy").write_bytes(b"stale")
+    staging.with_suffix(".owner").write_text("")
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+
+    assert M._safe_move(src, dst, ScriptedConsole()) is True
+
+    assert dst.read_bytes() == SENTINEL
+    assert not src.exists()
+    assert not staging.exists()
+    assert not staging.with_suffix(".owner").exists()
+
+
+def test_concurrent_exdev_copies_never_delete_or_publish_each_others_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    dst = tmp_path / "current"
+    first.write_bytes(b"first backup")
+    second.write_bytes(b"second backup")
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    second_result: list[bool] = []
+
+    def publish_second_while_first_is_staged(first_staged: Path) -> None:
+        second_result.append(M._safe_move(second, dst, ScriptedConsole()))
+        assert first_staged.read_bytes() == b"first backup"
+
+    assert M._safe_move(first, dst, ScriptedConsole(), publish_second_while_first_is_staged) is False
+
+    assert second_result == [True]
+    assert first.read_bytes() == b"first backup"
+    assert not second.exists()
+    assert dst.read_bytes() == b"second backup"
+    assert not list(tmp_path.glob(".current.migration-*"))
+
+
+def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _OldLibc:
+        pass
+
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    monkeypatch.setattr(M.ctypes, "CDLL", lambda *_args, **_kwargs: _OldLibc())
+
+    with pytest.raises(OSError) as exc:
+        M._rename_no_replace(tmp_path / "source", tmp_path / "destination")
+
+    assert exc.value.errno == errno.ENOSYS
+    assert "renameat2" in str(exc.value)
+
+
+def test_exdev_directory_copy_verifies_file_bytes_before_removing_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    (src / "nested").mkdir(parents=True)
+    (src / "nested" / "recon").write_bytes(SENTINEL)
+    def corrupt_tree(_source: object, target: object, *_args: object, **_kwargs: object) -> Path:
+        copied = Path(target)
+        (copied / "nested").mkdir(parents=True)
+        (copied / "nested" / "recon").write_bytes(b"corrupt-data!\n")
+        return copied
+
+    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M.shutil, "copytree", corrupt_tree)
+    with pytest.raises(Die, match="did not verify"):
+        M._safe_move(src, dst, ScriptedConsole())
+    assert (src / "nested" / "recon").read_bytes() == SENTINEL
+    assert not dst.exists()
 
 
 def test_normalizes_legacy_backup_names_on_move(tmp_path: Path) -> None:
@@ -232,6 +672,27 @@ def test_syncs_the_current_robot_name_into_its_backups(tmp_path: Path) -> None:
     (bk / "files.tar.gz").write_bytes(b"x")  # no manifest yet -> backfilled + synced during migrate
     M.migrate(_env(tmp_path), ScriptedConsole())
     assert json.loads((bk / "manifest.json").read_text())["robot"] == "Kitchen Bot"
+
+
+def test_migrate_continues_when_one_backup_cannot_be_backfilled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v1(tmp_path)
+    blocked = tmp_path / "dreame-valetudo" / "backups" / _BK1
+    original = M.manifest._dump
+
+    def fail_one(backup_dir: Path, payload: dict[str, object]) -> None:
+        if backup_dir == blocked:
+            raise PermissionError("read-only backup")
+        original(backup_dir, payload)
+
+    monkeypatch.setattr(M.manifest, "_dump", fail_one)
+    con = ScriptedConsole()
+    M.migrate(_env(tmp_path), con)
+
+    assert not (blocked / "manifest.json").exists()
+    assert str(blocked) in con.text()
+    assert json.loads((tmp_path / "dreame-valetudo" / ".layout").read_text())["layout_version"] == 1
 
 
 def test_migrate_command_reports_state(tmp_path: Path) -> None:

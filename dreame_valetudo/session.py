@@ -89,19 +89,12 @@ PURE_COMMANDS = frozenset(
 # Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
 # loss — so there is never a stale lock to detect, and never a judgement call for the user about
 # whether some recorded pid is still alive. Module-level purely to keep the handle from being
-# garbage collected, which would release the lock early. A list so the handle is appended rather
-# than rebound — same lifetime, without a module-level `global`.
+# garbage collected, which would release the lock early. A cross-volume migration briefly holds
+# the source and copied destination together so the canonical path is never published unlocked.
 _HELD: list[IO[str]] = []
 
 
-def hold_workspace_lock(path: Path, command: str) -> None:
-    """Refuse to start when another run already owns this workspace.
-
-    The tmux wrapper already prevents most double-runs by attaching instead of starting a second
-    process. Piped and opted-out runs have no session to rejoin, so the lock is their only guard.
-    """
-    if command in PURE_COMMANDS:
-        return
+def _acquire_workspace_lock(path: Path, command: str) -> IO[str]:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Opened WITHOUT truncating: "w" would empty the file before the lock is even attempted, so a
     # run that is correctly refused would first erase the record of the run that beat it — and the
@@ -119,15 +112,52 @@ def hold_workspace_lock(path: Path, command: str) -> None:
             "once against the same robot risks bricking it. Wait for it to finish, or re-run "
             "this from a terminal to rejoin it."
         ) from None
-    # Replace, not append: a process holds at most one workspace lock, so _HELD[0] must always be
-    # the current one — describe_run writes through it.
-    _HELD[:] = [fh]
     # NOW that the lock is ours, start a fresh record. Not merely skipping the truncate above:
     # describe_run merges onto whatever it reads, so this run would inherit the previous one's
     # robot name and dead pid — naming the WRONG robot, which is worse than naming none.
     fh.seek(0)
     fh.truncate()
-    describe_run(command=command)
+    json.dump({"command": command, "pid": os.getpid()}, fh)
+    fh.flush()
+    return fh
+
+
+def hold_workspace_lock(path: Path, command: str) -> None:
+    """Refuse to start when another run already owns this workspace.
+
+    The tmux wrapper already prevents most double-runs by attaching instead of starting a second
+    process. Piped and opted-out runs have no session to rejoin, so the lock is their only guard.
+    """
+    if command in PURE_COMMANDS:
+        return
+    fh = _acquire_workspace_lock(path, command)
+    previous = list(_HELD)
+    _HELD[:] = [fh]
+    for old in previous:
+        old.close()
+
+
+def hold_additional_workspace_lock(path: Path, command: str) -> None:
+    """Lock a hidden cross-volume copy before migration publishes it at the canonical path."""
+    if command not in PURE_COMMANDS:
+        _HELD.append(_acquire_workspace_lock(path, command))
+
+
+def ensure_workspace_lock(path: Path, command: str) -> None:
+    """Move a held migration-era lock to its canonical path without an unlocked interval."""
+    if command in PURE_COMMANDS:
+        return
+    for held in _HELD:
+        try:
+            if os.path.samestat(os.fstat(held.fileno()), path.stat()):
+                for old in _HELD:
+                    if old is not held:
+                        old.close()
+                _HELD[:] = [held]
+                return
+        except OSError:
+            continue
+    hold_workspace_lock(path, command)
 
 
 def release_workspace_lock() -> None:
@@ -145,18 +175,18 @@ def describe_run(**fields: object) -> None:
     """
     if not _HELD:
         return
-    fh = _HELD[0]
-    current = _read_json(fh)
-    for key, value in fields.items():
-        if value is None:
-            current.pop(key, None)
-        else:
-            current[key] = value
-    current.setdefault("pid", os.getpid())
-    fh.seek(0)
-    fh.truncate()
-    json.dump(current, fh)
-    fh.flush()
+    for fh in _HELD:
+        current = _read_json(fh)
+        for key, value in fields.items():
+            if value is None:
+                current.pop(key, None)
+            else:
+                current[key] = value
+        current.setdefault("pid", os.getpid())
+        fh.seek(0)
+        fh.truncate()
+        json.dump(current, fh)
+        fh.flush()
 
 
 def records_step(name: str) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:

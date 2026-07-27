@@ -12,6 +12,7 @@ import pytest
 from conftest import ScriptedConsole
 
 from dreame_valetudo import cli as cli_mod
+from dreame_valetudo import migrate as migrate_mod
 from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux, main
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases import root as root_mod
@@ -27,6 +28,7 @@ from dreame_valetudo.session import (
     clear_outcome,
     client_attached,
     describe_run,
+    ensure_workspace_lock,
     env_prefix,
     hold_workspace_lock,
     kill_session,
@@ -207,6 +209,32 @@ def test_the_lock_refuses_a_second_run(tmp_path: Path) -> None:
     )
     out = subprocess.run([sys.executable, str(rival)], capture_output=True, check=False)
     assert out.returncode == 3  # the rival could not take the lock
+
+
+def test_cross_volume_lock_handoff_acquires_the_copy_before_releasing_the_source(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "legacy" / ".lock"
+    current = tmp_path / "current" / ".lock"
+    hold_workspace_lock(legacy, "root")
+    current.parent.mkdir()
+    current.write_bytes(legacy.read_bytes())  # the distinct inode produced by an EXDEV copy
+
+    ensure_workspace_lock(current, "root")
+
+    rival = tmp_path / "rival.py"
+    rival.write_text(
+        "import fcntl, sys\n"
+        f"f = open({str(current)!r}, 'r+')\n"
+        "try:\n"
+        "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except OSError:\n"
+        "    sys.exit(3)\n"
+        "sys.exit(0)\n"
+    )
+    out = subprocess.run([sys.executable, str(rival)], capture_output=True, check=False)
+    assert out.returncode == 3
+    assert running_run(current)["command"] == "root"
 
 
 @pytest.mark.parametrize("cmd", sorted(PURE_COMMANDS))
@@ -450,6 +478,118 @@ def test_reexec_asks_tmux_nothing_at_all_from_inside_the_session(tmp_path: Path)
                        con, tmp_path)
     assert not calls.exists(), f"tmux was invoked from inside the session: {calls.read_text()}"
     assert con.lines == []      # and the user was asked nothing
+
+
+def test_legacy_work_symlink_keeps_one_session_identity_through_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = tmp_path / "external-work"
+    external.mkdir()
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(external, target_is_directory=True)
+    current = tmp_path / "dreame-valetudo" / "work"
+    libexec, calls = _stub_tmux(tmp_path, session_exists=False)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = ScriptedConsole()
+
+    with pytest.raises(SystemExit):
+        _reexec_under_tmux(
+            ["root"],
+            {"HOME": str(tmp_path), "DREAME_LIBEXEC": str(libexec)},
+            con,
+            current,
+        )
+
+    created_as = session_name(external)
+    assert f"new-session -A -d -s {created_as}" in calls.read_text()
+    migrate_mod.migrate({"HOME": str(tmp_path)}, ScriptedConsole())
+    assert session_name(current) == created_as
+
+
+def test_legacy_work_symlink_clears_the_outcome_from_its_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = tmp_path / "external-work"
+    external.mkdir()
+    stale = external / OUTCOME
+    stale.write_text(json.dumps({"rc": 99, "log": ""}))
+    (tmp_path / "dreame-valetudo-work").symlink_to(external, target_is_directory=True)
+    current = tmp_path / "dreame-valetudo" / "work"
+    libexec, _calls = _stub_tmux(tmp_path, session_exists=False)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    with pytest.raises(SystemExit):
+        _reexec_under_tmux(
+            ["root"],
+            {"HOME": str(tmp_path), "DREAME_LIBEXEC": str(libexec)},
+            ScriptedConsole(),
+            current,
+        )
+
+    assert not stale.exists()
+
+
+def test_failed_first_migration_records_its_outcome_in_the_legacy_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = tmp_path / "dreame-valetudo-work"
+    old.mkdir()
+
+    def fail_migration(*_args: object, **_kwargs: object) -> bool:
+        raise OSError("migration failed before publishing work")
+
+    monkeypatch.setattr(cli_mod, "migrate", fail_migration)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    con = ScriptedConsole()
+    rc = main(
+        ["status"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_NO_LOG": "1"},
+        console=con,
+    )
+
+    assert rc == 1
+    assert read_outcome(old) == (1, None)
+    assert "migration failed before publishing work" in con.text()
+
+
+def test_failed_migration_replays_the_screen_from_the_surviving_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = tmp_path / "external-work"
+    external.mkdir()
+    (external / OUTCOME).write_text(json.dumps({"rc": 1, "log": ""}))
+    (tmp_path / "dreame-valetudo-work").symlink_to(external, target_is_directory=True)
+    current = tmp_path / "dreame-valetudo" / "work"
+    libexec, _calls = _stub_tmux(tmp_path, session_exists=True)
+    monkeypatch.setattr(sys, "stdin", _Tty(True))
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    seen: list[Path] = []
+
+    def captured_from(base: Path) -> bytes:
+        seen.append(base)
+        return b"migration detail\n"
+
+    monkeypatch.setattr(cli_mod, "read_captured_pane", captured_from)
+
+    class _CapturesReplay(ScriptedConsole):
+        def replay(self, data: bytes) -> None:
+            self.lines.append(("replay", data.decode()))
+
+    con = _CapturesReplay(asks=["1"])
+
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(
+            ["root"],
+            {"HOME": str(tmp_path), "DREAME_LIBEXEC": str(libexec)},
+            con,
+            current,
+        )
+
+    assert exc.value.code == 1
+    assert seen == [external]
+    assert "migration detail" in con.text()
 
 
 class _Tty:

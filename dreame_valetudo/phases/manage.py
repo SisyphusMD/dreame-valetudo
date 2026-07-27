@@ -81,7 +81,7 @@ def rename(ctx: Context, rest: Sequence[str]) -> None:
     if dst != src:
         src.rename(dst)
     Robot(dst).set_display_name(raw)
-    retagged = manifest.retag_robot(ctx.env, Robot(dst).config(), raw)
+    retagged = manifest.retag_robot(ctx.env, Robot(dst).config(), raw, console=ctx.console)
     tail = f" (folder {slug})" if slug != raw else ""
     ctx.console.say(f"Renamed '{old_disp}' -> '{raw}'{tail}.")
     if retagged:

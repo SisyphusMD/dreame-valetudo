@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **fix**: workspace migration no longer marks legacy data complete when an environment override
+  made it skip that data, safely relocates an existing work-directory symlink, and verifies every
+  copied file before removing a cross-volume source. Unwritable, unrelated, or symlinked backup
+  folders no longer abort every command or receive manifests outside the workspace.
 - **fix**: SSH-key setup now refuses incomplete key pairs instead of invoking `ssh-keygen` over an
   existing private key, reuses an unrecorded dedicated key, and disconnects key generation from
   hidden input so an overwrite prompt can never hang the run or destroy the only robot credential.

@@ -9,8 +9,12 @@ convention that an ABSENT manifest means a legacy backup.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
+import stat
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -26,13 +30,72 @@ _MODEL_RE = re.compile(r"^dreame-([^-]+)-")  # the model code right after 'dream
 
 
 def _contents(backup_dir: Path) -> list[str]:
-    return sorted(p.name for p in backup_dir.iterdir() if p.name != "manifest.json")
+    return sorted(
+        p.name
+        for p in backup_dir.iterdir()
+        if p.name != "manifest.json"
+        and not (
+            p.name.startswith(".manifest.")
+            and (p.name.endswith(".tmp") or p.name.endswith(".owner"))
+        )
+    )
+
+
+def looks_like_backup(backup_dir: Path) -> bool:
+    """True only for a real, local backup directory carrying backup-shaped contents."""
+    return (
+        backup_dir.is_dir()
+        and not backup_dir.is_symlink()
+        and (
+            (backup_dir / "files.tar.gz").exists()
+            or (backup_dir / "manifest.json").exists()
+            or any(backup_dir.glob("*.dd.gz"))
+        )
+    )
 
 
 def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
-    (backup_dir / "manifest.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    )
+    target = backup_dir / "manifest.json"
+    for abandoned in backup_dir.glob(".manifest.*.tmp"):
+        abandoned_owner = abandoned.with_suffix(".owner")
+        if not abandoned_owner.is_file() or abandoned_owner.is_symlink():
+            continue
+        try:
+            with abandoned_owner.open("r+") as stale:
+                fcntl.flock(stale, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                abandoned.unlink()
+                abandoned_owner.unlink()
+        except OSError:
+            continue
+    try:
+        existing_mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
+    temporary: Path | None = None
+    owner_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+",
+            dir=backup_dir,
+            prefix=".manifest.",
+            suffix=".owner",
+            delete=False,
+        ) as owner:
+            owner_path = Path(owner.name)
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            temporary = owner_path.with_suffix(".tmp")
+            with temporary.open("x", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            if existing_mode is not None:
+                temporary.chmod(existing_mode)
+            temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        if owner_path is not None:
+            owner_path.unlink(missing_ok=True)
 
 
 def write(backup_dir: Path, data: Mapping[str, object]) -> None:
@@ -85,7 +148,9 @@ def _backups_dir(env: Mapping[str, str]) -> Path:
     return Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "backups"
 
 
-def retag_robot(env: Mapping[str, str], config: str | None, new_name: str) -> int:
+def retag_robot(
+    env: Mapping[str, str], config: str | None, new_name: str, console: Console | None = None,
+) -> int:
     """Bring the recorded robot name current in every backup matching `config` (the durable join) —
     a rename updates each backup's authoritative record. Only the manifest's name label is touched;
     the backup DATA (tar/dd) is never modified. Returns how many were updated."""
@@ -93,9 +158,15 @@ def retag_robot(env: Mapping[str, str], config: str | None, new_name: str) -> in
     if not config or not backups.is_dir():
         return 0
     n = 0
-    for d in sorted(backups.iterdir()):
+    try:
+        entries = sorted(backups.iterdir())
+    except OSError as exc:
+        if console:
+            console.warn(f"Could not scan factory backups at {backups}: {exc}")
+        return 0
+    for d in entries:
         mf = d / "manifest.json"
-        if not mf.is_file():
+        if d.is_symlink() or not mf.is_file():
             continue
         try:
             data = json.loads(mf.read_text())
@@ -103,7 +174,12 @@ def retag_robot(env: Mapping[str, str], config: str | None, new_name: str) -> in
             continue
         if isinstance(data, dict) and data.get("config") == config and data.get("robot") != new_name:
             data["robot"] = new_name
-            _dump(d, data)
+            try:
+                _dump(d, data)
+            except OSError as exc:
+                if console:
+                    console.warn(f"Could not update the factory-backup manifest in {d}: {exc}")
+                continue
             n += 1
     return n
 
@@ -114,6 +190,17 @@ def backfill_manifests(env: Mapping[str, str], console: Console) -> None:
     backups = _backups_dir(env)
     if not backups.is_dir():
         return
-    n = sum(backfill_if_missing(d) for d in sorted(backups.iterdir()) if d.is_dir())
+    try:
+        entries = sorted(backups.iterdir())
+    except OSError as exc:
+        console.warn(f"Could not scan factory backups at {backups}: {exc}")
+        return
+    n = 0
+    for d in entries:
+        try:
+            if looks_like_backup(d) and backfill_if_missing(d):
+                n += 1
+        except OSError as exc:
+            console.warn(f"Could not backfill the factory-backup manifest in {d}: {exc}")
     if n:
         console.info(f"Backfilled a provenance manifest into {n} pre-manifest backup(s).")
