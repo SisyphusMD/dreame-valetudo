@@ -86,7 +86,7 @@
       "matchDepNames": ["python/cpython"],
       "matchUpdateTypes": ["minor", "major"],
       "automerge": false,
-      "prBodyNotes": ["A CPython minor bump must also update `depends_on \"python@3.x\"` in packaging/homebrew/dreame-valetudo.rb by hand — no Renovate manager covers the formula."]
+      "prBodyNotes": ["A CPython minor bump must also update `depends_on \"python@3.x\"` in `packaging/homebrew/*.rb` by hand — no Renovate manager covers the formulae."]
     },
     {
       "description": "The .deb builder image (docker `python`) freezes the same interpreter as the bundle; a MINOR bump (3.14 -> 3.15) must not slip in via automerge — it gets the same human review as the setup-python CPython pin.",

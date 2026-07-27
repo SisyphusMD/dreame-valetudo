@@ -110,7 +110,23 @@ jobs:
           docker start -a "$CID"
           docker cp "$CID":/w/ci.deb ./ci.deb
           docker rm "$CID" >/dev/null
-          dpkg-deb -c ci.deb | grep -E '/(dreame-valetudo|dreame-fastboot|sunxi-fel)$'
+          deb_contents="$(dpkg-deb -c ci.deb)"
+          for required in \
+            ./usr/bin/dreame-valetudo \
+            ./usr/lib/dreame-valetudo/dreame-fastboot \
+            ./usr/lib/dreame-valetudo/sunxi-fel; do
+            grep -Fq "$required" <<<"$deb_contents"
+          done
+          set +e
+          fastboot_out="$(./out/dreame-fastboot devices 2>&1)"
+          fastboot_rc=$?
+          set -e
+          if (( fastboot_rc > 1 )) \
+              || { (( fastboot_rc == 1 )) && [[ -n "$fastboot_out" ]]; } \
+              || grep -Eqi 'Traceback|NoBackendError|no libusb backend|library not loaded' <<<"$fastboot_out"; then
+            echo "fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out"
+            exit 1
+          fi
           # Also build the .rpm from the same binaries: validates the rpm overrides/config (it ships in
           # publish.yml). rpm tooling isn't on the runner to inspect, so just confirm it's non-empty.
           CIDR=$(docker create -e DEB_ARCH=amd64 -e VERSION=0.0.0 -w /w "$NFPM" package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm)

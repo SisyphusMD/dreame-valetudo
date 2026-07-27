@@ -85,19 +85,25 @@ jobs:
 
       - name: Create the three releases with the Linux assets
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x packaging/forgejo-release.sh packaging/github-release.sh
           ASSETS=(./*.deb ./*.rpm ./*.tar.gz)
+          fail=0
           packaging/forgejo-release.sh forgejo.bryantserver.com \
-            "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}"
-          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
-            "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}"
+            "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
+            || fail=1
           packaging/github-release.sh \
-            "${{ secrets.GH_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}"
+            "${{ secrets.GH_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
+            || fail=1
+          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
+            "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
+            || fail=1
+          exit "$fail"
 
   homebrew-tap:
     name: Update the Homebrew tap formula (stable or -rc per tag)
     needs: releases
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,6 +130,7 @@ jobs:
   reconcile:
     name: Reconcile releases across registries (bridge .pkgs to NAS, heal history)
     needs: releases
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

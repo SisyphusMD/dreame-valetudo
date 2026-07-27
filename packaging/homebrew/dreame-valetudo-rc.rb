@@ -13,13 +13,16 @@ class DreameValetudoRc < Formula
 
   desc "Root supported Dreame robot vacuums and install Valetudo (release candidate)"
   homepage "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
-  url "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/archive/vREPLACE_VERSION.tar.gz"
+  url "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/vREPLACE_VERSION/dreame-valetudo-REPLACE_VERSION.tar.gz"
+  mirror "https://github.com/SisyphusMD/dreame-valetudo/releases/download/vREPLACE_VERSION/dreame-valetudo-REPLACE_VERSION.tar.gz"
   sha256 "REPLACE_TARBALL_SHA256"
   license "AGPL-3.0-or-later"
 
   # Installs the same `dreame-valetudo` command as the stable formula, so the two can't coexist.
   conflicts_with "dreame-valetudo", because: "both install the dreame-valetudo command"
 
+  # matches the interpreter the .pkg/.deb bundles freeze; bump by hand with each CPython minor —
+  # no Renovate manager covers this formula (see the python/cpython prBodyNotes in .renovaterc.json).
   depends_on "python@3.14"
   depends_on "libusb"       # the fastboot-over-libusb client + sunxi-fel load it at runtime
   depends_on "uv"           # runs the libusb fastboot client (fetches pyusb on first use)
