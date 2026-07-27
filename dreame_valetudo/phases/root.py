@@ -19,6 +19,7 @@ from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
 from ..session import describe_run, records_step
 from ..util import parse_config
+from ..workspace import RECOVERY_BACKUP_ZIP
 from .doctor import _is_exe, doctor
 from .image import image
 
@@ -27,7 +28,19 @@ _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
 # identity of the config the image was built for (see log.py's redact_dust_token).
 _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
-_SAFE_BACKUP_STATES = frozenset({"obtained", "not-requested"})
+_RECOVERY_DUMPS = ("dustx100.bin", "dustx101.bin", "dustx102.bin")
+
+# These are deliberately well below the current builder artifacts, but high enough that a hollow
+# or grossly truncated member cannot reach either rootfs slot with an OKAY response. All supported
+# models share this MR813 FEL image layout; a future smaller layout must be reviewed explicitly.
+_FEL_IMAGE_MIN_BYTES = {
+    "fsbl.bin": 32 * 1024,
+    "payload.bin": 4 * 1024 * 1024,
+    "toc1.img": 1 * 1024 * 1024,
+    "boot.img": 8 * 1024 * 1024,
+    "rootfs.img": 100 * 1024 * 1024,
+    "check.txt": 1,
+}
 
 
 # Every signal the kernel delivers to the whole foreground process group that would otherwise end
@@ -92,6 +105,16 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
             "to flash. Re-run 'image --force' to stage this robot's own build.")
 
 
+def _has_recovery_backup(ctx: Context) -> bool:
+    robot = ctx.need_robot()
+    archive = robot.recon_dir / RECOVERY_BACKUP_ZIP
+    if archive.is_file() and archive.stat().st_size > 0:
+        return True
+    return all((robot.recon_dir / name).is_file()
+               and (robot.recon_dir / name).stat().st_size > 0
+               for name in _RECOVERY_DUMPS)
+
+
 @records_step("flashing the rooted image")
 def root(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
@@ -110,6 +133,15 @@ def root(ctx: Context, *, force: bool = False) -> None:
     missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]
     if missing:
         die(f"Run 'image' to stage the dustbuilder FEL image first (missing: {', '.join(missing)}).")
+    undersized = [
+        f"{name} ({(robot.fw_dir / name).stat().st_size} bytes; need at least {minimum})"
+        for name, minimum in _FEL_IMAGE_MIN_BYTES.items()
+        if (robot.fw_dir / name).stat().st_size < minimum
+    ]
+    if undersized:
+        die("SAFETY STOP: the staged image contains implausibly short files: "
+            f"{', '.join(undersized)}. Refusing to flash; re-run 'image --force' to stage a "
+            "complete build.")
     # Strip ALL whitespace (not just the ends), only the POSIX class — the token feeds the
     # `oem dust` flash-authorization argument, so any stray whitespace must not reach the wire.
     dust = (robot.fw_dir / "check.txt").read_text().translate(_POSIX_SPACE_DELETE)
@@ -133,12 +165,16 @@ def root(ctx: Context, *, force: bool = False) -> None:
          if field.startswith("backup=")),
         "unknown",
     )
-    if backup_state not in _SAFE_BACKUP_STATES:
+    backup_exists = _has_recovery_backup(ctx)
+    if backup_state != "not-requested" and not backup_exists:
         if backup_state == "missing":
             backup_warning = "The requested disaster-recovery backup was NOT obtained."
+        elif backup_state == "obtained":
+            backup_warning = "Recon recorded a disaster-recovery backup, but its files are missing."
         else:
-            backup_warning = "No recognised disaster-recovery backup result is recorded."
-        ctx.console.warn(f"{backup_warning} Flashing without that backup removes a recovery option.")
+            backup_warning = "No disaster-recovery backup can be found for this robot."
+        ctx.console.warn(f"{backup_warning} Flashing without it removes a recovery option. Run "
+                         "'dreame-valetudo recon --force' to capture it before flashing.")
         if not ctx.console.confirm("Flash without a disaster-recovery backup anyway?"):
             die("Aborted — nothing was written to the robot.")
 

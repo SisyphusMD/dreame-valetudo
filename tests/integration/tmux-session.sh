@@ -291,6 +291,9 @@ pass "a failing wrapped run returns its own status and shows its error"
 
 # --- 5. Ctrl+C returns to the same wrapped run ----------------------------------------------
 W_INT="$RUNDIR/work-interrupt"
+mkdir -p "$W_INT/cache/dist"
+: > "$W_INT/cache/dist/payload.bin"
+: > "$W_INT/cache/dist/fsbl_ddr4.bin"
 INT_USB="$RUNDIR/pyusb-stub"
 mkdir -p "$INT_USB/usb"
 printf '' > "$INT_USB/usb/__init__.py"
@@ -312,7 +315,7 @@ chmod +x "$INT_LIBEXEC/sunxi-fel"
 drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
   "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" \
   "DREAME_LIBEXEC=$INT_LIBEXEC" \
-  -- "${TOOL[@]}" &
+  -- "${TOOL[@]}" recon --no-recovery-backup &
 INT_CLIENT=$!
 INT_SESSION="$(session_for_work "$W_INT")"
 for _ in $(seq 1 80); do
