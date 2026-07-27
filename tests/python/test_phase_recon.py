@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -118,6 +119,8 @@ def test_recon_creates_robot_named_by_device_identity(make_ctx: CtxFactory) -> N
     assert (robot.recon_dir / "config.txt").read_text().strip() == f"config: {_CFG}"
     assert (robot.state_dir / "model_key").read_text().strip() == "x40-ultra"
     assert robot.state_has("recon")
+    assert stat.S_IMODE(robot.recon_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((robot.recon_dir / "config.txt").stat().st_mode) == 0o600
 
 
 def test_recon_captures_identity_vars_for_the_manual_checker(make_ctx: CtxFactory) -> None:
@@ -140,6 +143,7 @@ def test_recon_captures_identity_vars_for_the_manual_checker(make_ctx: CtxFactor
     robot = ctx.robot
     assert robot is not None
     assert robot.identity() == vals
+    assert stat.S_IMODE((robot.recon_dir / "identity.txt").stat().st_mode) == 0o600
 
 
 def test_recon_omits_identity_vars_the_bootloader_wont_answer(make_ctx: CtxFactory) -> None:
@@ -398,6 +402,9 @@ def _sampling_responder(*, blob: bytes) -> Callable[[tuple[str, ...]], Result]:
         if "get_staged" in joined:
             Path(str(argv[-1])).write_bytes(blob)
             return Result(argv, 0, f"OKAY uploaded {len(blob)} bytes", "")
+        if argv[:1] == ("zip",):
+            Path(argv[3]).write_bytes(b"recovery archive")
+            return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")
 
     return responder
@@ -411,6 +418,13 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert robot is not None
     for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
         assert (robot.recon_dir / name).stat().st_size == 1024
+    private = [
+        robot.recon_dir / "config.txt",
+        *(robot.recon_dir / name for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin")),
+        robot.recon_dir / "dreame_recovery_backup.zip",
+    ]
+    assert stat.S_IMODE(robot.recon_dir.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in private)
     assert any("Backup:" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
@@ -458,6 +472,11 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
     assert not (robot.recon_dir / "dreame_recovery_backup.zip").exists()
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert robot.state_get("recon") == f"config={_CFG} backup=missing"
+    assert stat.S_IMODE(robot.recon_dir.stat().st_mode) == 0o700
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) == 0o600
+        for path in robot.recon_dir.glob("dustx*.bin")
+    )
 
 
 def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> None:

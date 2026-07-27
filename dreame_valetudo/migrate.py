@@ -41,7 +41,7 @@ from pathlib import Path
 
 from . import __version__, dust_decrypt, manifest
 from .console import Console, die
-from .workspace import RECOVERY_BACKUP_ZIP, WORKSPACE_SUBDIR, Robot
+from .workspace import RECOVERY_BACKUP_ZIP, WORKSPACE_SUBDIR, Robot, protect_recon_artifacts
 
 BeforePublish = Callable[[Path], None]
 
@@ -573,6 +573,11 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
 
     Shared by the launch self-heal (old dumps) and recon (fresh dumps captured by a re-run), so
     calling either is safe and repeatable. Opt out entirely with ``DREAME_NO_DECRYPT=1``."""
+    try:
+        protect_recon_artifacts(recon_dir)
+    except OSError as exc:
+        console.warn(f"  could not restrict recovery-backup permissions in {recon_dir}: {exc}")
+        return 0
     if env.get("DREAME_NO_DECRYPT") == "1":
         return 0
     pending: list[tuple[Path, Path]] = []
@@ -616,6 +621,7 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
                 plain = dust_decrypt.xor_stream(src.read_bytes(), keystream)
                 with gzip.open(tmp, "wb") as fh:
                     fh.write(plain)
+                tmp.chmod(0o600)
                 tmp.replace(dst)  # atomic on the same directory/filesystem
         except OSError as exc:
             with contextlib.suppress(OSError):

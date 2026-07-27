@@ -26,6 +26,16 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
 
 
+def protect_recon_artifacts(recon_dir: Path) -> None:
+    """Restrict an existing recon directory and every regular artifact directly inside it."""
+    if recon_dir.is_symlink() or not recon_dir.is_dir():
+        return
+    recon_dir.chmod(0o700)
+    for artifact in recon_dir.iterdir():
+        if artifact.is_file() and not artifact.is_symlink():
+            artifact.chmod(0o600)
+
+
 def slugify(name: str) -> str:
     """A filesystem-safe single-segment folder slug from a human name: spaces become dashes, other
     unsafe characters are dropped, and runs collapse. May be empty (the caller rejects that). The

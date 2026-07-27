@@ -181,14 +181,20 @@ def fix_impl(ctx: Context) -> None:
         # remote shell and corrupt the config.
         patched_file = ctx.ws.base / "valetudo_config.json.patched"
         ctx.ws.base.mkdir(parents=True, exist_ok=True)
-        patched_file.write_text(json.dumps(data, indent=2) + "\n")
-        if not ctx.runner.run_redirect(
-            [*ssh_base(_TARGET, key),
-             ("cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
-              "cat > /data/valetudo_config.json")],
-            stdin_path=str(patched_file), check=False,
-        ).ok:
-            die("Couldn't write the patched config to the robot.")
+        try:
+            patched_file.unlink(missing_ok=True)
+            patched_file.touch(mode=0o600)
+            patched_file.write_text(json.dumps(data, indent=2) + "\n")
+            patched_file.chmod(0o600)
+            if not ctx.runner.run_redirect(
+                [*ssh_base(_TARGET, key),
+                 ("cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
+                  "cat > /data/valetudo_config.json")],
+                stdin_path=str(patched_file), check=False,
+            ).ok:
+                die("Couldn't write the patched config to the robot.")
+        finally:
+            patched_file.unlink(missing_ok=True)
         ctx.console.info("Patched config written (robot backup at "
                          "/data/valetudo_config.json.bak).")
 

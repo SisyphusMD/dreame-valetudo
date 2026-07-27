@@ -8,6 +8,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import random
+import stat
 import types
 from pathlib import Path
 
@@ -76,6 +77,7 @@ def test_decrypt_produces_restorable_ddgz(tmp_path: Path) -> None:
         assert out.is_file()
         assert gzip.decompress(out.read_bytes()) == plain  # restorable to the exact stock image
         assert (recon / f"{name}.bin").is_file()  # sealed original left untouched
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
 
 def test_decrypt_dense_slices_via_shared_keystream(tmp_path: Path) -> None:
@@ -120,8 +122,12 @@ def test_decrypt_is_idempotent(tmp_path: Path) -> None:
 def test_decrypt_opt_out(tmp_path: Path) -> None:
     recon = tmp_path / "recon"
     _seed_sealed(recon, "dustx100")
+    recon.chmod(0o755)
+    (recon / "dustx100.bin").chmod(0o644)
     assert M.decrypt_recovery_backup(recon, {"DREAME_NO_DECRYPT": "1"}, ScriptedConsole()) == 0
     assert not (recon / "dustx100.dd.gz").exists()
+    assert stat.S_IMODE(recon.stat().st_mode) == 0o700
+    assert stat.S_IMODE((recon / "dustx100.bin").stat().st_mode) == 0o600
 
 
 def test_decrypt_skips_non_obfuscated_data(tmp_path: Path) -> None:
