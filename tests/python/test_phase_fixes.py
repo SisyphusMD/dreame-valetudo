@@ -14,8 +14,6 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.phases.fixes import _DIAGNOSE_REMOTE, diagnose, fix_did, fix_impl, fix_key
 from dreame_valetudo.run import Result
 
-_ENV = {"HOME": "/tmp/dreame-none"}
-
 
 def _remote(call: tuple[str, ...]) -> str:
     """The remote command string of a recorded ssh/scp-style call (its last argv element)."""
@@ -40,7 +38,7 @@ def test_fix_did_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None
             return Result(argv, 0, "-1\n", "")  # a repairable negative deviceId
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, interactive=False, confirms=[])
+    ctx = make_ctx(responder=responder, interactive=False, confirms=[])
     assert fix_did(ctx) is False
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("reboot" in r for r in remotes)      # never rebooted
@@ -56,7 +54,7 @@ def test_fix_did_already_positive_returns_true(make_ctx: CtxFactory) -> None:
             return Result(argv, 0, "12345\n", "")
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, interactive=False)
+    ctx = make_ctx(responder=responder, interactive=False)
     assert fix_did(ctx) is True
 
 
@@ -75,7 +73,7 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
             return Result(argv, 0, "", "")  # UI answers on the first poll
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(model="x40-ultra", responder=responder, env=_ENV)
+    ctx = make_ctx(model="x40-ultra", responder=responder)
     fix_impl(ctx)
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("cat > /data/valetudo_config.json" in r for r in remotes)
@@ -96,7 +94,7 @@ def test_fix_key_restores_from_secure_storage(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, confirms=[True])
+    ctx = make_ctx(responder=responder, confirms=[True])
     assert fix_key(ctx) is True
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("key_orig.txt" in r for r in remotes)          # the restore write ran
@@ -113,7 +111,7 @@ def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFacto
             return Result(argv, 0, "ALREADYSET12345\n", "")  # a key is already there
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, interactive=False)
+    ctx = make_ctx(responder=responder, interactive=False)
     assert fix_key(ctx) is True
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("key_orig.txt" in r for r in remotes)       # never wrote
@@ -125,7 +123,7 @@ def test_fix_key_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None
     def responder(argv: tuple[str, ...]) -> Result:
         return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, interactive=False, confirms=[])
+    ctx = make_ctx(responder=responder, interactive=False, confirms=[])
     assert fix_key(ctx) is False
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("key_orig.txt" in r for r in remotes)  # _apply_key_fix never ran
@@ -144,7 +142,7 @@ def test_fix_key_refuses_a_malformed_secure_storage_key(make_ctx: CtxFactory) ->
             return Result(argv, 0, "MI_KEY = has a space!\n", "")  # not [A-Za-z0-9]{8,64}
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, env=_ENV, confirms=[True])
+    ctx = make_ctx(responder=responder, confirms=[True])
     with pytest.raises(Die, match="expected format"):
         fix_key(ctx)
     assert not any("key_orig.txt" in _remote(c) for c in ctx.runner.calls)  # type: ignore[attr-defined]
@@ -163,13 +161,13 @@ def _did_responder(did: str) -> object:
 
 
 def test_fix_did_dies_on_non_integer_did(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(responder=_did_responder("abc"), env=_ENV, interactive=False)
+    ctx = make_ctx(responder=_did_responder("abc"), interactive=False)
     with pytest.raises(Die, match="isn't a plain integer"):
         fix_did(ctx)
 
 
 def test_fix_did_dies_on_out_of_range_did(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(responder=_did_responder("-5000000000"), env=_ENV, interactive=False)
+    ctx = make_ctx(responder=_did_responder("-5000000000"), interactive=False)
     with pytest.raises(Die, match="valid uint32"):
         fix_did(ctx)
 
@@ -197,7 +195,7 @@ def _impl_responder(model_line: str, config_json: str, ui_up: bool, log_report: 
 
 def test_fix_impl_dies_on_unknown_model(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.zz9999\n", "", ui_up=True)
-    ctx = make_ctx(model="x40-ultra", responder=r, env=_ENV)
+    ctx = make_ctx(model="x40-ultra", responder=r)
     with pytest.raises(Die, match="isn't one this tool knows"):
         fix_impl(ctx)
 
@@ -205,7 +203,7 @@ def test_fix_impl_dies_on_unknown_model(make_ctx: CtxFactory) -> None:
 def test_fix_impl_falls_back_to_profile_class_without_model_line(make_ctx: CtxFactory) -> None:
     # device.conf has no model= -> pin the SELECTED model's class and warn about it.
     r = _impl_responder("did=1\nkey=abc\n", '{"robot":{"implementation":"auto"}}', ui_up=True)
-    ctx = make_ctx(model="x40-ultra", responder=r, env=_ENV)
+    ctx = make_ctx(model="x40-ultra", responder=r)
     fix_impl(ctx)
     assert any(k == "warn" and "No readable model=" in m
                for k, m in ctx.console.lines)  # type: ignore[attr-defined]
@@ -216,7 +214,7 @@ def test_fix_impl_falls_back_to_profile_class_without_model_line(make_ctx: CtxFa
 def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
-    ctx = make_ctx(model="x40-ultra", responder=r, env=_ENV)
+    ctx = make_ctx(model="x40-ultra", responder=r)
     fix_impl(ctx)
     assert any("already pins" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("cat > /data/valetudo_config.json" in _remote(c)
@@ -226,7 +224,7 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
 def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}',
                         ui_up=False, log_report="Cannot read properties of null (reading 'did')")
-    ctx = make_ctx(model="x40-ultra", responder=r, env=_ENV)
+    ctx = make_ctx(model="x40-ultra", responder=r)
     fix_impl(ctx)
     assert any("fix-did" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
@@ -253,7 +251,7 @@ def test_diagnose_scrubs_a_key_shaped_token_from_the_report(make_ctx: CtxFactory
             return pre
         return Result(argv, 0, f"key={mikey}\ndid=12\n", "")  # a stray key line from the robot
 
-    ctx = make_ctx(responder=responder, env=_ENV)
+    ctx = make_ctx(responder=responder)
     diagnose(ctx)
     written = (ctx.ws.base / "diagnose.log").read_text()
     assert mikey not in written

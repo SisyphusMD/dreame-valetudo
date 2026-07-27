@@ -84,7 +84,9 @@ def _redirect(
 
 
 def _ctx(make_ctx: CtxFactory) -> Context:
-    return make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True])
+    assert ctx.backups_dir.is_relative_to(ctx.ws.base.parent)
+    return ctx
 
 
 def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,7 +57,17 @@ def _isolated_print_once_state() -> None:
 
 
 @pytest.fixture
-def make_ctx(tmp_path: Path) -> CtxFactory:
+def make_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CtxFactory:
+    empty_libexec = tmp_path / "libexec"
+    empty_libexec.mkdir()
+    # A packaged helper or PATH entry on the developer's machine must not change which branch a
+    # phase test exercises. Tests for helper discovery call the resolver directly without this
+    # Context factory.
+    monkeypatch.setattr("dreame_valetudo.context.find_helper", lambda _name, _env: None)
+    monkeypatch.setattr(
+        "dreame_valetudo.context.shutil", SimpleNamespace(which=lambda _name: None),
+    )
+
     def _make(
         *,
         model: str = "x40-ultra",
@@ -86,7 +97,11 @@ def make_ctx(tmp_path: Path) -> CtxFactory:
         ctx = Context(
             runner=rr,
             console=console,
-            env={"HOME": str(tmp_path / "home"), **(env or {})},
+            env={
+                "HOME": str(tmp_path / "home"),
+                "DREAME_LIBEXEC": str(empty_libexec),
+                **(env or {}),
+            },
             ws=ws,
             profile=load_profile(model),
             robot=robot,
