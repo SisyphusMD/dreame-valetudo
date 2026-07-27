@@ -289,7 +289,13 @@ pass "a failing wrapped run returns its own status and shows its error"
 
 # --- 5. Ctrl+C returns to the same wrapped run ----------------------------------------------
 W_INT="$RUNDIR/work-interrupt"
-drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" "DREAME_TEST_HOLD_PROMPT=1" \
+INT_USB="$RUNDIR/pyusb-stub"
+mkdir -p "$INT_USB/usb"
+printf '' > "$INT_USB/usb/__init__.py"
+printf '' > "$INT_USB/usb/core.py"
+INT_PYTHON="$(command -v python3)"
+drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
+  "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" "PYTHONPATH=$INT_USB" \
   -- "${TOOL[@]}" &
 INT_CLIENT=$!
 INT_SESSION="$(session_for_work "$W_INT")"
@@ -301,10 +307,19 @@ done
 # interrupt at the name prompt itself is meant to close without a question — testing the resume path
 # from there would assert the opposite of the intended behaviour.
 "${TMUX_CMD[@]}" send-keys -t "$INT_SESSION" "Bench Bot" Enter
+# Force a usable transport even on the minimal CI runner, then interrupt at a live prompt. A line
+# such as "The road ahead" remains in scrollback after the run has moved on and is not a usable
+# synchronization point.
+ready=0
 for _ in $(seq 1 80); do
-  "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null | grep -q "The road ahead" && break
+  if "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null |
+      grep -q "Ready to start watching for the robot"; then
+    ready=1
+    break
+  fi
   sleep 0.25
 done
+[ "$ready" = 1 ] || fail "the interrupt case never reached its live readiness prompt"
 "${TMUX_CMD[@]}" send-keys -t "$INT_SESSION" C-c
 for _ in $(seq 1 60); do
   "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null | grep -qE "\[y/N\]" && break

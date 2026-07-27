@@ -671,6 +671,37 @@ def test_the_final_question_matches_the_run_outcome_and_no_does_not_rerun(
     assert calls == 1
 
 
+def test_interrupting_the_final_question_is_clean_and_records_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        _record_bound_robot(work)
+        return 1, None
+
+    class _InterruptedPrompt(ScriptedConsole):
+        def confirm(self, asked: str) -> bool:
+            self.lines.append(("confirm", asked))
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    con = _InterruptedPrompt()
+    assert main(
+        ["auto"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(work)},
+        console=con,
+    ) == 130
+    assert con.lines == [
+        ("confirm", "Continue with 'Test Bench #1'?"),
+        ("info", "Interrupted — nothing is lost; re-run to resume."),
+    ]
+    ended = read_outcome(work)
+    assert ended is not None and ended[0] == 130
+
+
 @pytest.mark.parametrize("rc", [0, 7])
 def test_a_run_without_a_bound_robot_returns_without_a_question_or_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int

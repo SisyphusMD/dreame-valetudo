@@ -777,7 +777,17 @@ def main(
                         question = f"Go back to: {pending.rstrip(' :?')}?"
                     else:
                         question = f"Continue with '{robot_label}'?"
-                    again = (console or Console()).confirm(question)
+                    try:
+                        again = (console or Console()).confirm(question)
+                    except KeyboardInterrupt:
+                        # This prompt runs after _run(), outside its interrupt boundary. Ctrl+C
+                        # must still be a clean interruption, especially when a fast failure reaches
+                        # this question before the user's earlier keypress is delivered by tmux.
+                        rc = 130
+                        record_outcome(base, rc, log_path)
+                        (console or Console()).info(
+                            "Interrupted — nothing is lost; re-run to resume."
+                        )
             if again:
                 clear_outcome(base)
                 resumed = dict(resolved)
