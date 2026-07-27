@@ -72,4 +72,4 @@ def test_sunxi_tools_updates_always_require_human_review() -> None:
     ]
     assert len(matching) == 1
     assert matching[0]["automerge"] is False
-    assert any("release-macos.yml" in note for note in matching[0]["prBodyNotes"])
+    assert any("upstream" in note for note in matching[0]["prBodyNotes"])

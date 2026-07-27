@@ -27,17 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
-        uses: docker://koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
-        with:
-          args: >-
-            --severity=warning
-            packaging/build-tarball.sh packaging/build-bundle.sh packaging/build-fastboot-client.sh
-            packaging/changelog-section.sh
-            packaging/forgejo-release.sh packaging/github-release.sh packaging/release-common.sh
-            packaging/reconcile-releases.sh
-            packaging/update-tap.sh packaging/deb-postinstall.sh packaging/bundle-macos-dylibs.sh packaging/uninstall-macos.sh
-            tests/integration/release-scripts.sh tests/integration/reconcile.sh
-            tests/integration/tmux-session.sh
+        run: |
+          # renovate: datasource=docker depName=koalaman/shellcheck
+          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
+          cid=$(docker create -w /work "$SHELLCHECK" \
+            --severity=warning packaging/*.sh tests/integration/*.sh)
+          docker cp . "$cid":/work
+          check_rc=0
+          docker start -a "$cid" || check_rc=$?
+          docker rm "$cid" >/dev/null
+          exit "$check_rc"
 
   python:
     # trusted-ref gate (see header): don't run PR-supplied pytest on the self-hosted runner
@@ -159,4 +158,4 @@ jobs:
           pip install -e .
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
-          for t in tests/integration/release-scripts.sh tests/integration/reconcile.sh tests/integration/tmux-session.sh; do echo "== $t =="; bash "$t"; done
+          for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done

@@ -9,6 +9,9 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 _PUBLISH = _ROOT / ".forgejo" / "workflows" / "publish.yml"
 _CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
+_RELEASE = _ROOT / ".forgejo" / "workflows" / "release.yml"
+_PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
+_MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 
 
 def _job(text: str, name: str) -> str:
@@ -61,3 +64,37 @@ def test_homebrew_templates_use_the_replicated_release_tarball() -> None:
     ]
     assert len(python_rules) == 1
     assert any("packaging/homebrew/*.rb" in note for note in python_rules[0]["prBodyNotes"])
+
+
+def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
+    ci = _CI.read_text()
+    pins = {
+        name: re.search(rf'{name}="([^"]+)"', ci).group(1)  # type: ignore[union-attr]
+        for name in ("RUFF", "MYPY", "PYTEST", "SHELLCHECK")
+    }
+    for workflow in (_CI, _RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        for name, value in pins.items():
+            assert f'{name}="{value}"' in text, workflow
+        assert "packaging/*.sh tests/integration/*.sh" in text, workflow
+        assert "apt-get install -y shellcheck" not in text, workflow
+        assert '-v "$PWD:' not in text, workflow
+        assert 'docker create -w /work "$SHELLCHECK"' in text, workflow
+        assert 'docker cp . "$cid":/work' in text, workflow
+
+
+def test_macos_build_reads_the_sunxi_pin_from_constants() -> None:
+    text = _MACOS.read_text()
+    build = text[text.index("      - name: Build sunxi-fel") : text.index("      - name: Bundle libusb")]
+    assert 'SREF="$(read_pin SUNXI_TOOLS_REF)"' in build
+    assert 'checkout "$SREF"' in build
+    assert not re.search(r"checkout [0-9a-f]{40}", build)
+
+
+def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:
+    text = (_ROOT / "packaging" / "nfpm.yaml").read_text()
+    deb, rpm = text.split("overrides:\n", 1)
+    deb_floor = re.search(r"libc6 \(>= ([0-9.]+)\)", deb)
+    rpm_floor = re.search(r"glibc >= ([0-9.]+)", rpm)
+    assert deb_floor is not None and rpm_floor is not None
+    assert deb_floor.group(1) == rpm_floor.group(1) == "2.35"
