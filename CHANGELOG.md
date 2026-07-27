@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **fix**: the libusb fastboot client now reports missing backends without a traceback, `doctor`
+  exercises it before any robot work, and failed waits/identity reads show the host error instead
+  of blaming the FEL button sequence. The uv fallback no longer inspects or mutates the launcher's
+  current Python project.
 - **fix**: re-running recon after rooting can no longer overwrite the pre-root recovery capture.
   Phase 3 now verifies every factory-backup gzip and its tar structure before writing a manifest,
   and discards partial backups after an SSH connection failure.

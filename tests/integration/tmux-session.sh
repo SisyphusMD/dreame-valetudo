@@ -297,7 +297,17 @@ mkdir -p "$W_INT/cache/dist"
 INT_USB="$RUNDIR/pyusb-stub"
 mkdir -p "$INT_USB/usb"
 printf '' > "$INT_USB/usb/__init__.py"
-printf '' > "$INT_USB/usb/core.py"
+cat > "$INT_USB/usb/core.py" <<'EOF'
+class USBError(Exception):
+    pass
+
+class NoBackendError(ValueError):
+    pass
+
+def find(**_kwargs):
+    return []
+EOF
+printf '' > "$INT_USB/usb/util.py"
 REAL_PYTHON="$(command -v python3)"
 INT_PYTHON="$RUNDIR/python-with-pyusb"
 cat > "$INT_PYTHON" <<EOF

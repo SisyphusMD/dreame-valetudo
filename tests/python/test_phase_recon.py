@@ -171,6 +171,19 @@ def test_read_identity_from_robot_brings_it_up_and_records(make_ctx: CtxFactory)
     assert ctx.need_robot().identity() == vals  # persisted for later runs
 
 
+def test_auxiliary_identity_read_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "devices":
+            return Result(argv, 1, "", "FAILED no libusb backend available")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder)
+    _dist_ready(ctx)
+    with pytest.raises(Die, match="fastboot client"):
+        read_identity_from_robot(ctx)
+    assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
+
+
 def test_recon_waits_for_interactive_readiness_before_polling(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(responder=_responder())
     _dist_ready(ctx)
@@ -243,6 +256,32 @@ def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:
     _dist_ready(ctx)
     with pytest.raises(Die, match="config value"):
         recon(ctx, recovery_backup=False)
+
+
+def test_recon_surfaces_the_failed_config_read(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "getvar config" in " ".join(argv):
+            return Result(argv, 1, "", "FAILED [Errno 13] Access denied")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(responder=responder)
+    _dist_ready(ctx)
+    with pytest.raises(Die, match="config value"):
+        recon(ctx, recovery_backup=False)
+    assert "Access denied" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_standalone_recon_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "devices":
+            return Result(argv, 1, "", "FAILED no libusb backend available")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(responder=responder)
+    _dist_ready(ctx)
+    with pytest.raises(Die, match="fastboot client"):
+        recon(ctx, recovery_backup=False)
+    assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
 
 
 def test_recon_is_idempotent(make_ctx: CtxFactory) -> None:
@@ -390,6 +429,7 @@ def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> No
     fastboot_calls = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
                       if call[:len(FB)] == FB]
     assert fastboot_calls == [
+        ("devices",),
         ("wait", "90"),
         ("getvar", "config"),
         ("getvar", "serialno"),

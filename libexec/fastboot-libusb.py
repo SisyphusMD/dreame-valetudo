@@ -8,7 +8,7 @@ can claim it. This client talks fastboot directly over libusb, which works, so t
 FEL->fastboot->flash rooting flow stays on the Mac — no Linux box needed.
 
 Run it with uv so pyusb is provided without polluting the system:
-    uv run --with pyusb ./fastboot-libusb.py <command> [args]
+    uv run --no-project --isolated --with pyusb ./fastboot-libusb.py <command> [args]
 
 Commands (mirror Google fastboot):
     devices                 list a connected fastboot device (matches by interface)
@@ -128,14 +128,22 @@ def _is_fastboot_intf(intf: Any) -> bool:
 
 def find_device() -> tuple[Any, Any, Any]:
     """Return the first USB device exposing a fastboot interface, or (None, None, None)."""
-    for dev in usb.core.find(find_all=True):
-        try:
-            for cfg in dev:
-                for intf in cfg:
-                    if _is_fastboot_intf(intf):
-                        return dev, cfg, intf
-        except usb.core.USBError:
-            continue  # unreadable descriptors aren't the target device
+    try:
+        for dev in usb.core.find(find_all=True):
+            try:
+                for cfg in dev:
+                    for intf in cfg:
+                        if _is_fastboot_intf(intf):
+                            return dev, cfg, intf
+            except usb.core.USBError:
+                continue  # unreadable descriptors aren't the target device
+    except usb.core.NoBackendError as exc:
+        raise FastbootError(
+            "no libusb backend available — install libusb (macOS: brew install libusb; "
+            "Debian: sudo apt install libusb-1.0-0)"
+        ) from exc
+    except OSError as exc:
+        raise FastbootError(f"libusb could not load: {exc}") from exc
     return None, None, None
 
 
@@ -279,25 +287,25 @@ def main(argv: list[str]) -> int:
               f"round-trip={recon == data}  => {'OK' if ok else 'FAIL'}")
         return 0 if ok else 1
 
-    if cmd == "wait":
-        deadline = time.time() + (int(rest[0]) if rest else 180)
-        while time.time() < deadline:
-            dev, _, _ = find_device()
-            if dev is not None:
-                print("OKAY fastboot device present")
-                return 0
-            time.sleep(1)
-        print("FAILED no device", file=sys.stderr)
-        return 1
-
-    if cmd == "devices":
-        dev, _, _ = find_device()
-        if dev is None:
-            return 1
-        print("libusb\tfastboot")
-        return 0
-
     try:
+        if cmd == "wait":
+            deadline = time.time() + (int(rest[0]) if rest else 180)
+            while time.time() < deadline:
+                dev, _, _ = find_device()
+                if dev is not None:
+                    print("OKAY fastboot device present")
+                    return 0
+                time.sleep(1)
+            print("FAILED no device", file=sys.stderr)
+            return 1
+
+        if cmd == "devices":
+            dev, _, _ = find_device()
+            if dev is None:
+                return 1
+            print("libusb\tfastboot")
+            return 0
+
         fb = Fastboot()
         if cmd == "getvar":
             print("OKAY " + fb.getvar(rest[0]))
@@ -317,7 +325,7 @@ def main(argv: list[str]) -> int:
             print("unknown command: " + cmd, file=sys.stderr)
             return 2
         return 0
-    except (FastbootError, IndexError, usb.core.USBError) as e:
+    except (FastbootError, IndexError, OSError, usb.core.NoBackendError, usb.core.USBError) as e:
         print("FAILED " + str(e), file=sys.stderr)
         return 1
 

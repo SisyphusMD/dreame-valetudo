@@ -120,7 +120,8 @@ def resolve_transport(
     if which("uv"):
         return Transport(
             "uv",
-            ("uv", "run", "--quiet", "--with", f"pyusb=={PYUSB_VERSION}", "python3", fblibusb),
+            ("uv", "run", "--quiet", "--no-project", "--isolated", "--with",
+             f"pyusb=={PYUSB_VERSION}", "python3", fblibusb),
         )
 
     py3 = which("python3")
@@ -148,6 +149,13 @@ class Fastboot:
     def fbt(self, *args: object, check: bool = True) -> Result:
         """Drop-in for `fastboot`: devices|getvar|oem|flash|get_staged|reboot|wait."""
         return self.runner.run(self._argv(args), check=check)
+
+    def report_failure(self, result: Result) -> None:
+        """Surface a failed client's diagnostic before a higher-level phase explains the stop."""
+        if result.ok:
+            return
+        for line in (result.stdout + result.stderr).splitlines():
+            self.console.err(f"fastboot: {line}")
 
     def fb(self, *args: object) -> None:
         """Run a fastboot command and HARD-STOP unless it succeeds with OKAY.

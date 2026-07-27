@@ -62,6 +62,7 @@ class Context:
     _libexec: Path | None = field(default=None, repr=False, compare=False)
     _fastboot: Fastboot | None = field(default=None, repr=False, compare=False)
     _fel: Fel | None = field(default=None, repr=False, compare=False)
+    _fastboot_checked: bool = field(default=False, repr=False, compare=False)
 
     # --- lazily resolved hardware seams ---
     @property

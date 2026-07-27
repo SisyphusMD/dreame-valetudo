@@ -9,6 +9,7 @@ the platform-specific brew/Xcode install OFFERS are intentionally left to fail w
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,11 @@ from ..context import Context
 # them, but the tarball channel guarantees nothing — and a missing one otherwise surfaces deep
 # inside a phase as a bare "command not found", often with a robot already half-provisioned.
 _REQUIRED_TOOLS = ("curl", "unzip", "tar", "zip", "ssh", "ssh-keygen")
+_FASTBOOT_HOST_FAULT = re.compile(
+    r"traceback|nobackenderror|no libusb backend|permission denied|access denied|"
+    r"library not loaded|error while loading shared libraries",
+    re.IGNORECASE,
+)
 
 
 def _is_exe(p: Path) -> bool:
@@ -34,6 +40,23 @@ def _check_external_tools(ctx: Context) -> None:
             f"when they run. Install them with "
             f"{'brew' if ctx.system == 'Darwin' else 'your package manager'} and re-run."
         )
+
+
+def check_fastboot_client(ctx: Context) -> None:
+    """Exercise the resolved client once per run, before any phase asks the user to enter FEL."""
+    if ctx._fastboot_checked:
+        return
+    probe = ctx.fastboot.fbt("devices", check=False)
+    diagnostic = probe.stdout + probe.stderr
+    # This client deliberately returns rc=1 with no output when no robot is attached. Any
+    # diagnostic-bearing rc=1 is therefore a host/client fault, not the healthy no-device case.
+    if (probe.returncode not in (0, 1) or (probe.returncode == 1 and diagnostic.strip())
+            or _FASTBOOT_HOST_FAULT.search(diagnostic)):
+        ctx.fastboot.report_failure(probe)
+        die("fastboot client cannot access libusb. Install/fix libusb, then re-run (macOS: "
+            "'brew install libusb'; Debian: 'sudo apt install libusb-1.0-0'; Linux permission "
+            "errors: install packaging/udev/99-dreame-valetudo.rules).")
+    ctx._fastboot_checked = True
 
 
 def doctor(ctx: Context) -> None:
@@ -55,6 +78,7 @@ def doctor(ctx: Context) -> None:
 
     # Resolve (and report) the fastboot transport — dies with install guidance if none is usable.
     ctx.console.info(f"fastboot transport: {ctx.fastboot.transport.mode} (libusb client)")
+    check_fastboot_client(ctx)
 
     if not needs_build:
         ctx.console.info(f"sunxi-fel: present ({ctx.sunxi_fel})")

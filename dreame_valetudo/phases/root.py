@@ -20,7 +20,7 @@ from ..hazards import model_hazard_check
 from ..session import describe_run, records_step
 from ..util import parse_config
 from ..workspace import RECOVERY_BACKUP_ZIP
-from .doctor import _is_exe, doctor
+from .doctor import _is_exe, check_fastboot_client, doctor
 from .image import image
 
 _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
@@ -190,6 +190,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
                                "bricking)"):
         die("Aborted — nothing was written to the robot.")
 
+    check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
     if ctx.interactive:
         ctx.console.once(
@@ -208,6 +209,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     res = ctx.fastboot.fbt("getvar", "config", check=False)
     live_cfg = parse_config(res.stdout + res.stderr)
     if not live_cfg:
+        ctx.fastboot.report_failure(res)
         die("Couldn't read the connected robot's config value — aborting before any write.")
     if live_cfg != expect_cfg:
         die(f"SAFETY STOP: connected robot config={live_cfg} but this image was built for "

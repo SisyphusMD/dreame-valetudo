@@ -144,8 +144,11 @@ def test_transport_prefers_uv_over_current_interpreter(tmp_path: Path) -> None:
         {}, tmp_path, which=lambda c: "/usr/bin/uv" if c == "uv" else None,
         python_imports_usb=lambda p: p == sys.executable,
     )
-    assert t.mode == "uv"
-    assert "pyusb==1.3.1" in t.cmd
+    assert t == Transport(
+        "uv",
+        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with", "pyusb==1.3.1",
+         "python3", str(tmp_path / "fastboot-libusb.py")),
+    )
 
 
 def test_transport_falls_back_to_uv(tmp_path: Path) -> None:
@@ -153,8 +156,11 @@ def test_transport_falls_back_to_uv(tmp_path: Path) -> None:
         {}, tmp_path, which=lambda c: "/usr/bin/uv" if c == "uv" else None,
         python_imports_usb=lambda p: False,
     )
-    assert t.mode == "uv"
-    assert "pyusb==1.3.1" in t.cmd
+    assert t == Transport(
+        "uv",
+        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with", "pyusb==1.3.1",
+         "python3", str(tmp_path / "fastboot-libusb.py")),
+    )
 
 
 def test_transport_none_available_dies(tmp_path: Path) -> None:

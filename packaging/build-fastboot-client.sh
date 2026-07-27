@@ -18,8 +18,15 @@ pyinstaller --onefile --clean --noconfirm \
   --collect-all usb \
   "$ROOT/libexec/fastboot-libusb.py"
 
-# Smoke: with no args the client prints its usage (which names "fastboot") and exits 2 — capture
-# first so `set -o pipefail` doesn't read that expected non-zero exit as a build failure.
-out="$("$OUT/dreame-fastboot" 2>&1 || true)"
-grep -qi fastboot <<<"$out" || { echo "client smoke failed: $out"; exit 1; }
+# Smoke the USB/backend path, not the no-argument docstring path. No attached robot is rc=1 and is
+# healthy; a missing bundled backend, loader failure, or traceback is not.
+set +e
+out="$("$OUT/dreame-fastboot" devices 2>&1)"
+rc=$?
+set -e
+if (( rc > 1 )) || { (( rc == 1 )) && [[ -n "$out" ]]; } \
+    || grep -Eqi 'Traceback|NoBackendError|no libusb backend|library not loaded' <<<"$out"; then
+  echo "client smoke failed (rc=$rc): $out"
+  exit 1
+fi
 echo "client built: $OUT/dreame-fastboot"

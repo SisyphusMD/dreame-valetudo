@@ -30,8 +30,13 @@ def _load_module() -> Any:
     for name in ("usb", "usb.core", "usb.util"):
         if name not in sys.modules:
             sys.modules[name] = types.ModuleType(name)
+    sys.modules["usb"].core = sys.modules["usb.core"]  # type: ignore[attr-defined]
+    sys.modules["usb"].util = sys.modules["usb.util"]  # type: ignore[attr-defined]
     sys.modules["usb.core"].find = lambda **_kw: []  # type: ignore[attr-defined]
     sys.modules["usb.core"].USBError = type("USBError", (Exception,), {})  # type: ignore[attr-defined]
+    sys.modules["usb.core"].NoBackendError = type(  # type: ignore[attr-defined]
+        "NoBackendError", (ValueError,), {}
+    )
     spec = importlib.util.spec_from_file_location("fastboot_libusb", _LIBEXEC)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -154,3 +159,52 @@ def test_is_fastboot_interface_matches_the_dreame_gadget_triple() -> None:
     assert fbl._is_fastboot_intf(good)
     good.bInterfaceProtocol = 0x02
     assert not fbl._is_fastboot_intf(good)
+
+
+def test_device_scan_skips_one_unreadable_usb_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Unreadable:
+        def __iter__(self) -> object:
+            raise fbl.usb.core.USBError("descriptors unavailable")
+
+    class Interface:
+        bInterfaceClass = 0xFF
+        bInterfaceSubClass = 0x42
+        bInterfaceProtocol = 0x03
+
+    target = [[Interface()]]
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kwargs: [Unreadable(), target])
+    assert fbl.find_device()[0] is target
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["devices"], ["wait", "1"], ["getvar", "config"], ["reboot"]],
+)
+def test_every_usb_command_reports_a_missing_backend_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str],
+) -> None:
+    def no_backend(**_kwargs: object) -> object:
+        raise fbl.usb.core.NoBackendError("No backend available")
+
+    monkeypatch.setattr(fbl.usb.core, "find", no_backend)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert fbl.main(argv) == 1
+    assert "FAILED no libusb backend available" in err.getvalue()
+    assert "Traceback" not in err.getvalue()
+
+
+def test_devices_reports_a_libusb_loader_error_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def loader_failure(**_kwargs: object) -> object:
+        raise OSError("dlopen(libusb-1.0.dylib): image not found")
+
+    monkeypatch.setattr(fbl.usb.core, "find", loader_failure)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert fbl.main(["devices"]) == 1
+    assert "FAILED libusb could not load" in err.getvalue()
+    assert "Traceback" not in err.getvalue()

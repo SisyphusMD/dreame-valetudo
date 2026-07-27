@@ -277,6 +277,34 @@ def test_root_reads_config_from_stderr_like_system_fastboot(make_ctx: CtxFactory
     assert ctx.need_robot().state_has("rooted")
 
 
+def test_root_surfaces_a_failed_pre_flash_identity_read(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "getvar config" in " ".join(argv):
+            return Result(argv, 1, "", "FAILED [Errno 13] Access denied")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    with pytest.raises(Die, match="connected robot's config"):
+        root(ctx)
+    assert "Access denied" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_standalone_root_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "devices":
+            return Result(argv, 1, "", "FAILED no libusb backend available")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    with pytest.raises(Die, match="fastboot client"):
+        root(ctx)
+    assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
+
+
 def test_root_strips_all_whitespace_from_dust_token(make_ctx: CtxFactory) -> None:
     """check.txt is fed to `oem dust` after removing ALL whitespace (tr -d '[:space:]'), not just
     the ends — internal whitespace must never reach the flash-authorization argument."""
