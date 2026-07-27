@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: recon recovery images and identity metadata are restricted to the current user, existing
+  workspaces self-heal older permissions, and `fix-impl` removes its private local config copy after
+  streaming it to the robot.
 - **fix**: shareable logs now scrub every supported SSH public-key shape and device-echoed flash
   token, including `fix-impl` failure reports, while preserving implementation classes, FEL
   addresses, and download-limit evidence needed to diagnose hardware runs.

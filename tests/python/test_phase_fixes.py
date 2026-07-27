@@ -7,6 +7,9 @@ never interpolate JSON into a remote shell command line.
 
 from __future__ import annotations
 
+import stat
+from pathlib import Path
+
 import pytest
 from conftest import CtxFactory
 
@@ -74,10 +77,22 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(model="x40-ultra", responder=responder)
+    streamed_modes: list[int] = []
+
+    def redirect(
+        argv: tuple[str, ...], _stdout_path: str | None, stdin_path: str | None,
+    ) -> Result:
+        assert stdin_path is not None
+        streamed_modes.append(stat.S_IMODE(Path(stdin_path).stat().st_mode))
+        return Result(argv, 0, "", "")
+
+    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
     fix_impl(ctx)
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("cat > /data/valetudo_config.json" in r for r in remotes)
     assert not any("printf" in r for r in remotes)  # no JSON on any command line
+    assert streamed_modes == [0o600]
+    assert not (ctx.ws.base / "valetudo_config.json.patched").exists()
 
 
 def _empty_key_then_secure_storage(argv: tuple[str, ...]) -> Result | None:
@@ -191,6 +206,23 @@ def _impl_responder(model_line: str, config_json: str, ui_up: bool, log_report: 
             return Result(argv, 0 if ui_up else 7, "", "")
         return Result(argv, 0, "", "")
     return responder
+
+
+def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
+    make_ctx: CtxFactory,
+) -> None:
+    r = _impl_responder(
+        "model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}', ui_up=True,
+    )
+    ctx = make_ctx(model="x40-ultra", responder=r)
+    ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
+        lambda argv, _stdout, _stdin: Result(argv, 1, "", "connection lost")
+    )
+
+    with pytest.raises(Die, match="Couldn't write the patched config"):
+        fix_impl(ctx)
+
+    assert not (ctx.ws.base / "valetudo_config.json.patched").exists()
 
 
 def test_fix_impl_dies_on_unknown_model(make_ctx: CtxFactory) -> None:

@@ -16,7 +16,7 @@ from ..migrate import decrypt_recovery_backup
 from ..profiles import SUPPORTED_MODELS, Profile, load_profile
 from ..session import records_step
 from ..util import parse_config, parse_getvar
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace, protect_recon_artifacts
 from .doctor import _is_exe, check_fastboot_client, doctor
 from .fetch import fetch
 
@@ -66,9 +66,11 @@ def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
             captured[var] = val
     if captured:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
+        protect_recon_artifacts(robot.recon_dir)
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in captured.items())
         )
+        protect_recon_artifacts(robot.recon_dir)
     _verify_reported_model(ctx, captured)
     return captured
 
@@ -224,8 +226,10 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    protect_recon_artifacts(robot.recon_dir)
     robot.state_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
+    protect_recon_artifacts(robot.recon_dir)
     (robot.state_dir / "model_key").write_text(f"{ctx.profile.key}\n")
     # A pending name describes the empty directory made by "start fresh", not the hardware:
     # discovering that the hardware already belongs to another directory must not rename it.
@@ -271,6 +275,13 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
 
 def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     """Best-effort ~1.2GB pre-root backup (the un-brick copy). Returns False on any failure."""
+    try:
+        return _pull_recovery_backup_unprotected(ctx, robot)
+    finally:
+        protect_recon_artifacts(robot.recon_dir)
+
+
+def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
     rd = robot.recon_dir
     d100, d101, d102 = rd / "dustx100.bin", rd / "dustx101.bin", rd / "dustx102.bin"
     try:
