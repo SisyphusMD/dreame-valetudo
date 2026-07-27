@@ -40,8 +40,9 @@ cannot be regenerated.** See [LAYOUT.md](LAYOUT.md) for the full workspace layou
 
 Every run writes a plain-text log to `~/dreame-valetudo/work/logs/`: the on-screen narrative plus the
 external commands, their exit codes, and per-command timing (each line is stamped with elapsed
-seconds, so the flash sequence's margin against the robot's watchdog is readable at a glance). It is
-**scrubbed** before anything is written — the home path, the robot's config/identity value, device
+seconds, so the flash sequence's margin against the power MCU's rail-cycle clock is readable at a
+glance). It is **scrubbed** before anything is written — the home path, the robot's config/identity
+value, device
 IDs, SSH public keys, and emails are redacted, and the SSH private key and the miio key never reach
 it — so it's safe to attach when you
 [open an issue](https://github.com/SisyphusMD/dreame-valetudo/issues). On any error the tool prints
@@ -77,7 +78,8 @@ Measured on an M-series Mac / macOS 26:
 
 `fastboot-libusb.py` matches by the fastboot **interface signature** (not VID/PID), so it
 survives the FEL→fastboot re-enumeration. Before the timed flash, throughput is pre-measured
-so the whole `oem`+flash+reboot sequence fits inside the 160 s watchdog.
+so the whole `oem`+flash+reboot sequence fits inside the roughly 180 seconds of usable FEL before
+the power MCU cycles the SoC rail.
 
 ## Low-level internals & research
 

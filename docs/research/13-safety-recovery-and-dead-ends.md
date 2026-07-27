@@ -35,7 +35,9 @@ redundancy mirror.
 
 - **64 KiB read chunks.** The libusb fastboot client's default `1 MiB` chunk EIOs on this host for
   both upload and download ([02](02-fel-fastboot-recon.md)).
-- **One script per FEL window.** The payload holds a ~160 s watchdog — no reasoning gaps mid-window.
+- **One script per FEL window.** The power MCU cycles the SoC rail roughly 210 seconds after the PCB
+  button sequence, leaving about 180 seconds of usable FEL. It is not a watchdog, and nothing can
+  extend it. If it expires, redo the button sequence.
 - **`no fastboot` = USB re-enumeration miss** (non-destructive) → re-run; don't let another process
   touch USB during a window.
 - **Never pin the full config.** Its back half drifts per session; only the first 4 bytes are stable.

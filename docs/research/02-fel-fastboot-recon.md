@@ -24,8 +24,10 @@ sunxi-fel write 0x4a000000 <payload>  ; sunxi-fel exe 0x4a000000   # fastboot up
 The fastboot payload is a patched build of the dustbuilder U-Boot payload (ARM Thumb-2, load base
 `0x4a000000`). The patched variants used here disable the eFuse burn path so no failure can be
 destructive (see [04](04-boot0-write-and-verify.md) and [13](13-safety-recovery-and-dead-ends.md)).
-The payload holds an internal **~160 s watchdog**, so each FEL window must be driven by a single
-uninterrupted script — no reasoning gaps mid-window.
+The robot's power MCU cuts and restores the SoC rail roughly 210 seconds after the PCB button
+sequence, leaving about 180 seconds of usable FEL. This is not a SoC or payload watchdog, and USB
+activity cannot extend it. Each FEL window must therefore be driven by a single uninterrupted
+script — no reasoning gaps mid-window. If the rail cycle occurs, redo the button sequence.
 
 ## The libusb fastboot client
 
