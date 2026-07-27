@@ -1,5 +1,8 @@
 name: Publish
 
+permissions:
+  contents: read
+
 # Tag-triggered (from release.yml / prerelease.yml): build both .debs + the tarball and create the
 # release on each forge. The GitHub mirror's release-macos.yml appends the signed .pkgs; the
 # reconcile job here fans every asset out to all three registries (and backfills any historical gap).

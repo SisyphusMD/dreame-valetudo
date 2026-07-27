@@ -1,5 +1,8 @@
 name: Release
 
+permissions:
+  contents: read
+
 # Cut a release from main: pick the bump in the Forgejo UI. Advances the CHANGELOG, bumps the
 # VERSION line in the script, runs the lint/smoke gate, then commits + tags. The tag triggers
 # publish.yml (the .deb + tarball + the forgejo/nas/github releases) and, on the GitHub mirror,

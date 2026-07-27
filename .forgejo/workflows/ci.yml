@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 # Lint + tests on every PR and push to main: pinned shellcheck +
 # a Python lint/typecheck/test job + a build job + integration scripts, with integration gated
 # behind lint. Make this a required check on main so releases (cut from main by release.yml) only
