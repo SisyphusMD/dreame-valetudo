@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: release workflows now default their repository tokens to read-only, and Apple signing
+  and notarization secrets are exposed only to their consuming steps and removed immediately after
+  use.
 - **fix**: recon recovery images and identity metadata are restricted to the current user, existing
   workspaces self-heal older permissions, and `fix-impl` removes its private local config copy after
   streaming it to the robot.
