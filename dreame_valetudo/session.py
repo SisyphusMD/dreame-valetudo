@@ -10,9 +10,9 @@ same command rejoins it. `new-session -A` is exactly that contract — attach if
 otherwise create it — which also means a second invocation joins the first rather than driving the
 same robot over USB twice.
 
-The tmux wrapper deliberately does not nest, so it cannot protect someone already working inside
-their own tmux — the remote/Pi case. The workspace lock covers that gap, and the piped and
-opted-out paths with it.
+The run uses a private tmux server, so someone already working inside their own tmux can attach to
+it without nesting on the same server. The workspace lock remains the backstop for piped and
+opted-out runs, where there is no session to rejoin.
 
 The decisions are pure functions so they are testable; only the exec itself lives in cli.
 """
@@ -98,8 +98,7 @@ def hold_workspace_lock(path: Path, command: str) -> None:
     """Refuse to start when another run already owns this workspace.
 
     The tmux wrapper already prevents most double-runs by attaching instead of starting a second
-    process — but it deliberately does not nest, so anyone working inside their own tmux (the
-    remote/Pi case) is not covered by it, and neither is a piped or opted-out run.
+    process. Piped and opted-out runs have no session to rejoin, so the lock is their only guard.
     """
     if command in PURE_COMMANDS:
         return

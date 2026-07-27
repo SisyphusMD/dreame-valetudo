@@ -384,6 +384,25 @@ def test_a_question_someone_is_watching_never_times_out(monkeypatch: pytest.Monk
         console._IDLE_PROBE.clear()
 
 
+def test_reattachment_is_rechecked_before_an_old_deadline_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary 15-second probe cadence must not let a cached detached state take away a
+    question from someone who reattached during the final seconds of the idle window."""
+    reads = iter([([], [], []), ([], [], []), ([True], [], [])])
+    monkeypatch.setattr(console.select, "select", lambda *_a: next(reads))
+    ticks = iter([16.0, 18.0])
+    monkeypatch.setattr(console.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(["y\n"]))
+    states = iter([False, True])
+    console.idle_timeout(1.0, lambda: next(states))
+    try:
+        assert Console(color=False).confirm("Flash now?") is True
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()
+
+
 def test_an_unknowable_attachment_never_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """None means the question could not be answered — no tmux, a failed query. A run may only be
     abandoned on positive evidence that nobody is there."""
