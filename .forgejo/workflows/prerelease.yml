@@ -33,6 +33,18 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
 
+      - name: Shellcheck every shipped and integration script
+        run: |
+          # renovate: datasource=docker depName=koalaman/shellcheck
+          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
+          cid=$(docker create -w /work "$SHELLCHECK" \
+            --severity=warning packaging/*.sh tests/integration/*.sh)
+          docker cp . "$cid":/work
+          check_rc=0
+          docker start -a "$cid" || check_rc=$?
+          docker rm "$cid" >/dev/null
+          exit "$check_rc"
+
       - name: Configure git identity
         run: |
           git config user.name "forgejo-actions[bot]"
@@ -92,15 +104,20 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          python -m pip install --upgrade pip pytest ruff mypy
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.16.0"
+          # renovate: datasource=pypi depName=mypy
+          MYPY="2.3.0"
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.1.1"
+          python -m pip install --upgrade pip
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
           ruff check dreame_valetudo libexec tests/python
           mypy
           pytest -q tests/python
           python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
           python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
           python -m dreame_valetudo help | grep -q "Supported models"
-          shellcheck -S warning packaging/*.sh tests/integration/*.sh
           for t in tests/integration/*.sh; do bash "$t"; done
 
       - name: Tag the stamped commit (branch untouched), push the tag

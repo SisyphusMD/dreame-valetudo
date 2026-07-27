@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: release and prerelease gates now use the same pinned test tools and complete shell-script
+  coverage as CI, every package declares the libc required by its bundled binaries, and the macOS
+  build reads the sunxi-tools revision from the package's single source of truth.
 - **fix**: release publication now attempts every registry even when one is unavailable, always
   runs the tap and self-healing reconcile jobs, waits for an exact GitHub tag, verifies every
   packaged binary, and gives Homebrew a stable release asset with a GitHub fallback.

@@ -79,7 +79,7 @@
       "description": "sunxi-tools is the FEL transport compiled into every release and used against the robot's boot ROM, so every upstream commit requires human review.",
       "matchDepNames": ["https://github.com/linux-sunxi/sunxi-tools"],
       "automerge": false,
-      "prBodyNotes": ["Review the upstream sunxi-tools commit before merging. The same SHA must remain pinned in `dreame_valetudo/constants.py` and `.github/workflows/release-macos.yml`."]
+      "prBodyNotes": ["Review the upstream sunxi-tools commit before merging; every build channel reads this SHA from `dreame_valetudo/constants.py`."]
     },
     {
       "description": "CPython (the interpreter frozen into the bundle): patch bumps automerge on green; a NEW minor (e.g. 3.14 -> 3.15) is a bigger move that gets a human review.",
