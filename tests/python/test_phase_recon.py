@@ -427,6 +427,37 @@ def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> No
     assert ctx.need_robot().state_get("recon") == f"config={_CFG} backup=not-requested"
 
 
+def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra", robot_name=f"r2416-{_CFG[:12]}",
+        responder=_sampling_responder(blob=b"post-root flash"),
+    )
+    _dist_ready(ctx)
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
+        (robot.recon_dir / name).write_bytes(b"factory flash")
+    recovery_zip = robot.recon_dir / "dreame_recovery_backup.zip"
+    recovery_zip.write_bytes(b"factory recovery archive")
+    robot.state_set("recon", f"config={_CFG} backup=obtained")
+    robot.state_set("rooted")
+
+    recon(ctx, force=True, recovery_backup=True)
+
+    assert all((robot.recon_dir / name).read_bytes() == b"factory flash"
+               for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"))
+    assert recovery_zip.read_bytes() == b"factory recovery archive"
+    assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
+    fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
+                if call[:len(FB)] == FB]
+    assert not any(call[0] == "get_staged" or call[:2] == ("oem", "stage1")
+                   or call[:2] == ("oem", "stage2") for call in fastboot)
+    assert "preserving any pre-root" in ctx.console.text()  # type: ignore[attr-defined]
+
+
 def test_recon_self_provisions_stage1_via_fetch(make_ctx: CtxFactory) -> None:
     # recon self-provisions: on missing stage1 it RUNS fetch, which then dies at its own
     # pinned-sha256 gate on the (here bogus) download. Proves the self-provision chain fired.

@@ -7,8 +7,11 @@ same pass, install the postboot hook, and reboot.
 
 from __future__ import annotations
 
+import gzip
 import re
 import shutil
+import tarfile
+import zlib
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +30,29 @@ _KEY_TXT = "/mnt/private/ULI/factory/key.txt"
 # The miio device key is 16+ alphanumerics; restricting to [A-Za-z0-9] also makes it safe to
 # interpolate into the remote printf/sed of _apply_key_fix (no shell/sed metacharacters).
 _MIKEY_RE = re.compile(r"[A-Za-z0-9]{8,64}")
+
+
+def _gzip_is_complete(path: Path) -> bool:
+    """Stream through the gzip trailer without retaining a partition-sized payload in memory."""
+    try:
+        with gzip.open(path, "rb") as stream:
+            while stream.read(1 << 20):
+                pass
+    except (EOFError, OSError, zlib.error):
+        return False
+    return True
+
+
+def _tar_gz_is_complete(path: Path) -> bool:
+    if not _gzip_is_complete(path):
+        return False
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            for _member in archive:
+                pass
+    except (EOFError, OSError, tarfile.TarError):
+        return False
+    return True
 
 
 def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
@@ -177,28 +203,44 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.say(f"Backing up the robot -> {backup} (config + keys + raw partitions)...")
     files_gz = backup / "files.tar.gz"
     with ctx.console.progress("Pulling files.tar.gz (config + keys, over the robot's Wi-Fi)"):
-        ctx.runner.run_redirect(
+        files_result = ctx.runner.run_redirect(
             [*ssh_base(_TARGET, key), "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null"],
             stdout_path=str(files_gz),
             check=False,
         )
+    # ssh propagates tar's ordinary 0/1/2 statuses, but 255 is its own connection failure. Missing
+    # host tooling similarly cannot produce a usable archive regardless of how many bytes landed.
+    if files_result.returncode not in (0, 1, 2):
+        shutil.rmtree(backup, ignore_errors=True)
+        die("connection failed while pulling the backup — rejoin the robot's AP and re-run.")
     if files_gz.is_file():
         files_gz.chmod(0o600)
-    # Gate on archive SIZE, not tar's exit code (a missing /etc/*.pem makes tar exit nonzero).
+    # A missing /etc/*.pem can make tar nonzero even when its archive is complete, so validate the
+    # bytes rather than requiring rc=0.
     if not files_gz.is_file() or files_gz.stat().st_size <= 1000:
         shutil.rmtree(backup, ignore_errors=True)
         die("backup came back empty — is the robot fully booted? Re-run.")
+    if not _tar_gz_is_complete(files_gz):
+        shutil.rmtree(backup, ignore_errors=True)
+        die("files.tar.gz is corrupt or truncated — rejoin the robot's AP and re-run.")
     ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
 
     for part in ("private", "misc"):
         dd = backup / f"{part}.dd.gz"
         with ctx.console.progress(f"Pulling the raw {part} partition"):
-            ctx.runner.run_redirect(
+            dd_result = ctx.runner.run_redirect(
                 [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
                 stdout_path=str(dd),
                 check=False,
             )
+        if not dd_result.ok:
+            shutil.rmtree(backup, ignore_errors=True)
+            die(f"connection failed while pulling backup {dd.name} — rejoin the robot's AP and "
+                "re-run.")
         if dd.is_file() and dd.stat().st_size > 1000:
+            if not _gzip_is_complete(dd):
+                shutil.rmtree(backup, ignore_errors=True)
+                die(f"{dd.name} is corrupt or truncated — rejoin the robot's AP and re-run.")
             dd.chmod(0o600)
             ctx.console.info(f"  {part}.dd.gz — raw partition")
         else:
