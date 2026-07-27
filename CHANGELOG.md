@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: release reconciliation now compares registry metadata before downloading assets, so a
+  fully consistent tag transfers nothing while missing, truncated, and size-unknown uploads are
+  still downloaded once and repaired on only the affected registry.
 - **fix**: release and prerelease gates now use the same pinned test tools and complete shell-script
   coverage as CI, every package declares the libc required by its bundled binaries, and the macOS
   build reads the sunxi-tools revision from the package's single source of truth.

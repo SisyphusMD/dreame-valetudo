@@ -11,12 +11,11 @@
 # (create-or-reuse the release + replace same-named assets), so it's idempotent and shares their
 # tested behavior. Warn-only: a reconcile hiccup never fails the release.
 #
-# It only (re)uploads what's actually needed: per registry it diffs the local asset set against what
-# the release already carries (by name + byte size) and hands the publisher just the missing/changed
-# ones, skipping a registry entirely when it's already complete. So reconcile cost scales with the
-# gap, not with the total tag/asset count — a full re-upload every release doesn't get slower as the
-# history grows. A size MISMATCH still re-uploads (heals a truncated/failed prior upload); only a
-# confirmed name+size match is skipped, and anything unverifiable (no size from the API) is uploaded.
+# It only downloads and (re)uploads what's actually needed. Metadata from all three registries is
+# compared first; an asset whose name and byte size agree everywhere costs no transfer. Missing,
+# mismatched, or unverifiable assets are downloaded once from the first source with a known size,
+# then handed only to the registries that need repair. Reconcile cost therefore scales with the gap,
+# not with the total tag/asset count.
 #
 # Env: CLUSTER_TOKEN, NAS_TOKEN, GH_TOKEN. Run from a checkout with all tags (fetch-depth: 0).
 set -uo pipefail
@@ -26,31 +25,24 @@ REPO="SisyphusMD/dreame-valetudo"
 CLUSTER_HOST="forgejo.bryantserver.com"
 NAS_HOST="forgejo.nas.bryantserver.com"
 
-# list_asset_urls <releases-api-base> <auth-header-value> <tag> — print each asset's download URL.
-list_asset_urls() {
+# remote_assets <releases-api-base> <auth-header-value> <tag> — print
+# "name|size|download-url" for each asset. Null/absent size stays empty and requires repair.
+remote_assets() {
   curl -sSL -H "Authorization: $2" "$1/tags/$3" 2>/dev/null \
-    | jq -r '.assets[]?.browser_download_url' 2>/dev/null || true
+    | jq -r '.assets[]? | [(.name // ""), ((.size // "") | tostring),
+             (.browser_download_url // "")] | join("|")' 2>/dev/null || true
 }
 
-# remote_asset_sizes <releases-api-base> <auth-header-value> <tag> — print "name<TAB>size" for each
-# asset the release already carries (size is bytes; null/absent -> empty, i.e. treated as unknown).
-remote_asset_sizes() {
-  curl -sSL -H "Authorization: $2" "$1/tags/$3" 2>/dev/null \
-    | jq -r '.assets[]? | "\(.name)\t\(.size // "")"' 2>/dev/null || true
-}
-
-# reconcile_registry <label> <size-api-base> <auth-header-value> <publisher-cmd...> — upload only the
-# assets this registry is missing or that differ in size, appending them to <publisher-cmd>. Skips
-# the publisher (no release create/reuse, no delete-probe, no upload) when the registry already has
-# every asset at the right size. Reads the loop-scoped $assets[] and $tag. Returns the publisher's
-# exit status (0 when nothing needed uploading).
+# reconcile_registry <label> <metadata-file> <publisher-cmd...> — upload only the downloaded repair
+# assets this registry is missing or has at a different/unknown size. Reads the loop-scoped
+# $assets[] and $tag. Returns the publisher's exit status (0 when nothing needs uploading).
 reconcile_registry() {
-  local label="$1" api="$2" auth="$3"; shift 3  # remaining args are the publisher command
+  local label="$1" metadata="$2"; shift 2  # remaining args are the publisher command
   local -A have=()
-  local n s
-  while IFS=$'\t' read -r n s; do
+  local n s url
+  while IFS='|' read -r n s url; do
     [ -n "$n" ] && have["$n"]="$s"
-  done < <(remote_asset_sizes "$api" "$auth" "$tag")
+  done < "$metadata"
 
   local todo=() a bn lsize
   for a in "${assets[@]}"; do
@@ -76,17 +68,71 @@ for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
   version="${tag#v}"
   dir="$(mktemp -d)"
 
-  # Gather the union of assets from all three registries into $dir (first source per basename wins).
-  {
-    list_asset_urls "https://$CLUSTER_HOST/api/v1/repos/$REPO/releases" "token ${CLUSTER_TOKEN:-}" "$tag"
-    list_asset_urls "https://api.github.com/repos/$REPO/releases"        "Bearer ${GH_TOKEN:-}"    "$tag"
-    list_asset_urls "https://$NAS_HOST/api/v1/repos/$REPO/releases"      "token ${NAS_TOKEN:-}"    "$tag"
-  } | while read -r url; do
-        [ -n "$url" ] || continue
-        name="$(basename "$url")"
-        [ -f "$dir/$name" ] && continue
-        curl -fsSL -o "$dir/$name" "$url" || { echo "::warning::reconcile: download failed: $url"; rm -f "$dir/$name"; }
-      done
+  cluster_metadata="$dir/cluster.assets"
+  github_metadata="$dir/github.assets"
+  nas_metadata="$dir/nas.assets"
+  remote_assets "https://$CLUSTER_HOST/api/v1/repos/$REPO/releases" "token ${CLUSTER_TOKEN:-}" "$tag" > "$cluster_metadata"
+  remote_assets "https://api.github.com/repos/$REPO/releases" "Bearer ${GH_TOKEN:-}" "$tag" > "$github_metadata"
+  remote_assets "https://$NAS_HOST/api/v1/repos/$REPO/releases" "token ${NAS_TOKEN:-}" "$tag" > "$nas_metadata"
+
+  unset cluster_sizes github_sizes nas_sizes all_names source_size candidate_urls
+  declare -A cluster_sizes=() github_sizes=() nas_sizes=() all_names=()
+  declare -A source_size=() candidate_urls=()
+  while IFS='|' read -r name size url; do
+    [ -n "$name" ] || continue
+    name="$(basename "$name")"; cluster_sizes["$name"]="$size"; all_names["$name"]=1
+    [ -z "$url" ] || candidate_urls["$name"]+="$url"$'\n'
+    [ -z "$size" ] || [ -n "${source_size[$name]+set}" ] || source_size["$name"]="$size"
+  done < "$cluster_metadata"
+  while IFS='|' read -r name size url; do
+    [ -n "$name" ] || continue
+    name="$(basename "$name")"; github_sizes["$name"]="$size"; all_names["$name"]=1
+    [ -z "$url" ] || candidate_urls["$name"]+="$url"$'\n'
+    [ -z "$size" ] || [ -n "${source_size[$name]+set}" ] || source_size["$name"]="$size"
+  done < "$github_metadata"
+  while IFS='|' read -r name size url; do
+    [ -n "$name" ] || continue
+    name="$(basename "$name")"; nas_sizes["$name"]="$size"; all_names["$name"]=1
+    [ -z "$url" ] || candidate_urls["$name"]+="$url"$'\n'
+    [ -z "$size" ] || [ -n "${source_size[$name]+set}" ] || source_size["$name"]="$size"
+  done < "$nas_metadata"
+
+  # A known source size is the comparison baseline. Only three positive matches avoid a download;
+  # an absent or unknown size cannot prove that a prior upload is complete.
+  repairs_needed=0
+  while read -r name; do
+    [ -n "$name" ] || continue
+    wanted="${source_size[$name]-}"
+    if [ -n "$wanted" ] \
+        && [ -n "${cluster_sizes[$name]+set}" ] && [ "${cluster_sizes[$name]}" = "$wanted" ] \
+        && [ -n "${github_sizes[$name]+set}" ] && [ "${github_sizes[$name]}" = "$wanted" ] \
+        && [ -n "${nas_sizes[$name]+set}" ] && [ "${nas_sizes[$name]}" = "$wanted" ]; then
+      continue
+    fi
+    repairs_needed=$((repairs_needed + 1))
+    # Preserve registry priority even when a source does not report size. Reordering by metadata
+    # quality can prefer a later truncated copy and overwrite a healthy earlier registry.
+    candidates="${candidate_urls[$name]-}"
+    if [ -z "$candidates" ]; then
+      echo "::warning::reconcile: no download URL for $tag asset $name"
+      fail=$((fail + 1))
+      continue
+    fi
+    downloaded=0
+    while read -r url; do
+      [ -n "$url" ] || continue
+      if curl -fsSL -o "$dir/$name" "$url"; then
+        downloaded=1
+        break
+      fi
+      echo "::warning::reconcile: download failed, trying another registry: $url"
+      rm -f "$dir/$name"
+    done <<< "$candidates"
+    if [ "$downloaded" != 1 ]; then
+      echo "::warning::reconcile: every download source failed for $tag asset $name"
+      fail=$((fail + 1))
+    fi
+  done < <(printf '%s\n' "${!all_names[@]}" | sort)
 
   notes="$dir/notes.md"
   if ! bash "$here/changelog-section.sh" "$version" > "$notes" 2>/dev/null || [ ! -s "$notes" ]; then
@@ -98,7 +144,13 @@ for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
   assets=("$dir"/dreame-valetudo*)
   shopt -u nullglob
   if [ "${#assets[@]}" -eq 0 ]; then
-    echo "::warning::reconcile: no assets found for $tag on any registry"
+    if [ "${#all_names[@]}" -eq 0 ]; then
+      echo "::warning::reconcile: no assets found for $tag on any registry"
+    elif [ "$repairs_needed" -eq 0 ]; then
+      echo "reconcile: $tag already consistent — no asset downloads"
+    else
+      echo "::warning::reconcile: $tag needs $repairs_needed repair asset(s), but none could be downloaded"
+    fi
     rm -rf "$dir"; continue
   fi
 
@@ -106,16 +158,16 @@ for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
   # Per registry, upload only what it's actually missing/changed (reconcile_registry diffs by
   # name+size); the publishers still create-or-reuse the release + replace by name for whatever it
   # does hand them. Each guarded so one registry's failure doesn't abort the rest.
-  reconcile_registry "$CLUSTER_HOST" "https://$CLUSTER_HOST/api/v1/repos/$REPO/releases" "token ${CLUSTER_TOKEN:-}" \
+  reconcile_registry "$CLUSTER_HOST" "$cluster_metadata" \
     bash "$here/forgejo-release.sh" "$CLUSTER_HOST" "${CLUSTER_TOKEN:-}" "$tag" "$notes" || fail=$((fail+1))
-  reconcile_registry "$NAS_HOST" "https://$NAS_HOST/api/v1/repos/$REPO/releases" "token ${NAS_TOKEN:-}" \
+  reconcile_registry "$NAS_HOST" "$nas_metadata" \
     bash "$here/forgejo-release.sh" "$NAS_HOST" "${NAS_TOKEN:-}" "$tag" "$notes" || fail=$((fail+1))
-  reconcile_registry "GitHub" "https://api.github.com/repos/$REPO/releases" "Bearer ${GH_TOKEN:-}" \
+  reconcile_registry "GitHub" "$github_metadata" \
     bash "$here/github-release.sh" "${GH_TOKEN:-}" "$tag" "$notes" || fail=$((fail+1))
   echo "::endgroup::"
   rm -rf "$dir"
 done
 
 [ "$fail" = 0 ] && echo "reconcile: all registries consistent" \
-                || echo "::warning::reconcile finished with $fail publisher failure(s) — next release retries"
+                || echo "::warning::reconcile finished with $fail repair failure(s) — next release retries"
 exit 0  # never fail the release for a reconcile hiccup
