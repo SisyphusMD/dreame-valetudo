@@ -17,6 +17,13 @@ from dreame_valetudo.run import Result
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 _FW = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
+_FW_SIZES = {
+    "fsbl.bin": 32 * 1024,
+    "payload.bin": 4 * 1024 * 1024,
+    "toc1.img": 1 * 1024 * 1024,
+    "boot.img": 8 * 1024 * 1024,
+    "rootfs.img": 100 * 1024 * 1024,
+}
 
 
 def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
@@ -33,7 +40,11 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
         if argv[0] == "unzip":
             dest = Path(argv[argv.index("-d") + 1])
             for f in _FW:
-                (dest / f).write_text("DUST\n" if f == "check.txt" else "x")
+                if f == "check.txt":
+                    (dest / f).write_text("DUST\n")
+                else:
+                    with (dest / f).open("wb") as image_file:
+                        image_file.truncate(_FW_SIZES[f])
             return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")  # sunxi-fel, fastboot client, ssh-keygen, zip, ...
 

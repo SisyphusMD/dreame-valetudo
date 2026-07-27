@@ -13,16 +13,25 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
 from dreame_valetudo.run import Result
+from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
+_MIN_IMAGE_BYTES = {
+    "fsbl.bin": 32 * 1024,
+    "payload.bin": 4 * 1024 * 1024,
+    "toc1.img": 1 * 1024 * 1024,
+    "boot.img": 8 * 1024 * 1024,
+    "rootfs.img": 100 * 1024 * 1024,
+}
 
 
 def _stage_image(ctx: Context, dust: str = "DUSTTOKEN") -> None:
     robot = ctx.need_robot()
     fw = robot.fw_dir
     fw.mkdir(parents=True, exist_ok=True)
-    for f in ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img"):
-        (fw / f).write_text("x")
+    for name, size in _MIN_IMAGE_BYTES.items():
+        with (fw / name).open("wb") as image:
+            image.truncate(size)
     (fw / "check.txt").write_text(f"{dust}\n")
     robot.state_set("image", "staged")  # so root()'s self-provision chain sees it as staged
 
@@ -31,6 +40,7 @@ def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
     rd = ctx.need_robot().recon_dir
     rd.mkdir(parents=True, exist_ok=True)
     (rd / "config.txt").write_text(f"config: {cfg}\n")
+    (rd / RECOVERY_BACKUP_ZIP).write_bytes(b"backup")
     ctx.need_robot().state_set("recon", f"config={cfg} backup=obtained")
 
 
@@ -76,6 +86,7 @@ def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
                    confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
+    (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).unlink()
     ctx.need_robot().state_set("recon", f"config={_CFG} backup=missing")
     with pytest.raises(Die, match="Aborted"):
         root(ctx)
@@ -91,11 +102,40 @@ def test_root_treats_old_or_unrecognised_backup_markers_as_unknown(
                    confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
+    (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).unlink()
     ctx.need_robot().state_set("recon", marker)
     with pytest.raises(Die, match="Aborted"):
         root(ctx)
-    assert "No recognised disaster-recovery backup result is recorded" in ctx.console.text()
+    assert "No disaster-recovery backup can be found" in ctx.console.text()
     assert _flash_ops(ctx) == []
+
+
+def test_root_checks_backup_evidence_instead_of_trusting_the_obtained_marker(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).unlink()
+    with pytest.raises(Die, match="Aborted"):
+        root(ctx)
+    assert "recorded a disaster-recovery backup, but its files are missing" in ctx.console.text()
+    assert "recon --force" in ctx.console.text()
+    assert _flash_ops(ctx) == []
+
+
+def test_root_accepts_the_three_recovery_dumps_when_the_archive_is_missing(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    (robot.recon_dir / RECOVERY_BACKUP_ZIP).unlink()
+    for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
+        (robot.recon_dir / name).write_bytes(b"backup")
+    root(ctx)
+    assert robot.state_has("rooted")
 
 
 def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
@@ -107,6 +147,20 @@ def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
     ctx.need_robot().state_set("recon", f"config={_CFG} backup=not-requested")
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
+
+
+@pytest.mark.parametrize("name", list(_MIN_IMAGE_BYTES))
+def test_root_refuses_an_implausibly_short_image_before_any_device_command(
+    make_ctx: CtxFactory, name: str,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    with (ctx.need_robot().fw_dir / name).open("r+b") as image:
+        image.truncate(_MIN_IMAGE_BYTES[name] - 1)
+    with pytest.raises(Die, match=f"SAFETY STOP.*{name}"):
+        root(ctx)
+    assert ctx.runner.calls == []  # refused before the FEL button sequence
 
 
 def test_rooted_marker_is_written_while_interrupts_are_still_masked(
