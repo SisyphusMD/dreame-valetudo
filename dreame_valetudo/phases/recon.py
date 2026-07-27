@@ -17,7 +17,7 @@ from ..profiles import SUPPORTED_MODELS, Profile, load_profile
 from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace
-from .doctor import _is_exe, doctor
+from .doctor import _is_exe, check_fastboot_client, doctor
 from .fetch import fetch
 
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
@@ -110,6 +110,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         fetch(ctx)
+    check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
     if not _wait_for_fel(ctx):
         ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
@@ -180,6 +181,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
+    check_fastboot_client(ctx)
     _print_intro(ctx)
     print_fel_entry(ctx.console, ctx.host)
     if not _wait_for_fel(ctx):
@@ -192,6 +194,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     res = ctx.fastboot.fbt("getvar", "config", check=False)
     cfg = parse_config(res.stdout + res.stderr)
     if not cfg:
+        ctx.fastboot.report_failure(res)
         die("Could not read the config value from the robot — aborting.")
 
     # Identity in hand — resolve the robot dir. `config` is the durable hardware ID: if this exact

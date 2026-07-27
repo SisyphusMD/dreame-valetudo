@@ -119,10 +119,11 @@ class Fel:
         self.console.say(f"Waiting up to {secs}s for the robot to come up in fastboot...")
         with self.console.progress("Watching for the fastboot device") as p:
             if self.fastboot.transport.mode != "system":
-                ok = self.fastboot.fbt("wait", secs, check=False).ok
-                if not ok:
+                result = self.fastboot.fbt("wait", secs, check=False)
+                if not result.ok:
+                    self.fastboot.report_failure(result)
                     p.close(done=False)
-                return ok
+                return result.ok
             for _ in range(secs):
                 res = self.runner.run(["fastboot", "devices"], check=False)
                 if res.stdout.strip():

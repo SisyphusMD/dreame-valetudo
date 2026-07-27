@@ -22,7 +22,39 @@ def test_doctor_reports_ready_when_sunxi_present(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()  # conftest provisions an executable sunxi-fel
     doctor(ctx)
     assert any("Toolchain ready" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
-    assert ctx.runner.calls == []  # nothing built or cloned
+    assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr"),
+    [
+        (1, "FAILED no libusb backend available"),
+        (1, "FAILED [Errno 13] Access denied"),
+        (1, "FAILED libusb could not load: dlopen image not found"),
+        (127, "dyld: Library not loaded: libusb-1.0.dylib"),
+        (1, "Traceback (most recent call last): NoBackendError"),
+    ],
+)
+def test_doctor_rejects_a_host_broken_fastboot_client(
+    make_ctx: CtxFactory, returncode: int, stderr: str,
+) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, returncode, "", stderr))
+    with pytest.raises(Die, match="fastboot client"):
+        doctor(ctx)
+    assert stderr in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_doctor_accepts_a_working_client_with_no_robot_attached(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 1, "", ""))
+    doctor(ctx)
+    assert "Toolchain ready" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_fastboot_client_probe_runs_only_once_per_context(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    doctor(ctx)
+    doctor(ctx)
+    assert ctx.runner.calls.count(("python3", "/x/fastboot-libusb.py", "devices")) == 1
 
 
 def test_doctor_builds_sunxi_when_absent(make_ctx: CtxFactory) -> None:
