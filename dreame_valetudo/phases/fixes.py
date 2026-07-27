@@ -26,6 +26,12 @@ _DID_TXT = "/mnt/private/ULI/factory/did.txt"
 _KEY_TXT = "/mnt/private/ULI/factory/key.txt"
 
 
+def _write_shareable_report(ctx: Context, path: Path, lines: list[str], *, title: str) -> None:
+    cleaned = [scrub(line, ctx.home) for line in lines]
+    path.write_text("\n".join(cleaned) + ("\n" if cleaned else ""))
+    ctx.console.block(cleaned, title=title)
+
+
 def _key(ctx: Context) -> Path | None:
     k = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base)
     if Path(k).is_file():
@@ -233,8 +239,9 @@ def fix_impl(ctx: Context) -> None:
         key=key, check=False,
     )
     report = grabbed.stdout + grabbed.stderr
-    fix_log.write_text(report)
-    ctx.console.block(report.splitlines(), title="startup log from the robot")
+    _write_shareable_report(
+        ctx, fix_log, report.splitlines(), title="startup log from the robot",
+    )
     ctx.console.info("The config pin is saved regardless (persists across reboots).")
     if "reading 'did'" in report:
         ctx.console.warn("That 'null (reading did)' means device.conf won't parse — usually a "
@@ -308,10 +315,5 @@ def diagnose(ctx: Context) -> None:
         with ctx.console.progress("Running the on-robot checks (~30s)"):
             got = robot_ssh(ctx.runner, _TARGET, _DIAGNOSE_REMOTE, key=key, check=False)
         lines.extend((got.stdout + got.stderr).splitlines())
-    # Scrub the whole report before it is printed or written: diagnose.log is explicitly meant to
-    # be shared, so home paths and any identity/secret-shaped token (incl. the miio key, should a
-    # future field re-introduce it) must be redacted the same way the run log is.
-    lines = [scrub(line, ctx.home) for line in lines]
-    ctx.console.block(lines, title=f"diagnose — {_TARGET}")
-    log.write_text("\n".join(lines) + "\n")
+    _write_shareable_report(ctx, log, lines, title=f"diagnose — {_TARGET}")
     ctx.console.info(f"Saved to: {log}. Rejoin your normal Wi-Fi, then share that file.")

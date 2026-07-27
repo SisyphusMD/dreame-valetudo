@@ -15,6 +15,7 @@ import pytest
 
 from dreame_valetudo.console import Console, Die
 from dreame_valetudo.fastboot import Fastboot, Transport, find_helper, resolve_transport
+from dreame_valetudo.log import LoggingConsole, RunLog
 from dreame_valetudo.run import RecordingRunner, Result
 
 _PY_TRANSPORT = Transport("python", ("python3", "/x/fastboot-libusb.py"))
@@ -56,6 +57,26 @@ def test_fb_die_message_masks_the_dust_token() -> None:
     assert "10d0f120" not in str(ei.value)
     assert "oem dust <redacted-id>" in str(ei.value)
     assert rr.calls[0][-1] == "10d0f120"  # the real command still carried the token
+
+
+def test_fb_failure_echo_masks_an_all_numeric_dust_token_in_the_run_log(tmp_path: Path) -> None:
+    token = "12345678"
+    log = RunLog.open(
+        tmp_path, tmp_path / "home", ["root"], "0.1.0",
+        stamp="20260727-120000", when="Mon Jul 27 12:00:00 2026",
+    )
+    rr = RecordingRunner(
+        lambda argv: Result(argv, 1, "", f"FAILED oem dust {token} -> FAIL rejected"),
+    )
+    fb = Fastboot(rr, LoggingConsole(log, color=False), _PY_TRANSPORT)
+
+    with pytest.raises(Die):
+        fb.fb("oem", "dust", token)
+    log.close()
+
+    written = log.path.read_text()
+    assert token not in written
+    assert "FAILED oem dust <redacted-id>" in written
 
 
 def test_fb_hard_stops_on_nonzero_rc_even_with_okay_text() -> None:

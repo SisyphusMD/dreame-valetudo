@@ -211,6 +211,11 @@ _IMPL_PREFIXES: list[tuple[str, str]] = [
     ("dreame.vacuum.p2156", "DreameMovaZ500ValetudoRobot"),
 ]
 
+KNOWN_IMPL_CLASSES = frozenset({
+    *(profile.impl_class for profile in _PROFILES.values()),
+    *(cls for _prefix, cls in _IMPL_PREFIXES),
+})
+
 
 def impl_class_for_model(code: str) -> str | None:
     """Valetudo implementation class for a robot-reported model code, or None if unknown."""

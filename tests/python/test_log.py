@@ -17,6 +17,7 @@ from dreame_valetudo.log import (
     tail_transcript,
 )
 from dreame_valetudo.migrate import _RECON_DUMPS
+from dreame_valetudo.profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import RecordingRunner, Result
 
 
@@ -55,6 +56,23 @@ def test_scrub_redacts_email_and_ssh_public_key() -> None:
     assert "ssh-ed25519" in out  # the type stays; only the key material goes
 
 
+def test_scrub_redacts_every_openssh_public_key_shape_and_its_comment() -> None:
+    for key_type in ("ecdsa-sha2-nistp256", "sk-ssh-ed25519@openssh.com"):
+        blob = "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHA"
+        out = scrub(f"{key_type} {blob} Alice Smith MacBook")
+        assert key_type in out
+        assert blob not in out
+        assert "Alice" not in out
+        assert "Smith" not in out
+        assert "MacBook" not in out
+
+
+def test_scrub_does_not_consume_the_line_after_a_commentless_public_key() -> None:
+    blob = "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHA"
+    out = scrub(f"ssh-ed25519 {blob}\nnext diagnostic line")
+    assert out == "ssh-ed25519 <redacted-public-key>\nnext diagnostic line"
+
+
 def test_scrub_keeps_useful_nonsensitive_values() -> None:
     # model codes, the AP IP, version numbers, and small rc/exit codes must survive for debugging.
     assert "r2416" in scrub("Model: Dreame X40 Ultra (dreame.vacuum.r2416)")
@@ -66,6 +84,7 @@ def test_scrub_keeps_useful_nonsensitive_values() -> None:
 def test_scrub_redacts_a_miio_key_shaped_token() -> None:
     # The mixed-case-plus-digit miio device key dodges the hex and long-int rules; it must not survive.
     assert "A1b2C3d4E5f6G7h8" not in scrub("key=A1b2C3d4E5f6G7h8")
+    assert "A1b2C3d4E5f6G7h8" not in scrub("label-A1b2C3d4E5f6G7h8.txt")
     # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
     assert "valetudo" in scrub("== valetudo running? == RUNNING")
     assert "RUNNING" in scrub("== valetudo running? == RUNNING")
@@ -88,6 +107,24 @@ def test_recon_dump_names_all_survive_scrub() -> None:
         assert name in scrub(f"Decrypting {name}.bin")
 
 
+def test_profile_diagnostics_all_survive_scrub() -> None:
+    for key in SUPPORTED_MODELS:
+        profile = load_profile(key)
+        for token in (profile.fsbl_addr, profile.payload_addr):
+            assert token in scrub(f"diagnostic {token}")
+    for token in (*KNOWN_IMPL_CLASSES, "toc0hash", "toc1hash"):
+        assert token in scrub(f"diagnostic {token}")
+    assert "DreameX40UltraValetudoRobot123" not in scrub(
+        "diagnostic DreameX40UltraValetudoRobot123"
+    )
+
+
+def test_scrub_masks_an_echoed_oem_dust_token() -> None:
+    out = scrub("FAILED oem dust 12345678 -> FAIL rejected")
+    assert "12345678" not in out
+    assert "oem dust <redacted-id>" in out
+
+
 # --- redact_dust_token: the 8-hex flash token scrub()'s length rule can't catch ---------------
 def test_redact_dust_token_masks_only_the_token_argument() -> None:
     # Only the single argument after `oem dust` is masked; every other command is untouched.
@@ -107,6 +144,20 @@ def test_command_masks_the_oem_dust_flash_token(tmp_path: Path) -> None:
     text = log.path.read_text()
     assert "10d0f120" not in text
     assert "$ dreame-fastboot oem dust <redacted-id>" in text
+
+
+def test_command_masks_an_oem_dust_token_echoed_on_failure(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.command(Result(
+        ("/x/dreame-fastboot", "oem", "dust", "12345678"),
+        1,
+        "",
+        "FAILED oem dust 12345678 -> FAIL rejected",
+    ))
+    log.close()
+    text = log.path.read_text()
+    assert "12345678" not in text
+    assert text.count("oem dust <redacted-id>") == 2
 
 
 # --- RunLog: writes a readable, flushed, shareable file ---------------------------------------

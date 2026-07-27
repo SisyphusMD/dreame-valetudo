@@ -229,6 +229,26 @@ def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFa
     assert any("fix-did" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_fix_impl_scrubs_the_shareable_failure_report(make_ctx: CtxFactory) -> None:
+    mikey = "A1b2C3d4E5f6G7h8"
+    did = "4177362863"
+    r = _impl_responder(
+        "model=dreame.vacuum.r2416\n",
+        '{"robot":{"implementation":"auto"}}',
+        ui_up=False,
+        log_report=f"startup failed key={mikey} did={did}\n",
+    )
+    ctx = make_ctx(model="x40-ultra", responder=r)
+    fix_impl(ctx)
+
+    written = (ctx.ws.base / "fix-impl.log").read_text()
+    assert mikey not in written
+    assert did not in written
+    assert "<redacted-id>" in written
+    assert not any(mikey in text or did in text
+                   for _kind, text in ctx.console.lines)  # type: ignore[attr-defined]
+
+
 # --- diagnose: the miio key must never reach the shareable log --------------------------------
 def test_diagnose_remote_reports_key_presence_only_never_its_value() -> None:
     """The remote script greps only did/model — never the key= VALUE — yet still flags whether the

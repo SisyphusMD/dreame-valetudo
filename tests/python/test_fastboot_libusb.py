@@ -23,6 +23,8 @@ from typing import Any
 
 import pytest
 
+from dreame_valetudo.log import scrub
+
 _LIBEXEC = Path(__file__).resolve().parents[2] / "libexec" / "fastboot-libusb.py"
 
 
@@ -133,8 +135,7 @@ def test_flash_logs_single_download_evidence(tmp_path: Path) -> None:
         fb.flash("toc1", str(img))
     log = err.getvalue()
     assert "single raw download" in log
-    assert "0x8000000" in log  # the probed max-download-size is surfaced (hex survives the scrubber)
-    assert "MiB" in log        # image size in a scrub-safe unit
+    assert "max-download-size 128.0 MiB" in scrub(log)
 
 
 def test_flash_logs_sparse_split_evidence(tmp_path: Path) -> None:

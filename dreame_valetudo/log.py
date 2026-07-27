@@ -23,12 +23,17 @@ from pathlib import Path
 from typing import ClassVar, TextIO
 
 from .console import Console, Progress, _fmt_elapsed
+from .profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from .run import Result, RunError, Runner
 
 # Redaction patterns, applied to every line before it is written. Order matters: the SSH-key blob is
 # base64 (matches the hex/int rules), so it must be redacted whole first.
-_SSH_PUB = re.compile(r"(ssh-[A-Za-z0-9-]+)\s+AAAA[0-9A-Za-z+/=]+")
+_SSH_PUB = re.compile(
+    r"\b((?:ssh|ecdsa|sk)-[A-Za-z0-9@.-]+)[ \t]+AAAA[0-9A-Za-z+/=]{20,}"
+    r"(?:[ \t]+[^\r\n]*)?"
+)
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_DUST_COMMAND = re.compile(r"(\boem\s+dust\s+)[0-9a-fA-F]{8}\b", re.IGNORECASE)
 _HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")             # config/identity value, robot-tag hex, SHAs
 # Device IDs are 9-10 digit ints; ≥9 catches them (and, harmlessly, big byte counts) while sparing
 # 8-digit YYYYMMDD dates / timestamps, which are useful and not sensitive.
@@ -39,18 +44,20 @@ _LONGINT = re.compile(r"(?<![\w.])-?\d{9,}(?![\w.])")
 # random credential — so ordinary all-alpha words in a shared log (valetudo, processes, …) survive.
 _MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,64}\b")
 
-# Fixed, public filenames of the recon disaster-recovery dumps (migrate._RECON_DUMPS). Each is an
-# 8-char letter+digit token, so _MIKEY would redact it — but they are constant filenames, never
-# secrets, and a shared log is far more useful when it can name WHICH slice it means (which decrypt
-# failed) instead of three identical <redacted-id>s. An EXACT-literal allowlist can only ever spare
-# these strings, never a real credential (which is random and won't equal a fixed filename). Kept in
-# sync with _RECON_DUMPS by test_recon_dump_names_all_survive_scrub.
-_DUST_DUMP_NAMES = frozenset({"dustx100", "dustx101", "dustx102"})
+# Fixed public identifiers can share the shape of a miio key. An exact-literal allowlist preserves
+# diagnostic meaning without exempting arbitrary credential-shaped strings. Drift guards cover the
+# dump names and every profile-derived value.
+_PUBLIC_TOKENS = frozenset({
+    "dustx100", "dustx101", "dustx102", "toc0hash", "toc1hash",
+    *(load_profile(key).fsbl_addr for key in SUPPORTED_MODELS),
+    *(load_profile(key).payload_addr for key in SUPPORTED_MODELS),
+    *KNOWN_IMPL_CLASSES,
+})
 
 
 def _mask_mikey(match: re.Match[str]) -> str:
     token = match.group(0)
-    return token if token in _DUST_DUMP_NAMES else "<redacted-id>"
+    return token if token in _PUBLIC_TOKENS else "<redacted-id>"
 
 
 def scrub(text: str, home: Path | None = None) -> str:
@@ -59,11 +66,22 @@ def scrub(text: str, home: Path | None = None) -> str:
         h = str(home)
         if len(h) > 1:  # never blank out "/"
             text = text.replace(h, "~")
-    text = _SSH_PUB.sub(r"\1 <redacted-public-key>", text)
+    protected_types: list[tuple[str, str]] = []
+
+    def mask_public_key(match: re.Match[str]) -> str:
+        marker = f"\0SSH-TYPE-{len(protected_types)}\0"
+        protected_types.append((marker, match.group(1)))
+        return f"{marker} <redacted-public-key>"
+
+    text = _SSH_PUB.sub(mask_public_key, text)
     text = _EMAIL.sub("<redacted-email>", text)
+    text = _DUST_COMMAND.sub(r"\1<redacted-id>", text)
     text = _HEX.sub("<redacted-id>", text)
     text = _LONGINT.sub("<redacted-id>", text)
-    return _MIKEY.sub(_mask_mikey, text)
+    text = _MIKEY.sub(_mask_mikey, text)
+    for marker, key_type in protected_types:
+        text = text.replace(marker, key_type)
+    return text
 
 
 def redact_dust_token(args: Sequence[object]) -> list[str]:

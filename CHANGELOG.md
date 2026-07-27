@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: shareable logs now scrub every supported SSH public-key shape and device-echoed flash
+  token, including `fix-impl` failure reports, while preserving implementation classes, FEL
+  addresses, and download-limit evidence needed to diagnose hardware runs.
 - **fix**: workspace migration no longer marks legacy data complete when an environment override
   made it skip that data, safely relocates an existing work-directory symlink, and verifies every
   copied file before removing a cross-volume source. Unwritable, unrelated, or symlinked backup
