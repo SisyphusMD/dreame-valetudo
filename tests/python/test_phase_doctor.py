@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
 from conftest import CtxFactory
@@ -73,6 +74,29 @@ def test_doctor_builds_sunxi_when_absent(make_ctx: CtxFactory) -> None:
     assert any("git clone" in t and "sunxi-tools" in t for t in transcript)
     assert any("checkout" in t for t in transcript)
     assert any(t.endswith("sunxi-fel") and "make" in t for t in transcript)
+
+
+def test_doctor_build_test_ignores_a_host_sunxi_on_path(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_fel = tmp_path / "host-bin" / "sunxi-fel"
+    host_fel.parent.mkdir()
+    host_fel.write_text("#!/bin/sh\n")
+    host_fel.chmod(0o755)
+    monkeypatch.setenv("PATH", str(host_fel.parent))
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("make",) and argv[-1] == "sunxi-fel":
+            ctx.ws.sunxi_fel.parent.mkdir(parents=True, exist_ok=True)
+            ctx.ws.sunxi_fel.write_text("#!/bin/sh\n")
+            ctx.ws.sunxi_fel.chmod(0o755)
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(responder=responder)
+    _no_sunxi(ctx)
+    doctor(ctx)
+
+    assert any(call[:2] == ("git", "clone") for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_doctor_dies_when_build_produces_no_binary(make_ctx: CtxFactory) -> None:
