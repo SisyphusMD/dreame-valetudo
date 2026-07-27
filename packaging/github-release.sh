@@ -16,7 +16,7 @@ api="https://api.github.com/repos/$repo"
 auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
 
 echo "waiting for tag $tag on GitHub..."
-rel_wait_for_tag "$api/git/refs/tags/$tag" || { echo "tag $tag never appeared on GitHub" >&2; exit 1; }
+rel_wait_for_tag "$api/git/ref/tags/$tag" || { echo "tag $tag never appeared on GitHub" >&2; exit 1; }
 
 # A semver prerelease tag (contains a hyphen, e.g. v0.1.0-rc.1) is published as a prerelease so it
 # never becomes the "latest" release.

@@ -53,8 +53,10 @@ echo "  forgejo-release.sh: tag-wait + create + multipart upload calls OK"
 : > "$calls"
 out="$(bash "$root/packaging/github-release.sh" tok v9.9.9 "$notes" "$asset" 2>&1)" \
   || fail "github-release.sh exited nonzero: $out"
-grep -Eq 'api\.github\.com/repos/SisyphusMD/dreame-valetudo/git/refs/tags/v9\.9\.9' "$calls" \
-  || fail "github: no tag-wait call to the git/refs/tags endpoint"
+grep -Eq 'api\.github\.com/repos/SisyphusMD/dreame-valetudo/git/ref/tags/v9\.9\.9' "$calls" \
+  || fail "github: no exact tag-wait call to the singular git/ref/tags endpoint"
+! grep -Eq 'api\.github\.com/repos/SisyphusMD/dreame-valetudo/git/refs/tags/' "$calls" \
+  || fail "github: prefix-matching git/refs endpoint can accept an rc tag in place of stable"
 grep -Eq 'POST .*api\.github\.com/repos/SisyphusMD/dreame-valetudo/releases([[:space:]]|$)' "$calls" \
   || fail "github: no release-create POST to /releases"
 grep -Eq 'data-binary @.*uploads\.github\.com/repos/SisyphusMD/dreame-valetudo/releases/999/assets\?name=dreame-valetudo_amd64\.deb' "$calls" \
@@ -113,5 +115,69 @@ bash "$root/packaging/forgejo-release.sh" forge.example tok v9.9.9 "$notes" "$as
 grep -Eq 'DELETE .*forge\.example/api/v1/repos/SisyphusMD/dreame-valetudo/releases/999/assets/42' "$calls" \
   || fail "forgejo: same-named asset delete must hit /releases/<id>/assets/<id>"
 echo "  forgejo-release.sh: asset delete uses the /releases/<id>/assets/<id> URL OK"
+
+# ---- Homebrew formula: use replicated release assets and fail closed on a broken template ----
+cat > "$tmp/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >> "$calls"
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = -o ]; then printf 'release tarball bytes' > "\$2"; exit 0; fi
+  shift
+done
+exit 2
+EOF
+chmod +x "$tmp/curl"
+
+tap="$tmp/tap"
+: > "$calls"
+bash "$root/packaging/update-tap.sh" v9.9.9 "$tap" >/dev/null \
+  || fail "update-tap.sh exited nonzero for a valid stable formula"
+stable="$tap/Formula/dreame-valetudo.rb"
+grep -Fq 'releases/download/v9.9.9/dreame-valetudo-9.9.9.tar.gz' "$stable" \
+  || fail "stable formula does not use the versioned release asset"
+grep -Fq 'github.com/SisyphusMD/dreame-valetudo/releases/download/v9.9.9/' "$stable" \
+  || fail "stable formula has no GitHub mirror"
+! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$stable" \
+  || fail "stable formula retained an unsubstituted placeholder"
+grep -Fq 'forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v9.9.9/' "$calls" \
+  || fail "update-tap did not hash the same release asset the formula downloads"
+
+cat > "$tmp/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >> "$calls"
+case "\$*" in
+  *forgejo.bryantserver.com*) exit 22 ;;
+  *)
+    out=""
+    while [ "\$#" -gt 0 ]; do
+      if [ "\$1" = -o ]; then out="\$2"; break; fi
+      shift
+    done
+    printf 'release tarball bytes' > "\$out"
+    ;;
+esac
+EOF
+chmod +x "$tmp/curl"
+: > "$calls"
+bash "$root/packaging/update-tap.sh" v9.9.9 "$tap" >/dev/null 2>&1 \
+  || fail "update-tap did not fall back when the primary release registry was unavailable"
+grep -Fq 'github.com/SisyphusMD/dreame-valetudo/releases/download/v9.9.9/' "$calls" \
+  || fail "update-tap did not hash the GitHub mirror after the primary registry failed"
+
+bash "$root/packaging/update-tap.sh" v9.9.9-rc.1 "$tap" >/dev/null \
+  || fail "update-tap.sh exited nonzero for a valid rc formula"
+rc="$tap/Formula/dreame-valetudo-rc.rb"
+grep -Fq 'dreame-valetudo-9.9.9-rc.1.tar.gz' "$rc" \
+  || fail "rc formula did not strip only the tag's leading v from the asset name"
+
+broken="$tmp/broken-packaging"
+mkdir -p "$broken/homebrew"
+cp "$root/packaging/update-tap.sh" "$broken/update-tap.sh"
+sed 's/REPLACE_TARBALL_SHA256/missing-checksum-placeholder/' \
+  "$root/packaging/homebrew/dreame-valetudo.rb" > "$broken/homebrew/dreame-valetudo.rb"
+if bash "$broken/update-tap.sh" v9.9.9 "$tmp/broken-tap" >/dev/null 2>&1; then
+  fail "update-tap accepted a formula template whose checksum placeholder was missing"
+fi
+echo "  update-tap.sh: replicated asset URLs + stable/rc substitution + fail-closed template OK"
 
 echo "PASS: both release scripts issue their expected create+upload calls via the shared release-common.sh helpers"

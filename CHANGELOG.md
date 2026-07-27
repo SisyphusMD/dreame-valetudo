@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: release publication now attempts every registry even when one is unavailable, always
+  runs the tap and self-healing reconcile jobs, waits for an exact GitHub tag, verifies every
+  packaged binary, and gives Homebrew a stable release asset with a GitHub fallback.
 - **fix**: source-built `sunxi-fel` now fetches and verifies the exact pinned sunxi-tools commit,
   rebuilds when that pin changes, and stops instead of compiling a stale checkout; Renovate updates
   to the boot-ROM transport require human review.
