@@ -129,7 +129,7 @@ class Context:
         if robot is None:
             return
         label = self.robot_label()
-        describe_run(robot=label)
+        describe_run(robot=label, robot_dir=robot.work.name)
         bookmark_prompts_in(robot.state_dir)
         tmux = working_tmux(self.env)
         if tmux and self.env.get("TMUX"):

@@ -16,6 +16,7 @@ from .. import manifest
 from ..console import die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
+from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base
 from ..util import parse_mikey, repair_did
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
@@ -105,6 +106,7 @@ def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) ->
         pass
 
 
+@records_step("installing Valetudo")
 def push(ctx: Context, key: str | Path | None = None) -> bool:
     """Returns True once Valetudo is installed; False if the robot isn't reachable on its AP
     (so the caller can print Phase-3 guidance instead of aborting the whole run)."""

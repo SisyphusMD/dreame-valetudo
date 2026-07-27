@@ -42,13 +42,16 @@ from .run import RunError, Runner, SubprocessRunner
 from .session import (
     IN_SESSION,
     PURE_COMMANDS,
+    capture_pane,
     clear_outcome,
     client_attached,
     hold_workspace_lock,
     kill_session,
     lock_free,
+    read_captured_pane,
     read_outcome,
     record_outcome,
+    release_workspace_lock,
     running_run,
     session_name,
     session_pane_dead,
@@ -72,12 +75,15 @@ _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"}
 _NO_WORKSPACE = PURE_COMMANDS
 
 
-def select_model(ctx: Context) -> None:
-    forced = ctx.env.get("DREAME_MODEL")
+def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True) -> bool:
+    forced = ctx.env.get("DREAME_MODEL") if use_env else None
     if forced:
         ctx.profile = load_profile(forced)
+        ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+        if ctx.robot is not None:
+            ctx.robot.state_set("model_key", ctx.profile.key)
         ctx.console.info(f"Model: {ctx.profile.model} (from DREAME_MODEL)")
-        return
+        return True
     if not ctx.interactive:
         raise Die("stdin isn't a terminal — set DREAME_MODEL=<key> (one of: "
                   f"{' '.join(SUPPORTED_MODELS)}).")
@@ -86,51 +92,65 @@ def select_model(ctx: Context) -> None:
         p = load_profile(key)
         suffix = " (UART - guided manual, not yet automated)" if p.method == "uart" else ""
         ctx.console.info(f"   {i}) {p.model}{suffix}")
-    choice = ctx.console.ask(f"Model [1-{len(SUPPORTED_MODELS)}]?").strip()
+    back = ", b=back" if allow_back else ""
+    choice = ctx.console.ask(f"Model [1-{len(SUPPORTED_MODELS)}{back}]?").strip()
+    if allow_back and choice.lower() in {"b", "back"}:
+        return False
     # ASCII-digits only (str.isdigit accepts superscripts/other Unicode digits that int() rejects).
     if not re.fullmatch(r"[0-9]+", choice) or not (1 <= int(choice) <= len(SUPPORTED_MODELS)):
         raise Die(f"Invalid choice: {choice}")
     ctx.profile = load_profile(SUPPORTED_MODELS[int(choice) - 1])
     ctx.console.info(f"Model: {ctx.profile.model}")
-    model_hazard_check(ctx)
+    ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+    if ctx.robot is not None:
+        ctx.robot.state_set("model_key", ctx.profile.key)
+    return True
 
 
-def _bind_robot(ctx: Context) -> None:
+def _bind_robot(ctx: Context) -> bool:
     """Resolve the profile, then record which robot this run is on.
 
     Recorded as early as the robot is known, so a second invocation can say WHICH robot is busy
     rather than refusing anonymously. The blank-name path has no robot until recon reads the device
     id, so recon records it again once it does.
     """
-    _profile_for_work(ctx)
+    if not _profile_for_work(ctx):
+        return False
     ctx.bind_robot()
+    return True
 
 
-def _profile_for_work(ctx: Context) -> None:
+def _profile_for_work(ctx: Context) -> bool:
     robot = ctx.robot
     if robot is not None and (
         (robot.state_dir / "model_key").is_file() or (robot.recon_dir / "config.txt").is_file()
     ):
         ctx.profile = load_profile(model_key_for_dir(robot.work))
         ctx.console.info(f"Model: {ctx.profile.model}")
-    else:
-        select_model(ctx)
+        ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+        return True
+    return select_model(ctx, allow_back=robot is not None)
 
 
-def _name_new_robot(ctx: Context) -> None:
+def _name_new_robot(ctx: Context, *, allow_back: bool = False) -> bool:
     """Name a brand-new robot up front. Blank — or non-interactive — leaves ctx.robot None so recon
     auto-names it by device ID; a given name creates the robot dir now. Shared by the first-robot
     and 'start FRESH' paths so a device is nameable from the very first run (recon or auto). A name
     collision is not fatal — names stay unique (they're the human handle), so it just re-prompts."""
     if not ctx.interactive:
         ctx.robot = None
-        return
+        return True
     while True:
-        raw = ctx.console.ask("Name for this robot [blank = auto-name by device ID]:").strip()
+        back = ", b=back" if allow_back else ""
+        raw = ctx.console.ask(
+            f"Name for this robot [blank = auto-name by device ID{back}]:"
+        ).strip()
+        if allow_back and raw.lower() in {"b", "back"}:
+            return False
         if not raw:
             ctx.robot = None
             ctx.console.info("New robot — created and named by device ID once recon reads it.")
-            return
+            return True
         if "/" in raw:
             ctx.console.warn("A robot name can't contain '/'. Try again.")
             continue
@@ -144,8 +164,26 @@ def _name_new_robot(ctx: Context) -> None:
             continue
         ctx.robot = Robot(ctx.ws.robots_dir / slug)
         ctx.pending_name = raw
+        ctx.robot.set_display_name(raw)
         ctx.console.info(f"New robot: '{raw}'" + (f" (folder {slug})" if slug != raw else ""))
+        return True
+
+
+def _discard_uncommitted_robot(ctx: Context, created: Path | None) -> None:
+    if created is None or ctx.robot is None or ctx.robot.work != created:
         return
+    state = created / "state"
+    # Refusing broad recursive cleanup makes an unexpected file evidence that setup progressed.
+    if not created.is_dir() or set(created.iterdir()) != {state}:
+        return
+    name = state / "name"
+    if not state.is_dir() or set(state.iterdir()) != {name} or not name.is_file():
+        return
+    name.unlink()
+    state.rmdir()
+    created.rmdir()
+    ctx.robot = None
+    ctx.pending_name = None
 
 
 def select_robot(ctx: Context) -> None:
@@ -154,35 +192,46 @@ def select_robot(ctx: Context) -> None:
     if named:
         ctx.robot = Robot(ctx.ws.robots_dir / named)
         ctx.console.info(f"Robot: {named} (from DREAME_ROBOT)")
-        _bind_robot(ctx)
+        if not _bind_robot(ctx):
+            raise Die("Model selection cancelled.")
         return
 
     # Skip dot-directories; only real robot dirs count.
     dirs = [d for d in sorted(ctx.ws.robots_dir.iterdir())
             if d.is_dir() and not d.name.startswith(".")]
     if not dirs:
-        ctx.console.say("No prior robots — setting up your first one.")
-        _name_new_robot(ctx)  # nameable here too, so the first device needn't be a throwaway
-        _bind_robot(ctx)
-        return
+        while True:
+            ctx.console.say("No prior robots — setting up your first one.")
+            _name_new_robot(ctx)  # nameable here too, so the first device needn't be a throwaway
+            created = ctx.robot.work if ctx.robot is not None else None
+            if _bind_robot(ctx):
+                return
+            _discard_uncommitted_robot(ctx, created)
     if not ctx.interactive:
         raise Die("Multiple robots exist and stdin isn't a terminal — set DREAME_ROBOT=<name>.")
 
-    ctx.console.say(f"Found {len(dirs)} prior robot(s):")
-    for i, d in enumerate(dirs, 1):
-        ctx.console.info(f"   {i}) {Robot(d).display_name()}   {_summary(d)}")
-    fresh = len(dirs) + 1
-    ctx.console.info(f"   {fresh}) start a FRESH robot")
-    ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
-    choice = ctx.console.ask(f"Resume which robot, or start fresh [1-{fresh}]?").strip()
-    if re.fullmatch(r"[0-9]+", choice) and 1 <= int(choice) <= len(dirs):
-        ctx.robot = Robot(dirs[int(choice) - 1])
-        ctx.console.info(f"Resuming: {ctx.robot.display_name()}")
-    elif choice == str(fresh):
-        _name_new_robot(ctx)
-    else:
-        raise Die(f"Invalid choice: {choice}")
-    _bind_robot(ctx)
+    while True:
+        ctx.console.say(f"Found {len(dirs)} prior robot(s):")
+        for i, d in enumerate(dirs, 1):
+            ctx.console.info(f"   {i}) {Robot(d).display_name()}   {_summary(d)}")
+        fresh = len(dirs) + 1
+        ctx.console.info(f"   {fresh}) start a FRESH robot")
+        ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
+        choice = ctx.console.ask(
+            f"Resume which robot, or start fresh [1-{fresh}]?"
+        ).strip()
+        if re.fullmatch(r"[0-9]+", choice) and 1 <= int(choice) <= len(dirs):
+            ctx.robot = Robot(dirs[int(choice) - 1])
+            ctx.console.info(f"Resuming: {ctx.robot.display_name()}")
+        elif choice == str(fresh):
+            if not _name_new_robot(ctx, allow_back=True):
+                continue
+            created = ctx.robot.work if ctx.robot is not None else None
+        else:
+            raise Die(f"Invalid choice: {choice}")
+        if _bind_robot(ctx):
+            return
+        _discard_uncommitted_robot(ctx, created if choice == str(fresh) else None)
 
 
 def _pcb_help(ctx: Context) -> None:
@@ -192,6 +241,24 @@ def _pcb_help(ctx: Context) -> None:
                        "(1.2mm board)")
     ctx.console.detail("Assembly + FEL button sequence, with photos: "
                        "https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf")
+
+
+def _auto_intro(ctx: Context) -> None:
+    def full() -> None:
+        named = f" '{ctx.robot_label()}'" if ctx.robot is not None else ""
+        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every phase is "
+                        "guided and resumable):")
+        ctx.console.steps([
+            "Recon (read-only): validate the USB path and record the robot's identity.",
+            "Root (the one destructive step): flash the image the dustbuilder builds for it.",
+            "Install: push Valetudo onto the robot over its own Wi-Fi AP.",
+        ])
+        _pcb_help(ctx)
+        ctx.console.info("This replaces the robot's firmware — flashing always carries some risk "
+                         "of bricking, so you do this at your own risk. Ctrl+C is safe at any "
+                         "non-flash step; re-run to resume.")
+
+    ctx.console.once("auto-intro", full)
 
 
 def _pause(ctx: Context) -> None:
@@ -271,18 +338,7 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming: "
                         "every remaining phase runs guided, in order.")
     else:
-        named = f" '{ctx.robot_label()}'" if ctx.robot is not None else ""
-        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every phase is "
-                        "guided and resumable):")
-        ctx.console.steps([
-            "Recon (read-only): validate the USB path and record the robot's identity.",
-            "Root (the one destructive step): flash the image the dustbuilder builds for it.",
-            "Install: push Valetudo onto the robot over its own Wi-Fi AP.",
-        ])
-        _pcb_help(ctx)
-        ctx.console.info("This replaces the robot's firmware — flashing always carries some risk "
-                         "of bricking, so you do this at your own risk. Ctrl+C is safe at any "
-                         "non-flash step; re-run to resume.")
+        _auto_intro(ctx)
     doctor(ctx)
     fetch(ctx)
     recon(ctx, force="--force" in rest, recovery_backup="--no-recovery-backup" not in rest)
@@ -332,6 +388,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
+        "  dreame-valetudo model      correct the saved model before the robot is rooted\n"
         "  dreame-valetudo migrate    run the one-time workspace migration now (else it's automatic)\n"
         "  dreame-valetudo rename <old> <new>  rename a robot (its config identity is unchanged)\n"
         "  dreame-valetudo forget <name>  remove a robot's working dir (factory backups are kept)\n"
@@ -393,6 +450,14 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0 if fix_key(ctx) else 1
 
     select_robot(ctx)
+    if cmd == "model":
+        robot = ctx.need_robot()
+        if robot.state_has("rooted"):
+            raise Die("The model cannot be changed after rooting — the flashed image was built "
+                      "for the saved model.")
+        # The command exists specifically to replace a saved choice, so it must not silently load it.
+        select_model(ctx, use_env=False)
+        return 0
     if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
         raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
                   f"(no args) for its guided flow, not 'dreame-valetudo {cmd}'.")
@@ -513,6 +578,21 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
                and wraps_this_run(self_cmd, env, Path(found), interactive=interactive))
     chose_rejoin = False
     if found is not None and applies and tmux_session_exists(Path(found), session):
+        # A dead pane is not a run in progress. Offering to "go back to it" would attach the user to
+        # a corpse that can never return or record anything, so reap it and report what it left
+        # behind. Checked HERE rather than beside the plan below, because that check can only see a
+        # session this invocation created — and a corpse is by definition one that outlived its run.
+        if session_pane_dead(Path(found), session):
+            kill_session(Path(found), session)
+            stopped = read_outcome(base)
+            if stopped is None:
+                con.err("The run stopped without recording how it went. Re-run to pick it back up; "
+                        f"logs are under {base / 'logs'}.")
+                raise SystemExit(1)
+            dead_rc, dead_log = stopped
+            for line in tail_transcript(dead_log) if dead_log is not None else []:
+                con.info(line)
+            raise SystemExit(dead_rc)
         if _offer_existing_run(con, Path(found), session, lock):
             # Remembered, because the answer must not change meaning afterwards. The run can end
             # while the menu is on screen; the re-probe below then says "no session", and without
@@ -565,11 +645,12 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     # Cleared BEFORE the session is created, never after. A short run can finish before this process
     # even reaches the attach, and clearing it there would delete the record the run had already
     # written — leaving this process to report a finished run as still going.
-    clear_outcome(base)
+    if not still_there:
+        clear_outcome(base)
     started = False
     for step in plan[:-1]:
         if subprocess.run(step, check=False, capture_output=True).returncode == 0:
-            started = started or step[1] == "new-session"
+            started = started or step[3] == "new-session"
             continue
         # WHICH step failed decides everything. Before the session exists, running inline is the
         # honest fallback. After it exists the command is ALREADY RUNNING in there, so falling
@@ -586,29 +667,27 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         con.err("The run stopped without recording how it went. Re-run to pick it back up; "
                 f"logs are under {base / 'logs'}.")
         raise SystemExit(1)
-    # switch-client moves the caller's EXISTING client and returns at once (measured: ~12ms); only
-    # attach-session blocks until the run ends. So after a switch there is nobody left watching this
-    # pane — the user is looking at the session — and nothing here could report an outcome to them.
-    if plan[-1][1] != "attach-session":
-        if subprocess.run(plan[-1], check=False, capture_output=True).returncode != 0:
-            # The client never moved. Whether that matters depends on the session, NOT on the
-            # failure: if the run is going in there, falling through would start the whole command
-            # a second time — flash included — beside the one already running.
-            if found is not None and tmux_session_exists(Path(found), session):
-                con.say("Still running. Re-run this command to come back to it.")
-                raise SystemExit(0)
-            return  # nothing is running anywhere: inline is the honest fallback
-        raise SystemExit(0)
-    # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the moment
-    # the session ends the terminal is restored and every line the run printed is erased with it —
-    # the address to open, the error, the path to the log. Staying alive leaves someone to report.
-    try:
-        subprocess.run(plan[-1], check=False)
-    except OSError:
-        return  # could not attach at all: run inline rather than fail the whole run
-    # The client writes its exit marker to stdout, the same stream it needs to draw the terminal,
-    # so it cannot be filtered or redirected away. Remove it before replaying the run's output.
-    con.erase_line()
+    # A short run can be over before this process gets here — a command that only reports finishes
+    # in milliseconds — and attaching to a session that has already gone prints tmux's own "no
+    # sessions" on the user's terminal. The attach must inherit the terminal to draw on it, so that
+    # message cannot be captured away; the only way not to show it is not to run the command.
+    attached = tmux_session_exists(Path(found), session) if found is not None else False
+    if attached:
+        # Deliberately NOT execv. A tmux client draws on the terminal's alternate screen, so the
+        # moment the session ends the terminal is restored and every line the run printed is erased
+        # with it — the address to open, the error, the path to the log. Staying alive leaves
+        # someone to report.
+        try:
+            # stderr discarded, stdout NOT: the client draws on stdout, and tmux reports "no
+            # sessions" on stderr. The check above cannot close the gap on its own — the run can
+            # end in the instant between asking and attaching — and a raw tmux diagnostic is the
+            # one thing this wrapper must never put on the user's terminal.
+            subprocess.run(plan[-1], check=False, stderr=subprocess.DEVNULL)
+        except OSError:
+            return  # could not attach at all: run inline rather than fail the whole run
+        # The client writes its exit marker to stdout, the same stream it needs to draw the
+        # terminal, so it cannot be filtered or redirected away. Remove it before replaying.
+        con.erase_line()
     ended = read_outcome(base)
     if ended is None:
         # No record means one of two very different things, and the difference matters: ASK, do not
@@ -626,17 +705,27 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
                 f"logs are under {base / 'logs'}.")
         raise SystemExit(1)
     rc, log_path = ended
+    captured = read_captured_pane(base)
+    if captured is not None:
+        # Wrapping is already baked in at the pane width used at capture time, and an in-place
+        # progress spinner can only contribute its final frame.
+        con.replay(captured)
+        raise SystemExit(rc)
     said = tail_transcript(log_path) if log_path is not None else []
     for line in said:
         con.info(line)
     if not said:
         # A run with no log (DREAME_NO_LOG=1, an unwritable logs dir, a failure before the log
-        # opened) would otherwise end on a wiped screen with nothing at all on it.
+        # opened) leaves a detached caller with nothing else that says how it went.
         con.info(f"The run finished with exit status {rc}. It kept no log to show here.")
     # Where to find the rest — but never twice. A run that died on an exception printed this line
     # itself, so it is already in the transcript just replayed; a plain non-zero return (a guard, a
     # phase result) never printed it at all, and that is the case that most needs it.
-    if rc != 0 and log_path is not None and not any(str(log_path) in line for line in said):
+    # Matched on the PHRASE, not the path: the copy inside the log has been through scrub(), which
+    # rewrites the home directory to `~`, so comparing absolute paths saw two different strings and
+    # printed the same log twice in two renderings.
+    already_said = any("log of this run was saved" in line for line in said)
+    if rc != 0 and log_path is not None and not already_said:
         con.info(f"A scrubbed log of this run was saved to {log_path}")
     raise SystemExit(rc)
 
@@ -653,7 +742,54 @@ def main(
     # Leave the outcome where the invocation that attached can find it and report it instead.
     resolved = dict(os.environ if env is None else env)
     if resolved.get(IN_SESSION):
-        record_outcome(Workspace.from_env(resolved).base, rc, log_path)
+        base = Workspace.from_env(resolved).base
+        record_outcome(base, rc, log_path)
+        if cmd_of(list(sys.argv[1:] if argv is None else argv)) not in PURE_COMMANDS:
+            # The attachment rule belongs to every normal Console prompt: watching clears its
+            # deadline, detaching starts it, and an unknown state never expires. Release first so
+            # a finished run kept on screen never prevents another invocation from taking over.
+            run_state = running_run(base / ".lock")
+            robot_dir = run_state.get("robot_dir")
+            robot_label = run_state.get("robot")
+            step = run_state.get("step")
+            pending = ""
+            if isinstance(robot_dir, str) and robot_dir:
+                pending_file = base / "robots" / robot_dir / "state" / "pending"
+                if pending_file.is_file():
+                    pending = " ".join(pending_file.read_text().split())
+            release_workspace_lock()
+            # No robot was ever bound, so this run never got as far as engaging with one: an
+            # interrupt at the picker started nothing, and an informational command finished without
+            # choosing anything. Neither has something to continue OR something to follow, and the
+            # interrupt already printed that nothing was lost. Asking anyway produced a question
+            # about a robot that does not exist.
+            engaged = isinstance(robot_label, str) and bool(robot_label)
+            again = False
+            if engaged and sys.stdout.isatty():
+                with contextlib.suppress(Die):
+                    if rc == 0:
+                        question = "Set up another robot?"
+                    elif step == "waiting for the robot to enter FEL mode":
+                        question = "Watch for the robot again?"
+                    elif pending:
+                        # Prompts end in their own punctuation — a bare append turns the robot-name
+                        # question into "[blank = auto-name by device ID]:?".
+                        question = f"Go back to: {pending.rstrip(' :?')}?"
+                    else:
+                        question = f"Continue with '{robot_label}'?"
+                    again = (console or Console()).confirm(question)
+            if again:
+                clear_outcome(base)
+                resumed = dict(resolved)
+                if isinstance(robot_dir, str) and robot_dir:
+                    resumed["DREAME_ROBOT"] = robot_dir
+                    key_file = base / "robots" / robot_dir / "state" / "model_key"
+                    if key_file.is_file() and key_file.read_text().strip():
+                        resumed["DREAME_MODEL"] = key_file.read_text().strip()
+                return main(["auto"], env=resumed, console=console, runner=runner)
+            tmux = working_tmux(resolved)
+            if tmux is not None:
+                capture_pane(Path(tmux), session_name(base), base)
     return rc
 
 

@@ -192,6 +192,17 @@ def test_progress_prints_start_and_done_lines_when_piped(capsys: pytest.CaptureF
     assert con._active is None
 
 
+def test_progress_without_timer_omits_elapsed_figure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    con = Console(color=False, width=80)
+    with con.progress("Watching", timer=False):
+        pass
+    out = capsys.readouterr().out
+    assert "Watching — done" in out
+    assert "(" not in out
+
+
 def test_progress_error_exit_leaves_no_done_line(capsys: pytest.CaptureFixture[str]) -> None:
     con = Console(color=False, width=80)
     with pytest.raises(RuntimeError), con.progress("Working"):

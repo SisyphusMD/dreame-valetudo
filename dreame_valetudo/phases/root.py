@@ -17,7 +17,7 @@ from ..constants import FEL_IMAGE_FILES
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
-from ..session import describe_run
+from ..session import describe_run, records_step
 from ..util import parse_config
 from .doctor import _is_exe, doctor
 from .image import image
@@ -27,13 +27,14 @@ _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
 # identity of the config the image was built for (see log.py's redact_dust_token).
 _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_SAFE_BACKUP_STATES = frozenset({"obtained", "not-requested"})
 
 
 # Every signal the kernel delivers to the whole foreground process group that would otherwise end
 # or freeze the flash. HUP (closing the terminal, quitting the terminal app, an SSH session
 # dropping — a Pi driven over SSH is a supported setup) terminates by default; TSTP is Ctrl+Z, the
 # key next to the one the user has just been told not to press, and STOP is worse than death here
-# because the robot's ~160s watchdog keeps counting while the process is frozen mid-write.
+# because the power MCU's fixed rail-cycle clock keeps counting while the process is frozen.
 # Dispositions survive exec, so SIG_IGN also covers the fastboot child doing the bulk USB writes.
 _FLASH_WINDOW_SIGNALS = (
     signal.SIGINT, signal.SIGTERM, signal.SIGQUIT,
@@ -91,6 +92,7 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
             "to flash. Re-run 'image --force' to stage this robot's own build.")
 
 
+@records_step("flashing the rooted image")
 def root(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
     # Self-provision prerequisites before the already-rooted check: build the toolchain if
@@ -125,9 +127,26 @@ def root(ctx: Context, *, force: bool = False) -> None:
             "re-run recon for this robot first.")
     _check_image_built_for(dust, expect_cfg)
 
-    ctx.console.warn("Once the payload boots, a 160s watchdog starts. This runs the flash "
-                     "sequence back-to-back and STOPS on the first non-OKAY. If anything is not "
-                     "OKAY, power off and start over — do not improvise.")
+    recon_state = robot.state_get("recon") or ""
+    backup_state = next(
+        (field.removeprefix("backup=") for field in recon_state.split()
+         if field.startswith("backup=")),
+        "unknown",
+    )
+    if backup_state not in _SAFE_BACKUP_STATES:
+        if backup_state == "missing":
+            backup_warning = "The requested disaster-recovery backup was NOT obtained."
+        else:
+            backup_warning = "No recognised disaster-recovery backup result is recorded."
+        ctx.console.warn(f"{backup_warning} Flashing without that backup removes a recovery option.")
+        if not ctx.console.confirm("Flash without a disaster-recovery backup anyway?"):
+            die("Aborted — nothing was written to the robot.")
+
+    ctx.console.warn("The robot's power MCU cuts and restores the SoC rail roughly 210s after the "
+                     "PCB button sequence, leaving about 180s of usable FEL. This is not a "
+                     "watchdog, and nothing can extend the clock. This runs the flash sequence "
+                     "back-to-back and STOPS on the first non-OKAY. If anything is not OKAY, redo "
+                     "the button sequence — do not improvise.")
     ctx.console.info("This is the point of no return: flashing replaces the firmware and can, in "
                      "the worst case, permanently brick the robot. Keep your recon backup.")
     model_hazard_check(ctx)
@@ -136,7 +155,12 @@ def root(ctx: Context, *, force: bool = False) -> None:
         die("Aborted — nothing was written to the robot.")
 
     print_fel_entry(ctx.console, ctx.host)
-    if not ctx.fel.poll_fel(180):
+    if ctx.interactive:
+        ctx.console.once(
+            "fel-readiness",
+            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
+        )
+    if not ctx.fel.poll_fel():
         die("No FEL device — aborting before any write.")
     ctx.fel.fel_boot_fastboot(
         robot.fw_dir, "fsbl.bin", "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
@@ -155,7 +179,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
             "DREAME_ROBOT=<name>.)")
     ctx.console.info(f"Robot identity confirmed (config={live_cfg}).")
 
-    ctx.console.say(">>> WATCHDOG LIVE — flashing now <<<")
+    ctx.console.say(">>> POWER-CYCLE CLOCK LIVE — flashing now <<<")
     ctx.console.warn("Do NOT press Ctrl+C or unplug USB until you see 'All flashes OKAY' — "
                      "interrupting a flash in progress can PERMANENTLY brick the robot. Interrupt "
                      "signals are ignored for the next few seconds.")
@@ -170,10 +194,10 @@ def root(ctx: Context, *, force: bool = False) -> None:
         fb("flash", "rootfs1", str(robot.fw_dir / "rootfs.img"))
         fb("flash", "boot2", str(robot.fw_dir / "boot.img"))
         fb("flash", "rootfs2", str(robot.fw_dir / "rootfs.img"))
+        robot.state_set("rooted")
         ctx.console.say("All flashes OKAY. Rebooting...")
         ctx.fastboot.fbt("reboot", check=False)
 
-    robot.state_set("rooted")
     ctx.console.say("Flash complete — if the robot boots normally, it's rooted.")
     ctx.console.info("Next: re-run and it continues to Phase 3 (install Valetudo over the robot's "
                      "Wi-Fi AP).")

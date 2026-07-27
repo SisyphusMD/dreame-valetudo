@@ -7,12 +7,14 @@ from pathlib import Path
 
 from ..constants import ROBOT_AP_IP
 from ..context import Context
-from ..profiles import load_profile, model_key_for_dir
+from ..profiles import known_model_key_for_dir, load_profile
+from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import parse_config
 from ..workspace import Robot
 
 
+@records_step("installing Valetudo")
 def valetudo(ctx: Context) -> None:
     ctx.console.phase(f"Install Valetudo on the rooted robot ({ctx.profile.arch})",
                       index=3, total=3)
@@ -64,8 +66,8 @@ def _summary(base: Path) -> str:
     cfg_file = d / "recon" / "config.txt"
     if cfg_file.is_file():
         cfg = parse_config(cfg_file.read_text()) or "?"
-    key = model_key_for_dir(d)
-    model = load_profile(key).model
+    key = known_model_key_for_dir(d)
+    model = load_profile(key).model if key else "model not chosen yet"
     last = "none"
     for s in ("valetudo", "rooted", "image", "recon"):
         if (d / "state" / s).is_file():

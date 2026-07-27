@@ -31,6 +31,7 @@ def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
     rd = ctx.need_robot().recon_dir
     rd.mkdir(parents=True, exist_ok=True)
     (rd / "config.txt").write_text(f"config: {cfg}\n")
+    ctx.need_robot().state_set("recon", f"config={cfg} backup=obtained")
 
 
 def _ok_responder(live_cfg: str = _CFG) -> object:
@@ -66,6 +67,66 @@ def test_root_happy_path_flashes_in_order_and_marks_rooted(make_ctx: CtxFactory)
         ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
         ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
     ]
+
+
+def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(),
+                   confirms=[False])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    ctx.need_robot().state_set("recon", f"config={_CFG} backup=missing")
+    with pytest.raises(Die, match="Aborted"):
+        root(ctx)
+    assert "requested disaster-recovery backup was NOT obtained" in ctx.console.text()
+    assert _flash_ops(ctx) == []
+
+
+@pytest.mark.parametrize("marker", [f"config={_CFG}", f"config={_CFG} backup=future-value"])
+def test_root_treats_old_or_unrecognised_backup_markers_as_unknown(
+    make_ctx: CtxFactory, marker: str,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(),
+                   confirms=[False])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    ctx.need_robot().state_set("recon", marker)
+    with pytest.raises(Die, match="Aborted"):
+        root(ctx)
+    assert "No recognised disaster-recovery backup result is recorded" in ctx.console.text()
+    assert _flash_ops(ctx) == []
+
+
+def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    ctx.need_robot().state_set("recon", f"config={_CFG} backup=not-requested")
+    root(ctx)
+    assert ctx.need_robot().state_has("rooted")
+
+
+def test_rooted_marker_is_written_while_interrupts_are_still_masked(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    original = type(robot).state_set
+    dispositions: list[object] = []
+
+    def recording_state_set(target: object, phase: str, detail: str = "") -> None:
+        if phase == "rooted":
+            dispositions.append(signal.getsignal(signal.SIGINT))
+        original(target, phase, detail)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(type(robot), "state_set", recording_state_set)
+    root(ctx)
+    assert dispositions == [signal.SIG_IGN]
 
 
 def test_root_fails_closed_when_recon_identity_missing(make_ctx: CtxFactory) -> None:
@@ -194,7 +255,8 @@ _MUST_MASK = {"SIGINT", "SIGTERM", "SIGQUIT", "SIGHUP", "SIGTSTP", "SIGTTIN", "S
 def test_flash_window_masks_every_signal_that_would_end_or_freeze_the_write() -> None:
     """SIGHUP is a closed terminal or a dropped SSH session (a Pi over SSH is supported); SIGTSTP
     is Ctrl+Z, next to the key the user was just told not to press — and a stopped process is
-    worse than a dead one here, because the robot's watchdog keeps counting while it is frozen.
+    worse than a dead one here, because the power MCU's rail-cycle clock keeps counting while it is
+    frozen.
 
     Asserted on the dispositions rather than by delivering the signals: an unmasked SIGTERM would
     kill the test run and an unmasked SIGTSTP would hang CI, so a regression must fail cleanly.
@@ -265,6 +327,7 @@ def test_root_aborts_when_fel_never_appears(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
+    ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
     with pytest.raises(Die, match="No FEL device"):
         root(ctx)
     assert _flash_ops(ctx) == []
