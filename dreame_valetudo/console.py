@@ -401,7 +401,10 @@ class Console:
                     return ""
                 return line.rstrip("\n")
             now = time.monotonic()
-            if now - last_probe >= 15.0:   # spawning tmux every loop would be gratuitous
+            # The normal cadence avoids spawning tmux on every input poll. At the deadline,
+            # however, re-probe before taking the question away: someone can reattach during the
+            # final 15 seconds, and an attached prompt must never expire on a cached False.
+            if now - last_probe >= 15.0 or (deadline is not None and now >= deadline):
                 attached, last_probe = probe(), now
             deadline = next_deadline(attached, deadline, now, timeout)
             if deadline is not None and now >= deadline:

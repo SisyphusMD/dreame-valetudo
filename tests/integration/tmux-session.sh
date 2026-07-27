@@ -18,6 +18,7 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 0
 fi
 TMUX_CMD=(tmux -L dreame-valetudo)
+USER_TMUX_CMD=(tmux -L dreame-valetudo-user)
 
 # A unix socket path caps near 104 bytes and macOS TMPDIR is already long, so the private server
 # lives somewhere short. Never the default socket: the developer has real sessions on it.
@@ -28,6 +29,7 @@ HOME_DIR="$RUNDIR/home"
 mkdir -p "$HOME_DIR"
 
 cleanup() {
+  "${USER_TMUX_CMD[@]}" kill-server 2>/dev/null || true
   sessions="$("${TMUX_CMD[@]}" list-sessions -F '#S' 2>/dev/null || true)"
   while IFS= read -r session; do
     [ -n "$session" ] && "${TMUX_CMD[@]}" kill-session -t "$session" 2>/dev/null || true
@@ -415,7 +417,47 @@ text_of dead | grep -q "stopped without recording" || fail "the dead run's outco
 rm -f "$HOME_DIR/.tmux.conf"
 pass "a dead pane is reported instead of attached and its session is removed"
 
-# --- 8. an uninterruptible lock can only be rejoined ----------------------------------------
+# --- 8. hostile lifecycle defaults cannot retain or redirect the client ---------------------
+# Start a fresh private server with settings that can change where a client goes when its session
+# ends, plus defaults that must not replace the explicit command or the deliberately minimal bar.
+cat > "$HOME_DIR/.tmux.conf" <<'EOF'
+set-option -g remain-on-exit on
+set-option -g detach-on-destroy off
+set-option -g default-command 'exit 97'
+set-option -g status-left 'USER STATUS'
+set-hook -g after-new-session 'run-shell "sleep 0.2"'
+EOF
+env HOME="$HOME_DIR" "${TMUX_CMD[@]}" new-session -d -s unrelated 'sleep 20'
+W_CONFIG="$RUNDIR/work-config"
+CONFIG_SESSION="$(session_for_work "$W_CONFIG")"
+drive config 40 "DREAME_WORK=$W_CONFIG" -- "${TOOL[@]}" &
+CONFIG_CLIENT=$!
+for _ in $(seq 1 80); do
+  pane="$("${TMUX_CMD[@]}" capture-pane -p -t "$CONFIG_SESSION" 2>/dev/null || true)"
+  attached="$("${TMUX_CMD[@]}" display-message -p -t "$CONFIG_SESSION" \
+    '#{session_attached}' 2>/dev/null || true)"
+  [[ "$pane" == *"Name for this robot"* && "$attached" = 1 ]] && break
+  sleep 0.25
+done
+[[ "${pane:-}" == *"Name for this robot"* && "${attached:-0}" = 1 ]] ||
+  fail "user tmux defaults prevented the explicit run from reaching its prompt"
+[ "$("${TMUX_CMD[@]}" show-options -v -t "$CONFIG_SESSION" remain-on-exit)" = off ] ||
+  fail "the run inherited remain-on-exit on"
+[ "$("${TMUX_CMD[@]}" show-options -v -t "$CONFIG_SESSION" detach-on-destroy)" = on ] ||
+  fail "the run inherited detach-on-destroy off"
+[ "$("${TMUX_CMD[@]}" show-options -v -t "$CONFIG_SESSION" status-left)" = dreame-valetudo ] ||
+  fail "the user's status format replaced the run's bar"
+"${TMUX_CMD[@]}" send-keys -t "$CONFIG_SESSION" C-c
+wait "$CONFIG_CLIENT" 2>/dev/null || true
+[ "$(rc_of config)" = 130 ] ||
+  fail "the client did not return the interrupted run's status under hostile lifecycle defaults"
+"${TMUX_CMD[@]}" has-session -t unrelated 2>/dev/null ||
+  fail "destroying the run also destroyed the unrelated session"
+"${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+rm -f "$HOME_DIR/.tmux.conf"
+pass "user lifecycle, command and status defaults cannot retain or redirect the run"
+
+# --- 9. an uninterruptible lock can only be rejoined ----------------------------------------
 W_FLASH="$RUNDIR/work-flash"
 mkdir -p "$W_FLASH"
 FLASH_SESSION="$(session_for_work "$W_FLASH")"
@@ -441,7 +483,7 @@ kill "$LOCK_HOLDER" 2>/dev/null || true
 wait "$LOCK_HOLDER" 2>/dev/null || true
 pass "an uninterruptible lock never offers to close the live run"
 
-# --- 9. an install path containing a space still starts -------------------------------------
+# --- 10. an install path containing a space still starts ------------------------------------
 # tmux runs a SINGLE trailing argument through /bin/sh, and a bare invocation is the one form that
 # produces exactly one — so from a spaced path the binary silently never started.
 SPACED="$RUNDIR/robot stuff"
@@ -456,7 +498,43 @@ drive spaced 120 "DREAME_WORK=$RUNDIR/work-sp" -- "$SPACED/dreame-valetudo" stat
 [ -d "$RUNDIR/work-sp/logs" ] || fail "the spaced-path run never reached its workspace"
 pass "a bare invocation from a path containing a space still starts"
 
-# --- 10. a pure command does not disturb a live run ------------------------------------------
+# --- 11. a caller already inside tmux attaches across the private server ---------------------
+W_NESTED="$RUNDIR/work-nested"
+NESTED_SESSION="$(session_for_work "$W_NESTED")"
+NESTED_SCRIPT="$RUNDIR/nested.sh"
+printf -v NESTED_TOOL '%q ' "${TOOL[@]}"
+cat > "$NESTED_SCRIPT" <<EOF
+#!/usr/bin/env bash
+cd '$PWD'
+env HOME='$HOME_DIR' TMUX_TMPDIR='$TMUX_TMPDIR' TERM=xterm-256color \
+    DREAME_WORK='$W_NESTED' DREAME_NO_UPDATE_CHECK=1 DREAME_NO_UDEV_CHECK=1 \
+    DREAME_IDLE_TIMEOUT=0 NO_COLOR=1 ${NESTED_TOOL% }
+rc=\$?
+printf '%s\n' "\$rc" > '$RUNDIR/nested.rc'
+sleep 20
+EOF
+chmod +x "$NESTED_SCRIPT"
+env HOME="$HOME_DIR" TMUX_TMPDIR="$TMUX_TMPDIR" TERM=xterm-256color \
+  "${USER_TMUX_CMD[@]}" new-session -d -s user -x 120 -y 40 "$NESTED_SCRIPT"
+for _ in $(seq 1 80); do
+  pane="$("${TMUX_CMD[@]}" capture-pane -p -t "$NESTED_SESSION" 2>/dev/null || true)"
+  attached="$("${TMUX_CMD[@]}" display-message -p -t "$NESTED_SESSION" \
+    '#{session_attached}' 2>/dev/null || true)"
+  [[ "$pane" == *"Name for this robot"* && "$attached" = 1 ]] && break
+  sleep 0.25
+done
+[[ "${pane:-}" == *"Name for this robot"* && "${attached:-0}" = 1 ]] ||
+  fail "a caller inside another tmux did not attach to the private run"
+"${TMUX_CMD[@]}" send-keys -t "$NESTED_SESSION" C-c
+for _ in $(seq 1 80); do [ -s "$RUNDIR/nested.rc" ] && break; sleep 0.1; done
+[ "$(cat "$RUNDIR/nested.rc" 2>/dev/null || true)" = 130 ] ||
+  fail "the nested caller did not receive the run's exit status"
+"${USER_TMUX_CMD[@]}" has-session -t user 2>/dev/null ||
+  fail "ending the private run destroyed the caller's own tmux session"
+"${USER_TMUX_CMD[@]}" kill-server 2>/dev/null || true
+pass "a caller inside another tmux attaches across servers and gets the outcome"
+
+# --- 12. a pure command does not disturb a live run ------------------------------------------
 # A bare run with no robots stops at the naming prompt and sits there, which is a live session.
 W2="$RUNDIR/work2"
 drive live 40 "DREAME_WORK=$W2" -- "${TOOL[@]}" &
@@ -472,7 +550,7 @@ if text_of ver | grep -qi "already in progress"; then
 fi
 pass "--version during a live run prints a version and is offered nothing"
 
-# --- 11. a second workspace is an independent session, not the same one ----------------------
+# --- 13. a second workspace is an independent session, not the same one ----------------------
 # The mid-flash guard cross-checks a PER-WORKSPACE lock, so a shared session name would leave it
 # unable to see the run it is guarding.
 W3="$RUNDIR/work3"

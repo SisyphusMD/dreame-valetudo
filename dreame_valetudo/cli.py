@@ -825,10 +825,10 @@ def _run(
     log: RunLog | None = None
     try:
         if production:
-            # Before anything touches the workspace or opens the run log: re-exec inside tmux so
-            # the run outlives its terminal, and so a second invocation rejoins it instead of
-            # starting a rival process against the same robot. Replaces this process when it
-            # applies; an exec failure just falls through and runs inline.
+            # Before anything touches the workspace or opens the run log: start the run inside
+            # tmux so it outlives its terminal, and so a second invocation rejoins it instead of
+            # starting a rival process against the same robot. A failure before the session exists
+            # falls through and runs inline.
             _reexec_under_tmux(args, resolved_env, con, ws.base)
             # An unanswered question inside a session would otherwise block forever: tmux keeps
             # the pty open when the client detaches, so input() never sees EOF. Default an hour;
@@ -843,9 +843,9 @@ def _run(
                     )
             if cmd not in PURE_COMMANDS:
                 _warn_on_multiple_installs(con, resolved_env)
-            # One run per workspace. The tmux wrapper above already makes a second invocation
-            # attach instead of starting a rival, but it never nests — so a user inside their own
-            # tmux, or a piped/opted-out run, reaches here unprotected.
+            # One run per workspace. The tmux wrapper above already makes a second interactive
+            # invocation attach instead of starting a rival. Piped and opted-out runs reach here
+            # without that protection, so the lock remains load-bearing.
             hold_workspace_lock(ws.base / ".lock", cmd)
             # Help the fastboot client + sunxi-fel find libusb.
             apply_library_path(resolve_libexec(resolved_env))
