@@ -6,9 +6,9 @@ The dump is obfuscated with a fixed 0x20000-byte repeating XOR keystream that is
 robot AND every slice (from Max Ammann's reverse-engineering of the dust ``upload`` command). The
 keystream is not pinned as a checked-in blob; it is recovered from the dumps' own redundancy — a
 flash image is dominated by 0x00 fill, so at every keystream position the most common byte across the
-0x20000-periodic blocks IS that keystream byte. Recovery is rejected unless the decrypted fill
-collapses back to 0x00, so a file that is not this obfuscation scheme fails loudly instead of
-yielding plausible garbage.
+0x20000-periodic blocks IS that keystream byte. Recovery must match the pinned digest of the known
+transport keystream, then the decrypted fill must collapse back to 0x00, so a plausible but offset
+key or a file that is not this obfuscation scheme fails loudly instead of yielding garbage.
 
 The recovery backup is three consecutive eMMC slices (dustx100/101/102), each an exact multiple of
 the period and each XORed from keystream position 0, so they share one keystream. Only a *sparse*
@@ -20,8 +20,11 @@ see ``recover_shared_keystream``.
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from collections.abc import Iterable, Sequence
+
+from .constants import DUST_KEYSTREAM_SHA256
 
 # Keystream length: 256 sections of 0x200, selected by (block_index & 0xff). The whole dump is XORed
 # against this stream repeated end to end.
@@ -56,7 +59,7 @@ def _vote_keystream(dumps: Iterable[bytes], sample_blocks: int = 512) -> bytes:
 
 def recover_keystream(data: bytes, sample_blocks: int = 512) -> bytes:
     """Recover the repeating XOR keystream from a single dump's own 0x00 fill."""
-    return _vote_keystream((data,), sample_blocks)
+    return recover_shared_keystream((data,), sample_blocks)
 
 
 def xor_stream(data: bytes, keystream: bytes) -> bytes:
@@ -73,10 +76,16 @@ def xor_stream(data: bytes, keystream: bytes) -> bytes:
     return bytes(out)
 
 
+def _sample_stride(length: int) -> int:
+    # A shared factor with the repeating key period would inspect only a subset of its offsets and
+    # could mistake a periodic byte pattern for the distribution of the whole decrypted image.
+    return max(1, length // 2_000_000) | 1
+
+
 def _zero_fraction(data: bytes) -> float:
     """Fraction of 0x00 bytes over a uniform sample across ``data`` — a cheap check on whether the
     fill decrypted correctly."""
-    step = max(1, len(data) // 2_000_000)
+    step = _sample_stride(len(data))
     sample = data[::step]
     return sample.count(0) / len(sample) if sample else 0.0
 
@@ -92,6 +101,8 @@ def recover_shared_keystream(dumps: Sequence[bytes], sample_blocks: int = 512) -
     garbage.
     """
     key = _vote_keystream(dumps, sample_blocks)
+    if hashlib.sha256(key).hexdigest() != DUST_KEYSTREAM_SHA256:
+        raise ValueError("keystream recovery failed: result does not match the known transport keystream")
     if any(_zero_fraction(xor_stream(d, key)) >= 0.2 for d in dumps):
         return key
     raise ValueError("keystream recovery failed: no slice is dominated by 0x00 fill")

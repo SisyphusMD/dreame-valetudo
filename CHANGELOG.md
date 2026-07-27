@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: recovery-backup decryption now verifies the recovered transport keystream against its
+  known digest, preventing a constant-XOR-offset key from passing the sparse-fill check and turning
+  every restored slice into plausible garbage.
 - **fix**: the libusb fastboot client now reports missing backends without a traceback, `doctor`
   exercises it before any robot work, and failed waits/identity reads show the host error instead
   of blaming the FEL button sequence. The uv fallback no longer inspects or mutates the launcher's
