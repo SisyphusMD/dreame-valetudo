@@ -6,18 +6,28 @@ the final on-disk location."""
 from __future__ import annotations
 
 import gzip
+import hashlib
 import random
 import types
 from pathlib import Path
 
+import pytest
 from conftest import ScriptedConsole
 
+from dreame_valetudo import dust_decrypt
 from dreame_valetudo import migrate as M
 from dreame_valetudo.dust_decrypt import PERIOD, xor_stream
 
 
 def _keystream() -> bytes:
     return bytes((i * 37 + 11) & 0xFF for i in range(PERIOD))
+
+
+@pytest.fixture(autouse=True)
+def trust_test_keystream(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dust_decrypt, "DUST_KEYSTREAM_SHA256", hashlib.sha256(_keystream()).hexdigest()
+    )
 
 
 def _fake_flash(nblocks: int = 4) -> bytes:
@@ -122,6 +132,21 @@ def test_decrypt_skips_non_obfuscated_data(tmp_path: Path) -> None:
     (recon / "dustx100.bin").write_bytes(random.Random(1234).randbytes(PERIOD * 16))
     assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 0
     assert not (recon / "dustx100.dd.gz").exists()
+
+
+def test_decrypt_writes_nothing_for_constant_xor_offset_key(tmp_path: Path) -> None:
+    recon = tmp_path / "recon"
+    recon.mkdir(parents=True)
+    key = _keystream()
+    plains = {
+        "dustx100": bytes(PERIOD * 4),
+        "dustx101": bytes([0xFF]) * (PERIOD * 20),
+    }
+    for name, plain in plains.items():
+        (recon / f"{name}.bin").write_bytes(xor_stream(plain, key))
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 0
+    assert not list(recon.glob("*.dd.gz"))
 
 
 def test_decrypt_skips_when_low_disk(tmp_path: Path, monkeypatch) -> None:
