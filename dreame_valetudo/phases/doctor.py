@@ -32,6 +32,18 @@ def _is_exe(p: Path) -> bool:
     return p.is_file() and os.access(p, os.X_OK)
 
 
+def _sunxi_ready(ctx: Context) -> bool:
+    resolved = ctx.sunxi_fel
+    if not _is_exe(resolved):
+        return False
+    if resolved != ctx.ws.sunxi_fel:
+        return True  # packaged/system helpers are pinned when their package is built
+    try:
+        return (ctx.ws.sunxi_dir / ".built-ref").read_text().strip() == SUNXI_TOOLS_REF
+    except OSError:
+        return False
+
+
 def _check_external_tools(ctx: Context) -> None:
     missing = [t for t in _REQUIRED_TOOLS if not shutil.which(t)]
     if missing:
@@ -60,7 +72,7 @@ def check_fastboot_client(ctx: Context) -> None:
 
 
 def doctor(ctx: Context) -> None:
-    needs_build = not _is_exe(ctx.sunxi_fel)
+    needs_build = not _sunxi_ready(ctx)
     if needs_build:
         ctx.console.say(
             f"Toolchain cache — {ctx.profile.model} (code={ctx.profile.model_code}, "
@@ -97,15 +109,37 @@ def _build_sunxi(ctx: Context) -> None:
             check=False,
         ).ok:
             die("clone failed")
+        checkout = ["git", "-C", str(sd), "checkout", "--quiet", SUNXI_TOOLS_REF]
+        if not ctx.runner.run(checkout, check=False).ok:
+            if not ctx.runner.run(
+                ["git", "-C", str(sd), "fetch", "--quiet", "origin"], check=False,
+            ).ok:
+                die("Couldn't fetch sunxi-tools to resolve the pinned ref — check the network and "
+                    "re-run.")
+            if not ctx.runner.run(checkout, check=False).ok:
+                die(f"Couldn't check out pinned sunxi-tools ref '{SUNXI_TOOLS_REF}' — refusing to "
+                    "build a different revision.")
+        # HEAD alone does not describe the source being compiled: checkout preserves compatible
+        # local edits, and stale untracked files can participate in a build. This repository lives
+        # in the disposable cache, so restore the pinned tree exactly before trusting its output.
         if not ctx.runner.run(
-            ["git", "-C", str(sd), "checkout", "--quiet", SUNXI_TOOLS_REF], check=False
+            ["git", "-C", str(sd), "reset", "--hard", SUNXI_TOOLS_REF], check=False,
+        ).ok or not ctx.runner.run(
+            ["git", "-C", str(sd), "clean", "-fdx"], check=False,
         ).ok:
-            ctx.console.warn(f"Couldn't check out sunxi-tools ref '{SUNXI_TOOLS_REF}' — building "
-                             "the current checkout.")
+            die("Couldn't clean the cached sunxi-tools source — refusing to build a modified tree.")
+        head = ctx.runner.run(
+            ["git", "-C", str(sd), "rev-parse", "HEAD"], check=False,
+        )
+        actual = head.stdout.strip()
+        if not head.ok or actual != SUNXI_TOOLS_REF:
+            die(f"Pinned sunxi-tools ref '{SUNXI_TOOLS_REF}' resolved to "
+                f"'{actual or 'no revision'}' — refusing to build it.")
         ctx.runner.run(["make", "-C", str(sd), "clean"], check=False)
         if not ctx.runner.run(["make", "-C", str(sd), "sunxi-fel"], check=False).ok:
             die("sunxi-fel build failed (missing a dev dep? need libusb-1.0, libfdt/dtc, zlib, "
                 "pkg-config, git, make)")
         if not _is_exe(ctx.ws.sunxi_fel):
             die("build produced no sunxi-fel binary")
+        (sd / ".built-ref").write_text(SUNXI_TOOLS_REF + "\n")
     ctx.console.info(f"Built: {ctx.ws.sunxi_fel}")

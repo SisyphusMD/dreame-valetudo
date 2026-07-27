@@ -20,7 +20,7 @@ from ..hazards import model_hazard_check
 from ..session import describe_run, records_step
 from ..util import parse_config
 from ..workspace import RECOVERY_BACKUP_ZIP
-from .doctor import _is_exe, check_fastboot_client, doctor
+from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .image import image
 
 _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
@@ -125,7 +125,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     # A non-forced completed run must return before self-provisioning; clean --all deliberately
     # removes staged firmware, and rebuilding it for a robot that will not be flashed is pure risk.
     # A real first flash (or explicit --force reflash) still self-provisions its prerequisites.
-    if not _is_exe(ctx.sunxi_fel):
+    if not _sunxi_ready(ctx):
         doctor(ctx)
     if not robot.state_has("image"):
         image(ctx)

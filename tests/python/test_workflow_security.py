@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -61,3 +62,14 @@ def test_workflow_tokens_default_read_only_and_only_macos_publish_can_write() ->
     assert "contents: write" not in build
     assert "\n    permissions:\n      contents: write\n" in publish
     assert macos.count("contents: write") == 1
+
+
+def test_sunxi_tools_updates_always_require_human_review() -> None:
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    matching = [
+        rule for rule in config["packageRules"]
+        if "https://github.com/linux-sunxi/sunxi-tools" in rule.get("matchDepNames", [])
+    ]
+    assert len(matching) == 1
+    assert matching[0]["automerge"] is False
+    assert any("release-macos.yml" in note for note in matching[0]["prBodyNotes"])

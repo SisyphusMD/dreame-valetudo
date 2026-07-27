@@ -11,6 +11,7 @@ from conftest import FB, CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
+from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
 from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
@@ -85,6 +86,23 @@ def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> 
     root(ctx)
     assert "already rooted" in ctx.console.text()
     assert ctx.runner.calls == []  # no doctor, dustbuilder image flow, FEL, or fastboot command
+
+
+def test_root_revalidates_a_stale_sunxi_cache_before_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder())
+    _stage_image(ctx)
+    _write_recon(ctx)
+    (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
+
+    def pin_revalidation(_ctx: Context) -> None:
+        raise Die("pin revalidation reached")
+
+    monkeypatch.setattr(root_module, "doctor", pin_revalidation)
+    with pytest.raises(Die, match="pin revalidation reached"):
+        root(ctx)
+    assert _flash_ops(ctx) == []
 
 
 def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
