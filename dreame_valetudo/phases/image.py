@@ -208,10 +208,9 @@ def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str)
     this robot's — matched on digest as well as name, since a re-download is renamed but identical.
     """
     for d in sorted(ctx.ws.robots_dir.glob("*")):
-        marker = d / "state" / "image"
-        if d == robot.work or not marker.is_file():
+        if d == robot.work or not d.is_dir() or d.is_symlink():
             continue
-        recorded = marker.read_text()
+        recorded = "\n".join(Robot(d).image_provenance())
         if name in recorded or digest in recorded:
             return d.name
     return None
@@ -237,6 +236,7 @@ def image(ctx: Context, *, force: bool = False) -> None:
         (robot.recon_dir / ".submitted").unlink(missing_ok=True)
         # Dropped up front, not after a successful re-stage: any die between here and the swap
         # below must leave root() re-running this phase, never flashing a half-replaced fw dir.
+        robot.remember_image()
         robot.state_clear("image")
 
     unsup = ctx.runner.run(
@@ -316,4 +316,5 @@ def image(ctx: Context, *, force: bool = False) -> None:
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
     robot.state_set("image", f"from {zip_path} sha256={digest}")
+    robot.remember_image()
     ctx.console.say("Image staged. Next: root (DESTRUCTIVE)")

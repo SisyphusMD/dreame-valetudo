@@ -72,7 +72,7 @@ def test_auto_pushes_then_installs_valetudo_when_rooted(
     ctx.robot.state_set("rooted")  # rooted but not yet installed -> push, then valetudo on push-fail
     cli.auto(ctx, [])
     names = [name for name, _a, _k in calls]
-    assert names == ["doctor", "fetch", "recon", "image", "root", "push", "valetudo"]
+    assert names == ["doctor", "fetch", "recon", "push", "valetudo"]
 
 
 def test_auto_reports_complete_when_valetudo_already_installed(

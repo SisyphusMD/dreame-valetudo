@@ -79,6 +79,14 @@ def test_root_happy_path_flashes_in_order_and_marks_rooted(make_ctx: CtxFactory)
     ]
 
 
+def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder())
+    ctx.need_robot().state_set("rooted")
+    root(ctx)
+    assert "already rooted" in ctx.console.text()
+    assert ctx.runner.calls == []  # no doctor, dustbuilder image flow, FEL, or fastboot command
+
+
 def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
     make_ctx: CtxFactory,
 ) -> None:

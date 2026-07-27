@@ -115,6 +115,20 @@ def test_forget_dies_on_missing_robot(make_ctx: CtxFactory) -> None:
         forget(ctx, ["ghost"])
 
 
+def test_forget_rejects_an_empty_name_without_resolving_the_robots_directory(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(asks=["robots"])
+    for name in ("kitchen", "upstairs"):
+        recon = ctx.ws.robots_dir / name / "recon"
+        recon.mkdir(parents=True)
+        (recon / "dustx100.bin").write_bytes(b"irreplaceable")
+    with pytest.raises(Die, match="isn't a robot name"):
+        forget(ctx, [""])
+    assert (ctx.ws.robots_dir / "kitchen" / "recon" / "dustx100.bin").is_file()
+    assert (ctx.ws.robots_dir / "upstairs" / "recon" / "dustx100.bin").is_file()
+
+
 def test_forget_refuses_non_interactive(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(interactive=False)
     (ctx.ws.robots_dir / "kitchen").mkdir(parents=True)
@@ -146,12 +160,109 @@ def test_clean_removes_only_the_cache(make_ctx: CtxFactory) -> None:
     assert (ctx.ws.robots_dir / "kitchen").is_dir()  # robot state kept
 
 
-def test_clean_all_removes_the_whole_work_dir_after_confirm(make_ctx: CtxFactory) -> None:
+def test_clean_all_removes_only_reobtainable_data_after_confirm(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(confirms=[True])
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.robots_dir / "kitchen").mkdir(parents=True)
+    ctx.ws.cache.joinpath("download").write_bytes(b"cached")
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "dustx100.bin").write_bytes(b"irreplaceable")
+    robot.fw_dir.mkdir()
+    (robot.fw_dir / "rootfs.img").write_bytes(b"re-obtainable")
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("image", "staged")
+    robot.state_set("rooted")
+    (ctx.ws.base / "id_dreame").write_bytes(b"private-key")
+    (ctx.ws.base / "id_dreame.pub").write_bytes(b"public-key")
+    (ctx.ws.base / "sshkey.path").write_text("/some/explicit/key\n")
     clean(ctx, ["--all"])
-    assert not ctx.ws.base.exists()
+    assert not ctx.ws.cache.exists()
+    assert not robot.fw_dir.exists()
+    assert not robot.state_has("image")  # it described the staged files that were removed
+    assert robot.state_get("image-history") == "staged"  # consumed-build provenance survives
+    assert (robot.recon_dir / "dustx100.bin").read_bytes() == b"irreplaceable"
+    assert robot.state_has("recon")
+    assert robot.state_has("rooted")
+    assert (ctx.ws.base / "id_dreame").read_bytes() == b"private-key"
+    assert (ctx.ws.base / "id_dreame.pub").read_bytes() == b"public-key"
+    assert (ctx.ws.base / "sshkey.path").read_text() == "/some/explicit/key\n"
+
+
+def test_clean_all_never_follows_a_robot_symlink_outside_the_workspace(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    ctx.ws.cache.mkdir(parents=True, exist_ok=True)
+    external_fw = tmp_path / "outside" / "fw"
+    external_fw.mkdir(parents=True)
+    keep = external_fw / "keep.img"
+    keep.write_bytes(b"not workspace data")
+    ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)
+    linked_robot = ctx.ws.robots_dir / "linked"
+    linked_robot.symlink_to(external_fw.parent, target_is_directory=True)
+    clean(ctx, ["--all"])
+    assert keep.read_bytes() == b"not workspace data"
+    assert linked_robot.is_symlink()
+
+
+def test_clean_all_never_follows_a_symlinked_robots_root(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    external_fw = tmp_path / "outside" / "robot" / "fw"
+    external_fw.mkdir(parents=True)
+    keep = external_fw / "keep.img"
+    keep.write_bytes(b"not workspace data")
+    ctx.ws.robots_dir.parent.mkdir(parents=True, exist_ok=True)
+    ctx.ws.robots_dir.symlink_to(external_fw.parent.parent, target_is_directory=True)
+    clean(ctx, ["--all"])
+    assert keep.read_bytes() == b"not workspace data"
+    assert ctx.ws.robots_dir.is_symlink()
+
+
+def test_clean_all_keeps_each_image_marker_consistent_if_a_later_delete_fails(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    robots = [Robot(ctx.ws.robots_dir / name) for name in ("a", "b")]
+    for robot in robots:
+        robot.fw_dir.mkdir(parents=True)
+        (robot.fw_dir / "rootfs.img").write_bytes(b"staged")
+        robot.state_set("image", "staged")
+    original = manage._remove_tree
+
+    def fail_on_second(path: Path) -> None:
+        if path == robots[1].fw_dir:
+            raise OSError("simulated I/O failure")
+        original(path)
+
+    monkeypatch.setattr(manage, "_remove_tree", fail_on_second)
+    with pytest.raises(OSError, match="simulated"):
+        clean(ctx, ["--all"])
+    assert not robots[0].fw_dir.exists()
+    assert not robots[0].state_has("image")
+    assert robots[1].fw_dir.is_dir()
+    assert robots[1].state_has("image")
+
+
+def test_clean_all_keeps_firmware_if_its_provenance_cannot_be_saved(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.fw_dir.mkdir(parents=True)
+    image = robot.fw_dir / "rootfs.img"
+    image.write_bytes(b"staged")
+    robot.state_set("image", "from a.zip sha256=abc")
+
+    def fail_to_remember(_robot: Robot) -> None:
+        raise OSError("simulated provenance write failure")
+
+    monkeypatch.setattr(Robot, "remember_image", fail_to_remember)
+    with pytest.raises(OSError, match="provenance"):
+        clean(ctx, ["--all"])
+    assert image.read_bytes() == b"staged"
+    assert robot.state_has("image")
 
 
 def test_clean_all_cancels_without_confirmation(make_ctx: CtxFactory) -> None:

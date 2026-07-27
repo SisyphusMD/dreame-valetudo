@@ -342,9 +342,10 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
     doctor(ctx)
     fetch(ctx)
     recon(ctx, force="--force" in rest, recovery_backup="--no-recovery-backup" not in rest)
-    image(ctx)
-    root(ctx)
-    robot = ctx.robot
+    robot = ctx.need_robot()
+    if not robot.state_has("rooted"):
+        image(ctx)
+        root(ctx)
     if (robot is not None and robot.state_has("rooted") and not robot.state_has("valetudo")
             and not push(ctx)):
         valetudo(ctx)
@@ -392,7 +393,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo migrate    run the one-time workspace migration now (else it's automatic)\n"
         "  dreame-valetudo rename <old> <new>  rename a robot (its config identity is unchanged)\n"
         "  dreame-valetudo forget <name>  remove a robot's working dir (factory backups are kept)\n"
-        "  dreame-valetudo clean [--all]  delete the cache (--all: all robot state too; backups kept)\n"
+        "  dreame-valetudo clean [--all]  delete cache (--all: staged firmware too; recovery kept)\n"
         "  dreame-valetudo diagnose   on the robot's AP: check why the UI isn't up\n"
         "  dreame-valetudo fix-impl   pin the Valetudo implementation for the robot's model\n"
         "  dreame-valetudo fix-did    repair a NEGATIVE factory deviceId\n"
