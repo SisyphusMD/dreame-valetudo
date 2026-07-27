@@ -86,20 +86,42 @@ def _record(ptr: Path, key: Path) -> None:
     ptr.write_text(str(key) + "\n")
 
 
+def _path_present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
 def _keygen(runner: Runner, console: Console, key: Path, comment: str) -> None:
+    pub = Path(f"{key}.pub")
+    # The chooser and this call are separated by user input; recheck here so a key created in that
+    # window can never reach ssh-keygen's hidden overwrite prompt.
+    if _path_present(key) or _path_present(pub):
+        die(f"Refusing to generate an SSH key over existing key material at {key} or {pub}.")
     key.parent.mkdir(parents=True, exist_ok=True)
     console.say(f"Generating an ed25519 SSH key at {key} ...")
     if not runner.run(
         ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(key)], check=False,
+        stdin="",
     ).ok:
         die("ssh-keygen failed")
 
 
 def ensure_sshkey(runner: Runner, console: Console, key: Path) -> None:
     """Ensure key + key.pub exist, generating a dedicated ed25519 key if not."""
-    if Path(f"{key}.pub").is_file():
+    pub = Path(f"{key}.pub")
+    private_ok, public_ok = key.is_file(), pub.is_file()
+    if private_ok and public_ok:
         console.info(f"SSH key: using {key} (override with DREAME_SSHKEY=...)")
         return
+    if private_ok:
+        die(
+            f"{key} already exists but its public half is missing at {pub}. Regenerating would "
+            f"destroy the private key. Restore the public half with: ssh-keygen -y -f {key} > {pub}"
+        )
+    if public_ok:
+        die(
+            f"{pub}: the public half exists but the private key is missing at {key}. Refusing to "
+            "replace either half; restore the private key or point DREAME_SSHKEY at another key."
+        )
     _keygen(runner, console, key, "valetudo-dreame")
 
 
@@ -132,13 +154,28 @@ def choose_sshkey(ctx: Context) -> Path:
     c.info("the PRIVATE half stays on this machine and is what 'push' uses to log in later.")
     existing = discover_keys(ctx.home)
     options: list[tuple[str, str, Path]] = [(f"use {k}", "use", k) for k in existing]
-    options.append(
-        (("generate a DEDICATED key just for this tool (recommended — nothing personal is shared) "
-          f"-> {dedicated}"), "gen", dedicated)
-    )
+    dedicated_pub = Path(f"{dedicated}.pub")
+    if dedicated.is_file() and dedicated_pub.is_file():
+        options.append((f"use existing DEDICATED key -> {dedicated}", "use", dedicated))
+    elif not _path_present(dedicated) and not _path_present(dedicated_pub):
+        options.append(
+            (("generate a DEDICATED key just for this tool (recommended — nothing personal is "
+              f"shared) -> {dedicated}"), "gen", dedicated)
+        )
     personal = ctx.home / ".ssh" / "id_ed25519"
-    if not personal.is_file():
+    personal_pub = Path(f"{personal}.pub")
+    if not _path_present(personal) and not _path_present(personal_pub):
         options.append((f"generate a new PERSONAL SSH key at {personal}", "gen", personal))
+    if not options:
+        present = [
+            str(path) for path in (dedicated, dedicated_pub, personal, personal_pub)
+            if _path_present(path)
+        ]
+        die(
+            "No complete SSH key pair is available. Incomplete key material was left untouched at: "
+            f"{', '.join(present)}. Restore a matching private/public pair at one location, or set "
+            "DREAME_SSHKEY to another complete key."
+        )
     for i, (label, _kind, _p) in enumerate(options, 1):
         c.info(f"   {i}) {label}")
     choice = c.ask(f"Key [1-{len(options)}]?").strip()
@@ -147,6 +184,8 @@ def choose_sshkey(ctx: Context) -> Path:
     _label, kind, chosen = options[int(choice) - 1]
     if kind == "gen":
         _keygen(ctx.runner, ctx.console, chosen, "valetudo-dreame")
+    else:
+        ensure_sshkey(ctx.runner, ctx.console, chosen)
     _record(ptr, chosen)
     c.info(f"Using SSH key: {chosen}")
     if chosen == dedicated:
