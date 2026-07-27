@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from dreame_valetudo.console import Console, Progress, reset_print_once
+from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.profiles import load_profile
@@ -89,6 +90,7 @@ def make_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CtxFactory:
         ws.sunxi_fel.parent.mkdir(parents=True, exist_ok=True)
         ws.sunxi_fel.write_text("#!/bin/sh\n")
         ws.sunxi_fel.chmod(0o755)
+        (ws.sunxi_dir / ".built-ref").write_text(SUNXI_TOOLS_REF + "\n")
         robot = Robot(ws.robots_dir / robot_name) if robot_name else None
         # HOME defaults to the tmp dir, never the real one. Context.backups_dir falls back to
         # $HOME/dreame-valetudo/backups when DREAME_BACKUPS is unset, so a test that touched it

@@ -9,6 +9,7 @@ from conftest import ScriptedConsole
 
 from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
+from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 
 
@@ -96,6 +97,7 @@ def test_main_dispatches_into_fetch_and_verifies_stage1(tmp_path: Path) -> None:
     sunxi.parent.mkdir(parents=True, exist_ok=True)
     sunxi.write_text("#!/bin/sh\n")
     sunxi.chmod(0o755)
+    (sunxi.parent / ".built-ref").write_text(SUNXI_TOOLS_REF + "\n")
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:

@@ -15,7 +15,7 @@ from ..constants import STAGE1_SHA256
 from ..context import Context
 from ..download import download, valetudo_published_sha256
 from ..util import sha256_of
-from .doctor import _is_exe, doctor
+from .doctor import _sunxi_ready, doctor
 
 
 def _flatten_stage1(dist: Path, fsbl_name: str) -> None:
@@ -29,7 +29,7 @@ def _flatten_stage1(dist: Path, fsbl_name: str) -> None:
 
 
 def fetch(ctx: Context) -> None:
-    if not _is_exe(ctx.sunxi_fel):
+    if not _sunxi_ready(ctx):
         doctor(ctx)
     dist = ctx.ws.dist
     dist.mkdir(parents=True, exist_ok=True)

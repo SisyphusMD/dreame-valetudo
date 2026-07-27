@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: source-built `sunxi-fel` now fetches and verifies the exact pinned sunxi-tools commit,
+  rebuilds when that pin changes, and stops instead of compiling a stale checkout; Renovate updates
+  to the boot-ROM transport require human review.
 - **fix**: release workflows now default their repository tokens to read-only, and Apple signing
   and notarization secrets are exposed only to their consuming steps and removed immediately after
   use.

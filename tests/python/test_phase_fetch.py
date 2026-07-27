@@ -21,6 +21,20 @@ def _write_curl_target(argv: tuple[str, ...], data: bytes) -> None:
         f.write(data)
 
 
+def test_fetch_revalidates_a_stale_sunxi_cache(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
+
+    def pin_revalidation(_ctx: object) -> None:
+        raise Die("pin revalidation reached")
+
+    monkeypatch.setattr(fetch_mod, "doctor", pin_revalidation)
+    with pytest.raises(Die, match="pin revalidation reached"):
+        fetch(ctx)
+
+
 def test_fetch_refuses_stage1_on_checksum_mismatch(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
 

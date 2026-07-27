@@ -12,6 +12,7 @@ from conftest import FB, CtxFactory
 from dreame_valetudo import console
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
+from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
     _verify_reported_model,
     _wait_for_fel,
@@ -109,6 +110,21 @@ def test_recon_ddr3_model_boots_the_ddr3_fsbl(make_ctx: CtxFactory) -> None:
     assert not any("fsbl_ddr4.bin" in w for w in sunxi_writes)
 
 
+def test_standalone_recon_revalidates_a_stale_sunxi_cache(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
+
+    def pin_revalidation(_ctx: Context) -> None:
+        raise Die("pin revalidation reached")
+
+    monkeypatch.setattr(recon_module, "doctor", pin_revalidation)
+    with pytest.raises(Die, match="pin revalidation reached"):
+        recon(ctx, recovery_backup=False)
+
+
 def test_recon_creates_robot_named_by_device_identity(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="x40-ultra", responder=_responder())  # no robot yet
     _dist_ready(ctx)
@@ -173,6 +189,20 @@ def test_read_identity_from_robot_brings_it_up_and_records(make_ctx: CtxFactory)
     _dist_ready(ctx)
     assert read_identity_from_robot(ctx) == vals
     assert ctx.need_robot().identity() == vals  # persisted for later runs
+
+
+def test_auxiliary_identity_read_revalidates_a_stale_sunxi_cache(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
+
+    def pin_revalidation(_ctx: Context) -> None:
+        raise Die("pin revalidation reached")
+
+    monkeypatch.setattr(recon_module, "doctor", pin_revalidation)
+    with pytest.raises(Die, match="pin revalidation reached"):
+        read_identity_from_robot(ctx)
 
 
 def test_auxiliary_identity_read_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:

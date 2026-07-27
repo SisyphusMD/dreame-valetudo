@@ -17,7 +17,7 @@ from ..profiles import SUPPORTED_MODELS, Profile, load_profile
 from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace, protect_recon_artifacts
-from .doctor import _is_exe, check_fastboot_client, doctor
+from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch
 
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
@@ -108,7 +108,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     The TOOL drives every fastboot step; the user only does the FEL button sequence. Returns the
     captured {var: value} (possibly partial), or {} if the robot never came up in fastboot."""
     robot = ctx.need_robot()
-    if not _is_exe(ctx.sunxi_fel):
+    if not _sunxi_ready(ctx):
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         fetch(ctx)
@@ -164,7 +164,7 @@ def _saved_backup_state(robot: Robot) -> str:
 def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
     # Self-provision before the already-done check: toolchain, then stage1.
-    if not _is_exe(ctx.sunxi_fel):
+    if not _sunxi_ready(ctx):
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
         fetch(ctx)
