@@ -300,8 +300,16 @@ cat > "$INT_PYTHON" <<EOF
 PYTHONPATH='$INT_USB' exec '$REAL_PYTHON' "\$@"
 EOF
 chmod +x "$INT_PYTHON"
+INT_LIBEXEC="$RUNDIR/libexec-stub"
+mkdir -p "$INT_LIBEXEC"
+cat > "$INT_LIBEXEC/sunxi-fel" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$INT_LIBEXEC/sunxi-fel"
 drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
   "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" \
+  "DREAME_LIBEXEC=$INT_LIBEXEC" \
   -- "${TOOL[@]}" &
 INT_CLIENT=$!
 INT_SESSION="$(session_for_work "$W_INT")"
