@@ -230,7 +230,7 @@ class Fastboot:
             maxdl = int(self.getvar("max-download-size").strip() or "0", 0)
         except Exception:  # any probe failure means "unknown" — fall back to a single download
             maxdl = 0
-        maxdl_str = f"0x{maxdl:x}" if maxdl else "unknown"
+        maxdl_str = _mib(maxdl) if maxdl else "unknown"
         if maxdl and len(data) > maxdl:
             # Too big for one download — send Android sparse sub-images, each <= maxdl,
             # exactly as Google fastboot would.
