@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: `clean --all` now removes only re-obtainable cache and staged firmware. It keeps each
+  robot's recovery capture, identity and phase state, SSH keys, and logs. An empty `forget` name can
+  no longer resolve to the entire robots directory.
 - **fix**: the macOS `.pkg`'s `sunxi-fel` was missing a library on a Mac without Homebrew, so
   FEL never worked there — and the tool reported "FEL up" anyway instead of saying so.
 

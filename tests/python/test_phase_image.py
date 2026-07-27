@@ -20,8 +20,10 @@ from conftest import CtxFactory
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases.image import image
+from dreame_valetudo.phases.manage import clean
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
+from dreame_valetudo.workspace import Robot
 
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
@@ -193,6 +195,26 @@ def test_a_zip_already_staged_for_another_robot_is_refused(
     assert not ctx.need_robot().state_has("image")
 
 
+def test_clean_all_cannot_erase_the_cross_robot_build_reuse_warning(
+    make_ctx: CtxFactory, tmp_path: Path
+) -> None:
+    # clean; open builder; build accepted; decline reuse of the other robot's consumed image.
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True, True, False])
+    built = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    built.write_text("zip")
+    digest = sha256_of(built)
+    built.unlink()
+    sibling = Robot(ctx.ws.robots_dir / "r9316-other")
+    sibling.state_set("image", f"from {built} sha256={digest}")
+
+    clean(ctx, ["--all"])
+    assert not sibling.state_has("image")
+    _lands_during_the_wait(ctx, built)
+    with pytest.raises(Die, match="Refused"):
+        image(ctx)
+    assert not any(call and call[0] == "unzip" for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
 def test_the_staged_marker_records_the_full_path_and_digest(
     make_ctx: CtxFactory, tmp_path: Path
 ) -> None:
@@ -270,7 +292,10 @@ def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
     """A member that fails CRC is written to disk before unzip reports the failure."""
     ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(_FEL, 2))
     robot = ctx.need_robot()
+    prior = robot.state_get("image")
+    robot.state_clear("image-history")  # simulate a marker written by a pre-history release
     with pytest.raises(Die, match="unzip failed"):
         image(ctx, force=True)
     assert not robot.state_has("image")
+    assert prior in robot.image_provenance()
     assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)

@@ -2,9 +2,9 @@
 
 Storage model, all under the ~/dreame-valetudo/ umbrella:
   * ``work/cache/``    — toolchain build + downloads; 100% re-obtainable, safe to delete, shared.
-  * ``work/robots/<id>/`` — a robot's working state, created only once recon reads its identity.
-  * ``backups/``       — the one un-obtainable thing (flash/identity backups). A SIBLING of work/,
-                         never inside it, so clearing the work dir can never lose a backup.
+  * ``work/robots/<id>/`` — identity/state plus the pre-root recovery capture and staged firmware.
+  * ``backups/``       — post-root factory identity backups. A SIBLING of work/, so cache/staged-
+                         firmware cleanup cannot touch them.
 """
 
 from __future__ import annotations
@@ -99,6 +99,30 @@ class Robot:
         """Drop a marker so the phase re-runs. Used before a destructive re-stage, so a failure
         part-way through can never leave a later phase believing the old marker still holds."""
         (self.state_dir / name).unlink(missing_ok=True)
+
+    def remember_image(self) -> None:
+        """Retain consumed-build provenance independently of the staged-files marker.
+
+        ``state/image`` means the files in ``fw/`` are ready to flash, so cleanup and forced
+        restaging must clear it. Its path and digest also prevent one robot from silently reusing
+        another robot's dustbuilder image, which must outlive those staged files.
+        """
+        marker = self.state_get("image")
+        if marker is None:
+            return
+        history = self.state_get("image-history")
+        records = history.splitlines() if history else []
+        if marker not in records:
+            self.state_set("image-history", "\n".join([*records, marker]))
+
+    def image_provenance(self) -> tuple[str, ...]:
+        """Every current or previously consumed dustbuilder image record for this robot."""
+        records: list[str] = []
+        for name in ("image", "image-history"):
+            value = self.state_get(name)
+            if value:
+                records.extend(value.splitlines())
+        return tuple(records)
 
     def display_name(self) -> str:
         """The human name the user chose (may contain spaces / capitals), saved in state/name — or

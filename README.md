@@ -287,7 +287,7 @@ dreame-valetudo status     # what's done / what's left, for every robot
 # Manage robots (each picks from a list if run with no name):
 dreame-valetudo rename <old> <new>  # rename a robot (its config identity is unchanged)
 dreame-valetudo forget <name>       # remove a robot's working dir (factory backups are KEPT)
-dreame-valetudo clean [--all]       # delete the cache (--all: all robot state too; backups kept)
+dreame-valetudo clean [--all]       # delete cache (--all: staged firmware too; recovery + keys kept)
 dreame-valetudo help                # full help
 ```
 

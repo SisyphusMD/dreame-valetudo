@@ -17,9 +17,10 @@ from .misc import _summary
 
 def _robot_dirs(ctx: Context) -> list[Path]:
     robots = ctx.ws.robots_dir
-    if not robots.is_dir():
+    if not robots.is_dir() or robots.is_symlink():
         return []
-    return [d for d in sorted(robots.iterdir()) if d.is_dir() and not d.name.startswith(".")]
+    return [d for d in sorted(robots.iterdir())
+            if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")]
 
 
 def _pick_robot(ctx: Context, verb: str) -> str:
@@ -42,7 +43,8 @@ def _pick_robot(ctx: Context, verb: str) -> str:
 def _resolve_robot(ctx: Context, name: str) -> Path:
     """Find a robot's dir by its folder slug OR its display name, so either works on the command
     line. Dies if the name is unsafe or matches nothing."""
-    if "/" in name or name in (".", ".."):
+    name = name.strip()
+    if not name or "/" in name or name in (".", ".."):
         die(f"'{name}' isn't a robot name.")
     direct = ctx.ws.robots_dir / name
     if direct.is_dir():
@@ -112,24 +114,59 @@ def forget(ctx: Context, rest: Sequence[str]) -> None:
 
 
 def clean(ctx: Context, rest: Sequence[str]) -> None:
-    """`clean` removes the re-obtainable cache. `clean --all` removes ALL of the work dir (cache +
-    every robot's state), keeping the factory backups (a SIBLING of the work dir)."""
+    """Remove re-obtainable files without destroying recovery evidence or robot access.
+
+    `clean` removes the shared cache. `clean --all` also removes staged firmware and its marker,
+    while retaining recon, phase/identity state, SSH credentials, logs, and factory backups.
+    `forget` is the separately typed-confirmation path for deleting a robot record.
+    """
     everything = "--all" in rest
-    target = ctx.ws.base if everything else ctx.ws.cache
-    what = "the entire work dir (cache + all robot state)" if everything else "the re-obtainable cache"
-    if not target.is_dir():
-        ctx.console.info(f"Nothing to clean — {target} doesn't exist.")
+    robots = [Robot(path) for path in _robot_dirs(ctx)] if everything else []
+    staged = [(robot, (robot.fw_dir, robot.work / "fw.new")) for robot in robots]
+    has_cache = ctx.ws.cache.is_dir() or ctx.ws.cache.is_symlink()
+    has_staged = any(path.is_dir() or path.is_symlink()
+                     for _robot, paths in staged for path in paths)
+    has_image_markers = any(robot.state_has("image") for robot in robots)
+    if not has_cache and not has_staged and not has_image_markers:
+        ctx.console.info(f"Nothing to clean under {ctx.ws.base}.")
         return
-    ctx.console.say(f"About to remove {what}: {target}")
-    ctx.console.info("Your factory backups under ~/dreame-valetudo/backups are NOT affected.")
+    if everything:
+        ctx.console.say(f"About to remove the cache and staged firmware under {ctx.ws.base}.")
+        ctx.console.info("Recovery backups, recon identity, phase state, SSH keys, and logs are "
+                         "kept. Use 'forget' to remove one robot's full record.")
+    else:
+        ctx.console.say(f"About to remove the re-obtainable cache: {ctx.ws.cache}")
     if everything:
         if not ctx.interactive:
-            die("Refusing to 'clean --all' non-interactively — it removes all robot state.")
-        if not ctx.console.confirm("Remove ALL robot state (backups are kept)?"):
+            die("Refusing to 'clean --all' non-interactively — it removes staged firmware.")
+        if not ctx.console.confirm("Remove the cache and ALL staged firmware?"):
             ctx.console.info("Cancelled — nothing removed.")
             return
-    shutil.rmtree(target)
-    ctx.console.say("Done." + (" Backups kept." if everything else ""))
+    if has_cache:
+        _remove_tree(ctx.ws.cache)
+    for robot, paths in staged:
+        fw, abandoned = paths
+        # Provenance prevents another robot from silently reusing this one-shot build. Save it
+        # before deleting fw/, so a write failure leaves both the files and active marker intact.
+        robot.remember_image()
+        if fw.is_dir() or fw.is_symlink():
+            _remove_tree(fw)
+        # The marker describes fw/, not the abandoned atomic-staging dir. Clear it immediately
+        # after that robot's cleanup, so a later robot's I/O failure cannot leave this one claiming
+        # files that were already removed.
+        robot.state_clear("image")
+        if abandoned.is_dir() or abandoned.is_symlink():
+            _remove_tree(abandoned)
+    ctx.console.say("Done. Recovery backups, robot records, and SSH keys kept." if everything
+                    else "Done.")
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove one workspace-owned tree without following a replacement symlink."""
+    if path.is_symlink():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
 
 
 def uninstall(ctx: Context) -> None:

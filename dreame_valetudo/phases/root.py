@@ -118,17 +118,17 @@ def _has_recovery_backup(ctx: Context) -> bool:
 @records_step("flashing the rooted image")
 def root(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
-    # Self-provision prerequisites before the already-rooted check: build the toolchain if
-    # sunxi-fel is missing, and stage the FEL image if it isn't staged yet.
-    if not _is_exe(ctx.sunxi_fel):
-        doctor(ctx)
-    if not robot.state_has("image"):
-        image(ctx)
     if robot.state_has("rooted") and not force:
         ctx.console.warn("Marker says this robot is already rooted. Re-run with '--force' to "
                          "flash again.")
         return
-
+    # A non-forced completed run must return before self-provisioning; clean --all deliberately
+    # removes staged firmware, and rebuilding it for a robot that will not be flashed is pure risk.
+    # A real first flash (or explicit --force reflash) still self-provisions its prerequisites.
+    if not _is_exe(ctx.sunxi_fel):
+        doctor(ctx)
+    if not robot.state_has("image"):
+        image(ctx)
     ctx.console.phase("Flash the rooted image — DESTRUCTIVE", index=2, total=3)
     missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]
     if missing:
