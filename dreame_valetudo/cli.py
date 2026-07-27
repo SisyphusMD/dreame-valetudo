@@ -21,7 +21,7 @@ from .fastboot import resolve_libexec
 from .hazards import model_hazard_check
 from .installs import find_installs
 from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog, tail_transcript
-from .migrate import migrate, report
+from .migrate import migrate, pre_migration_lock_path, pre_migration_session_path, report
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
@@ -45,6 +45,8 @@ from .session import (
     capture_pane,
     clear_outcome,
     client_attached,
+    ensure_workspace_lock,
+    hold_additional_workspace_lock,
     hold_workspace_lock,
     kill_session,
     lock_free,
@@ -558,13 +560,22 @@ def _idle_seconds(env: Mapping[str, str]) -> float:
         return 3600.0
 
 
+def _outcome_workspace(env: Mapping[str, str], base: Path) -> Path:
+    """Where a run can record its result even if migration never creates the canonical path."""
+    if base.exists() or base.is_symlink():
+        return base
+    return pre_migration_lock_path(env, base).parent
+
+
 def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base: Path) -> None:
     """Move this run into the tmux session, when that applies, and report how it ended.
 
     Exits the process when the run happened in a session; returns when it must run inline.
     """
-    lock = base / ".lock"
-    session = session_name(base)
+    lock = pre_migration_lock_path(env, base)
+    session_base = pre_migration_session_path(env, base)
+    outcome_base = lock.parent
+    session = session_name(session_base)
     # This process IS the run tmux started, so there is no session to join and nobody to ask about
     # one. Checked before the probe below, which would otherwise find this run's own session.
     if env.get(IN_SESSION):
@@ -585,10 +596,11 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         # session this invocation created — and a corpse is by definition one that outlived its run.
         if session_pane_dead(Path(found), session):
             kill_session(Path(found), session)
-            stopped = read_outcome(base)
+            result_base = _outcome_workspace(env, base)
+            stopped = read_outcome(result_base)
             if stopped is None:
                 con.err("The run stopped without recording how it went. Re-run to pick it back up; "
-                        f"logs are under {base / 'logs'}.")
+                        f"logs are under {result_base / 'logs'}.")
                 raise SystemExit(1)
             dead_rc, dead_log = stopped
             for line in tail_transcript(dead_log) if dead_log is not None else []:
@@ -611,10 +623,11 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     if chose_rejoin and not still_there:
         # The run ended between the question and the answer. "Go back to it" is not permission to
         # start anything, so report how it went instead — the same as if the attach had returned.
-        ended = read_outcome(base)
+        result_base = _outcome_workspace(env, base)
+        ended = read_outcome(result_base)
         if ended is None:
             con.err("That run stopped while you were answering, without recording how it went. "
-                    f"Re-run to pick it back up; logs are under {base / 'logs'}.")
+                    f"Re-run to pick it back up; logs are under {result_base / 'logs'}.")
             raise SystemExit(1)
         rc, log_path = ended
         for line in tail_transcript(log_path) if log_path is not None else []:
@@ -647,7 +660,7 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
     # even reaches the attach, and clearing it there would delete the record the run had already
     # written — leaving this process to report a finished run as still going.
     if not still_there:
-        clear_outcome(base)
+        clear_outcome(outcome_base)
     started = False
     for step in plan[:-1]:
         if subprocess.run(step, check=False, capture_output=True).returncode == 0:
@@ -689,7 +702,8 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         # The client writes its exit marker to stdout, the same stream it needs to draw the
         # terminal, so it cannot be filtered or redirected away. Remove it before replaying.
         con.erase_line()
-    ended = read_outcome(base)
+    result_base = _outcome_workspace(env, base)
+    ended = read_outcome(result_base)
     if ended is None:
         # No record means one of two very different things, and the difference matters: ASK, do not
         # assume. A live session is the user detaching from a run that is still going — the whole
@@ -703,10 +717,10 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
             con.say("Still running. Re-run this command to come back to it.")
             raise SystemExit(0)
         con.err("The run stopped without recording how it went. Re-run to pick it back up; "
-                f"logs are under {base / 'logs'}.")
+                f"logs are under {result_base / 'logs'}.")
         raise SystemExit(1)
     rc, log_path = ended
-    captured = read_captured_pane(base)
+    captured = read_captured_pane(result_base)
     if captured is not None:
         # Wrapping is already baked in at the pane width used at capture time, and an in-place
         # progress spinner can only contribute its final frame.
@@ -744,12 +758,13 @@ def main(
     resolved = dict(os.environ if env is None else env)
     if resolved.get(IN_SESSION):
         base = Workspace.from_env(resolved).base
-        record_outcome(base, rc, log_path)
+        result_base = _outcome_workspace(resolved, base)
+        record_outcome(result_base, rc, log_path)
         if cmd_of(list(sys.argv[1:] if argv is None else argv)) not in PURE_COMMANDS:
             # The attachment rule belongs to every normal Console prompt: watching clears its
             # deadline, detaching starts it, and an unknown state never expires. Release first so
             # a finished run kept on screen never prevents another invocation from taking over.
-            run_state = running_run(base / ".lock")
+            run_state = running_run(result_base / ".lock")
             robot_dir = run_state.get("robot_dir")
             robot_label = run_state.get("robot")
             step = run_state.get("step")
@@ -785,12 +800,12 @@ def main(
                         # must still be a clean interruption, especially when a fast failure reaches
                         # this question before the user's earlier keypress is delivered by tmux.
                         rc = 130
-                        record_outcome(base, rc, log_path)
+                        record_outcome(result_base, rc, log_path)
                         (console or Console()).info(
                             "Interrupted — nothing is lost; re-run to resume."
                         )
             if again:
-                clear_outcome(base)
+                clear_outcome(result_base)
                 resumed = dict(resolved)
                 if isinstance(robot_dir, str) and robot_dir:
                     resumed["DREAME_ROBOT"] = robot_dir
@@ -800,7 +815,8 @@ def main(
                 return main(["auto"], env=resumed, console=console, runner=runner)
             tmux = working_tmux(resolved)
             if tmux is not None:
-                capture_pane(Path(tmux), session_name(base), base)
+                session = session_name(pre_migration_session_path(resolved, base))
+                capture_pane(Path(tmux), session, result_base)
     return rc
 
 
@@ -838,7 +854,7 @@ def _run(
             if resolved_env.get(IN_SESSION) and tmux_for_idle:
                 seconds = _idle_seconds(resolved_env)
                 if seconds > 0:
-                    session = session_name(ws.base)
+                    session = session_name(pre_migration_session_path(resolved_env, ws.base))
                     idle_timeout(
                         seconds, lambda: client_attached(Path(tmux_for_idle), session)
                     )
@@ -847,7 +863,7 @@ def _run(
             # One run per workspace. The tmux wrapper above already makes a second interactive
             # invocation attach instead of starting a rival. Piped and opted-out runs reach here
             # without that protection, so the lock remains load-bearing.
-            hold_workspace_lock(ws.base / ".lock", cmd)
+            hold_workspace_lock(pre_migration_lock_path(resolved_env, ws.base), cmd)
             # Help the fastboot client + sunxi-fel find libusb.
             apply_library_path(resolve_libexec(resolved_env))
             if cmd not in _NO_WORKSPACE:
@@ -859,7 +875,12 @@ def _run(
                 # moment it opens, so a first-run migration problem still lands in the shareable log
                 # (the log itself can't exist yet).
                 migration_console = BufferingConsole(con)
-                migrate(resolved_env, migration_console)
+                migrate(
+                    resolved_env,
+                    migration_console,
+                    lambda staged: hold_additional_workspace_lock(staged / ".lock", cmd),
+                )
+                ensure_workspace_lock(ws.base / ".lock", cmd)
                 if resolved_env.get("DREAME_NO_LOG") != "1":
                     now = datetime.now()
                     with contextlib.suppress(OSError):

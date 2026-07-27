@@ -24,12 +24,17 @@ reverse-migrate.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
+import fcntl
+import filecmp
 import gzip
 import json
 import os
 import re
 import shutil
+import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,13 +43,15 @@ from . import __version__, dust_decrypt, manifest
 from .console import Console, die
 from .workspace import RECOVERY_BACKUP_ZIP, WORKSPACE_SUBDIR, Robot
 
+BeforePublish = Callable[[Path], None]
+
 
 @dataclass(frozen=True)
 class Layout:
     version: int
     since: str  # tool release that introduced this layout = the compatible-range LOWER bound
     summary: str
-    apply: Callable[[Mapping[str, str], Console], bool]  # True only when the step fully completed
+    apply: Callable[[Mapping[str, str], Console, BeforePublish | None], bool]
 
 
 def _home(env: Mapping[str, str]) -> Path:
@@ -60,6 +67,67 @@ def _marker(env: Mapping[str, str]) -> Path:
     return base_dir(env) / ".layout"
 
 
+def _uses_custom_work(env: Mapping[str, str]) -> bool:
+    configured = env.get("DREAME_WORK")
+    if not configured:
+        return False
+    try:
+        return Path(configured).resolve() != (base_dir(env) / "work").resolve()
+    except (OSError, RuntimeError):
+        return True
+
+
+def _uses_custom_backups(env: Mapping[str, str]) -> bool:
+    configured = env.get("DREAME_BACKUPS")
+    if not configured:
+        return False
+    try:
+        return Path(configured).resolve() != (base_dir(env) / "backups").resolve()
+    except (OSError, RuntimeError):
+        return True
+
+
+def pre_migration_lock_path(env: Mapping[str, str], work: Path) -> Path:
+    """The lock path that remains stable while a legacy work symlink is relocated."""
+    default = work / ".lock"
+    if _uses_custom_work(env) or work.exists() or work.is_symlink():
+        return default
+    old = _home(env) / "dreame-valetudo-work"
+    if old.is_symlink():
+        try:
+            target = old.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return default
+        return target / ".lock" if target.is_dir() else default
+    if old.is_dir():
+        # A same-filesystem directory rename carries this exact locked inode into the new path.
+        return old / ".lock"
+    return default
+
+
+def pre_migration_session_path(env: Mapping[str, str], work: Path) -> Path:
+    """The workspace identity tmux will still derive after the structural move."""
+    if _uses_custom_work(env) or work.is_symlink():
+        return work
+    old = _home(env) / "dreame-valetudo-work"
+    if not old.is_symlink():
+        return work
+    try:
+        target = old.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return work
+    if not target.is_dir():
+        return work
+    lock = work / ".lock"
+    lock_only = (
+        work.is_dir()
+        and lock.is_file()
+        and not lock.is_symlink()
+        and list(work.iterdir()) == [lock]
+    )
+    return target if not work.exists() or lock_only else work
+
+
 def _read_marker(env: Mapping[str, str]) -> dict[str, object]:
     with contextlib.suppress(OSError, ValueError):
         data = json.loads(_marker(env).read_text())
@@ -71,12 +139,6 @@ def _read_marker(env: Mapping[str, str]) -> dict[str, object]:
 def _on_disk_version(env: Mapping[str, str]) -> int:
     v = _read_marker(env).get("layout_version", 0)
     return v if isinstance(v, int) else 0
-
-
-def _looks_like_backup(d: Path) -> bool:
-    return d.is_dir() and (
-        (d / "files.tar.gz").exists() or (d / "manifest.json").exists() or any(d.glob("*.dd.gz"))
-    )
 
 
 # Legacy backups were `dreame-<model>-[<name>-]<config>-backup-<YYYYMMDD-HHMMSS>`; the current form
@@ -97,7 +159,84 @@ def _normalize_backup_name(name: str) -> str:
     return _LEGACY_BACKUP_SUFFIX.sub(r"-\1", name)
 
 
-def _safe_move(src: Path, dst: Path, console: Console) -> bool:
+def _copied_tree_matches(src: Path, dst: Path) -> bool:
+    source = {p.relative_to(src): p for p in src.rglob("*")}
+    copied = {p.relative_to(dst): p for p in dst.rglob("*")}
+    if source.keys() != copied.keys():
+        return False
+    for relative, original in source.items():
+        candidate = copied[relative]
+        if original.is_symlink():
+            if not candidate.is_symlink() or original.readlink() != candidate.readlink():
+                return False
+        elif original.is_dir():
+            if not candidate.is_dir() or candidate.is_symlink():
+                return False
+        elif original.is_file():
+            if candidate.is_symlink() or not candidate.is_file():
+                return False
+            if not filecmp.cmp(original, candidate, shallow=False):
+                return False
+        else:
+            return False
+    return True
+
+
+def _rename_no_replace(src: Path, dst: Path) -> None:
+    """Atomically publish ``src`` only when ``dst`` is still absent (macOS + Linux)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(encoded_src, encoded_dst, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError:
+            raise OSError(
+                errno.ENOSYS,
+                "this Linux libc does not expose renameat2; cannot migrate without the "
+                "no-clobber guarantee",
+                dst,
+            ) from None
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(-100, encoded_src, -100, encoded_dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive rename is unsupported on this platform", dst)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), dst)
+
+
+def _remove_abandoned_staging(dst: Path) -> None:
+    for staging in dst.parent.glob(f".{dst.name}.migration-*.payload"):
+        owner = staging.with_suffix(".owner")
+        if not owner.is_file() or owner.is_symlink():
+            continue
+        try:
+            with owner.open("r+") as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if staging.is_dir() and not staging.is_symlink():
+                    shutil.rmtree(staging)
+                else:
+                    staging.unlink(missing_ok=True)
+                owner.unlink()
+        except OSError:
+            continue
+
+
+def _safe_move(
+    src: Path, dst: Path, console: Console, before_publish: BeforePublish | None = None,
+) -> bool:
     """Move src -> dst, NEVER clobbering. Atomic rename on one filesystem; a verified copy-then-
     remove across filesystems (never remove before the copy verifies). Returns True if it moved."""
     if dst.exists() or dst.is_symlink():
@@ -105,21 +244,74 @@ def _safe_move(src: Path, dst: Path, console: Console) -> bool:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.rename(src, dst)  # noqa: PTH104 — low-level so EXDEV is catchable + the fallback testable
+        _rename_no_replace(src, dst)
     except OSError as exc:
+        if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+            console.warn(f"Left {src.name} in place — {dst} already exists.")
+            return False
         if exc.errno != errno.EXDEV:
             raise
-        shutil.copytree(src, dst)
-        if {p.relative_to(src) for p in src.rglob("*")} != {p.relative_to(dst) for p in dst.rglob("*")}:
-            die(f"Migration copy of {src} did not verify — original left untouched at {src}.")
-        shutil.rmtree(src)
+        _remove_abandoned_staging(dst)
+        # Kept open across copy, verification, and publication so cleanup cannot claim this payload.
+        owner = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            mode="w+",
+            dir=dst.parent,
+            prefix=f".{dst.name}.migration-",
+            suffix=".owner",
+            delete=False,
+        )
+        owner_path = Path(owner.name)
+        fcntl.flock(owner, fcntl.LOCK_EX)
+        temporary = owner_path.with_suffix(".payload")
+        published = False
+        try:
+            if src.is_dir() and not src.is_symlink():
+                shutil.copytree(src, temporary, symlinks=True)
+                verified = _copied_tree_matches(src, temporary)
+            elif src.is_symlink():
+                shutil.copy2(src, temporary, follow_symlinks=False)
+                verified = temporary.is_symlink() and src.readlink() == temporary.readlink()
+            else:
+                shutil.copy2(src, temporary)
+                verified = filecmp.cmp(src, temporary, shallow=False)
+            if not verified:
+                die(f"Migration copy of {src} did not verify — original left untouched at {src}.")
+            if before_publish is not None:
+                before_publish(temporary)
+            try:
+                _rename_no_replace(temporary, dst)
+            except OSError as publish_error:
+                if publish_error.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+                    console.warn(f"Left {src.name} in place — {dst} appeared during the copy.")
+                    return False
+                raise
+            published = True
+            if src.is_dir() and not src.is_symlink():
+                shutil.rmtree(src)
+            else:
+                src.unlink()
+        finally:
+            owner.close()
+            if not published:
+                if temporary.is_dir() and not temporary.is_symlink():
+                    shutil.rmtree(temporary, ignore_errors=True)
+                else:
+                    temporary.unlink(missing_ok=True)
+            owner_path.unlink(missing_ok=True)
     return True
 
 
 _BAK_SUFFIX = ".pre-migration.bak"
 
 
-def _safe_merge(src: Path, dst: Path, console: Console) -> bool:
+def _safe_merge(
+    src: Path,
+    dst: Path,
+    console: Console,
+    before_publish: BeforePublish | None = None,
+    *,
+    preserve_destination_lock: bool = False,
+) -> bool:
     """Move ``src`` into ``dst`` without ever deleting or overwriting a file. An absent ``dst`` is a
     plain atomic move (via ``_safe_move``). When ``dst`` already exists, two real directories merge
     child-by-child — a child missing at ``dst`` moves wholesale, a directory on both sides recurses.
@@ -130,16 +322,33 @@ def _safe_merge(src: Path, dst: Path, console: Console) -> bool:
     next launch rather than stranding data as done. Returns True only when ``src`` was fully
     consumed (and removed)."""
     if not dst.exists() and not dst.is_symlink():
-        return _safe_move(src, dst, console)
+        return _safe_move(src, dst, console, before_publish)
     if src.is_dir() and dst.is_dir() and not src.is_symlink() and not dst.is_symlink():
         complete = True
         for child in sorted(src.iterdir()):
-            if not _safe_merge(child, dst / child.name, console):
+            if not _safe_merge(
+                child,
+                dst / child.name,
+                console,
+                preserve_destination_lock=preserve_destination_lock and child.name == ".lock",
+            ):
                 complete = False
         if complete:
             with contextlib.suppress(OSError):
                 src.rmdir()  # now-empty
         return complete
+    if (
+        preserve_destination_lock
+        and src.name == dst.name == ".lock"
+        and src.is_file()
+        and not src.is_symlink()
+        and dst.is_file()
+        and not dst.is_symlink()
+    ):
+        # The destination is the inode this process already holds. Replacing it, even briefly,
+        # would publish an unlocked canonical path; the source is only an obsolete run record.
+        src.unlink()
+        return True
     bak = dst.with_name(dst.name + _BAK_SUFFIX)
     if bak.exists() or bak.is_symlink():
         console.warn(f"Left {src} in place — {dst} already exists and {bak.name} is taken too.")
@@ -149,7 +358,71 @@ def _safe_merge(src: Path, dst: Path, console: Console) -> bool:
     return _safe_move(src, dst, console)  # canonical path now vacated -> plain move
 
 
-def _to_v1(env: Mapping[str, str], console: Console) -> bool:
+def _move_work_symlink(
+    src: Path, dst: Path, console: Console, before_publish: BeforePublish | None = None,
+) -> bool:
+    """Relocate a user-owned legacy work symlink without changing or traversing its target."""
+    try:
+        target = src.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        console.warn(f"Left legacy work symlink {src} in place because its target is unusable: {exc}")
+        return False
+    if not target.is_dir():
+        console.warn(f"Left legacy work symlink {src} in place because {target} is not a directory.")
+        return False
+    if dst.exists() or dst.is_symlink():
+        try:
+            same_target = dst.resolve(strict=True) == target
+        except (OSError, RuntimeError):
+            same_target = False
+        if not same_target:
+            lock = dst / ".lock"
+            lock_only = (
+                dst.is_dir()
+                and not dst.is_symlink()
+                and lock.is_file()
+                and not lock.is_symlink()
+                and list(dst.iterdir()) == [lock]
+            )
+            if not lock_only:
+                console.warn(f"Left legacy work symlink {src} in place because {dst} already "
+                             "contains different work data; reconcile those two locations by hand.")
+                return False
+            if before_publish is not None:
+                before_publish(target)
+            lock.unlink()
+            dst.rmdir()
+        else:
+            try:
+                src.unlink()
+            except OSError as exc:
+                console.warn(f"Could not remove redundant legacy work symlink {src}: {exc}")
+                return False
+            return True
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dst.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        console.warn(f"Could not relocate legacy work symlink {src} to {dst}: {exc}")
+        return False
+    try:
+        preserved = dst.is_symlink() and dst.resolve(strict=True) == target
+    except (OSError, RuntimeError):
+        preserved = False
+    if not preserved:
+        dst.unlink(missing_ok=True)
+        die(f"Migration of work symlink {src} did not preserve its target — original left in place.")
+    try:
+        src.unlink()
+    except OSError as exc:
+        console.warn(f"Copied legacy work symlink to {dst}, but could not remove {src}: {exc}")
+        return False
+    return True
+
+
+def _to_v1(
+    env: Mapping[str, str], console: Console, before_publish_work: BeforePublish | None = None,
+) -> bool:
     """Legacy -> consolidated. ~/dreame-valetudo-work -> ~/dreame-valetudo/work (MERGED in, keeping
     both copies on any same-path collision — the legacy copy wins the canonical path and the other
     is saved as <name>.pre-migration.bak), and every scattered ~/dreame-*-backup-* into backups/.
@@ -162,19 +435,53 @@ def _to_v1(env: Mapping[str, str], console: Console) -> bool:
     base = base_dir(env)
     complete = True
     moved: list[str] = []
-    if not env.get("DREAME_WORK"):
-        old, new = home / "dreame-valetudo-work", base / "work"
-        if old.is_dir() and not old.is_symlink():
-            if _safe_merge(old, new, console):
-                moved.append(f"work dir -> {new}")
-            else:
+    old, new = home / "dreame-valetudo-work", base / "work"
+    if _uses_custom_work(env):
+        if old.exists() or old.is_symlink():
+            console.warn(f"Left legacy work data at {old} because DREAME_WORK is set; unset it and "
+                         "re-run migration before removing the old path.")
+            complete = False
+    elif old.is_symlink():
+        if _move_work_symlink(old, new, console, before_publish_work):
+            moved.append(f"work dir -> {new}")
+        else:
+            complete = False
+    elif old.is_dir():
+        if _safe_merge(
+            old,
+            new,
+            console,
+            before_publish_work,
+            preserve_destination_lock=True,
+        ):
+            moved.append(f"work dir -> {new}")
+        else:
+            complete = False
+    elif old.exists():
+        console.warn(f"Left legacy work path {old} in place because it is not a directory.")
+        complete = False
+
+    legacy_backups: list[Path] = []
+    for d in sorted(home.glob("dreame-*-backup-*")):
+        if d.is_symlink():
+            console.warn(f"Left legacy backup symlink {d} in place; move its target by hand.")
+            complete = False
+        else:
+            try:
+                if manifest.looks_like_backup(d):
+                    legacy_backups.append(d)
+            except OSError as exc:
+                console.warn(f"Could not inspect legacy backup candidate {d}; left it in place: {exc}")
                 complete = False
-    if not env.get("DREAME_BACKUPS"):
+    if _uses_custom_backups(env):
+        if legacy_backups:
+            console.warn("Left legacy factory backups in place because DREAME_BACKUPS is set: "
+                         + ", ".join(str(d) for d in legacy_backups))
+            complete = False
+    else:
         dest = base / "backups"
         n = 0
-        for d in sorted(home.glob("dreame-*-backup-*")):
-            if not _looks_like_backup(d):
-                continue
+        for d in legacy_backups:
             if _safe_move(d, dest / _normalize_backup_name(d.name), console):
                 n += 1
             else:
@@ -233,7 +540,7 @@ def _backfill_names(env: Mapping[str, str]) -> None:
             Robot(d).set_display_name(d.name)
 
 
-def _sync_backup_robot_names(env: Mapping[str, str]) -> None:
+def _sync_backup_robot_names(env: Mapping[str, str], console: Console) -> None:
     """Self-heal: set each backup's recorded robot name to its robot's CURRENT name (joined by
     `config`), so a backfilled backup gains a name and every backup tracks a rename even without one.
     Only the manifest label is touched; a backup whose config matches no current robot is left as-is."""
@@ -246,7 +553,7 @@ def _sync_backup_robot_names(env: Mapping[str, str]) -> None:
             r = Robot(d)
             cfg = r.config()
             if cfg:
-                manifest.retag_robot(env, cfg, r.display_name())
+                manifest.retag_robot(env, cfg, r.display_name(), console=console)
 
 
 # The sealed disaster-recovery dumps `get_staged` pulls during recon (phases/recon._pull_recovery_backup).
@@ -349,7 +656,10 @@ def _heal_recon_backups(env: Mapping[str, str], console: Console) -> None:
             decrypt_recovery_backup(recon, env, console)
 
 
-def migrate(env: Mapping[str, str], console: Console) -> None:
+def migrate(
+    env: Mapping[str, str], console: Console,
+    before_publish_work: BeforePublish | None = None,
+) -> bool:
     """Bring the on-disk workspace up to LAYOUT_VERSION. A cheap no-op once current. Refuses (never
     corrupts) if the on-disk layout is newer than this build understands."""
     on_disk = _on_disk_version(env)
@@ -360,39 +670,43 @@ def migrate(env: Mapping[str, str], console: Console) -> None:
             f"{__version__}) understands (up to v{LAYOUT_VERSION}). Upgrade to dreame-valetudo "
             f">= {need}, or run with DREAME_WORK pointed at a separate directory."
         )
+    # Early v1 builds could stamp the layout after skipping legacy paths hidden by an environment
+    # override or symlink. Re-running this idempotent step heals those already-stamped workspaces;
+    # an incomplete retry remains visible and is attempted again on every later launch.
+    complete = True
+    if on_disk >= 1:
+        complete = _to_v1(env, console, before_publish_work)
     if on_disk < LAYOUT_VERSION:
-        complete = True
         for layout in LAYOUTS:
             if layout.version > on_disk:
-                complete = layout.apply(env, console) and complete
+                complete = layout.apply(env, console, before_publish_work) and complete
         if complete:
             _stamp(env)
-        else:
-            # A file already existed at the destination, so the original was left in place. Do NOT
-            # stamp — an un-stamped workspace retries next launch, rather than being marked migrated
-            # while a file is still stranded at the old location (the trap this whole design avoids).
-            console.warn(
-                "Workspace migration is incomplete — a copy already existed at the destination, so "
-                "the original was kept in place. Reconcile the leftover by hand; migration retries "
-                "on the next run."
-            )
+    if not complete:
+        # An un-stamped workspace retries the layout step; early v1 stamps cannot be rolled back,
+        # so their idempotent repair is also retried on every launch.
+        console.warn(
+            "Workspace migration or repair is incomplete — unresolved legacy data was kept in "
+            "place. Reconcile the warning above; migration retries on the next run."
+        )
     # Self-healing invariants, not layout steps: bring the data fully current on every launch
     # (gaps-only, idempotent) so nothing is left half-migrated — a legacy backup gets a manifest and
     # a nameless robot gets its slug recorded — without a version bump (which only gates old builds).
     manifest.backfill_manifests(env, console)
     _backfill_names(env)
-    _sync_backup_robot_names(env)
+    _sync_backup_robot_names(env, console)
     _heal_recon_backups(env, console)
+    return complete
 
 
 def report(env: Mapping[str, str], console: Console) -> None:
     """The ``migrate`` command: run/confirm the migration and show the layout state. Migration also
     runs automatically at launch, so this exists for someone who upgraded but has no rooting task
     yet and wants to migrate deliberately."""
-    migrate(env, console)  # idempotent — a no-op if launch already migrated
+    complete = migrate(env, console)  # idempotent — a no-op if launch already migrated
     on_disk = _on_disk_version(env)
     console.say(
         f"Workspace layout v{on_disk} at {base_dir(env)} (this build supports up to v{LAYOUT_VERSION})."
     )
-    if on_disk >= LAYOUT_VERSION:
+    if on_disk >= LAYOUT_VERSION and complete:
         console.info("Up to date — nothing to migrate.")

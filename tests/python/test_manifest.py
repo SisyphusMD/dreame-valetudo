@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 from conftest import ScriptedConsole
 
 from dreame_valetudo import manifest
@@ -50,6 +53,96 @@ def test_backfill_never_overwrites_an_existing_manifest(tmp_path: Path) -> None:
     assert json.loads((b / "manifest.json").read_text())["model"] == "keep me"
 
 
+def test_failed_manifest_replace_preserves_the_existing_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = _backup(tmp_path)
+    manifest.write(b, {"model": "keep me"})
+    before = (b / "manifest.json").read_bytes()
+
+    def fail_replace(_src: Path, _dst: Path) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="disk full"):
+        manifest.write(b, {"model": "must not become partial"})
+
+    assert (b / "manifest.json").read_bytes() == before
+    assert list(b.glob(".manifest.*.tmp")) == []
+
+
+def test_atomic_rewrite_preserves_restrictive_manifest_permissions(tmp_path: Path) -> None:
+    b = _backup(tmp_path)
+    manifest.write(b, {"model": "private"})
+    target = b / "manifest.json"
+    target.chmod(0o600)
+
+    manifest.write(b, {"model": "still private"})
+
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_manifest_temporary_stays_locked_through_atomic_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = _backup(tmp_path)
+    original_replace = Path.replace
+
+    def replace_while_checked(source: Path, target: Path) -> Path:
+        owner = source.with_suffix(".owner")
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import fcntl, sys; f=open(sys.argv[1], 'r+'); "
+                    "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)"
+                ),
+                str(owner),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        assert probe.returncode != 0
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", replace_while_checked)
+
+    manifest.write(b, {"model": "locked until published"})
+    assert json.loads((b / "manifest.json").read_text())["model"] == "locked until published"
+
+
+def test_rewrite_removes_abandoned_manifest_temporary_without_recording_it(tmp_path: Path) -> None:
+    b = _backup(tmp_path)
+    abandoned = b / ".manifest.abandoned.tmp"
+    abandoned.write_text("partial")
+    owner = abandoned.with_suffix(".owner")
+    owner.write_text("")
+
+    manifest.write(b, {"model": "complete"})
+
+    data = json.loads((b / "manifest.json").read_text())
+    assert not abandoned.exists()
+    assert not owner.exists()
+    assert data["contents"] == ["files.tar.gz", "private.dd.gz"]
+
+
+def test_failed_backfill_never_leaves_a_partial_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = _backup(tmp_path)
+
+    def fail_replace(_src: Path, _dst: Path) -> Path:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="disk full"):
+        manifest.backfill_if_missing(b)
+
+    assert not (b / "manifest.json").exists()
+    assert list(b.glob(".manifest.*.tmp")) == []
+
+
 def test_retag_robot_updates_only_matching_config_backups(tmp_path: Path) -> None:
     backups = tmp_path / "dreame-valetudo" / "backups"
     a = _backup(backups, "dreame-r2416-abc-20200101")
@@ -71,3 +164,65 @@ def test_backfill_manifests_scans_the_backups_dir_gaps_only(tmp_path: Path) -> N
     manifest.backfill_manifests({"HOME": str(tmp_path)}, ScriptedConsole())
     assert json.loads((b1 / "manifest.json").read_text())["backfilled"] is True
     assert json.loads((b2 / "manifest.json").read_text())["model"] == "already has one"
+
+
+def test_backfill_skips_unwritable_backup_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    blocked = _backup(backups, "dreame-r2416-blocked-20200101")
+    healthy = _backup(backups, "dreame-r2416-healthy-20200102")
+    original = manifest._dump
+
+    def fail_one(backup_dir: Path, payload: dict[str, object]) -> None:
+        if backup_dir == blocked:
+            raise PermissionError("read-only backup")
+        original(backup_dir, payload)
+
+    monkeypatch.setattr(manifest, "_dump", fail_one)
+    con = ScriptedConsole()
+    manifest.backfill_manifests({"HOME": str(tmp_path)}, con)
+
+    assert not (blocked / "manifest.json").exists()
+    assert (healthy / "manifest.json").is_file()
+    assert str(blocked) in con.text()
+
+
+def test_backfill_ignores_non_backups_and_symlinks(tmp_path: Path) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    notes = backups / "my-tax-returns"
+    notes.mkdir(parents=True)
+    (notes / "2025.pdf").write_bytes(b"private")
+    outside = tmp_path / "offsite"
+    _backup(tmp_path, "offsite")
+    (backups / "offsite-link").symlink_to(outside, target_is_directory=True)
+
+    manifest.backfill_manifests({"HOME": str(tmp_path)}, ScriptedConsole())
+
+    assert not (notes / "manifest.json").exists()
+    assert not (outside / "manifest.json").exists()
+
+
+def test_retag_skips_unwritable_manifest_and_updates_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    blocked = _backup(backups, "dreame-r2416-blocked-20200101")
+    healthy = _backup(backups, "dreame-r2416-healthy-20200102")
+    manifest.write(blocked, {"config": "same", "robot": "old"})
+    manifest.write(healthy, {"config": "same", "robot": "old"})
+    original = manifest._dump
+
+    def fail_one(backup_dir: Path, payload: dict[str, object]) -> None:
+        if backup_dir == blocked:
+            raise PermissionError("read-only backup")
+        original(backup_dir, payload)
+
+    monkeypatch.setattr(manifest, "_dump", fail_one)
+    con = ScriptedConsole()
+    assert manifest.retag_robot(
+        {"HOME": str(tmp_path)}, "same", "new", console=con,
+    ) == 1
+    assert json.loads((blocked / "manifest.json").read_text())["robot"] == "old"
+    assert json.loads((healthy / "manifest.json").read_text())["robot"] == "new"
+    assert str(blocked) in con.text()
