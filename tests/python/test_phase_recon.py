@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import FB, CtxFactory
 
 from dreame_valetudo import console
 from dreame_valetudo.console import Die
@@ -376,6 +376,36 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
+
+
+def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> None:
+    """Recon promises zero writes to flash, so pin every fastboot verb it is allowed to issue.
+
+    The `oem stage1`/`stage2` commands only select the next readback slice. In particular, neither
+    `oem prep` (which disables Secure Boot) nor any flash/erase command may enter this phase.
+    """
+    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=True)
+    fastboot_calls = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
+                      if call[:len(FB)] == FB]
+    assert fastboot_calls == [
+        ("wait", "90"),
+        ("getvar", "config"),
+        ("getvar", "serialno"),
+        ("getvar", "toc0hash"),
+        ("getvar", "toc1hash"),
+        ("getvar", "product"),
+        ("getvar", "model"),
+        ("getvar", "variant"),
+        ("getvar", "hw-revision"),
+        ("getvar", "version-bootloader"),
+        ("get_staged", str(ctx.need_robot().recon_dir / "dustx100.bin")),
+        ("oem", "stage1"),
+        ("get_staged", str(ctx.need_robot().recon_dir / "dustx101.bin")),
+        ("oem", "stage2"),
+        ("get_staged", str(ctx.need_robot().recon_dir / "dustx102.bin")),
+    ]
 
 
 def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: CtxFactory) -> None:

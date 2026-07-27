@@ -62,11 +62,14 @@ def test_main_invalid_model_is_clean_error_not_traceback(tmp_path: Path) -> None
     assert _has(con, "Unknown model key")
 
 
-def test_main_refuses_fastboot_phase_on_uart_model(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command", ("doctor", "fetch", "recon", "image", "root", "push"))
+def test_main_refuses_every_fastboot_phase_on_uart_model(
+    tmp_path: Path, command: str,
+) -> None:
     # A UART model must not run the FEL/fastboot phases directly (wrong engine, brick risk).
     con = ScriptedConsole()
     env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "z10-pro", "DREAME_ROBOT": "t"}
-    assert main(["recon"], env=env, console=con, runner=RecordingRunner()) == 1
+    assert main([command], env=env, console=con, runner=RecordingRunner()) == 1
     assert _has(con, "UART method")
 
 
