@@ -9,6 +9,7 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo import manifest
+from dreame_valetudo.cli import select_robot
 from dreame_valetudo.console import Die
 from dreame_valetudo.installs import Install
 from dreame_valetudo.phases import manage
@@ -42,6 +43,32 @@ def test_rename_dies_on_existing_target(make_ctx: CtxFactory) -> None:
         rename(ctx, ["old", "taken"])
 
 
+def test_rename_allows_only_a_case_change_on_a_case_insensitive_filesystem(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    src = ctx.ws.robots_dir / "kitchen"
+    src.mkdir(parents=True)
+    dst = ctx.ws.robots_dir / "Kitchen"
+    real_exists = Path.exists
+    real_samefile = Path.samefile
+    monkeypatch.setattr(
+        Path, "exists", lambda path: True if path == dst else real_exists(path),
+    )
+    monkeypatch.setattr(
+        Path,
+        "samefile",
+        lambda path, other: (
+            True if path == dst and Path(other) == src else real_samefile(path, other)
+        ),
+    )
+
+    rename(ctx, ["kitchen", "Kitchen"])
+
+    assert dst.is_dir()
+    assert Robot(dst).display_name() == "Kitchen"
+
+
 def test_rename_rejects_a_name_with_a_slash(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     (ctx.ws.robots_dir / "old").mkdir(parents=True)
@@ -55,6 +82,22 @@ def test_rename_saves_a_spaced_name_as_the_display_name(make_ctx: CtxFactory) ->
     rename(ctx, ["old", "living room"])
     assert (ctx.ws.robots_dir / "living-room").is_dir()  # folder is the slug
     assert (ctx.ws.robots_dir / "living-room" / "state" / "name").read_text().strip() == "living room"
+
+
+def test_rename_persists_a_legacy_directorys_inferred_model(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    legacy = Robot(ctx.ws.robots_dir / "r2250-0123456789ab")
+    legacy.recon_dir.mkdir(parents=True)
+    (legacy.recon_dir / "config.txt").write_text("config: 0123456789abcdef0123456789abcdef\n")
+    assert legacy.state_get("model_key") is None
+
+    rename(ctx, [legacy.work.name, "Kitchen"])
+
+    renamed = Robot(ctx.ws.robots_dir / "Kitchen")
+    assert renamed.state_get("model_key") == "d10s-pro"
+    ctx.env["DREAME_ROBOT"] = "Kitchen"
+    select_robot(ctx)
+    assert ctx.profile.key == "d10s-pro"
 
 
 def test_rename_prompts_for_the_new_name_when_only_old_is_given(make_ctx: CtxFactory) -> None:

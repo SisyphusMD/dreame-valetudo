@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **fix**: renaming a legacy robot now preserves the model encoded in its old folder name, and
+  capitalization-only renames work correctly on case-insensitive filesystems.
 - **fix**: FEL permission failures now keep polling instead of being mistaken for a connected
   robot, and a robot saved by a newer release no longer breaks status, robot selection, or
   management for every other robot in the workspace.

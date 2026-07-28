@@ -11,6 +11,7 @@ from .. import manifest
 from ..console import die
 from ..context import Context
 from ..installs import find_installs
+from ..profiles import known_model_key_for_dir
 from ..workspace import Robot, slugify
 from .misc import _summary
 
@@ -76,8 +77,19 @@ def rename(ctx: Context, rest: Sequence[str]) -> None:
     if not slug:
         die(f"'{raw}' has no usable characters for a name — use letters or digits.")
     dst = ctx.ws.robots_dir / slug
-    if dst.exists() and dst != src:
-        die(f"A robot named '{raw}' already exists — pick a different name.")
+    if dst.exists():
+        try:
+            same_robot = dst.samefile(src)
+        except OSError:
+            same_robot = False
+        if not same_robot:
+            die(f"A robot named '{raw}' already exists — pick a different name.")
+    robot = Robot(src)
+    inferred_key = known_model_key_for_dir(src)
+    if inferred_key and not robot.state_get("model_key"):
+        # Legacy directories carried the model only in their r#### prefix. Persist it before a
+        # cosmetic rename removes that prefix, or the next run silently falls back to X40.
+        robot.state_set("model_key", inferred_key)
     if dst != src:
         src.rename(dst)
     Robot(dst).set_display_name(raw)
