@@ -56,6 +56,8 @@ def _reject_ctx(
     identity: bool, zip_: bool, confirms: list[bool],
     responder: Callable[[tuple[str, ...]], Result] = _curl_only,
     stage_dist: bool = False,
+    model: str = "x30-ultra",
+    model_code: str = "r9316",
 ) -> Context:
     key = tmp_path / "k"
     key.write_text("PRIV")
@@ -63,9 +65,9 @@ def _reject_ctx(
     home = tmp_path / "home"
     home.mkdir()
     ctx = make_ctx(
-        model="x30-ultra", responder=responder, confirms=confirms,
+        model=model, responder=responder, confirms=confirms,
         env={"DREAME_SSHKEY": str(key), "HOME": str(home)},
-        robot_name=f"r9316-{_CFG[:12]}",
+        robot_name=f"{model_code}-{_CFG[:12]}",
     )
     if stage_dist:  # so the on-demand read's FEL bring-up doesn't self-provision via fetch
         ctx.ws.dist.mkdir(parents=True, exist_ok=True)
@@ -138,9 +140,16 @@ def _staging_responder(argv: tuple[str, ...]) -> Result:
     return Result(argv, 0, "OKAY", "")
 
 
-def _staging_ctx(make_ctx: CtxFactory, tmp_path: Path, confirms: list[bool]) -> Context:
+def _staging_ctx(
+    make_ctx: CtxFactory,
+    tmp_path: Path,
+    confirms: list[bool],
+    *,
+    model: str = "x30-ultra",
+    model_code: str = "r9316",
+) -> Context:
     ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=confirms,
-                      responder=_staging_responder)
+                      responder=_staging_responder, model=model, model_code=model_code)
     (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
     return ctx
 
@@ -179,6 +188,46 @@ def test_a_browser_deduplicated_download_is_visible_to_the_watcher(
     )
     image(ctx)
     assert ctx.need_robot().state_has("image")
+
+
+def test_image_stages_the_exact_model_not_its_lookalike(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _staging_ctx(
+        make_ctx, tmp_path, [True, True],
+        model="l10s-pro-ultra-heat", model_code="r2338",
+    )
+    downloads = tmp_path / "home" / "Downloads"
+    exact = downloads / "dreame.vacuum.r2338_1782_fel_ng.zip"
+    lookalike = downloads / "dreame.vacuum.r2338h_1782_fel_ng.zip"
+
+    def _land_both(_seconds: float) -> None:
+        exact.write_text("exact")
+        lookalike.write_text("lookalike")
+
+    ctx.sleep = _land_both
+    image(ctx)
+
+    marker = (ctx.need_robot().state_dir / "image").read_text()
+    assert exact.name in marker
+    assert lookalike.name not in marker
+
+
+def test_image_refuses_a_lookalike_as_the_only_download(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _staging_ctx(
+        make_ctx, tmp_path, [True, True],
+        model="l10s-pro-ultra-heat", model_code="r2338",
+    )
+    lookalike = tmp_path / "home" / "Downloads" / "dreame.vacuum.r2338h_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, lookalike)
+
+    with pytest.raises(Die, match="No zip found"):
+        image(ctx)
+
+    assert not ctx.need_robot().state_has("image")
+    assert not any(c and c[0] == "unzip" for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_a_zip_already_staged_for_another_robot_is_refused(
