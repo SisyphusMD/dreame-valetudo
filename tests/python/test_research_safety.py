@@ -146,6 +146,7 @@ def test_tracked_tree_contains_only_declared_synthetic_device_configs() -> None:
         "0123456789abcdef0123456789abcdef",
         "beefbeefbeefbeefbeefbeefbeefbeef",
     }
+    private_key_marker = "PRIVATE " + "KEY-----"
     found: list[str] = []
     for raw in tracked:
         if not raw:
@@ -160,6 +161,6 @@ def test_tracked_tree_contains_only_declared_synthetic_device_configs() -> None:
             for value in re.findall(r"\b[0-9a-fA-F]{32}\b", text)
             if value.lower() not in allowed
         )
-        if "PRIVATE KEY-----" in text:
+        if private_key_marker in text:
             found.append(str(path.relative_to(_ROOT)))
     assert not found, f"tracked private-material-shaped content in: {sorted(set(found))}"
