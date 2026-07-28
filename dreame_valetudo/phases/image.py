@@ -54,7 +54,8 @@ def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     say("Build the rooted image on the dustbuilder — fill the web form TOP-TO-BOTTOM as below")
     info("   Your Voucher ......... leave as 'roborock' (the default)")
     info("   Your Email ........... your email — the build link is emailed here")
-    info(f"   Your SSH-Public key .. Choose File -> {pubkey}")
+    info("   Your SSH-Public key .. SELECT this upload radio (neither key option is pre-selected)")
+    info(f"                          then Choose File -> {pubkey}")
     info("                          (a copy in a normal folder — browser dialogs hide ~/.ssh; "
          "upload it, do NOT 'generate a keypair')")
     info("   Device serial number . the REAL serial from UNDER THE DUSTBIN, ALL-CAPS.")
@@ -66,6 +67,7 @@ def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
          "first.")
     info(f"   Config value ......... {cfg}")
     info("   Create diff .......... leave UNCHECKED")
+    info("   Prepackage Valetudo .. leave UNCHECKED if present (this tool installs it in Phase 3)")
     info("   Patch DNS ............ CHECK  (required for Valetudo)")
     info("   Preinstall tools ..... CHECK  (nano/curl/wget/htop/hexdump)")
     info("   Build type ........... SELECT 'Create FEL image (for initial rooting via USB)'")
@@ -154,6 +156,8 @@ def _config_rejected_help(ctx: Context) -> None:
     if zip_path.is_file():
         size = zip_path.stat().st_size / (1 << 20)
         ctx.console.info(f"   {'get_staged image':<22} {zip_path}  ({size:.1f} MiB)")
+        ctx.console.warn("That recovery image is a raw copy of the robot's flash, including its "
+                         "userdata partition and miio device key. Share it only intentionally.")
     else:
         ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
                          "--force' (keep the recovery backup on) to build it, then come back.")
@@ -230,8 +234,15 @@ def _watch_for_zip(ctx: Context, floor: float, tries: int = 720) -> str | None:
 def image(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
     if robot.state_has("image") and not force:
-        ctx.console.info(f"Image already staged in {robot.fw_dir}. Re-run with --force to reopen.")
-        return
+        missing = [name for name in FEL_IMAGE_FILES if not (robot.fw_dir / name).is_file()]
+        if not missing:
+            ctx.console.info(f"Image already staged in {robot.fw_dir}. Re-run with --force to "
+                             "reopen.")
+            return
+        robot.remember_image()
+        robot.state_clear("image")
+        ctx.console.warn(f"The staged-image record is incomplete ({', '.join(missing)} missing), "
+                         "so this phase will stage it again.")
     if force:
         (robot.recon_dir / ".submitted").unlink(missing_ok=True)
         # Dropped up front, not after a successful re-stage: any die between here and the swap

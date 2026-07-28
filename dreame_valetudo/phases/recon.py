@@ -108,17 +108,17 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     The TOOL drives every fastboot step; the user only does the FEL button sequence. Returns the
     captured {var: value} (possibly partial), or {} if the robot never came up in fastboot."""
     robot = ctx.need_robot()
-    if not _sunxi_ready(ctx):
-        doctor(ctx)
-    if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
-        fetch_stage1(ctx)
-    check_fastboot_client(ctx)
-    print_fel_entry(ctx.console, ctx.host)
-    if not _wait_for_fel(ctx):
-        ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
-                         "connected to try again.")
-        return {}
     try:
+        if not _sunxi_ready(ctx):
+            doctor(ctx)
+        if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
+            fetch_stage1(ctx)
+        check_fastboot_client(ctx)
+        print_fel_entry(ctx.console, ctx.host)
+        if not _wait_for_fel(ctx):
+            ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
+                             "connected to try again.")
+            return {}
         ctx.fel.fel_boot_fastboot(
             ctx.ws.dist, ctx.fsbl_name, "payload.bin",
             ctx.profile.fsbl_addr, ctx.profile.payload_addr,
@@ -313,4 +313,6 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
         return False
     ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
                      "rejects your config)")
+    ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
+                     "partition and miio device key. Share it only intentionally.")
     return True

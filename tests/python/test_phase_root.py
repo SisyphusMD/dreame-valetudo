@@ -280,6 +280,18 @@ def test_root_self_provisions_image_when_unstaged(make_ctx: CtxFactory) -> None:
                for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
+def test_root_restages_when_the_image_marker_outlives_its_files(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _write_recon(ctx)
+    ctx.need_robot().state_set("image", "stale")
+
+    with pytest.raises(Die):
+        root(ctx)
+
+    assert any("unsupported.txt" in " ".join(str(a) for a in call)
+               for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
 def test_root_reads_config_from_stderr_like_system_fastboot(make_ctx: CtxFactory) -> None:
     """Google's fastboot prints 'config: <hex>' to STDERR; the identity gate must merge streams
     exactly like recon (stdout+stderr merged) so the system transport can flash."""

@@ -357,8 +357,9 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
     if not robot.state_has("rooted"):
         image(ctx)
         root(ctx)
-    if (robot.state_has("rooted") and not robot.state_has("valetudo") and not push(ctx)):
-        valetudo(ctx)
+    if robot.state_has("rooted") and not robot.state_has("valetudo"):
+        if not push(ctx):
+            valetudo(ctx)
         return
     if robot.state_has("valetudo"):
         ctx.console.say(f"All phases complete — open http://{ROBOT_AP_IP}")

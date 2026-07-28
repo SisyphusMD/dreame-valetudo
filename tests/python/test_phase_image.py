@@ -96,6 +96,10 @@ def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory,
     assert all(v in text for v in _IDENT.values())      # captured values, verbatim
     assert "dreame_recovery_backup.zip" in text         # the get_staged image to upload
     assert "fastboot getvar" not in text                # the tool never punts a command to the user
+    assert "SELECT this upload radio" in text           # neither radio is selected by the page
+    assert "Prepackage Valetudo .. leave UNCHECKED" in text
+    assert "raw copy of the robot's flash" in text
+    assert "miio device key" in text
     assert any(kind == "action" for kind, _ in ctx.console.lines)  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("image")      # not staged -> re-run resumes
 
@@ -188,6 +192,21 @@ def test_a_browser_deduplicated_download_is_visible_to_the_watcher(
     )
     image(ctx)
     assert ctx.need_robot().state_has("image")
+
+
+def test_an_image_marker_with_missing_files_restages_without_force(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True])
+    ctx.need_robot().state_set("image", "stale")
+    built = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, built)
+
+    image(ctx)
+
+    assert ctx.need_robot().state_has("image")
+    assert all((ctx.need_robot().fw_dir / name).is_file() for name in _FEL)
+    assert "staged-image record is incomplete" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_image_stages_the_exact_model_not_its_lookalike(

@@ -19,6 +19,9 @@
 - **fix**: each robot now remembers the SSH key embedded in its own dustbuilder image, so preparing
   another robot cannot make a later push offer the wrong key; explicit keys no longer expose every
   unrelated agent identity to the robot AP.
+- **fix**: the dustbuilder walkthrough now names the unselected key-upload radio and keeps
+  prepackaged Valetudo off, discloses the sensitive contents of recovery-image uploads, repairs a
+  stale staged-image marker automatically, and no longer points at an AP dropped by the reboot.
 - **fix**: release reconciliation now compares registry metadata before downloading assets, so a
   fully consistent tag transfers nothing while missing, truncated, and size-unknown uploads are
   still downloaded once and repaired on only the affected registry.
