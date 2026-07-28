@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import random
@@ -23,6 +24,15 @@ from dreame_valetudo.run import Result
 _CFG = "abcdef0123456789abcdef0123456789"
 
 
+@pytest.fixture(autouse=True)
+def _trust_the_test_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        fetch_mod,
+        "VALETUDO_SHA256",
+        {"aarch64": hashlib.sha256(b"valetudo binary").hexdigest()},
+    )
+
+
 def _valetudo_bin(ctx: Context) -> None:
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     ctx.valetudo_bin.write_text("valetudo binary")
@@ -41,7 +51,9 @@ def _text(
         if cmd == "test -d /mnt/private/ULI/factory":
             return Result(argv, 0 if is_dreame else 1, "", "")
         if "grep -E '^(model|did)='" in cmd:
-            return Result(argv, 0, f"model={model}\ndid={did}\n", "")
+            return Result(
+                argv, 0, f"model={model}\ndid={did}\nfactory_config=config: {_CFG}\n", ""
+            )
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, key + "\n", "")  # normal unit: key already present
         if "did.txt" in cmd:
@@ -59,12 +71,26 @@ def _redirect(
             path = Path(stdout_path)
             if files_size <= 1000:
                 path.write_bytes(b"x" * files_size)
+            elif failure == "files-directories-only":
+                with tarfile.open(path, "w:gz") as archive:
+                    for dirname in ("mnt/private", "mnt/misc"):
+                        directory = tarfile.TarInfo(dirname)
+                        directory.type = tarfile.DIRTYPE
+                        archive.addfile(directory)
+                    padding = random.Random(1).randbytes(files_size)
+                    unrelated = tarfile.TarInfo("etc/padding.pem")
+                    unrelated.size = len(padding)
+                    archive.addfile(unrelated, io.BytesIO(padding))
             else:
                 payload = random.Random(1).randbytes(files_size)
                 with tarfile.open(path, "w:gz") as archive:
                     member = tarfile.TarInfo("mnt/private/ULI/factory/config.txt")
                     member.size = len(payload)
                     archive.addfile(member, io.BytesIO(payload))
+                    if failure != "files-missing-misc":
+                        misc = tarfile.TarInfo("mnt/misc/factory.marker")
+                        misc.size = 4
+                        archive.addfile(misc, io.BytesIO(b"misc"))
                 if failure == "files-corrupt":
                     path.write_bytes(path.read_bytes()[:-8])
                 elif failure == "files-deflate-corrupt":
@@ -78,7 +104,7 @@ def _redirect(
             if failure == "files-transport":
                 return Result(argv, 255, "", "connection lost")
             return Result(argv, 2 if failure == "files-tar-nonzero" else 0, "", "tar warning")
-        if stdout_path and "dd if=/dev/by-name/" in argv[-1]:
+        if stdout_path and "/dev/by-name/" in argv[-1]:
             path = Path(stdout_path)
             payload = random.Random(argv[-1]).randbytes(4096)
             with gzip.open(path, "wb") as stream:
@@ -141,7 +167,10 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
 ) -> None:
     ctx = _ctx(make_ctx)
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
-    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fetch_mod, "VALETUDO_SHA256",
+        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+    )
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -445,12 +474,58 @@ def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
     assert list(ctx.backups_dir.glob("*/manifest.json"))
 
 
+def test_push_refuses_a_valid_archive_without_both_factory_trees(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-missing-misc")  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="does not contain both /mnt/private and /mnt/misc"):
+        push(ctx)
+    assert not list(ctx.backups_dir.glob("*/manifest.json"))
+    assert not any(call[-1] == "cat > /data/valetudo" for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_push_refuses_factory_directories_that_contain_no_files(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(  # type: ignore[attr-defined]
+        files_size=32 * 1024, failure="files-directories-only",
+    )
+
+    with pytest.raises(Die, match="does not contain both /mnt/private and /mnt/misc"):
+        push(ctx)
+    assert not list(ctx.backups_dir.glob("*/manifest.json"))
+
+
+def test_push_refuses_a_different_same_model_robot_by_factory_config(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    normal = ctx.runner._responder  # type: ignore[attr-defined]
+
+    def wrong_robot(argv: tuple[str, ...]) -> Result:
+        if "grep -E '^(model|did)='" in argv[-1]:
+            return Result(
+                argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
+                "factory_config=config: beefbeefbeefbeefbeefbeefbeefbeef\n", "",
+            )
+        return normal(argv)
+
+    ctx.runner._responder = wrong_robot  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="factory config does not match"):
+        push(ctx)
+    assert not any("tar czf" in call[-1] or call[-1] == "cat > /data/valetudo"
+                   for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
 def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(did="-117604433")  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
     assert push(ctx) is True
+    assert ctx.backups_dir.stat().st_mode & 0o777 == 0o700
     assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
     # the negative did was repaired to its uint32 value
     assert any("4177362863" in msg for _, msg in ctx.console.lines)  # type: ignore[attr-defined]
@@ -473,7 +548,8 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
         if cmd == "test -d /mnt/private/ULI/factory":
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
-            return Result(argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n", "")
+            return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
+                                  f"factory_config=config: {_CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty: cloudKey only in secure storage
         if "dreame_release.na -c 7" in cmd:
@@ -505,7 +581,8 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
         if cmd == "test -d /mnt/private/ULI/factory":
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
-            return Result(argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n", "")
+            return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
+                                  f"factory_config=config: {_CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty
         if "did.txt" in cmd:
@@ -537,7 +614,8 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
         if cmd == "test -d /mnt/private/ULI/factory":
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
-            return Result(argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n", "")
+            return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
+                                  f"factory_config=config: {_CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")
         if "dreame_release.na -c 7" in cmd:

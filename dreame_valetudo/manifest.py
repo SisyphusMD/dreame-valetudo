@@ -13,7 +13,6 @@ import fcntl
 import json
 import os
 import re
-import stat
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -69,10 +68,6 @@ def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
                 abandoned_owner.unlink()
         except OSError:
             continue
-    try:
-        existing_mode = stat.S_IMODE(target.stat().st_mode)
-    except FileNotFoundError:
-        existing_mode = None
     temporary: Path | None = None
     owner_path: Path | None = None
     try:
@@ -90,14 +85,37 @@ def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
                 fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
                 fh.flush()
                 os.fsync(fh.fileno())
-            if existing_mode is not None:
-                temporary.chmod(existing_mode)
+            temporary.chmod(0o600)
             temporary.replace(target)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
         if owner_path is not None:
             owner_path.unlink(missing_ok=True)
+
+
+def protect_backups(env: Mapping[str, str], console: Console | None = None) -> None:
+    """Self-heal private modes on every factory backup without following any symlink."""
+    root = backups_dir(env)
+    if root.is_symlink() or not root.is_dir():
+        return
+    try:
+        root.chmod(0o700)
+    except OSError as exc:
+        if console is not None:
+            console.warn(f"Could not restrict backup permissions at {root}: {exc}")
+        return
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        try:
+            if path.is_dir():
+                path.chmod(0o700)
+            elif path.is_file():
+                path.chmod(0o600)
+        except OSError as exc:
+            if console is not None:
+                console.warn(f"Could not restrict backup permissions at {path}: {exc}")
 
 
 def write(backup_dir: Path, data: Mapping[str, object]) -> None:

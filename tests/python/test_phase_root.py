@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
+import zipfile
 from pathlib import Path
 
 import pytest
 from conftest import FB, CtxFactory
 
+from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
+from dreame_valetudo.constants import (
+    FEL_IMAGE_FILES,
+    RECOVERY_DUMP_ALIGNMENT,
+    RECOVERY_DUMP_MIN_BYTES,
+    STAGED_IMAGE_MANIFEST,
+)
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
 from dreame_valetudo.run import Result
+from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
 
 _CFG = "abcdef0123456789abcdef0123456789"
@@ -26,7 +36,13 @@ _MIN_IMAGE_BYTES = {
 }
 
 
-def _stage_image(ctx: Context, dust: str = "DUSTTOKEN") -> None:
+@pytest.fixture(autouse=True)
+def _small_recovery_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 1)
+
+
+def _stage_image(ctx: Context, dust: str = "626153c7") -> None:
     robot = ctx.need_robot()
     fw = robot.fw_dir
     fw.mkdir(parents=True, exist_ok=True)
@@ -34,14 +50,23 @@ def _stage_image(ctx: Context, dust: str = "DUSTTOKEN") -> None:
         with (fw / name).open("wb") as image:
             image.truncate(size)
     (fw / "check.txt").write_text(f"{dust}\n")
-    robot.state_set("image", "staged")  # so root()'s self-provision chain sees it as staged
+    digests = {
+        name: sha256_of(fw / name)
+        for name in FEL_IMAGE_FILES
+    }
+    (fw / STAGED_IMAGE_MANIFEST).write_text(
+        json.dumps({"model_key": ctx.profile.key, "files": digests}) + "\n"
+    )
+    robot.state_set("image", f"model={ctx.profile.key} staged")
 
 
 def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
     rd = ctx.need_robot().recon_dir
     rd.mkdir(parents=True, exist_ok=True)
     (rd / "config.txt").write_text(f"config: {cfg}\n")
-    (rd / RECOVERY_BACKUP_ZIP).write_bytes(b"backup")
+    with zipfile.ZipFile(rd / RECOVERY_BACKUP_ZIP, "w") as archive:
+        for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
+            archive.writestr(name, b"backup")
     ctx.need_robot().state_set("recon", f"config={cfg} backup=obtained")
 
 
@@ -73,7 +98,7 @@ def test_root_happy_path_flashes_in_order_and_marks_rooted(make_ctx: CtxFactory)
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
     assert _flash_ops(ctx) == [
-        ("oem", "dust", "DUSTTOKEN"), ("oem", "prep"),
+        ("oem", "dust", "626153c7"), ("oem", "prep"),
         ("flash", "toc1", "toc1.img"),
         ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
         ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
@@ -164,6 +189,22 @@ def test_root_accepts_the_three_recovery_dumps_when_the_archive_is_missing(
     assert robot.state_has("rooted")
 
 
+def test_root_rejects_a_recovery_archive_corrupted_after_recon(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).write_bytes(b"corrupt")
+    with pytest.raises(Die, match="Aborted"):
+        root(ctx)
+    assert "files are missing" in ctx.console.text()
+    assert _flash_ops(ctx) == []
+
+
+def test_recovery_dump_production_floor_is_brick_relevant() -> None:
+    assert RECOVERY_DUMP_MIN_BYTES >= 300 * (1 << 20)
+    assert RECOVERY_DUMP_ALIGNMENT == 0x20000
+
+
 def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
     make_ctx: CtxFactory,
 ) -> None:
@@ -241,13 +282,33 @@ def test_root_accepts_the_image_built_for_this_robot(make_ctx: CtxFactory) -> No
     assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)
 
 
-def test_root_allows_a_token_that_is_not_8_hex(make_ctx: CtxFactory) -> None:
-    """FAIL OPEN by design: a future dustbuilder check.txt format must not block a real flash."""
+@pytest.mark.parametrize("name", ["toc1.img", "boot.img", "rootfs.img"])
+def test_root_refuses_a_staged_member_changed_without_changing_its_size(
+    make_ctx: CtxFactory, name: str,
+) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
-    _stage_image(ctx, dust="NOTHEX01")  # right length, not hex
+    _stage_image(ctx)
+    _write_recon(ctx)
+    path = ctx.need_robot().fw_dir / name
+    with path.open("r+b") as stream:
+        stream.seek(max(0, path.stat().st_size // 2))
+        stream.write(b"X")
+    with pytest.raises(Die, match=rf"staged {name} changed after extraction"):
+        root(ctx)
+    assert ctx.runner.calls == []
+
+
+@pytest.mark.parametrize("dust", ["NOTHEX01", "1234567", "123456789"])
+def test_root_refuses_a_malformed_image_identity_token(
+    make_ctx: CtxFactory, dust: str,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx, dust=dust)
     _write_recon(ctx, _CFG)
-    root(ctx)
-    assert ctx.need_robot().state_has("rooted")
+    with pytest.raises(Die, match=r"check\.txt is not the expected 8-hex identity token"):
+        root(ctx)
+    assert ctx.runner.calls == []
+    assert not ctx.need_robot().state_has("rooted")
 
 
 def test_root_refuses_on_config_mismatch(make_ctx: CtxFactory) -> None:
@@ -339,13 +400,12 @@ def test_root_strips_all_whitespace_from_dust_token(make_ctx: CtxFactory) -> Non
     """check.txt is fed to `oem dust` after removing ALL whitespace (tr -d '[:space:]'), not just
     the ends — internal whitespace must never reach the flash-authorization argument."""
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
-    _stage_image(ctx)
-    (ctx.need_robot().fw_dir / "check.txt").write_text(" DUST\tTOK\nEN \r\n")
+    _stage_image(ctx, dust=" 6261\t53\nC7 \r")
     _write_recon(ctx)
     root(ctx)
     dust_args = [c for c in ctx.runner.calls  # type: ignore[attr-defined]
                  if c[:2] == FB and len(c) > 3 and c[2:4] == ("oem", "dust")]
-    assert dust_args and dust_args[0][4] == "DUSTTOKEN"
+    assert dust_args and dust_args[0][4] == "626153C7"
 
 
 def test_root_hard_stops_on_non_okay_flash(make_ctx: CtxFactory) -> None:
@@ -431,8 +491,7 @@ def test_root_aborts_when_live_config_unreadable(make_ctx: CtxFactory) -> None:
 
 def test_root_aborts_on_empty_check_txt(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
-    _stage_image(ctx)
-    (ctx.need_robot().fw_dir / "check.txt").write_text("   \n\t\n")  # only whitespace
+    _stage_image(ctx, dust="   \n\t")
     _write_recon(ctx)
     with pytest.raises(Die, match=r"check\.txt is empty"):
         root(ctx)

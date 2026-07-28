@@ -72,8 +72,8 @@ def test_parse_config_finds_the_hex_token() -> None:
 
 
 def test_parse_config_is_case_insensitive() -> None:
-    assert util.parse_config("OKAY D97C4DE6F64818765E2FAF9F14309818") == (
-        "D97C4DE6F64818765E2FAF9F14309818"
+    assert util.parse_config("OKAY 00112233445566778899AABBCCDDEEFF") == (
+        "00112233445566778899AABBCCDDEEFF"
     )
 
 

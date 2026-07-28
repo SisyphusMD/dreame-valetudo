@@ -67,10 +67,19 @@ def find_installs(env: Mapping[str, str], root: Path = Path("/")) -> list[Instal
     if linux.is_dir():
         # dpkg and rpm both land here; pick the remover by which tool the system actually has.
         apt = (root / "usr/bin/apt-get").exists()
+        if apt:
+            removal = ["sudo", "apt-get", "remove", "-y", "dreame-valetudo"]
+        elif (root / "usr/bin/zypper").exists():
+            removal = ["sudo", "zypper", "remove", "-y", "dreame-valetudo"]
+        elif (root / "usr/bin/dnf").exists():
+            removal = ["sudo", "dnf", "remove", "-y", "dreame-valetudo"]
+        elif (root / "usr/bin/yum").exists():
+            removal = ["sudo", "yum", "remove", "-y", "dreame-valetudo"]
+        else:
+            removal = ["sudo", "rpm", "-e", "dreame-valetudo"]
         found.append(Install(
             ".deb package" if apt else ".rpm package", linux,
-            ["sudo", "apt-get", "remove", "-y", "dreame-valetudo"] if apt
-            else ["sudo", "dnf", "remove", "-y", "dreame-valetudo"],
+            removal,
         ))
 
     uv_tool = home / ".local/share/uv/tools/dreame-valetudo"

@@ -9,11 +9,14 @@ Storage model, all under the ~/dreame-valetudo/ umbrella:
 
 from __future__ import annotations
 
+import os
 import re
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .constants import RECOVERY_DUMP_ALIGNMENT, RECOVERY_DUMP_MIN_BYTES, RECOVERY_DUMP_NAMES
 from .util import parse_config
 
 # The ~/dreame-valetudo/ umbrella holding work/, backups/, and the .layout marker. Shared by
@@ -24,6 +27,39 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 # `get_staged` image the builder's checker wants). A launch self-heal renames the pre-rename
 # `dreame_samples.zip` forward to this (see migrate.py), so readers only ever need this name.
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
+
+
+def recovery_dump_valid(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    return size >= RECOVERY_DUMP_MIN_BYTES and size % RECOVERY_DUMP_ALIGNMENT == 0
+
+
+def recovery_zip_valid(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if tuple(member.filename for member in members) != tuple(
+                f"{name}.bin" for name in RECOVERY_DUMP_NAMES
+            ):
+                return False
+            if any(
+                member.file_size < RECOVERY_DUMP_MIN_BYTES
+                or member.file_size % RECOVERY_DUMP_ALIGNMENT != 0
+                for member in members
+            ):
+                return False
+            return archive.testzip() is None
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return False
+
+
+def recovery_backup_valid(recon_dir: Path) -> bool:
+    return recovery_zip_valid(recon_dir / RECOVERY_BACKUP_ZIP) or all(
+        recovery_dump_valid(recon_dir / f"{name}.bin") for name in RECOVERY_DUMP_NAMES
+    )
 
 
 def home_dir(env: Mapping[str, str]) -> Path:
@@ -61,6 +97,26 @@ def protect_recon_artifacts(recon_dir: Path) -> None:
     for artifact in recon_dir.iterdir():
         if artifact.is_file() and not artifact.is_symlink():
             artifact.chmod(0o600)
+
+
+def protect_state_artifacts(state_dir: Path) -> None:
+    """Restrict an existing state directory and every regular marker directly inside it."""
+    if state_dir.is_symlink() or not state_dir.is_dir():
+        return
+    state_dir.chmod(0o700)
+    for marker in state_dir.iterdir():
+        if marker.is_file() and not marker.is_symlink():
+            marker.chmod(0o600)
+
+
+def _write_private_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(value)
 
 
 def slugify(name: str) -> str:
@@ -123,8 +179,7 @@ class Robot:
         return self.work / "fw"
 
     def state_set(self, name: str, value: str = "done") -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / name).write_text(value + "\n")
+        _write_private_text(self.state_dir / name, value + "\n")
 
     def state_has(self, name: str) -> bool:
         return (self.state_dir / name).is_file()
@@ -166,8 +221,7 @@ class Robot:
         return f.read_text().strip() if f.is_file() else self.work.name
 
     def set_display_name(self, name: str) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "name").write_text(name.strip() + "\n")
+        self.state_set("name", name.strip())
 
     def state_get(self, name: str) -> str | None:
         marker = self.state_dir / name

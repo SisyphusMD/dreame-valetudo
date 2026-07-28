@@ -7,13 +7,14 @@ build (r2338 vs r2338h) can't be staged.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from ..console import abort, die
-from ..constants import FEL_IMAGE_FILES
+from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
 from ..context import Context
 from ..dustbuilder import (
     CONFIG_CHECKER_URL,
@@ -240,14 +241,20 @@ def image(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
     if robot.state_has("image") and not force:
         missing = [name for name in FEL_IMAGE_FILES if not (robot.fw_dir / name).is_file()]
-        if not missing:
+        marker = robot.state_get("image") or ""
+        provenance_missing = (
+            f"model={ctx.profile.key}" not in marker
+            or not (robot.fw_dir / STAGED_IMAGE_MANIFEST).is_file()
+        )
+        if not missing and not provenance_missing:
             ctx.console.info(f"Image already staged in {robot.fw_dir}. Re-run with --force to "
                              "reopen.")
             return
         robot.remember_image()
         robot.state_clear("image")
-        ctx.console.warn(f"The staged-image record is incomplete ({', '.join(missing)} missing), "
-                         "so this phase will stage it again.")
+        detail = f"{', '.join(missing)} missing" if missing else "model/integrity record missing"
+        ctx.console.warn(f"The staged-image record is incomplete ({detail}), so this phase will "
+                         "stage it again.")
     if force:
         (robot.recon_dir / ".submitted").unlink(missing_ok=True)
         # Dropped up front, not after a successful re-stage: any die between here and the swap
@@ -327,8 +334,15 @@ def image(ctx: Context, *, force: bool = False) -> None:
         zip_path = str(robot.fw_dir / zp.name)
     shutil.rmtree(robot.fw_dir, ignore_errors=True)
     staging.rename(robot.fw_dir)
+    member_digests = {
+        name: sha256_of(robot.fw_dir / name)
+        for name in FEL_IMAGE_FILES
+    }
+    (robot.fw_dir / STAGED_IMAGE_MANIFEST).write_text(
+        json.dumps({"model_key": ctx.profile.key, "files": member_digests}, sort_keys=True) + "\n"
+    )
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
-    robot.state_set("image", f"from {zip_path} sha256={digest}")
+    robot.state_set("image", f"model={ctx.profile.key} from {zip_path} sha256={digest}")
     robot.remember_image()
     ctx.console.say("Image staged. Next: root (DESTRUCTIVE)")

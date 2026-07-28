@@ -23,12 +23,13 @@ Reference implementation: [`tools/compute_dust_token.py`](tools/compute_dust_tok
 
 ### Oracles (config → token)
 
-| Model | config (first 8 hex) | token |
+| Oracle | config (first 8 hex) | token |
 |---|---|---|
-| X40 `r2416` | `abcdef01` | `626153c7` |
-| L10s `r2338` | `44268c81` | `8d8a3047` |
-| D10S `r2240` | (per unit) | `18dbb75c` |
-| D10S (other retailer) | (per unit) | `11c2e33d` |
+| synthetic A | `abcdef01` | `626153c7` |
+| synthetic B | `01234567` | `c88ff9a1` |
+
+The formula was also checked against private hardware captures from multiple models and retailers;
+per-device configs and their reversible tokens are intentionally not published.
 
 The token depends only on the config value — **not** on the serial, SID, cpuid, or eFuse.
 

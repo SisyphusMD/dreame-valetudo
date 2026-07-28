@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.workspace import (
     Robot,
     Workspace,
     backups_dir,
     base_dir,
+    recovery_zip_valid,
     robot_dirs,
     robot_tag,
     slugify,
@@ -61,6 +68,45 @@ def test_state_marker_default_value(tmp_path: Path) -> None:
     r = Robot(tmp_path / "r2416-abc")
     r.state_set("rooted")
     assert r.state_get("rooted") == "done"
+
+
+def test_state_markers_are_private_even_under_a_permissive_umask(tmp_path: Path) -> None:
+    prior = os.umask(0o022)
+    try:
+        robot = Robot(tmp_path / "r2416-abc")
+        robot.state_set("recon", "backup=obtained")
+        robot.set_display_name("Kitchen")
+    finally:
+        os.umask(prior)
+    assert stat.S_IMODE(robot.state_dir.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in robot.state_dir.iterdir())
+
+
+@pytest.mark.parametrize("error", [RuntimeError("encrypted"), NotImplementedError("compression")])
+def test_recovery_zip_validation_treats_unsupported_members_as_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception,
+) -> None:
+    class UnsupportedZip:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def infolist(self) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    filename=f"dustx{number}.bin",
+                    file_size=workspace_module.RECOVERY_DUMP_MIN_BYTES,
+                )
+                for number in (100, 101, 102)
+            ]
+
+        def testzip(self) -> None:
+            raise error
+
+    monkeypatch.setattr(workspace_module.zipfile, "ZipFile", lambda _path: UnsupportedZip())
+    assert recovery_zip_valid(tmp_path / "unsupported.zip") is False
 
 
 # --- display name (folder slug vs the human name) ---------------------------------------------

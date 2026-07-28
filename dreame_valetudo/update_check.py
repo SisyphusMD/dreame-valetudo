@@ -53,9 +53,10 @@ def _parse_latest(text: str) -> str | None:
     return None
 
 
-def detect_install_method(env: Mapping[str, str]) -> str:
+def detect_install_method(env: Mapping[str, str], root: Path = Path("/")) -> str:
     """Best-effort guess of how the tool was installed, from the running executable path. Returns one
-    of: source, brew, deb, unknown. Errs toward `unknown` (a generic hint) rather than a wrong one."""
+    of: source, brew, deb, rpm-dnf, rpm-yum, rpm-zypper, rpm, unknown. Errs toward `unknown` (a
+    generic hint) rather than a wrong one."""
     # .git is a directory in a normal clone but a pointer FILE in a worktree/submodule checkout —
     # all of them are source checkouts.
     if (Path(__file__).resolve().parent.parent / ".git").exists():
@@ -71,7 +72,13 @@ def detect_install_method(env: Mapping[str, str]) -> str:
     if "homebrew" in exe or "cellar" in exe:
         return "brew"
     if sys.platform.startswith("linux") and exe.startswith("/usr/"):
-        return "deb"
+        if (root / "usr/bin/dpkg-query").exists():
+            return "deb"
+        for tool in ("zypper", "dnf", "yum"):
+            if (root / "usr/bin" / tool).exists():
+                return f"rpm-{tool}"
+        if (root / "usr/bin/rpm").exists():
+            return "rpm"
     return "unknown"
 
 
@@ -85,6 +92,10 @@ def _upgrade_hint(method: str, current: str = __version__, latest: str | None = 
         "source": "Update: git pull (you're running from a source checkout).",
         "brew": f"Update: brew upgrade sisyphusmd/tap/{brew_formula}",
         "deb": "Update: download the new .deb from the releases page and `sudo apt install ./<file>.deb`.",
+        "rpm-dnf": "Update: download the new .rpm and run `sudo dnf upgrade ./<file>.rpm`.",
+        "rpm-yum": "Update: download the new .rpm and run `sudo yum update ./<file>.rpm`.",
+        "rpm-zypper": "Update: download the new .rpm and run `sudo zypper install ./<file>.rpm`.",
+        "rpm": "Update: download the new .rpm and run `sudo rpm -U ./<file>.rpm`.",
         "unknown": "Update via your install method — see "
         "https://github.com/SisyphusMD/dreame-valetudo#upgrading",
     }[method]

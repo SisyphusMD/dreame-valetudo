@@ -5,6 +5,11 @@ placeholders like `<repo>`, `<work>`, `<robot-ip>`). These are reference impleme
 methods documented in the chapters, not a packaged CLI — paths at the top of each script are
 placeholders to fill in.
 
+Every tool that can write a boot chain requires the expected eight-hex config prefix and re-reads
+the connected robot before enabling writes. That value must come from the private capture for the
+physical unit on the bench; the published examples intentionally contain no reusable device token.
+The full-eMMC puller stops on the first missing or invalid stream and writes private files only.
+
 They depend on **sister tooling already in this repository**:
 - `dreame_valetudo/dust_decrypt.py` — recovers the transport keystream and de-obfuscates `upload`
   dumps (chapter 04).

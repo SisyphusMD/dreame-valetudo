@@ -4,13 +4,15 @@
 firmware pkg path (flash:toc1), which the disasm confirms (a) never reaches the boot0 stub and (b)
 never invokes the eFuse burn. burnsafe base => the eFuse CANNOT burn => every failure is FEL-recoverable.
 
-  skip-Dennis:   run_chain.py <...>/selfsigned_toc0.img   <...>/chain_toc1.img
-  full recovery: run_chain.py <...>/device_toc0_exact.img <...>/recovery_toc1.img
+  experiment:    run_chain.py --expect-config-prefix <8hex> <selfsigned_toc0> <chain_toc1>
+  full recovery: run_chain.py --expect-config-prefix <8hex> <device_toc0> <recovery_toc1>
 
 Run: cd <repo> && uv run --with pyusb==1.3.1 python3 <this> <toc0> <toc1>
 """
 from __future__ import annotations
-import importlib.util, subprocess, sys, time, hashlib
+import argparse, importlib.util, subprocess, sys, time, hashlib
+
+from research_safety import compute_dust_token, require_expected_config
 
 sys.path.insert(0, "<repo>")
 from dreame_valetudo import dust_decrypt
@@ -22,10 +24,12 @@ PAYLOAD = "<research>/d10s-test/payload_recovery_write.bin"
 READ_CHUNK = 65536
 MAIN_OFF, BACKUP_OFF = 0x2000, 0x20000
 
-if len(sys.argv) != 3:
-    print("usage: run_chain.py <toc0_img> <toc1_img>")
-    sys.exit(2)
-TOC0_IMG, TOC1_IMG = sys.argv[1], sys.argv[2]
+parser = argparse.ArgumentParser()
+parser.add_argument("--expect-config-prefix", required=True)
+parser.add_argument("toc0_img")
+parser.add_argument("toc1_img")
+args = parser.parse_args()
+TOC0_IMG, TOC1_IMG = args.toc0_img, args.toc1_img
 
 
 def sf(*a):
@@ -73,16 +77,17 @@ while time.time() < dl:
 if fb is None:
     log("no fastboot"); sys.exit(1)
 
-cfg = fb.getvar("config"); log("config: " + cfg)
-computed = "%08x" % (int(cfg[:8], 16) ^ 0xC9ACBCC6)
+try:
+    cfg = require_expected_config(fb.getvar("config"), args.expect_config_prefix)
+except ValueError as exc:
+    log(f"ABORT: {exc}; nothing written"); sys.exit(2)
+log("config verified: " + cfg[:8] + "…")
+computed = compute_dust_token(cfg)
 log(f"computed dust token = {computed}")
-for tok in [computed, "bypass"]:
-    try:
-        fb.oem("dust " + tok); log(f"unlocked (oem dust {tok})"); break
-    except Exception as e:
-        log(f"oem dust {tok} -> {e}")
-else:
-    log("ABORT: no dust token; nothing written"); sys.exit(1)
+try:
+    fb.oem("dust " + computed); log("unlocked with the config-derived token")
+except Exception as exc:
+    log(f"ABORT: config-derived dust token rejected ({exc}); nothing written"); sys.exit(1)
 
 # 1) write toc0 to boot0 main+backup via the stub
 log("downloading toc0..."); fb.download(toc0)
@@ -127,7 +132,7 @@ tag, body = fb.command("flash:toc1", timeout=120000)
 log(f"  flash returned: {tag} {body.decode('latin1','replace')}")
 if tag != "OKAY":
     log(">>> toc1 flash did NOT OKAY. Robot now has new toc0 + OLD toc1 => FEL on reboot.")
-    log("    Recover: run_chain.py <device_toc0_exact.img> <recovery_toc1.img>")
+    log("    Recover: run_chain.py --expect-config-prefix <8hex> <device_toc0> <recovery_toc1>")
     sys.exit(1)
 
 log("\n*** CHAIN WRITTEN: toc0 verified on boot0 (main+backup) + toc1 flashed OKAY. ***")

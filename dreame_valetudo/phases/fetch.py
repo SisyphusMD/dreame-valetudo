@@ -11,8 +11,8 @@ import contextlib
 import shutil
 from pathlib import Path
 
-from ..console import die
-from ..constants import STAGE1_SHA256
+from ..console import abort, die
+from ..constants import STAGE1_SHA256, VALETUDO_SHA256, VALETUDO_VERSION_DEFAULT
 from ..context import Context
 from ..download import download, valetudo_published_sha256
 from ..util import sha256_of
@@ -109,7 +109,13 @@ def fetch_valetudo(ctx: Context) -> None:
     with contextlib.suppress(OSError):
         vbin.chmod(vbin.stat().st_mode | 0o111)
     digest_stamp = vbin.with_name(f"{vbin.name}.sha256")
-    want = valetudo_published_sha256(ctx.runner, ctx.valetudo_version, ctx.profile.arch)
+    pinned = (
+        VALETUDO_SHA256.get(ctx.profile.arch)
+        if ctx.valetudo_version == VALETUDO_VERSION_DEFAULT else None
+    )
+    want = pinned or valetudo_published_sha256(
+        ctx.runner, ctx.valetudo_version, ctx.profile.arch
+    )
     if want:
         got = sha256_of(vbin)
         if got != want:
@@ -124,9 +130,8 @@ def fetch_valetudo(ctx: Context) -> None:
             temporary = digest_stamp.with_name(f"{digest_stamp.name}.tmp")
             temporary.write_text(f"{want}\n")
             temporary.replace(digest_stamp)
-        ctx.console.info(
-            f"Valetudo {ctx.valetudo_version} verified against GitHub's published digest."
-        )
+        source = "the bundled release digest" if pinned else "GitHub's published digest"
+        ctx.console.info(f"Valetudo {ctx.valetudo_version} verified against {source}.")
     else:
         try:
             cached = digest_stamp.read_text().strip()
@@ -138,10 +143,16 @@ def fetch_valetudo(ctx: Context) -> None:
             )
         else:
             ctx.console.warn(
-                f"Couldn't fetch GitHub's published digest for Valetudo {ctx.valetudo_version}/"
-                f"{ctx.profile.arch}; installing UNVERIFIED (the HTTPS download itself is "
-                "unchecked). Re-run with network access to verify."
+                f"Couldn't obtain a trusted digest for Valetudo {ctx.valetudo_version}/"
+                f"{ctx.profile.arch}. The downloaded executable is UNVERIFIED."
             )
+            if not ctx.interactive or not ctx.console.confirm(
+                "Install this unverified Valetudo binary anyway? This runs as root on the robot."
+            ):
+                vbin.unlink(missing_ok=True)
+                digest_stamp.unlink(missing_ok=True)
+                abort("Refused the unverified Valetudo binary. Re-run with network access, or use "
+                      "the pinned default Valetudo release.")
 
 
 def fetch(ctx: Context) -> None:

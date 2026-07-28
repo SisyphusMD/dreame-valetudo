@@ -115,6 +115,40 @@ grep -Eq 'DELETE .*forge\.example/api/v1/repos/SisyphusMD/dreame-valetudo/releas
   || fail "forgejo: same-named asset delete must hit /releases/<id>/assets/<id>"
 echo "  forgejo-release.sh: asset delete uses the /releases/<id>/assets/<id> URL OK"
 
+# ---- concurrent creator: lookup misses, create loses the race, second lookup must recover ----
+cat > "$tmp/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >> "$calls"
+u="\$*"
+case "\$u" in
+  *assets*)
+    case "\$u" in
+      *"attachment=@"*|*"--data-binary"*) : ;;
+      *) printf '[]\n' ;;
+    esac ;;
+  *"/releases/tags/"*)
+    key="$tmp/race-\$(printf '%s' "\$u" | shasum | cut -d' ' -f1)"
+    if [ -e "\$key" ]; then printf '{"id":777}\n'; else : > "\$key"; exit 22; fi ;;
+  *"/releases"*) exit 22 ;;
+  *) : ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/curl"
+
+: > "$calls"
+bash "$root/packaging/forgejo-release.sh" forge.example tok v9.9.8 "$notes" "$asset" \
+  >/dev/null 2>&1 || fail "forgejo did not recover when another publisher won release creation"
+grep -Eq 'releases/777/assets\?name=dreame-valetudo_amd64\.deb.*attachment=@' "$calls" \
+  || fail "forgejo did not upload through the concurrently created release"
+
+: > "$calls"
+bash "$root/packaging/github-release.sh" tok v9.9.7 "$notes" "$asset" \
+  >/dev/null 2>&1 || fail "github did not recover when another publisher won release creation"
+grep -Eq 'releases/777/assets\?name=dreame-valetudo_amd64\.deb' "$calls" \
+  || fail "github did not upload through the concurrently created release"
+echo "  concurrent release creation: failed POST -> second lookup -> upload (both forges) OK"
+
 # ---- Homebrew formula: use replicated release assets and fail closed on a broken template ----
 cat > "$tmp/curl" <<EOF
 #!/usr/bin/env bash

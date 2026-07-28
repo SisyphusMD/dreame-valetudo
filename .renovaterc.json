@@ -71,15 +71,22 @@
       "automerge": false
     },
     {
-      "description": "Valetudo is the firmware flashed to the robot. Renovate surfaces version bumps (the download self-verifies against GitHub's published digest, so there's no checksum to hand-edit), but never automerge them: a human should eye each firmware change.",
+      "description": "Valetudo is the firmware flashed to the robot. Renovate surfaces version bumps, but never automerges them because the release digests must be reviewed and updated with the version.",
       "matchDepNames": ["Hypfer/Valetudo"],
-      "automerge": false
+      "automerge": false,
+      "prBodyNotes": ["Update all `VALETUDO_SHA256` entries in `dreame_valetudo/constants.py` from the new release asset digests before merging."]
     },
     {
       "description": "sunxi-tools is the FEL transport compiled into every release and used against the robot's boot ROM, so every upstream commit requires human review.",
       "matchDepNames": ["https://github.com/linux-sunxi/sunxi-tools"],
       "automerge": false,
       "prBodyNotes": ["Review the upstream sunxi-tools commit before merging; every build channel reads this SHA from `dreame_valetudo/constants.py`."]
+    },
+    {
+      "description": "The macOS package compiles and signs tmux from its release tarball, whose digest must move with the version.",
+      "matchDepNames": ["tmux/tmux"],
+      "automerge": false,
+      "prBodyNotes": ["Update `TMUX_SHA256` in `dreame_valetudo/constants.py` from the new release tarball before merging."]
     },
     {
       "description": "CPython (the interpreter frozen into the bundle): patch bumps automerge on green; a NEW minor (e.g. 3.14 -> 3.15) is a bigger move that gets a human review.",

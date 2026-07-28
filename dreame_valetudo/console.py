@@ -93,6 +93,8 @@ def _bookmark(question: str | None) -> None:
         else:
             _BOOKMARK[0].mkdir(parents=True, exist_ok=True)
             f.write_text(question.strip() + "\n")
+            _BOOKMARK[0].chmod(0o700)
+            f.chmod(0o600)
     except OSError:
         pass  # a bookmark is a convenience; never fail a run over one
 

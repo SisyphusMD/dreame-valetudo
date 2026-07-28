@@ -55,7 +55,8 @@ while time.time() - t0 < POLL_SECONDS:
         print("     decision tree: ~3s = SPL rejected toc1; ~7s = u-boot pubkey / kernel / OP-TEE "
               "gate. (elapsed includes reboot + re-enum overhead — attach UART to confirm the gate)", flush=True)
         print("     recover to known-good Valetudo: "
-              "run_chain.py <device_toc0_exact.img> <recovery_toc1.img>", flush=True)
+              "run_chain.py --expect-config-prefix <8hex> <device_toc0_exact.img> "
+              "<recovery_toc1.img>", flush=True)
         sys.exit(1)
     if i % 5 == 0:
         code = http_up()

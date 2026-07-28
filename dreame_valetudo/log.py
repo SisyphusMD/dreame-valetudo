@@ -38,6 +38,12 @@ _HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")             # config/identity value, 
 # Device IDs are 9-10 digit ints; ≥9 catches them (and, harmlessly, big byte counts) while sparing
 # 8-digit YYYYMMDD dates / timestamps, which are useful and not sensitive.
 _LONGINT = re.compile(r"(?<![\w.])-?\d{9,}(?![\w.])")
+# A key in an explicit assignment is a credential even when it happens to be all letters or only
+# eight digits. Match the context before the generic high-entropy rule so ordinary words and dates
+# elsewhere remain useful diagnostics.
+_MIKEY_ASSIGNMENT = re.compile(
+    r"(\b(?:mi_?key|key)\s*[:=]\s*)([A-Za-z0-9]{8,64})\b", re.IGNORECASE
+)
 # The robot's miio device key (device.conf `key=`, push.py's _MIKEY_RE: [A-Za-z0-9]{8,64}). Its
 # mixed letters+digits dodge both _HEX (non-hex letters) and _LONGINT (has letters), so it needs its
 # own rule. Constrained to tokens carrying BOTH a letter and a digit — the high-entropy shape of a
@@ -76,6 +82,7 @@ def scrub(text: str, home: Path | None = None) -> str:
     text = _SSH_PUB.sub(mask_public_key, text)
     text = _EMAIL.sub("<redacted-email>", text)
     text = _DUST_COMMAND.sub(r"\1<redacted-id>", text)
+    text = _MIKEY_ASSIGNMENT.sub(r"\1<redacted-id>", text)
     text = _HEX.sub("<redacted-id>", text)
     text = _LONGINT.sub("<redacted-id>", text)
     text = _MIKEY.sub(_mask_mikey, text)

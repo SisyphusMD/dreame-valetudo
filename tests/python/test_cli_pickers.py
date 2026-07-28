@@ -142,6 +142,25 @@ def test_model_command_refuses_after_rooting(make_ctx: CtxFactory) -> None:
         _dispatch("model", [], ctx)
 
 
+def test_model_command_disarms_firmware_staged_for_the_previous_model(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(env={"DREAME_ROBOT": "bench"}, asks=["1"])
+    robot = Robot(ctx.ws.robots_dir / "bench")
+    robot.state_set("model_key", "d10s-pro")
+    robot.state_set("image", "model=d10s-pro from old.zip sha256=old")
+    robot.fw_dir.mkdir(parents=True)
+    (robot.fw_dir / "rootfs.img").write_bytes(b"old d10s firmware")
+
+    _dispatch("model", [], ctx)
+
+    assert ctx.profile.key == "x40-ultra"
+    assert robot.state_get("model_key") == "x40-ultra"
+    assert not robot.state_has("image")
+    assert "model=d10s-pro" in "\n".join(robot.image_provenance())
+    assert "previously staged firmware was disarmed" in ctx.console.text()
+
+
 def test_select_model_rejects_unicode_digits(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["²"])  # superscript-2: str.isdigit() true, int() would crash
     with pytest.raises(Die, match="Invalid choice"):

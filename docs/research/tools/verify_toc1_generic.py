@@ -11,7 +11,7 @@ apply unchanged to the D10S Plus (r2240), whose toc1 layout is byte-for-byte ide
 (A) internal validity: for each of the 7 certs, RSA-verify its self-signature over its TBS;
     confirm the 6 content-key moduli are pinned in the rootkey cert; confirm the 4 embedded
     binaries' SHA-256s match the hashes stored in their certs; confirm the header add_sum.
-    boot0 would accept the image IFF the per-unit eFuse ROTPK is unburned.
+    these static checks cannot establish whether boot0 or the per-unit eFuse will accept the image.
 (B) byte-equivalence: classify every differing byte between input and re-signed as either
     inside the crypto-variable fields (expected) or outside them (must be zero).
 
@@ -100,7 +100,7 @@ def verify_internal(buf, label):
     stored = struct.unpack_from("<I", buf, 20)[0]
     print(f"  header add_sum .......................... {'OK' if calc == stored else 'FAIL'} (0x{stored:08x})")
     ok &= calc == stored
-    print(f"  => image {'VALID (boot0 would accept if fuse unburned)' if ok else 'INVALID'}")
+    print(f"  => image {'STATIC CHECKS PASS (hardware acceptance unknown)' if ok else 'INVALID'}")
     return ok
 
 # ---- (B) byte-equivalence-except-crypto ------------------------------------

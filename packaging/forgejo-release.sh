@@ -21,9 +21,14 @@ rel_wait_for_tag "$api/tags/$tag" || { echo "tag $tag never appeared on $host" >
 pre=false; case "$tag" in *-*) pre=true ;; esac
 id="$(rel_release_id "$api/releases" "$tag")"
 if [ -z "$id" ]; then
-  id=$(curl -fsS "${auth[@]}" -H "Content-Type: application/json" \
-    -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,prerelease:$pre}')" \
-    "$api/releases" | jq -r .id)
+  if created=$(curl -fsS "${auth[@]}" -H "Content-Type: application/json" \
+      -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,prerelease:$pre}')" \
+      "$api/releases"); then
+    id=$(jq -r .id <<<"$created")
+  else
+    # Another publisher can create the same release after our lookup but before this POST.
+    id="$(rel_release_id "$api/releases" "$tag")"
+  fi
 fi
 [ -n "$id" ] && [ "$id" != "null" ] || { echo "could not create/find release for $tag on $host" >&2; exit 1; }
 echo "release id on $host: $id"

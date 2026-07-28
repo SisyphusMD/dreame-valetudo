@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dreame_valetudo.installs import find_installs
 
 
@@ -54,11 +56,24 @@ def test_a_pkg_that_predates_the_uninstaller_says_so_instead_of_failing(tmp_path
 def test_deb_and_rpm_share_a_path_so_the_remover_follows_the_system(tmp_path: Path) -> None:
     _mk(tmp_path, "usr/lib/dreame-valetudo")
     rpm = next(i for i in find_installs({"HOME": str(tmp_path)}, tmp_path) if "package" in i.kind)
-    assert rpm.kind == ".rpm package" and "dnf" in rpm.removal
+    assert rpm.kind == ".rpm package" and rpm.removal == ["sudo", "rpm", "-e", "dreame-valetudo"]
     _mk(tmp_path, "usr/bin")
     (tmp_path / "usr/bin/apt-get").write_text("")
     deb = next(i for i in find_installs({"HOME": str(tmp_path)}, tmp_path) if "package" in i.kind)
     assert deb.kind == ".deb package" and "apt-get" in deb.removal
+
+
+@pytest.mark.parametrize("manager", ["zypper", "dnf", "yum"])
+def test_rpm_removal_uses_the_native_package_manager(tmp_path: Path, manager: str) -> None:
+    _mk(tmp_path, "usr/lib/dreame-valetudo", "usr/bin")
+    (tmp_path / "usr/bin" / manager).write_text("")
+    package = next(
+        install
+        for install in find_installs({"HOME": str(tmp_path)}, tmp_path)
+        if install.kind == ".rpm package"
+    )
+    assert package.removal[1] == manager
+    assert package.removal[-1] == "dreame-valetudo"
 
 
 def test_brew_and_pkg_together_are_both_reported(tmp_path: Path) -> None:

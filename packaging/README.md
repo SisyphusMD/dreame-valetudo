@@ -16,8 +16,10 @@ Both `.deb` arches are built on the Forgejo runner through **buildx** (`packagin
 runner is a Talos node with no usable host binfmt for a plain `docker run --platform arm64`. nfpm
 then packages the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
 runs after every release and fans every asset out to all three registries (Forgejo, NAS, GitHub),
-backfilling any historical gap — assets are produced in two places (`.deb`/tarball on Forgejo, `.pkg`
-on GitHub), so a registry can otherwise fall behind. `brew install sisyphusmd/tap/dreame-valetudo-rc`
+backfilling any historical gap after two registries agree on the asset's SHA-256. It never trusts
+a filename or size alone, and ignores anything outside the exact release artifact matrix. Assets
+are produced in two places (`.deb`/tarball on Forgejo, `.pkg` on GitHub), so the quorum is available
+without making one registry authoritative. `brew install sisyphusmd/tap/dreame-valetudo-rc`
 installs the newest candidate for hardware testing without touching the stable formula.
 
 ## How a release flows
@@ -37,8 +39,9 @@ installs the newest candidate for hardware testing without touching the stable f
    Mac): a 2-leg matrix builds the **signed + notarized `.pkg` for arm64 AND x86_64**, then a
    `publish` job appends **both** to the **GitHub** and **public-Forgejo** releases.
 4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg`s on the public
-   Forgejo release, then walks **every** tag and (re)publishes the union of assets to all three
-   registries — bridging the `.pkg`s to the NAS and healing any gap left by a failed run or outage.
+   Forgejo release, then walks **every** tag, hashes each recognized copy, and repairs a missing or
+   dissenting registry only when the other two have identical content. Without a two-registry
+   quorum it warns and changes nothing.
 
 The release helpers are idempotent (create-or-reuse + replace assets), so the forges can write the
 same release in any order, and the reconcile job can safely re-run them. Every release and its assets

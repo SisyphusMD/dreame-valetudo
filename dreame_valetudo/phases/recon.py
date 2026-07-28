@@ -8,17 +8,24 @@ disaster-recovery backup.
 from __future__ import annotations
 
 import re
-import zipfile
 
 from ..console import Die, die, warn_if_low_disk
 from ..constants import RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry
+from ..hazards import requires_positive_model_verification
 from ..migrate import decrypt_recovery_backup
 from ..profiles import SUPPORTED_MODELS, Profile, load_profile
 from ..session import records_step
 from ..util import parse_config, parse_getvar
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace, protect_recon_artifacts
+from ..workspace import (
+    RECOVERY_BACKUP_ZIP,
+    Robot,
+    Workspace,
+    protect_recon_artifacts,
+    recovery_dump_valid,
+    recovery_zip_valid,
+)
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 
@@ -90,10 +97,18 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
                for code in {profile.model_code, profile.dust_code}):
             found[profile.key] = profile
     if not found:
+        if not ctx.interactive and requires_positive_model_verification(ctx.profile.key):
+            die(f"SAFETY STOP: {ctx.profile.model} requires a positive hardware-revision match, "
+                "but this bootloader did not report a recognisable model. Re-run interactively "
+                "and verify the physical label before flashing.")
         ctx.console.info("This bootloader does not report a recognisable model, so the chosen "
                          "model could not be verified.")
         return
     if len(found) != 1:
+        if not ctx.interactive and requires_positive_model_verification(ctx.profile.key):
+            die(f"SAFETY STOP: {ctx.profile.model} requires a positive hardware-revision match, "
+                "but this bootloader reported ambiguous model identifiers. Re-run interactively "
+                "and verify the physical label before flashing.")
         ctx.console.info("This bootloader reports ambiguous model identifiers, so the chosen "
                          "model could not be verified.")
         return
@@ -229,10 +244,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     protect_recon_artifacts(robot.recon_dir)
-    robot.state_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
     protect_recon_artifacts(robot.recon_dir)
-    (robot.state_dir / "model_key").write_text(f"{ctx.profile.key}\n")
+    robot.state_set("model_key", ctx.profile.key)
     # A pending name describes the empty directory made by "start fresh", not the hardware:
     # discovering that the hardware already belongs to another directory must not rename it.
     if ctx.pending_name and existing is None:
@@ -268,7 +282,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                 ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
                                  "recovery backup was saved.")
 
-    robot.state_set("recon", f"config={cfg} backup={backup_state}")
+    robot.state_set("recon", f"backup={backup_state}")
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")
@@ -298,9 +312,7 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
                 ctx.fastboot.fbt("oem", f"stage{index}")
     except Exception:
         return False
-    # A staged blob that came back empty (or missing) is a hollow backup — refuse to pass it off
-    # as a recovery copy even if every command reported OKAY.
-    if any(not dump.is_file() or dump.stat().st_size == 0 for dump in dumps):
+    if any(not recovery_dump_valid(dump) for dump in dumps):
         return False
     # Record the pulled sizes (MiB survives the log scrubber; a raw byte count would be redacted)
     # so a shared run log shows the backup is real, without needing the workspace on hand.
@@ -315,14 +327,7 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
         ).ok
     if not zipped:
         return False
-    try:
-        with zipfile.ZipFile(zip_path) as archive:
-            members = archive.infolist()
-    except (OSError, zipfile.BadZipFile):
-        return False
-    if (tuple(member.filename for member in members) != tuple(path.name for path in dumps)
-            or tuple(member.file_size for member in members)
-            != tuple(path.stat().st_size for path in dumps)):
+    if not recovery_zip_valid(zip_path):
         return False
     ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
                      "rejects your config)")
