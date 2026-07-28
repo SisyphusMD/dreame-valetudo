@@ -69,7 +69,7 @@ def _recovery_capture(
     struct.pack_into("<I", header, 8, 0x00010000)
     struct.pack_into("<I", header, 12, 92)
     struct.pack_into("<QQQQ", header, 24, 1, _DISK_BYTES // 512 - 1, 34, _DISK_BYTES // 512 - 34)
-    header[56:72] = bytes.fromhex("ffeeddccbbaa99887766554433221100")
+    header[56:72] = bytes.fromhex("00112233445566778899aabbccddeeff")
     struct.pack_into("<QIII", header, 72, 2, 12, 128, zlib.crc32(entries) & 0xFFFFFFFF)
     struct.pack_into("<I", header, 16, zlib.crc32(header[:92]) & 0xFFFFFFFF)
     disk[512:1024] = header
