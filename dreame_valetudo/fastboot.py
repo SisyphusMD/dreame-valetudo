@@ -35,9 +35,8 @@ _SYSTEM_LIBEXEC = (
 
 
 def _libexec_candidates(env: Mapping[str, str]) -> list[Path]:
-    """Ordered dirs that may hold the helpers (fastboot-libusb.py, dreame-fastboot, sunxi-fel,
-    dustbuilder-form.sig): DREAME_LIBEXEC, the PyInstaller bundle root, the package/source dir,
-    then the installed system prefixes."""
+    """Ordered dirs that may hold helpers/data: DREAME_LIBEXEC, the PyInstaller bundle root,
+    the package/source dir, then the installed system prefixes."""
     pkg = Path(__file__).resolve().parent
     cands: list[Path] = []
     override = env.get("DREAME_LIBEXEC")

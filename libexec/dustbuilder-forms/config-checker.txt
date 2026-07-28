@@ -1,0 +1,57 @@
+input	type=text	name=sn	value=	maxlength=30	checked=no
+input	type=text	name=configvalue	value=	maxlength=32	checked=no
+input	type=text	name=toc0value	value=	maxlength=32	checked=no
+input	type=text	name=toc1value	value=	maxlength=32	checked=no
+input	type=radio	name=type	value=S8	checked=no	label=S8
+input	type=radio	name=type	value=S8PU	checked=no	label=S8 Pro Ultra
+input	type=radio	name=type	value=R2104	checked=no	label=W10 Pro
+input	type=radio	name=type	value=R2228	checked=no	label=L10S Ultra
+input	type=radio	name=type	value=R2240	checked=no	label=D10S Plus
+input	type=radio	name=type	value=R2250	checked=no	label=D10S Pro
+input	type=radio	name=type	value=R2240	checked=no	label=D10S Plus
+input	type=radio	name=type	value=R2338	checked=no	label=L10S Pro Ultra Heat
+input	type=radio	name=type	value=R2394	checked=no	label=L20 (MR813) Ultra
+input	type=radio	name=type	value=R9316	checked=no	label=X30 Ultra
+input	type=radio	name=type	value=R2492	checked=no	label=L40 Ultra
+input	type=radio	name=type	value=R2416	checked=no	label=X40 Ultra
+input	type=radio	name=type	value=R2465	checked=no	label=X40 Master
+input	type=radio	name=type	value=R2385	checked=no	label=MOVA S20 Ultra
+input	type=radio	name=type	value=R2491	checked=no	label=MOVA P10 Pro Ultra
+input	type=file	name=file	required=yes	checked=no
+input	type=submit	value=Upload File	checked=no
+link=https://builder.dontvacuum.me/nextgen/	label=these PDFs
+text=Dust Checker
+text=Upload dustbuilder felroot samples
+text=Privacy Warning:
+text=The data you're about to upload could contain chunks and bits of sensitive information like Wi-Fi SSIDs, passwords and camera frames.
+text=Obviously, we dislike that as much as you probably do, given that this kind of stuff is why we started doing what we do in the first place.
+text=Still, if you do not trust us to handle it responsibly, please do not proceed with the upload.
+text=Also, please keep in mind that this is a service to you run by two people volunteering in their free time, free of charge and with the only goal of enabling you rooting your device. We do not need this to root our own robots, nor do we gain anything from it other than more work.
+text=After uploading the files, it should take up to 24 hours until they are processed. If the config value is still rejected, please send us an email.
+text=To: check[at]dontvacuum.me
+text=Subject: config
+text=Body: your model number (e.g. r1234), your config value, the last 6 digits of your serial number
+text=Upload your zip here, see
+text=these PDFs
+text=on how to create it.
+text=Device Serial number (check under the dustbin):
+text=Config value ("fastboot getvar config"):
+text=toc0hash value ("fastboot getvar toc0hash"):
+text=toc1hash value ("fastboot getvar toc1hash"):
+text=S8
+text=S8 Pro Ultra
+text=W10 Pro
+text=L10S Ultra
+text=D10S Plus
+text=D10S Pro
+text=D10S Plus
+text=L10S Pro Ultra Heat
+text=L20 (MR813) Ultra
+text=X30 Ultra
+text=L40 Ultra
+text=X40 Ultra
+text=X40 Master
+text=MOVA S20 Ultra
+text=MOVA P10 Pro Ultra
+text=Choose File (must be zip file!, Max 1536 MByte):
+text=0%

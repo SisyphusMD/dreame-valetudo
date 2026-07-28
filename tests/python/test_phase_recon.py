@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -433,7 +434,9 @@ def _sampling_responder(*, blob: bytes) -> Callable[[tuple[str, ...]], Result]:
             Path(str(argv[-1])).write_bytes(blob)
             return Result(argv, 0, f"OKAY uploaded {len(blob)} bytes", "")
         if argv[:1] == ("zip",):
-            Path(argv[3]).write_bytes(b"recovery archive")
+            with zipfile.ZipFile(argv[3], "w", compression=zipfile.ZIP_STORED) as archive:
+                for source in argv[4:]:
+                    archive.write(source, arcname=Path(source).name)
             return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")
 
@@ -495,8 +498,11 @@ def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> No
         ("wait", "90"),
         ("getvar", "config"),
         ("getvar", "serialno"),
+        ("getvar", "dustversion"),
+        ("getvar", "ramsize"),
         ("getvar", "toc0hash"),
         ("getvar", "toc1hash"),
+        ("getvar", "toc1version"),
         ("getvar", "product"),
         ("getvar", "model"),
         ("getvar", "variant"),
@@ -525,6 +531,26 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
         stat.S_IMODE(path.stat().st_mode) == 0o600
         for path in robot.recon_dir.glob("dustx*.bin")
     )
+
+
+def test_recon_refuses_a_zip_that_does_not_contain_all_three_exact_samples(
+    make_ctx: CtxFactory,
+) -> None:
+    base = _sampling_responder(blob=b"sample")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] != ("zip",):
+            return base(argv)
+        with zipfile.ZipFile(argv[3], "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.write(argv[4], arcname=Path(argv[4]).name)  # omits dustx101 + dustx102
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=True)
+
+    assert ctx.need_robot().state_get("recon") == f"config={_CFG} backup=missing"
+    assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
 def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> None:

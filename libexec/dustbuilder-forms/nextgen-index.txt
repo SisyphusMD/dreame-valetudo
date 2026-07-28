@@ -1,0 +1,2 @@
+link=dreame_gen3.pdf	label=How-To (PDF) for Dreame L10s Ultra, D10s Pro, D10s Plus
+link=fastboot-cheatcheat.txt	label=Cheatsheet with commands
