@@ -14,7 +14,14 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
-from dreame_valetudo.phases.fixes import _DIAGNOSE_REMOTE, diagnose, fix_did, fix_impl, fix_key
+from dreame_valetudo.phases.fixes import (
+    _DIAGNOSE_REMOTE,
+    diagnose,
+    fix_did,
+    fix_impl,
+    fix_key,
+    fix_wifi,
+)
 from dreame_valetudo.run import Result
 
 
@@ -29,6 +36,15 @@ def _reachable_dreame(argv: tuple[str, ...]) -> Result | None:
     if cmd == "true" or cmd == "test -d /mnt/private/ULI/factory":
         return Result(argv, 0, "", "")
     return None
+
+
+def test_fix_wifi_preserves_the_official_reset_command(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    fix_wifi(ctx)
+    output = ctx.console.text()  # type: ignore[attr-defined]
+    assert "rm -f /data/config/miio/wifi.conf /data/config/wifi/wpa_supplicant.conf" in output
+    assert "/var/run/wpa_supplicant.conf;" in output
+    assert 'dreame_release.na -c 9 -i ap_info -m " "; reboot' in output
 
 
 def test_fix_refuses_a_missing_env_override_before_ssh(

@@ -24,8 +24,10 @@
 - **fix**: installed RPM builds now give native update and uninstall commands for zypper, dnf, yum,
   or rpm instead of Debian-only advice.
 - **test**: weekly CI now compares all 13 fastboot models, implementation identities, binary
-  architectures, Secure Boot methods, and the ordered rooting procedure against the latest
-  official Valetudo source. This monitor never runs in or blocks the local rooting flow.
+  architectures, DDR choices, Secure Boot methods, look-alike warnings, model-specific recovery
+  notes, and the ordered rooting procedure against the latest official Valetudo source. Recon and
+  flash transcripts are exercised independently for every fastboot profile. This monitor never
+  runs in or blocks the local rooting flow.
 - **fix**: a changed stage1 archive pin now invalidates and atomically replaces the unpacked FEL
   payload, so a successfully verified new download can never be paired with stale boot files.
 - **fix**: legacy recovery-image decryption now streams and memory-maps the multi-gigabyte inputs

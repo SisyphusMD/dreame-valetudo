@@ -22,6 +22,7 @@ from dreame_valetudo.constants import (
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
+from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
@@ -91,8 +92,23 @@ def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
             if c[:2] == FB and len(c) > 3 and c[2] in ("oem", "flash")]
 
 
-def test_root_happy_path_flashes_in_order_and_marks_rooted(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+@pytest.mark.parametrize(
+    "model",
+    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+)
+def test_each_fastboot_model_follows_the_official_root_contract(
+    make_ctx: CtxFactory, model: str,
+) -> None:
+    profile = load_profile(model)
+    confirmations = [True, True] if (
+        model.startswith("l10s-pro-ultra-heat") or model == "l20-ultra"
+    ) else [True]
+    ctx = make_ctx(
+        model=model,
+        robot_name=f"{profile.model_code}-{_CFG[:12]}",
+        responder=_ok_responder(),
+        confirms=confirmations,
+    )
     _stage_image(ctx)
     _write_recon(ctx)
     root(ctx)

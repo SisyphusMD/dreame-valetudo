@@ -538,7 +538,13 @@ def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory)
 def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> None:
     """A W10-Pro-style unit with an empty key.txt gets it materialized from secure storage — and
     the secret is STREAMED over stdin, never placed on a command line."""
-    ctx = _ctx(make_ctx)
+    ctx = make_ctx(
+        model="w10-pro",
+        robot_name=f"r2104-{_CFG[:12]}",
+        confirms=[True],
+    )
+    ctx.need_robot().recon_dir.mkdir(parents=True)
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
     _valetudo_bin(ctx)
     streamed: list[str] = []
     backup_redirect = _redirect()
@@ -548,7 +554,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
         if cmd == "test -d /mnt/private/ULI/factory":
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
-            return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
+            return Result(argv, 0, f"model=dreame.vacuum.r2104\ndid=12345\n"
                                   f"factory_config=config: {_CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty: cloudKey only in secure storage
@@ -570,6 +576,25 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
     assert any("key_orig.txt" in r for r in remotes)          # the key-restore write ran
     assert "A1b2C3d4E5f6G7h8" in streamed                     # key was streamed over stdin
     assert not any("A1b2C3d4E5f6G7h8" in r for r in remotes)  # and never on a command line
+
+
+def test_heat_model_prints_the_official_mcu_resync_guidance(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(
+        model="l10s-pro-ultra-heat",
+        robot_name=f"r2338-{_CFG[:12]}",
+        confirms=[True],
+    )
+    ctx.need_robot().recon_dir.mkdir(parents=True)
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text(model="dreame.vacuum.r2338")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+    output = ctx.console.text()  # type: ignore[attr-defined]
+    assert "won't DOCK" in output
+    assert "manual installation" in output
+    assert "resync the MCU" in output
 
 
 def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFactory) -> None:

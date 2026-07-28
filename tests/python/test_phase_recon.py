@@ -22,9 +22,11 @@ from dreame_valetudo.phases.recon import (
     read_identity_from_robot,
     recon,
 )
+from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, Robot
+from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 _CFG = "abcdef0123456789abcdef0123456789"
 
@@ -116,20 +118,56 @@ def _responder(cfg: str = _CFG) -> object:
     return responder
 
 
-def test_recon_ddr3_model_boots_the_ddr3_fsbl(make_ctx: CtxFactory) -> None:
-    # Every other recon test uses a ddr4 model; pin that a ddr3 model selects fsbl_ddr3.bin (the
-    # wrong FSBL is a brick risk). D10s Plus is fastboot + ddr3.
-    ctx = make_ctx(model="d10s-plus", responder=_responder())
+@pytest.mark.parametrize(
+    "model",
+    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+)
+def test_each_fastboot_model_follows_the_official_recon_contract(
+    make_ctx: CtxFactory, model: str,
+) -> None:
+    ctx = make_ctx(model=model, responder=_responder())
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")
+    expected_dram = "ddr3" if model in DDR3_MODEL_KEYS else "ddr4"
+    expected_fsbl = f"fsbl_{expected_dram}.bin"
+    (ctx.ws.dist / expected_fsbl).write_text("f")
     (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
-    assert ctx.fsbl_name == "fsbl_ddr3.bin"
+    assert ctx.profile.dram == expected_dram
+    assert ctx.fsbl_name == expected_fsbl
     recon(ctx, recovery_backup=False)
-    sunxi_writes = [" ".join(str(a) for a in c) for c in ctx.runner.calls  # type: ignore[attr-defined]
-                    if any("sunxi-fel" in str(a) for a in c) and "write" in c]
-    assert any("fsbl_ddr3.bin" in w for w in sunxi_writes)
-    assert not any("fsbl_ddr4.bin" in w for w in sunxi_writes)
+    sunxi_ops = [
+        call[1:]
+        for call in ctx.runner.calls  # type: ignore[attr-defined]
+        if "sunxi-fel" in call[0] and call[1] in {"write", "exe"}
+    ]
+    assert sunxi_ops == [
+        ("write", ctx.profile.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
+        ("exe", ctx.profile.fsbl_addr),
+        ("write", ctx.profile.payload_addr, str(ctx.ws.dist / "payload.bin")),
+        ("exe", ctx.profile.payload_addr),
+    ]
+
+    fastboot_calls = [
+        call[len(FB):]
+        for call in ctx.runner.calls  # type: ignore[attr-defined]
+        if call[:len(FB)] == FB
+    ]
+    assert fastboot_calls == [
+        ("devices",),
+        ("wait", "90"),
+        ("getvar", "config"),
+        ("getvar", "serialno"),
+        ("getvar", "dustversion"),
+        ("getvar", "ramsize"),
+        ("getvar", "toc0hash"),
+        ("getvar", "toc1hash"),
+        ("getvar", "toc1version"),
+        ("getvar", "product"),
+        ("getvar", "model"),
+        ("getvar", "variant"),
+        ("getvar", "hw-revision"),
+        ("getvar", "version-bootloader"),
+    ]
 
 
 def test_standalone_recon_revalidates_a_stale_sunxi_cache(
