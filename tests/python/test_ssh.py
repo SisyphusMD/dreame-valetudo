@@ -35,6 +35,15 @@ def test_robot_ssh_never_falls_back_to_a_password_prompt() -> None:
     assert argv[option - 1] == "-o"
 
 
+def test_explicit_robot_key_is_the_only_identity_offered() -> None:
+    argv = ssh_base("root@192.168.5.1", "/keys/robot")
+    assert argv[argv.index("/dev/null") - 1] == "-F"
+    assert argv[argv.index("IdentitiesOnly=yes") - 1] == "-o"
+    assert argv[argv.index("IdentityAgent=none") - 1] == "-o"
+    assert argv[argv.index("IdentityFile=none") - 1] == "-o"
+    assert argv[argv.index("/keys/robot") - 1] == "-i"
+
+
 @pytest.mark.parametrize(
     ("stderr", "message"),
     [
@@ -77,6 +86,37 @@ def test_recorded_pointer_wins_over_default_key(tmp_path: Path) -> None:
     ws.mkdir()
     (ws / "sshkey.path").write_text("/recorded/key\n")
     assert resolve_sshkey({}, home, ws) == Path("/recorded/key")
+
+
+def test_robot_recorded_key_wins_over_the_later_workspace_choice(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    first = _keypair(tmp_path / "keys", "first")
+    second = _keypair(tmp_path / "keys", "second")
+    robot_a = make_ctx(robot_name="r2416-a", env={"DREAME_SSHKEY": str(first)})
+    robot_b = make_ctx(robot_name="r2416-b", env={"DREAME_SSHKEY": str(second)})
+
+    assert choose_sshkey(robot_a) == first
+    assert choose_sshkey(robot_b) == second
+    assert (robot_a.ws.base / "sshkey.path").read_text().strip() == str(second)
+    assert resolve_sshkey({}, robot_a.home, robot_a.ws.base, robot_a.need_robot()) == first
+    assert resolve_sshkey({}, robot_b.home, robot_b.ws.base, robot_b.need_robot()) == second
+
+    resumed_a = make_ctx(robot_name="r2416-a")
+    assert choose_sshkey(resumed_a) == first
+    assert (resumed_a.ws.base / "sshkey.path").read_text().strip() == str(first)
+
+
+def test_new_robot_persists_the_inherited_workspace_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    inherited = _keypair(tmp_path / "keys", "inherited")
+    ctx = make_ctx(robot_name="r2416-new")
+    ctx.ws.base.mkdir(parents=True, exist_ok=True)
+    (ctx.ws.base / "sshkey.path").write_text(str(inherited) + "\n")
+
+    assert choose_sshkey(ctx) == inherited
+    assert ctx.need_robot().state_get("sshkey") == str(inherited)
 
 
 def test_prefers_existing_default_key_when_no_pointer(tmp_path: Path) -> None:
@@ -180,10 +220,11 @@ def _recorded(ctx: object) -> str:
 
 def test_choose_sshkey_override_needs_no_prompt_but_persists(make_ctx: CtxFactory, tmp_path: Path) -> None:
     key = _keypair(tmp_path, "myid")
-    ctx = make_ctx(env={"DREAME_SSHKEY": str(key)})
+    ctx = make_ctx(env={"DREAME_SSHKEY": str(key)}, robot_name="r2416-test")
     assert choose_sshkey(ctx) == key
     assert not _kg(ctx)
     assert _recorded(ctx) == str(key)  # recorded so a later push WITHOUT the env resolves the same key
+    assert ctx.need_robot().state_get("sshkey") == str(key)
 
 
 def test_choose_sshkey_override_never_replaces_private_only_key(
@@ -224,6 +265,8 @@ def test_choose_sshkey_interactive_use_existing_key(make_ctx: CtxFactory, tmp_pa
     assert key == home / ".ssh" / "id_ed25519"
     assert not _kg(ctx)                 # existing key -> nothing generated
     assert _recorded(ctx) == str(key)
+    assert "deleting" not in ctx.console.text()  # type: ignore[attr-defined]
+    assert "DREAME_SSHKEY" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_choose_sshkey_interactive_generate_dedicated(make_ctx: CtxFactory, tmp_path: Path) -> None:

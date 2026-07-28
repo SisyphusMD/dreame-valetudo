@@ -72,6 +72,40 @@ def test_main_unknown_command_returns_1(tmp_path: Path) -> None:
     assert _has(con, "Unknown command")
 
 
+def test_fix_wifi_prints_without_forcing_a_robot_selection(tmp_path: Path) -> None:
+    Robot(tmp_path / "robots" / "one").state_set("model_key", "x40-ultra")
+    Robot(tmp_path / "robots" / "two").state_set("model_key", "x30-ultra")
+    con = ScriptedConsole()
+
+    assert main(
+        ["fix-wifi"], env={"DREAME_WORK": str(tmp_path)},
+        console=con, runner=RecordingRunner(),
+    ) == 0
+    assert _has(con, "rooted robot won't stay on your Wi-Fi")
+    assert not _has(con, "Which robot")
+
+
+@pytest.mark.parametrize("command", ("diagnose", "fix-impl", "fix-did", "fix-key"))
+def test_post_root_ssh_commands_select_the_robot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+) -> None:
+    robot = Robot(tmp_path / "robots" / "kitchen")
+    robot.state_set("model_key", "x30-ultra")
+    selected: list[str] = []
+
+    def capture(ctx: object) -> bool:
+        selected.append(ctx.robot.work.name)  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(cli, command.replace("-", "_"), capture)
+    assert main(
+        [command],
+        env={"DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "kitchen"},
+        console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == 0
+    assert selected == ["kitchen"]
+
+
 def test_main_invalid_model_is_clean_error_not_traceback(tmp_path: Path) -> None:
     con = ScriptedConsole()
     env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "no-such-model"}

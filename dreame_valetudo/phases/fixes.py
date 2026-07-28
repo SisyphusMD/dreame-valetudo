@@ -39,7 +39,7 @@ def _write_shareable_report(ctx: Context, path: Path, lines: list[str], *, title
 
 
 def _key(ctx: Context) -> Path | None:
-    k = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base)
+    k = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, ctx.robot)
     if Path(k).is_file():
         ctx.console.info(f"SSH key: {k}")
         return k

@@ -283,7 +283,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     (so the caller can print Phase-3 guidance instead of aborting the whole run)."""
     robot = ctx.need_robot()
     if key is None:
-        resolved = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base)
+        resolved = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, robot)
         if ctx.env.get("DREAME_SSHKEY") and not Path(resolved).is_file():
             die(f"SSH key not found: {resolved} (from DREAME_SSHKEY).")
         key = resolved if Path(resolved).is_file() else None
