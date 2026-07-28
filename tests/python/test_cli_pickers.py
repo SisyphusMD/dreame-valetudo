@@ -61,6 +61,32 @@ def test_summary_does_not_invent_a_model(make_ctx: CtxFactory) -> None:
     assert _summary(robot).startswith("model not chosen yet")
 
 
+def test_robot_picker_can_resume_a_known_robot_beside_an_unknown_one(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(asks=["2"])
+    unknown = Robot(ctx.ws.robots_dir / "a-newer-robot")
+    unknown.state_set("model_key", "x50-ultra")
+    known = Robot(ctx.ws.robots_dir / "b-known-robot")
+    known.state_set("model_key", "d10s-plus")
+
+    select_robot(ctx)
+
+    assert ctx.robot == known
+    assert ctx.profile.key == "d10s-plus"
+    assert "unknown model 'x50-ultra'" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_robot_picker_refuses_only_the_selected_unknown_model(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["1"])
+    unknown = Robot(ctx.ws.robots_dir / "future-robot")
+    unknown.set_display_name("Future Robot")
+    unknown.state_set("model_key", "x50-ultra")
+
+    with pytest.raises(Die, match=r"Future Robot.*future-robot.*x50-ultra.*Upgrade"):
+        select_robot(ctx)
+
+
 def test_back_from_name_returns_to_robot_picker(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["2", "b", "1"])
     prior = Robot(ctx.ws.robots_dir / "prior")

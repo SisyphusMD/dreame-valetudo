@@ -114,7 +114,7 @@ def test_poll_fel_returns_true_once_the_soc_answers() -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         seen["n"] += 1
         if seen["n"] < 3:
-            return Result(argv, 0, "", "usb device not found")
+            return Result(argv, 1, "", "usb device not found")
         return Result(argv, 0, "AWUSBFEX soc=00001855(H616)", "")
 
     fel, _ = _fel(responder)
@@ -129,7 +129,7 @@ def test_poll_fel_does_not_give_up_while_attached(monkeypatch: pytest.MonkeyPatc
         calls += 1
         if calls == 4:
             return Result(argv, 0, "AWUSBFEX soc=00001855(H616)", "")
-        return Result(argv, 0, "", "usb device not found")
+        return Result(argv, 1, "", "usb device not found")
 
     console.idle_timeout(1.0, lambda: True)
     monkeypatch.setattr("dreame_valetudo.fel.time.monotonic", lambda: calls * 100.0)
@@ -150,7 +150,7 @@ def test_poll_fel_gives_up_after_the_detached_idle_timeout(
     def responder(argv: tuple[str, ...]) -> Result:
         nonlocal calls
         calls += 1
-        return Result(argv, 0, "", "usb device not found")
+        return Result(argv, 1, "", "usb device not found")
 
     console.idle_timeout(2.0, lambda: False)
     monkeypatch.setattr("dreame_valetudo.fel.time.monotonic", lambda: float(calls))
@@ -173,7 +173,7 @@ def test_poll_fel_does_not_give_up_when_attachment_is_unknown(
         calls += 1
         if calls == 4:
             return Result(argv, 0, "AWUSBFEX soc=00001855(H616)", "")
-        return Result(argv, 0, "", "usb device not found")
+        return Result(argv, 1, "", "usb device not found")
 
     console.idle_timeout(1.0, lambda: None)
     monkeypatch.setattr("dreame_valetudo.fel.time.monotonic", lambda: calls * 100.0)
@@ -225,3 +225,25 @@ def test_a_linux_loader_failure_is_caught_too() -> None:
     fel, _ = _fel(lambda a: Result(a, 127, "", ldso))
     with pytest.raises(Die):
         fel.poll_fel()
+
+
+def test_poll_fel_keeps_waiting_after_a_permission_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = 0
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return Result(
+                argv, 1, "", "ERROR: You don't have permission to access Allwinner USB FEL device",
+            )
+        return Result(argv, 0, "AWUSBFEX soc=00001855(H616)", "")
+
+    fel, _ = _fel(responder)
+    assert fel.poll_fel() is True
+    assert calls == 2
+    output = capsys.readouterr().out
+    assert "USB permission error" in output
+    assert "FEL up: ERROR" not in output

@@ -71,6 +71,17 @@ def test_rename_picks_from_a_list_when_no_args(make_ctx: CtxFactory) -> None:
     assert (ctx.ws.robots_dir / "renamed").is_dir()
 
 
+def test_rename_picker_tolerates_an_unknown_saved_model(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["1", "renamed"])
+    robot = Robot(ctx.ws.robots_dir / "future-robot")
+    robot.state_set("model_key", "x50-ultra")
+
+    rename(ctx, [])
+
+    assert (ctx.ws.robots_dir / "renamed").is_dir()
+    assert "unknown model 'x50-ultra'" in ctx.console.text()  # type: ignore[attr-defined]
+
+
 def test_rename_non_interactive_needs_both_names(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(interactive=False)
     (ctx.ws.robots_dir / "old").mkdir(parents=True)
