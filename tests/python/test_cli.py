@@ -11,6 +11,7 @@ from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
 from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
+from dreame_valetudo.workspace import Robot
 
 
 def _has(console: ScriptedConsole, needle: str) -> bool:
@@ -47,6 +48,21 @@ def test_main_status_empty(tmp_path: Path) -> None:
     rc = main(["status"], env={"DREAME_WORK": str(tmp_path)}, console=con, runner=RecordingRunner())
     assert rc == 0
     assert _has(con, "No robots yet")
+
+
+def test_main_status_survives_a_robot_from_a_newer_release(tmp_path: Path) -> None:
+    unknown = Robot(tmp_path / "robots" / "future-robot")
+    unknown.state_set("model_key", "x50-ultra")
+    known = Robot(tmp_path / "robots" / "kitchen")
+    known.state_set("model_key", "d10s-plus")
+    con = ScriptedConsole()
+
+    rc = main(["status"], env={"DREAME_WORK": str(tmp_path)}, console=con,
+              runner=RecordingRunner())
+
+    assert rc == 0
+    assert _has(con, "unknown model 'x50-ultra'")
+    assert _has(con, "Dreame D10s Plus")
 
 
 def test_main_unknown_command_returns_1(tmp_path: Path) -> None:

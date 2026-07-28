@@ -74,6 +74,7 @@ class Fel:
             self.console.say("Waiting for the FEL device — do the button sequence now. Ctrl+C stops "
                              "waiting.")
             deadline: float | None = None
+            permission_warned = False
             with self.console.progress("Watching for the FEL device", timer=False) as p:
                 while True:
                     res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
@@ -85,16 +86,18 @@ class Fel:
                     if _LOADER_FAILED.search(out):
                         die("sunxi-fel is present but cannot start — it is missing a library it was "
                             f"built against, so FEL cannot be reached:\n{out.strip()}")
-                    if "not found" not in out.lower():
+                    if (not permission_warned
+                            and re.search(r"permission|access denied", out, re.IGNORECASE)):
+                        self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
+                                          "this usually means the udev rule is missing — install "
+                                          "packaging/udev/99-dreame-valetudo.rules to "
+                                          "/etc/udev/rules.d/, run 'sudo udevadm control --reload "
+                                          "&& sudo udevadm trigger', and replug the cable; or "
+                                          "re-run with sudo.)")
+                        permission_warned = True
+                    if res.ok:
                         first = out.splitlines()[0] if out.strip() else ""
                         self.console.info(f"FEL up: {first}")
-                        if re.search(r"permission|access denied", out, re.IGNORECASE):
-                            self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
-                                              "this usually means the udev rule is missing — install "
-                                              "packaging/udev/99-dreame-valetudo.rules to "
-                                              "/etc/udev/rules.d/, run 'sudo udevadm control --reload "
-                                              "&& sudo udevadm trigger', and replug the cable; or "
-                                              "re-run with sudo.)")
                         return True
                     now = time.monotonic()
                     deadline = next_idle_deadline(deadline, now)

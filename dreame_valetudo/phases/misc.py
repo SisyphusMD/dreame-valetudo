@@ -67,7 +67,13 @@ def _summary(base: Path) -> str:
     if cfg_file.is_file():
         cfg = parse_config(cfg_file.read_text()) or "?"
     key = known_model_key_for_dir(d)
-    model = load_profile(key).model if key else "model not chosen yet"
+    if key:
+        try:
+            model = load_profile(key).model
+        except ValueError:
+            model = f"unknown model '{key}' — upgrade dreame-valetudo"
+    else:
+        model = "model not chosen yet"
     last = "none"
     for s in ("valetudo", "rooted", "image", "recon"):
         if (d / "state" / s).is_file():

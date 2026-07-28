@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: FEL permission failures now keep polling instead of being mistaken for a connected
+  robot, and a robot saved by a newer release no longer breaks status, robot selection, or
+  management for every other robot in the workspace.
 - **fix**: installing Valetudo on an already-rooted robot now fetches only the Valetudo binary,
   without compiling or downloading the unused FEL toolchain, and gives explicit network-switching
   recovery steps when that binary is not cached.

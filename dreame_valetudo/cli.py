@@ -127,7 +127,12 @@ def _profile_for_work(ctx: Context) -> bool:
     if robot is not None and (
         (robot.state_dir / "model_key").is_file() or (robot.recon_dir / "config.txt").is_file()
     ):
-        ctx.profile = load_profile(model_key_for_dir(robot.work))
+        key = model_key_for_dir(robot.work)
+        try:
+            ctx.profile = load_profile(key)
+        except ValueError:
+            raise Die(f"Robot '{robot.display_name()}' ({robot.work.name}) uses unknown saved "
+                      f"model '{key}'. Upgrade dreame-valetudo to work with this robot.") from None
         ctx.console.info(f"Model: {ctx.profile.model}")
         ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
         return True

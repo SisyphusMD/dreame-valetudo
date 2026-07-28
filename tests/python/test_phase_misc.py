@@ -72,3 +72,18 @@ def test_status_hides_dot_directories(make_ctx: CtxFactory) -> None:
     (ctx.ws.robots_dir / ".hidden").mkdir()
     status(ctx)
     assert _said(ctx, "No robots yet")  # the dot-dir is not counted
+
+
+def test_status_keeps_listing_after_an_unknown_saved_model(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    unknown = Robot(ctx.ws.robots_dir / "from-newer-release")
+    unknown.state_set("model_key", "x50-ultra")
+    known = Robot(ctx.ws.robots_dir / "kitchen")
+    known.state_set("model_key", "d10s-plus")
+
+    status(ctx)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "unknown model 'x50-ultra'" in text
+    assert "upgrade dreame-valetudo" in text
+    assert "Dreame D10s Plus" in text
