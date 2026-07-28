@@ -68,11 +68,12 @@ def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     info(f"   Config value ......... {cfg}")
     info("   Create diff .......... leave UNCHECKED")
     info("   Prepackage Valetudo .. leave UNCHECKED if present (this tool installs it in Phase 3)")
-    info("   Patch DNS ............ CHECK  (required for Valetudo)")
-    info("   Preinstall tools ..... CHECK  (nano/curl/wget/htop/hexdump)")
+    info("   Patch DNS ............ leave CHECKED (the default; required for Valetudo)")
+    info("   Preinstall tools ..... leave CHECKED (the default; nano/curl/wget/htop/hexdump)")
     info("   Build type ........... SELECT 'Create FEL image (for initial rooting via USB)'")
     info("                          NOT the default 'Build for manual installation'")
     info(f"   Firmware version ..... leave the pre-selected latest '{ctx.profile.dust_code} ...'")
+    info("   I am human ........... complete the hCaptcha check")
     info("   Confirm + Affidavit .. TICK BOTH boxes, then click 'Create Job'.")
 
 

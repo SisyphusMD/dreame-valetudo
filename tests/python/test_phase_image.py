@@ -98,6 +98,9 @@ def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory,
     assert "fastboot getvar" not in text                # the tool never punts a command to the user
     assert "SELECT this upload radio" in text           # neither radio is selected by the page
     assert "Prepackage Valetudo .. leave UNCHECKED" in text
+    assert "I am human ........... complete the hCaptcha check" in text
+    assert "Patch DNS ............ leave CHECKED (the default" in text
+    assert "Preinstall tools ..... leave CHECKED (the default" in text
     assert "raw copy of the robot's flash" in text
     assert "miio device key" in text
     assert any(kind == "action" for kind, _ in ctx.console.lines)  # type: ignore[attr-defined]
