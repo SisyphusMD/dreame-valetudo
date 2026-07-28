@@ -23,6 +23,8 @@
   flashers stop on every failed FEL transfer, stock recovery requires the manifest-pinned genuine
   images, and the experimental `oem prep` prohibition is explicitly scoped away from the required
   production DustBuilder sequence.
+- **fix**: live robot identity checks now recognize Valetudo's current regional L20/L40 model
+  suffixes, while unknown suffixes still stop before the factory backup or installation begins.
 - **fix**: the destructive flash now requires an exactly formed image identity token, a staged
   model matching the selected robot, unchanged SHA-256-verified image members, and a complete
   aligned three-part recovery capture before treating the backup as usable.

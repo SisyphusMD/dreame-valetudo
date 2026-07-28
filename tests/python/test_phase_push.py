@@ -326,9 +326,9 @@ def test_push_distinguishes_the_r2338h_revision_even_though_its_impl_class_is_sh
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="dreame.vacuum.r2338ha")  # type: ignore[attr-defined]
+    ctx.runner._responder = _text(model="dreame.vacuum.r2338h")  # type: ignore[attr-defined]
 
-    with pytest.raises(Die, match=r"selected robot is Dreame L10s Pro Ultra Heat.*r2338ha"):
+    with pytest.raises(Die, match=r"selected robot is Dreame L10s Pro Ultra Heat.*r2338h"):
         push(ctx)
 
     assert not ctx.backups_dir.exists()
