@@ -113,6 +113,29 @@ def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None
     assert not ctx.need_robot().state_has("valetudo")
 
 
+def test_push_uses_the_selected_robots_key_not_the_later_workspace_choice(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    first = ctx.ws.base / "first-key"
+    second = ctx.ws.base / "second-key"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text("FIRST")
+    second.write_text("SECOND")
+    ctx.need_robot().state_set("sshkey", str(first))
+    (ctx.ws.base / "sshkey.path").write_text(str(second) + "\n")
+
+    def unreachable(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 255, "", "ssh: connect timed out")
+
+    ctx.runner._responder = unreachable  # type: ignore[attr-defined]
+    assert push(ctx) is False
+    probe = next(c for c in ctx.runner.calls if c[-1] == "true")  # type: ignore[attr-defined]
+    assert str(first) in probe
+    assert str(second) not in probe
+
+
 def test_push_fetches_only_valetudo_when_the_cache_is_empty(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

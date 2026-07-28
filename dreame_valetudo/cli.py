@@ -449,6 +449,11 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1
+    if cmd == "fix-wifi":
+        fix_wifi(ctx)
+        return 0
+
+    select_robot(ctx)
     if cmd == "diagnose":
         diagnose(ctx)
         return 0
@@ -459,8 +464,6 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0 if fix_did(ctx) else 1
     if cmd == "fix-key":
         return 0 if fix_key(ctx) else 1
-
-    select_robot(ctx)
     if cmd == "model":
         robot = ctx.need_robot()
         if robot.state_has("rooted"):
@@ -490,8 +493,6 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         sshkey(ctx)
     elif cmd == "verify-form":
         return 0 if verify_form(ctx) else 1
-    elif cmd == "fix-wifi":
-        fix_wifi(ctx)
     elif cmd == "auto":
         auto(ctx, rest)
     else:

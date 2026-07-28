@@ -16,6 +16,9 @@
 - **fix**: robot SSH can no longer open its own password prompt, explicit missing key paths now stop
   before connecting, and authentication or host-key negotiation failures name the offered key and
   real SSH error instead of incorrectly blaming the robot's Wi-Fi AP.
+- **fix**: each robot now remembers the SSH key embedded in its own dustbuilder image, so preparing
+  another robot cannot make a later push offer the wrong key; explicit keys no longer expose every
+  unrelated agent identity to the robot AP.
 - **fix**: release reconciliation now compares registry metadata before downloading assets, so a
   fully consistent tag transfers nothing while missing, truncated, and size-unknown uploads are
   still downloaded once and repaired on only the affected registry.

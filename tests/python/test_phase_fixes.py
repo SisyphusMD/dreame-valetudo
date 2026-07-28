@@ -343,3 +343,22 @@ def test_diagnose_scrubs_a_key_shaped_token_from_the_report(make_ctx: CtxFactory
     assert mikey not in written
     assert "<redacted-id>" in written
     assert not any(mikey in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_diagnose_uses_the_selected_robots_key_not_the_workspace_default(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="r2416-a", responder=lambda argv: Result(argv, 0, "", ""))
+    first = ctx.ws.base / "first-key"
+    second = ctx.ws.base / "second-key"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text("FIRST")
+    second.write_text("SECOND")
+    ctx.need_robot().state_set("sshkey", str(first))
+    (ctx.ws.base / "sshkey.path").write_text(str(second) + "\n")
+
+    diagnose(ctx)
+
+    ssh_calls = [c for c in ctx.runner.calls if c and c[0] == "ssh"]  # type: ignore[attr-defined]
+    assert ssh_calls
+    assert all(str(first) in call and str(second) not in call for call in ssh_calls)

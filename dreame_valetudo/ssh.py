@@ -20,12 +20,21 @@ from .run import Result, Runner
 
 if TYPE_CHECKING:
     from .context import Context
+    from .workspace import Robot
 
 
 def ssh_base(target: str, key: str | Path | None) -> list[str]:
     argv = ["ssh", *ROBOT_SSH_OPTS]
     if key:
-        argv += ["-i", str(key)]
+        # Otherwise OpenSSH also offers every agent/default identity to the unauthenticated AP,
+        # and a busy agent can exhaust the server's attempts before reaching the robot's key.
+        argv += [
+            "-F", "/dev/null",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "IdentityAgent=none",
+            "-o", "IdentityFile=none",
+            "-i", str(key),
+        ]
     argv.append(target)
     return argv
 
@@ -80,12 +89,18 @@ def _pointer(ws_base: Path) -> Path:
     return ws_base / "sshkey.path"
 
 
-def resolve_sshkey(env: Mapping[str, str], home: Path, ws_base: Path) -> Path:
-    """The private key push authenticates with: DREAME_SSHKEY, else the choice recorded by
-    choose_sshkey, else an existing default key, else a dedicated workspace key."""
+def resolve_sshkey(
+    env: Mapping[str, str], home: Path, ws_base: Path, robot: Robot | None = None,
+) -> Path:
+    """The private key push authenticates with: DREAME_SSHKEY, else this robot's recorded choice,
+    else the workspace choice, an existing default key, or a dedicated workspace key."""
     override = env.get("DREAME_SSHKEY")
     if override:
         return Path(override)
+    if robot is not None:
+        recorded = robot.state_get("sshkey")
+        if recorded:
+            return Path(recorded)
     ptr = _pointer(ws_base)
     if ptr.is_file():
         recorded = ptr.read_text().strip()
@@ -101,6 +116,12 @@ def resolve_sshkey(env: Mapping[str, str], home: Path, ws_base: Path) -> Path:
 def _record(ptr: Path, key: Path) -> None:
     ptr.parent.mkdir(parents=True, exist_ok=True)
     ptr.write_text(str(key) + "\n")
+
+
+def _remember_choice(ctx: Context, key: Path) -> None:
+    _record(_pointer(ctx.ws.base), key)
+    if ctx.robot is not None:
+        ctx.robot.state_set("sshkey", str(key))
 
 
 def _path_present(path: Path) -> bool:
@@ -152,17 +173,25 @@ def choose_sshkey(ctx: Context) -> Path:
     if override:
         key = Path(override)
         ensure_sshkey(ctx.runner, ctx.console, key)
-        _record(ptr, key)  # persist so a later push without the env resolves the SAME key
+        _remember_choice(ctx, key)
         return key
+    if ctx.robot is not None:
+        recorded = ctx.robot.state_get("sshkey")
+        if recorded:
+            key = Path(recorded)
+            ensure_sshkey(ctx.runner, ctx.console, key)
+            _record(ptr, key)
+            return key
     if ptr.is_file() and ptr.read_text().strip():
         key = Path(ptr.read_text().strip())
         ensure_sshkey(ctx.runner, ctx.console, key)
+        _remember_choice(ctx, key)
         return key
 
     dedicated = ctx.ws.base / "id_dreame"
     if not ctx.interactive:
         ensure_sshkey(ctx.runner, ctx.console, dedicated)
-        _record(ptr, dedicated)
+        _remember_choice(ctx, dedicated)
         return dedicated
 
     c = ctx.console
@@ -203,13 +232,13 @@ def choose_sshkey(ctx: Context) -> Path:
         _keygen(ctx.runner, ctx.console, chosen, "valetudo-dreame")
     else:
         ensure_sshkey(ctx.runner, ctx.console, chosen)
-    _record(ptr, chosen)
+    _remember_choice(ctx, chosen)
     c.info(f"Using SSH key: {chosen}")
     if chosen == dedicated:
         c.warn("This dedicated key is your ONLY SSH access to the rooted robot; 'push' copies it "
                "into the factory backup it writes to your home dir — keep that backup off this "
                "machine.")
-    c.info(f"(Change later with DREAME_SSHKEY=... or by deleting {ptr}.)")
+    c.info("(Change this robot's key later with DREAME_SSHKEY=... on an image/sshkey run.)")
     return chosen
 
 
