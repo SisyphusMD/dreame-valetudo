@@ -83,6 +83,21 @@ def test_model_identity_and_method_drift_turn_the_monitor_red(tmp_path: Path) ->
     assert any("official model section no longer says [Fastboot]" in issue for issue in issues)
 
 
+def test_r2338h_identity_cannot_mask_a_missing_r2338_identity(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = (
+        upstream / "backend/lib/robots/dreame/DreameL10SProUltraHeatValetudoRobot.js"
+    )
+    implementation.write_text(
+        implementation.read_text().replace('"dreame.vacuum.r2338", ', "")
+    )
+
+    assert any(
+        "l10s-pro-ultra-heat: r2338 is no longer an identity" in issue
+        for issue in verify(upstream)
+    )
+
+
 def test_model_specific_guidance_drift_turns_the_monitor_red(tmp_path: Path) -> None:
     upstream = _upstream_fixture(tmp_path)
     supported = upstream / "docs/pages/general/supported-robots.md"

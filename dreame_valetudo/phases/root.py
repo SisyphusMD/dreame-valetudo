@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import signal
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 from ..console import abort, die
 from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
@@ -139,10 +139,18 @@ def _check_staged_integrity(ctx: Context) -> None:
 @records_step("flashing the rooted image")
 def root(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
+    if robot.state_has("flash-attempt") and not force:
+        die("SAFETY STOP: a prior flash attempt did not reach a durable completion marker. The "
+            "robot may already be fully or partly flashed, so this tool will not repeat the write "
+            "automatically. Inspect the robot and recovery evidence first; use 'root --force' only "
+            "after deliberately deciding that another complete flash is safe.")
     if robot.state_has("rooted") and not force:
         ctx.console.warn("Marker says this robot is already rooted. Re-run with '--force' to "
                          "flash again.")
         return
+    if not robot.state_has("recon"):
+        die("SAFETY STOP: this robot has no completed reconnaissance record. A failed or "
+            "interrupted recon cannot authorize a flash; re-run recon successfully first.")
     # A non-forced completed run must return before self-provisioning; clean --all deliberately
     # removes staged firmware, and rebuilding it for a robot that will not be flashed is pure risk.
     # A real first flash (or explicit --force reflash) still self-provisions its prerequisites.
@@ -245,7 +253,14 @@ def root(ctx: Context, *, force: bool = False) -> None:
                      "interrupting a flash in progress can PERMANENTLY brick the robot. Interrupt "
                      "signals are ignored for the next few seconds.")
     fb = ctx.fastboot.fb
+    marker_error: OSError | None = None
     with _mask_interrupts():
+        # Written before the first device mutation. If the host dies anywhere below, the next run
+        # stops instead of blindly repeating a possibly complete or partial flash.
+        robot.state_set("flash-attempt", f"model={ctx.profile.key} config={live_cfg}")
+        # A forced reflash supersedes the prior success. Clear it only after the durable attempt
+        # marker exists, so a host failure between these writes still leaves the attempt dominant.
+        robot.state_clear("rooted")
         fb("oem", "dust", dust)
         fb("oem", "prep")  # disables Secure Boot
         fb("flash", "toc1", str(robot.fw_dir / "toc1.img"))
@@ -255,9 +270,23 @@ def root(ctx: Context, *, force: bool = False) -> None:
         fb("flash", "rootfs1", str(robot.fw_dir / "rootfs.img"))
         fb("flash", "boot2", str(robot.fw_dir / "boot.img"))
         fb("flash", "rootfs2", str(robot.fw_dir / "rootfs.img"))
-        robot.state_set("rooted")
         ctx.console.say("All flashes OKAY. Rebooting...")
+        try:
+            robot.state_set("rooted")
+        except OSError as exc:
+            marker_error = exc
         ctx.fastboot.fbt("reboot", check=False)
+        if marker_error is None:
+            # `rooted` is already durable, so a stale attempt marker is harmless; do not turn a
+            # successful flash/reboot into an error merely because cleanup failed.
+            with suppress(OSError):
+                robot.state_clear("flash-attempt")
+
+    if marker_error is not None:
+        die("All partition flashes returned OKAY and the reboot command was sent, but the tool "
+            "could not record completion in the workspace. The flash-attempt safety marker was "
+            "left in place so the next run will NOT reflash automatically. Preserve the workspace "
+            f"and investigate its storage/permissions ({marker_error}).")
 
     ctx.console.say("Flash complete — if the robot boots normally, it's rooted.")
     ctx.console.info("Next: re-run and it continues to Phase 3 (install Valetudo over the robot's "

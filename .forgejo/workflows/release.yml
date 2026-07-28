@@ -14,7 +14,9 @@ on:
         options: [patch, minor, major]
 
 concurrency:
-  group: release
+  # Stable and RC tag creation share one producer slot. Tag publishing has a per-tag group of its
+  # own: sharing this group could displace a queued publish run before it ever builds its assets.
+  group: release-cut
   cancel-in-progress: false
 
 jobs:
@@ -185,8 +187,9 @@ jobs:
           MYPY="2.3.0"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
           # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
           ruff check dreame_valetudo libexec tests/python
           mypy
@@ -204,10 +207,31 @@ jobs:
           # The bump moves pyproject's version; re-lock so uv.lock's own project entry matches, else
           # the next local `uv` run dirties the tree. Plain `uv lock` preserves every existing
           # dependency pin — only the project's own version field changes.
-          python -m pip install uv
+          # renovate: datasource=pypi depName=uv
+          UV="0.11.32"
+          python -m pip install "uv==$UV"
+          cp uv.lock uv.lock.before
           uv lock
-          grep -A2 'name = "dreame-valetudo"' uv.lock | grep -qE "^version = \"${VERSION}\"" \
-            || { echo "::error::uv.lock project version not synced to ${VERSION}"; exit 1; }
+          python - "$VERSION" <<'PY'
+          import difflib
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          before = Path("uv.lock.before").read_text()
+          after = Path("uv.lock").read_text()
+          pattern = re.compile(r'(\[\[package\]\]\nname = "dreame-valetudo"\nversion = ")[^"]+(\")')
+          expected, count = pattern.subn(lambda match: match.group(1) + version + match.group(2), before)
+          if count != 1 or after != expected:
+              print("::error::uv lock changed more than the project's own version")
+              print("".join(difflib.unified_diff(
+                  expected.splitlines(keepends=True), after.splitlines(keepends=True),
+                  fromfile="expected uv.lock", tofile="actual uv.lock",
+              )))
+              raise SystemExit(1)
+          PY
+          rm uv.lock.before
 
       - name: Commit, tag, push
         env:

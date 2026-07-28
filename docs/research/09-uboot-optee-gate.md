@@ -61,5 +61,9 @@ The ROTPK-burn routine `0x251c` has exactly one caller, `0x2706`, inside `burn_s
 anywhere in the 720 KB image (exhaustive 2-byte-aligned scan + raw-pointer scan, both empty; no
 `U_BOOT_CMD`/env-callback registration). So a normal boot — patched or not — **cannot burn the
 fuse**, and `0x251c` additionally self-guards (it refuses unless the eFuse currently reads all-zero).
-Keep it dead: never inject a call to `0x4a0026a4`, never arm `burn_secure_mode`, never `oem prep`.
+Keep it dead in these experimental self-root/recovery payloads: never inject a call to
+`0x4a0026a4`, never arm `burn_secure_mode`, and never add `oem prep` to the research scripts. This
+is narrower than the normal DustBuilder rooting contract: its production FEL image explicitly
+requires `oem dust` followed by `oem prep`, and `dreame-valetudo root` preserves that upstream
+sequence. The research warning must not be used to remove the production command.
 See [13](13-safety-recovery-and-dead-ends.md).

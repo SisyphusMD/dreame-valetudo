@@ -10,6 +10,12 @@ on:
     # the hyphenated ones as prereleases, and the tap job writes them to the separate -rc formula.
     tags: ["v*.*.*", "v*.*.*-*"]
 
+concurrency:
+  # Deduplicate only the same tag. A single global group keeps just one pending run, so a later tag
+  # can otherwise displace an earlier tag's still-pending publication and leave it assetless.
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
 
 jobs:
   releases:

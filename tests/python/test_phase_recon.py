@@ -33,8 +33,7 @@ _CFG = "abcdef0123456789abcdef0123456789"
 
 @pytest.fixture(autouse=True)
 def _small_recovery_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1)
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 1)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_BYTES", 1024)
 
 
 def test_reported_model_is_confirmed(make_ctx: CtxFactory) -> None:
@@ -47,6 +46,29 @@ def test_reported_model_mismatch_stops_safely(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="x40-ultra")
     with pytest.raises(Die, match=r"chosen model is Dreame X40 Ultra.*Choose Dreame D10s Pro"):
         _verify_reported_model(ctx, {"model": "r2250"})
+
+
+def test_failed_model_validation_publishes_no_trusted_recon_identity(
+    make_ctx: CtxFactory,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(argv)
+        if "getvar config" in joined:
+            return Result(argv, 0, f"OKAY {_CFG}", "")
+        if "getvar model" in joined:
+            return Result(argv, 0, "OKAY r2250", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    _dist_ready(ctx)
+    with pytest.raises(Die, match=r"chosen model is Dreame X40 Ultra"):
+        recon(ctx, recovery_backup=False)
+
+    robot = ctx.need_robot()
+    assert not (robot.recon_dir / "config.txt").exists()
+    assert robot.state_get("model_key") is None
+    assert robot.state_get("recon") is None
+    assert not (robot.recon_dir / "identity.txt").exists()
 
 
 def test_unreported_model_is_plainly_unverified(make_ctx: CtxFactory) -> None:
@@ -611,8 +633,7 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
 def test_recon_refuses_nonempty_but_truncated_recovery_slices(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1024)
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 512)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_BYTES", 1024)
     ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"x" * 513))
     _dist_ready(ctx)
     recon(ctx, recovery_backup=True)

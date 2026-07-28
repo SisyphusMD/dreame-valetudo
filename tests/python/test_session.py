@@ -695,10 +695,22 @@ def test_every_documented_override_reaches_the_session() -> None:
     is worse than not supporting it. The prefix rule covers any added later."""
     documented = ["DREAME_WORK", "DREAME_BACKUPS", "DREAME_MODEL", "DREAME_ROBOT", "DREAME_CONFIG",
                   "DREAME_LIBEXEC", "DREAME_IDLE_TIMEOUT", "DREAME_SSHKEY", "DREAME_NO_LOG",
-                  "DREAME_NO_UPDATE_CHECK", "DREAME_NO_UDEV_CHECK", "DREAME_FASTBOOT"]
+                  "DREAME_NO_UPDATE_CHECK", "DREAME_NO_UDEV_CHECK", "DREAME_FASTBOOT",
+                  "VALETUDO_VERSION"]
     flags = env_prefix(dict.fromkeys(documented, "x"))
     for name in documented:
         assert f"{name}=x" in flags
+
+
+def test_non_dreame_build_overrides_reach_an_existing_tmux_server() -> None:
+    flags = env_prefix({
+        "VALETUDO_VERSION": "latest",
+        "VALETUDO_URL": "https://example.test/valetudo",
+        "DUSTBUILDER_PAGE": "https://example.test/form",
+    })
+    assert "VALETUDO_VERSION=latest" in flags
+    assert "VALETUDO_URL=https://example.test/valetudo" in flags
+    assert "DUSTBUILDER_PAGE=https://example.test/form" in flags
 
 
 def test_the_create_step_actually_carries_the_environment() -> None:

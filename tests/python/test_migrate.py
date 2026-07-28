@@ -176,6 +176,26 @@ def test_merge_keeps_both_on_a_file_collision(tmp_path: Path) -> None:
     assert any(".pre-migration.bak" in msg for _k, msg in con.lines)
 
 
+def test_collision_publish_failure_restores_the_canonical_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_text("legacy data")
+    dst.write_text("current data")
+
+    def fail_move(*_args: object, **_kwargs: object) -> bool:
+        raise OSError("simulated publish failure")
+
+    monkeypatch.setattr(M, "_safe_move", fail_move)
+    with pytest.raises(OSError, match="publish failure"):
+        M._safe_merge(src, dst, ScriptedConsole())
+
+    assert dst.read_text() == "current data"
+    assert src.read_text() == "legacy data"
+    assert not (tmp_path / "current.pre-migration.bak").exists()
+
+
 def test_merge_preserves_the_canonical_lock_inode(tmp_path: Path) -> None:
     src = tmp_path / "legacy"
     dst = tmp_path / "current"

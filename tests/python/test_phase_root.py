@@ -15,8 +15,7 @@ from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import (
     FEL_IMAGE_FILES,
-    RECOVERY_DUMP_ALIGNMENT,
-    RECOVERY_DUMP_MIN_BYTES,
+    RECOVERY_DUMP_BYTES,
     STAGED_IMAGE_MANIFEST,
 )
 from dreame_valetudo.context import Context
@@ -39,8 +38,7 @@ _MIN_IMAGE_BYTES = {
 
 @pytest.fixture(autouse=True)
 def _small_recovery_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1)
-    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 1)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_BYTES", len(b"backup"))
 
 
 def _stage_image(ctx: Context, dust: str = "626153c7") -> None:
@@ -217,8 +215,7 @@ def test_root_rejects_a_recovery_archive_corrupted_after_recon(make_ctx: CtxFact
 
 
 def test_recovery_dump_production_floor_is_brick_relevant() -> None:
-    assert RECOVERY_DUMP_MIN_BYTES >= 300 * (1 << 20)
-    assert RECOVERY_DUMP_ALIGNMENT == 0x20000
+    assert RECOVERY_DUMP_BYTES == 0x18F00000
 
 
 def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
@@ -274,6 +271,74 @@ def test_root_fails_closed_when_recon_identity_missing(make_ctx: CtxFactory) -> 
         root(ctx)
     assert not ctx.need_robot().state_has("rooted")
     assert _flash_ops(ctx) == []  # nothing flashed
+
+
+def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    robot.state_set("model_key", ctx.profile.key)
+
+    with pytest.raises(Die, match="no completed reconnaissance record"):
+        root(ctx)
+
+    assert ctx.runner.calls == []
+    assert not robot.state_has("rooted")
+
+
+def test_completion_marker_failure_reboots_but_blocks_an_automatic_reflash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    original = type(robot).state_set
+
+    def fail_rooted(target: object, phase: str, detail: str = "") -> None:
+        if phase == "rooted":
+            raise OSError("workspace became read-only")
+        original(target, phase, detail)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(type(robot), "state_set", fail_rooted)
+    with pytest.raises(Die, match="All partition flashes returned OKAY"):
+        root(ctx)
+
+    assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)
+    assert any(call[:3] == (*FB, "reboot") for call in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert robot.state_has("flash-attempt")
+    before = list(ctx.runner.calls)  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="prior flash attempt"):
+        root(ctx)
+    assert ctx.runner.calls == before  # type: ignore[attr-defined]
+
+
+def test_failed_forced_reflash_invalidates_the_old_rooted_marker(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(argv)
+        if "getvar config" in joined:
+            return Result(argv, 0, f"OKAY {_CFG}", "")
+        if argv[:2] == FB and len(argv) > 3 and argv[2:4] == ("flash", "toc1"):
+            return Result(argv, 0, "FAILED write error", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+
+    with pytest.raises(Die, match="did NOT return OKAY"):
+        root(ctx, force=True)
+
+    assert robot.state_has("flash-attempt")
+    assert not robot.state_has("rooted")
+    before = list(ctx.runner.calls)  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="prior flash attempt"):
+        root(ctx)
+    assert ctx.runner.calls == before  # type: ignore[attr-defined]
 
 
 def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> None:
@@ -439,6 +504,7 @@ def test_root_hard_stops_on_non_okay_flash(make_ctx: CtxFactory) -> None:
     with pytest.raises(Die, match="did NOT return OKAY"):
         root(ctx)
     assert not ctx.need_robot().state_has("rooted")
+    assert ctx.need_robot().state_has("flash-attempt")  # a retry must stop, not reflash blindly
     # stopped at toc1: no boot/rootfs flashes issued
     assert ("flash", "boot1", "boot.img") not in _flash_ops(ctx)
 

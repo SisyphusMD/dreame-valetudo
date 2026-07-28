@@ -8,12 +8,14 @@ never interpolate JSON into a remote shell command line.
 from __future__ import annotations
 
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
+from dreame_valetudo.context import Context
 from dreame_valetudo.phases.fixes import (
     _DIAGNOSE_REMOTE,
     diagnose,
@@ -105,6 +107,8 @@ def test_fix_did_already_positive_returns_true(make_ctx: CtxFactory) -> None:
             return pre
         if "did.txt" in _remote(argv):
             return Result(argv, 0, "12345\n", "")
+        if '$1 == "did"' in _remote(argv):
+            return Result(argv, 0, "12345\n", "")
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(responder=responder, interactive=False)
@@ -174,6 +178,8 @@ def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFacto
             return pre
         if "key.txt" in _remote(argv):
             return Result(argv, 0, "ALREADYSET12345\n", "")  # a key is already there
+        if '$1 == "key"' in _remote(argv):
+            return Result(argv, 0, "ALREADYSET12345\n", "")
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(responder=responder, interactive=False)
@@ -181,6 +187,133 @@ def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFacto
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("key_orig.txt" in r for r in remotes)       # never wrote
     assert not any("dreame_release.na" in r for r in remotes)  # never probed secure storage
+
+
+@pytest.mark.parametrize(("command", "factory_path"), [
+    (fix_did, "did.txt"),
+    (fix_key, "key.txt"),
+])
+def test_fix_refuses_to_infer_stale_config_from_a_failed_inspection(
+    make_ctx: CtxFactory, command: Callable[[Context], bool], factory_path: str,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        cmd = _remote(argv)
+        if factory_path in cmd:
+            value = "12345" if factory_path == "did.txt" else "ALREADYSET12345"
+            return Result(argv, 0, value + "\n", "")
+        if "device.conf" in cmd:
+            return Result(argv, 255, "", "SSH read failed")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(responder=responder, confirms=[True])
+    with pytest.raises(Die, match=r"Couldn't inspect device\.conf"):
+        command(ctx)
+    remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    assert not any("did_orig.txt" in remote or "key_orig.txt" in remote for remote in remotes)
+
+
+def test_fix_did_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) -> None:
+    state = {"factory": "-1", "configured": "-1", "writes": 0}
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        cmd = _remote(argv)
+        if cmd == "cat /mnt/private/ULI/factory/did.txt 2>/dev/null":
+            return Result(argv, 0, state["factory"] + "\n", "")
+        if "did_orig.txt" in cmd:
+            state["writes"] += 1
+            state["factory"] = "4294967295"
+            if state["writes"] == 1:
+                return Result(argv, 1, "", "device.conf write failed")
+            state["configured"] = "4294967295"
+        elif '$1 == "did"' in cmd:
+            return Result(argv, 0, state["configured"] + "\n", "")
+        return Result(argv, 0, "", "")
+
+    first = make_ctx(responder=responder, confirms=[True])
+    with pytest.raises(Die, match="Failed to apply"):
+        fix_did(first)
+    assert state == {"factory": "4294967295", "configured": "-1", "writes": 1}
+
+    retry = make_ctx(responder=responder, confirms=[True])
+    assert fix_did(retry) is True
+    assert state == {"factory": "4294967295", "configured": "4294967295", "writes": 2}
+
+
+def test_fix_key_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) -> None:
+    state = {"factory": "", "configured": "", "writes": 0}
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        cmd = _remote(argv)
+        if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
+            return Result(argv, 0, state["factory"] + "\n", "")
+        if '$1 == "key"' in cmd:
+            return Result(argv, 0, state["configured"] + "\n", "")
+        if "dreame_release.na -c 7" in cmd:
+            return Result(argv, 0, "MI_KEY = A1b2C3d4E5f6G7h8\n", "")
+        return Result(argv, 0, "", "")
+
+    def redirect(
+        argv: tuple[str, ...], _stdout_path: str | None, stdin_path: str | None,
+    ) -> Result:
+        assert stdin_path is not None
+        state["writes"] += 1
+        state["factory"] = Path(stdin_path).read_text()
+        if state["writes"] == 1:
+            return Result(argv, 1, "", "device.conf write failed")
+        state["configured"] = state["factory"]
+        return Result(argv, 0, "", "")
+
+    first = make_ctx(responder=responder, confirms=[True])
+    first.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="Failed to apply"):
+        fix_key(first)
+    assert state["factory"] == "A1b2C3d4E5f6G7h8" and state["configured"] == ""
+
+    retry = make_ctx(responder=responder, confirms=[True])
+    retry.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    assert fix_key(retry) is True
+    assert state["configured"] == state["factory"]
+
+
+def test_fix_key_secret_tempfile_is_private_and_ignores_the_old_fixed_symlink(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    victim = tmp_path / "victim"
+    victim.write_text("do not overwrite")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(
+            argv, 0, "", ""
+        )
+
+    ctx = make_ctx(responder=responder, confirms=[True])
+    ctx.ws.base.mkdir(parents=True, exist_ok=True)
+    (ctx.ws.base / ".mikey").symlink_to(victim)
+    seen: list[tuple[str, int]] = []
+
+    def redirect(
+        argv: tuple[str, ...], _stdout_path: str | None, stdin_path: str | None,
+    ) -> Result:
+        assert stdin_path is not None
+        path = Path(stdin_path)
+        seen.append((path.read_text(), stat.S_IMODE(path.stat().st_mode)))
+        return Result(argv, 0, "", "")
+
+    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    assert fix_key(ctx) is True
+    assert seen == [("A1b2C3d4E5f6G7h8", 0o600)]
+    assert victim.read_text() == "do not overwrite"
+    assert (ctx.ws.base / ".mikey").is_symlink()
+    assert not list(ctx.ws.base.glob(".mikey.*"))
 
 
 def test_fix_key_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None:
@@ -301,6 +434,22 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
     assert any("already pins" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("cat > /data/valetudo_config.json" in _remote(c)
                    for c in ctx.runner.calls)  # type: ignore[attr-defined]  # no rewrite
+
+
+def test_fix_impl_does_not_claim_a_browser_opened_when_no_launcher_exists(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.phases.fixes.open_url", lambda *_args: False)
+    r = _impl_responder("model=dreame.vacuum.r2416\n",
+                        '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
+    ctx = make_ctx(model="x40-ultra", responder=r, system="Linux")
+
+    fix_impl(ctx)
+
+    assert any("Valetudo is UP — open http://192.168.5.1" in message
+               for _kind, message in ctx.console.lines)  # type: ignore[attr-defined]
+    assert not any("opened http://192.168.5.1" in message
+                   for _kind, message in ctx.console.lines)  # type: ignore[attr-defined]
 
 
 def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFactory) -> None:

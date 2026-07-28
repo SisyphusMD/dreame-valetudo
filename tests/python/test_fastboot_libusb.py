@@ -115,6 +115,17 @@ def test_upload_writes_a_normal_staged_blob(tmp_path: Path) -> None:
     out = tmp_path / "out.bin"
     assert fb.upload(str(out)) == 16
     assert out.read_bytes() == b"\x00" * 16
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_failed_upload_never_replaces_a_prior_complete_file(tmp_path: Path) -> None:
+    fb = _upload_client(fbl, b"00000010", [b"x" * 16, b"FAILtransfer failed"])
+    out = tmp_path / "out.bin"
+    out.write_bytes(b"prior complete capture")
+    with pytest.raises(fbl.FastbootError, match="upload failed"):
+        fb.upload(str(out))
+    assert out.read_bytes() == b"prior complete capture"
+    assert not list(tmp_path.glob("*.partial"))
 
 
 def _flash_client(mod: Any, maxdl: str) -> Any:
@@ -150,6 +161,24 @@ def test_flash_logs_sparse_split_evidence(tmp_path: Path) -> None:
     assert "sparse chunk 1/" in log
 
 
+def test_flash_keeps_the_partition_sized_source_file_backed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fb = _flash_client(fbl, "0x8000000")
+    img = tmp_path / "rootfs.img"
+    img.write_bytes(b"x" * 4096)
+
+    def no_whole_file_copy(_path: Path) -> bytes:
+        raise AssertionError("flash must not copy the whole image into memory")
+
+    monkeypatch.setattr(Path, "read_bytes", no_whole_file_copy)
+    fb.flash("rootfs1", str(img))
+
+
+def test_usb_transfer_chunk_is_the_hardware_proven_64_kib() -> None:
+    assert fbl.CHUNK == 65536
+
+
 def test_is_fastboot_interface_matches_the_dreame_gadget_triple() -> None:
     class _Intf:
         bInterfaceClass = 0xFF
@@ -177,6 +206,43 @@ def test_device_scan_skips_one_unreadable_usb_device(
     target = [[Interface()]]
     monkeypatch.setattr(fbl.usb.core, "find", lambda **_kwargs: [Unreadable(), target])
     assert fbl.find_device()[0] is target
+
+
+def test_device_scan_refuses_two_matching_fastboot_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Interface:
+        bInterfaceClass = 0xFF
+        bInterfaceSubClass = 0x42
+        bInterfaceProtocol = 0x03
+
+    monkeypatch.setattr(
+        fbl.usb.core, "find", lambda **_kwargs: [[[Interface()]], [[Interface()]]]
+    )
+    with pytest.raises(fbl.FastbootError, match="2 fastboot devices found"):
+        fbl.find_device()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["devices"], ["wait", "1"], ["getvar", "config"], ["oem", "prep"],
+     ["flash", "boot1", "unused"], ["upload", "unused"], ["reboot"]],
+)
+def test_every_usb_command_refuses_an_ambiguous_hardware_target(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str],
+) -> None:
+    class Interface:
+        bInterfaceClass = 0xFF
+        bInterfaceSubClass = 0x42
+        bInterfaceProtocol = 0x03
+
+    monkeypatch.setattr(
+        fbl.usb.core, "find", lambda **_kwargs: [[[Interface()]], [[Interface()]]]
+    )
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert fbl.main(argv) == 1
+    assert "2 fastboot devices found" in err.getvalue()
 
 
 @pytest.mark.parametrize(

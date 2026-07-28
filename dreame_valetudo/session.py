@@ -358,7 +358,13 @@ def env_prefix(env: Mapping[str, str]) -> list[str]:
     whole wrapper. Debian 11, Raspberry Pi OS bullseye and Ubuntu 20.04 all ship older tmux, and
     the Pi is a first-class target here. `env` is POSIX and needs nothing of tmux at all.
     """
-    carried = {k: v for k, v in env.items() if k.startswith("DREAME_") or k == "NO_COLOR"}
+    non_dreame_overrides = {
+        "DUSTBUILDER_PAGE", "NO_COLOR", "VALETUDO_URL", "VALETUDO_VERSION",
+    }
+    carried = {
+        k: v for k, v in env.items()
+        if k.startswith("DREAME_") or k in non_dreame_overrides
+    }
     carried[IN_SESSION] = "1"
     return ["env", *(f"{k}={carried[k]}" for k in sorted(carried))]
 

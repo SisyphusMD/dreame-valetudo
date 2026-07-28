@@ -23,10 +23,10 @@ DUST_KEYSTREAM_SHA256 = "f4aba17061faca41e1425624b7ba120b1b3856f9bbc0e3eb09aa36d
 
 # Consecutive eMMC slices pulled by recon and decrypted together with their shared keystream.
 RECOVERY_DUMP_NAMES = ("dustx100", "dustx101", "dustx102")
-# Each `get_staged` slice is roughly 400 MiB and starts on the payload's 0x20000-byte transport
-# period. A shorter or misaligned file cannot be the complete recovery slice it claims to be.
-RECOVERY_DUMP_MIN_BYTES = 300 * (1 << 20)
-RECOVERY_DUMP_ALIGNMENT = 0x20000
+# The pinned stage-one payload returns exactly 0x18f00000 bytes for each `get_staged` slice. Merely
+# accepting a large aligned file is insufficient: system fastboot can leave an aligned partial file
+# when USB fails, and three such leftovers must never masquerade as an un-brick backup.
+RECOVERY_DUMP_BYTES = 0x18F00000
 
 # sunxi-tools is built from source; pin to a commit for reproducible builds.
 # renovate: datasource=git-refs depName=https://github.com/linux-sunxi/sunxi-tools

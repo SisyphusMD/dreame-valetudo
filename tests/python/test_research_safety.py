@@ -39,6 +39,42 @@ def test_every_destructive_research_flasher_gates_identity_before_unlocking() ->
         assert '"bypass"' not in text, name
 
 
+def test_every_research_fel_load_is_checked_before_fastboot() -> None:
+    for name in ("run_chain.py", "recover_stock.py", "confirm_autofel.py"):
+        text = (_TOOLS / name).read_text()
+        assert re.search(r'(?<!checked_)sf\("write"', text) is None, name
+        assert re.search(r'(?<!checked_)sf\("exe"', text) is None, name
+        assert text.count('checked_sf("write"') == 2, name
+        assert text.count('checked_sf("exe"') == 2, name
+
+
+def test_failed_fel_step_is_a_hard_stop() -> None:
+    safety = _load_safety()
+    for command in (
+        ("write", "0x28000", "fsbl.bin"),
+        ("exe", "0x28000"),
+        ("write", "0x4a000000", "payload.bin"),
+        ("exe", "0x4a000000"),
+    ):
+        with pytest.raises(RuntimeError, match="sunxi-fel"):
+            safety.require_fel_ok(1, "USB write failed", command)  # type: ignore[attr-defined]
+
+
+def test_stock_recovery_pins_both_genuine_manifest_hashes_without_asserts() -> None:
+    text = (_TOOLS / "recover_stock.py").read_text()
+    assert "87fd116e86e74a43d1578a6f8058e6b4489489478a0150595c74c001ea969555" in text
+    assert "0231b9b1cd3015845927c5445546c1621b2d6069b493cf197b435ebe0ff78540" in text
+    assert "assert len(toc0)" not in text
+    assert "assert toc1" not in text
+
+
+def test_oem_prep_warning_is_scoped_away_from_the_required_production_sequence() -> None:
+    chapter = (_ROOT / "docs" / "research" / "13-safety-recovery-and-dead-ends.md").read_text()
+    assert "never add `oem prep` to those research scripts" in chapter
+    assert "normal DustBuilder rooting path" in chapter
+    assert "explicitly requires `oem dust` then `oem prep`" in chapter
+
+
 def test_zero_efuse_read_is_inconclusive_not_permission_to_flash(tmp_path: Path) -> None:
     fel = tmp_path / "sunxi-fel"
     fel.write_text(

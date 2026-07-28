@@ -21,7 +21,7 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
-from dreame_valetudo.phases.image import _print_checklist, image
+from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
 from dreame_valetudo.phases.manage import clean
 from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
@@ -107,6 +107,23 @@ def _reject_ctx(
     if zip_:
         (robot.recon_dir / "dreame_recovery_backup.zip").write_bytes(b"\x00" * (2 << 20))
     return ctx
+
+
+def test_dustbuilder_prints_the_url_when_the_desktop_launcher_fails(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True])
+    attempted: list[tuple[str, str]] = []
+
+    def fail_open(_runner: object, system: str, url: str) -> bool:
+        attempted.append((system, url))
+        return False
+
+    monkeypatch.setattr("dreame_valetudo.phases.image.open_url", fail_open)
+    _open_dustbuilder(ctx)
+
+    assert attempted == [(ctx.system, ctx.dustbuilder_page)]
+    assert f"Open this yourself: {ctx.dustbuilder_page}" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory, tmp_path: Path) -> None:

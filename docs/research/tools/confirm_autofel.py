@@ -8,8 +8,9 @@ On confirmed FEL it auto-recovers to recovery_toc1.img.
 """
 from __future__ import annotations
 import argparse, importlib.util, subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
 
-from research_safety import compute_dust_token, require_expected_config
+from research_safety import compute_dust_token, require_expected_config, require_fel_ok
 
 SF         = "<work>/cache/sunxi-tools/sunxi-fel"
 DIST       = "<work>/cache/dist"
@@ -24,12 +25,15 @@ args = parser.parse_args()
 
 
 def sf(*a): return subprocess.run([SF, *a], capture_output=True, text=True)
+def checked_sf(*a):
+    result = sf(*a)
+    require_fel_ok(result.returncode, result.stdout + result.stderr, tuple(a))
 def log(m): print(m, flush=True)
 def fel_present() -> bool:
     r = sf("ver"); return r.returncode == 0 and "soc=" in (r.stdout + r.stderr)
 
 spec = importlib.util.spec_from_file_location("fbmod", "libexec/fastboot-libusb.py")
-fbmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(fbmod); fbmod.CHUNK = 65536
+fbmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(fbmod)
 
 def fb_present() -> bool:
     d, _, _ = fbmod.find_device(); return d is not None
@@ -40,8 +44,12 @@ def valetudo_up():
     except Exception: return None
 
 def bring_up_fastboot():
-    sf("write", "0x28000", FSBL); sf("exe", "0x28000"); time.sleep(6)
-    sf("write", "0x4a000000", PAYLOAD); sf("exe", "0x4a000000")
+    try:
+        checked_sf("write", "0x28000", FSBL); checked_sf("exe", "0x28000"); time.sleep(6)
+        checked_sf("write", "0x4a000000", PAYLOAD); checked_sf("exe", "0x4a000000")
+    except RuntimeError as exc:
+        log(f"ABORT: {exc}; refusing to continue to fastboot")
+        return None
     for _ in range(60):
         if fb_present():
             try: return fbmod.Fastboot()
@@ -50,6 +58,13 @@ def bring_up_fastboot():
     return None
 
 # ---- PHASE 1: wait for a (manual) FEL, then flash the self-signed toc1 ----
+for image, label in ((SELFSIGNED, "self-signed toc1"), (RECOVERY, "recovery toc1")):
+    try:
+        head = Path(image).read_bytes()[:4]
+    except OSError as exc:
+        log(f"ABORT: cannot read {label}: {exc}"); sys.exit(2)
+    if head != b"sunx":
+        log(f"ABORT: {label} is not a toc1 image"); sys.exit(2)
 log("PHASE 1: put the robot in FEL now to flash the self-signed toc1 (this FEL entry is expected/manual).")
 dl = time.time() + 300
 while time.time() < dl:

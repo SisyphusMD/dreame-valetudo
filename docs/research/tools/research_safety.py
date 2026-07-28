@@ -29,3 +29,10 @@ def compute_dust_token(config: str) -> str:
         raise ValueError("config value must be exactly 32 hex characters")
     raw = bytes.fromhex(config[:8])
     return bytes(value ^ key for value, key in zip(raw, _DUST_KEY, strict=True)).hex()
+
+
+def require_fel_ok(returncode: int, output: str, command: tuple[str, ...]) -> None:
+    """Fail a RAM-loader sequence at the first command that did not complete."""
+    if returncode != 0:
+        detail = output.strip() or "no diagnostic"
+        raise RuntimeError(f"sunxi-fel {' '.join(command)} failed: {detail}")

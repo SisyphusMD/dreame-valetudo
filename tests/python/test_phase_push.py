@@ -18,7 +18,7 @@ from conftest import CtxFactory
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import fetch as fetch_mod
-from dreame_valetudo.phases.push import push
+from dreame_valetudo.phases.push import _device_conf_value, push
 from dreame_valetudo.run import Result
 
 _CFG = "abcdef0123456789abcdef0123456789"
@@ -58,6 +58,10 @@ def _text(
             return Result(argv, 0, key + "\n", "")  # normal unit: key already present
         if "did.txt" in cmd:
             return Result(argv, 0, did + "\n", "")
+        if '$1 == "did"' in cmd:
+            return Result(argv, 0, did + "\n", "")
+        if '$1 == "key"' in cmd:
+            return Result(argv, 0, key + "\n", "")
         return Result(argv, 0, "", "")
 
     return responder
@@ -618,6 +622,37 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
     assert push(ctx) is True  # completes; nothing to restore, so it just informs
     assert not any("key_orig.txt" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_push_does_not_repair_identity_after_device_conf_read_failure(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    normal = _text(did="12345")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "device.conf" in argv[-1] and argv[-1].startswith("awk -F="):
+            return Result(argv, 255, "", "SSH read failed")
+        return normal(argv)  # type: ignore[operator]
+
+    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    assert push(ctx) is True
+    remotes = [call[-1] for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    assert not any("did_orig.txt" in remote or "key_orig.txt" in remote for remote in remotes)
+    assert "Skipping automatic repair" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_device_conf_read_preserves_the_file_read_exit_status(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        command = argv[-1]
+        assert command.startswith("awk -F=")
+        assert "|" not in command
+        return Result(argv, 1, "", "device.conf unreadable")
+
+    ctx = make_ctx(responder=responder)
+    assert _device_conf_value(ctx, None, "did") is None
 
 
 def test_push_warns_on_out_of_range_negative_did(make_ctx: CtxFactory) -> None:

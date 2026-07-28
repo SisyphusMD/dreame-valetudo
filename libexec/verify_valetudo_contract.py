@@ -175,8 +175,8 @@ def verify(upstream: Path) -> list[str]:
         else:
             source = implementation.read_text()
             identities = (
-                f'"dreame.vacuum.{profile.model_code}',
-                f'"mova.vacuum.{profile.model_code}',
+                f'"dreame.vacuum.{profile.model_code}"',
+                f'"mova.vacuum.{profile.model_code}"',
             )
             if not any(identity in source for identity in identities):
                 issues.append(

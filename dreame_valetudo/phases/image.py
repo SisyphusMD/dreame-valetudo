@@ -22,6 +22,7 @@ from ..dustbuilder import (
     form_guide,
     forms_verified_on,
 )
+from ..platform_env import open_url
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
@@ -88,18 +89,16 @@ def _open_dustbuilder(ctx: Context) -> None:
         ctx.console.info(f"You already opened the builder for this robot ({receipt.read_text().strip()}). "
                          f"If that tab is still open, finish it there; the page is: "
                          f"{ctx.dustbuilder_page}")
-        if (ctx.interactive and shutil.which("open")
-                and ctx.console.confirm("Reopen the dustbuilder page now?")):
-            ctx.runner.run(["open", ctx.dustbuilder_page], check=False)
-            reopened = True
+        if ctx.interactive and ctx.console.confirm("Reopen the dustbuilder page now?"):
+            reopened = open_url(ctx.runner, ctx.system, ctx.dustbuilder_page)
+            if not reopened:
+                ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
     else:
         # Fail closed: declining (or a non-tty EOF) STOPS here rather than silently watching
         # ~/Downloads for a build the user never started.
         if not ctx.console.confirm("Open the dustbuilder in your browser now?"):
             abort("No problem — re-run 'dreame-valetudo' for this robot when ready.")
-        if shutil.which("open"):
-            ctx.runner.run(["open", ctx.dustbuilder_page], check=False)
-        else:
+        if not open_url(ctx.runner, ctx.system, ctx.dustbuilder_page):
             ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
     # The receipt is the floor that decides whether a downloaded zip belongs to this build, so it
     # moves forward whenever a build is (re)ordered — but NOT on a plain re-run, which would

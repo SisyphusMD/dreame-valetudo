@@ -15,6 +15,7 @@ from dreame_valetudo.workspace import (
     Workspace,
     backups_dir,
     base_dir,
+    recovery_dump_valid,
     recovery_zip_valid,
     robot_dirs,
     robot_tag,
@@ -82,6 +83,23 @@ def test_state_markers_are_private_even_under_a_permissive_umask(tmp_path: Path)
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in robot.state_dir.iterdir())
 
 
+def test_failed_atomic_state_replacement_preserves_the_prior_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = Robot(tmp_path / "r2416-abc")
+    robot.state_set("recon", "prior")
+
+    def fail_replace(_source: object, _destination: object) -> None:
+        raise OSError("simulated full disk")
+
+    monkeypatch.setattr(workspace_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="full disk"):
+        robot.state_set("recon", "replacement")
+
+    assert robot.state_get("recon") == "prior"
+    assert not list(robot.state_dir.glob(".*.tmp"))
+
+
 @pytest.mark.parametrize("error", [RuntimeError("encrypted"), NotImplementedError("compression")])
 def test_recovery_zip_validation_treats_unsupported_members_as_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception,
@@ -97,7 +115,7 @@ def test_recovery_zip_validation_treats_unsupported_members_as_invalid(
             return [
                 SimpleNamespace(
                     filename=f"dustx{number}.bin",
-                    file_size=workspace_module.RECOVERY_DUMP_MIN_BYTES,
+                    file_size=workspace_module.RECOVERY_DUMP_BYTES,
                 )
                 for number in (100, 101, 102)
             ]
@@ -107,6 +125,16 @@ def test_recovery_zip_validation_treats_unsupported_members_as_invalid(
 
     monkeypatch.setattr(workspace_module.zipfile, "ZipFile", lambda _path: UnsupportedZip())
     assert recovery_zip_valid(tmp_path / "unsupported.zip") is False
+
+
+def test_large_aligned_partial_recovery_slice_is_not_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_BYTES", 1024)
+    partial = tmp_path / "dustx100.bin"
+    partial.write_bytes(b"x" * 768)  # large and aligned, but still an interrupted transfer
+    assert partial.stat().st_size % 256 == 0
+    assert recovery_dump_valid(partial) is False
 
 
 # --- display name (folder slug vs the human name) ---------------------------------------------

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 
 from ..constants import ROBOT_AP_IP
 from ..context import Context
+from ..platform_env import open_url
 from ..profiles import known_model_key_for_dir, load_profile
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
@@ -49,9 +49,10 @@ def ui(ctx: Context) -> bool:
         if not up:
             p.close(done=False)
     if up:
-        if shutil.which("open"):
-            ctx.runner.run(["open", url], check=False)
-        ctx.console.say(f"Valetudo is up — opened {url}")
+        if open_url(ctx.runner, ctx.system, url):
+            ctx.console.say(f"Valetudo is up — opened {url}")
+        else:
+            ctx.console.say(f"Valetudo is up — open {url}")
         return True
     ctx.console.warn(f"Valetudo didn't identify itself at {url} after ~2 min. If a different "
                      "page answered, it is usually your router; join the robot's AP. Otherwise "

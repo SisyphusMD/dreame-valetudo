@@ -37,8 +37,9 @@ standalone libusb fastboot client, **`libexec/fastboot-libusb.py`**, that matche
 tooling imports it directly (`fbmod = import libexec/fastboot-libusb.py`) to run `getvar`, `oem`,
 `download`, `flash:…`, and the `upload` read-back.
 
-Repo bug worth knowing: the client's default `CHUNK = 1 << 20` **EIOs on this Mac** for both upload
-and download. Use 64 KiB (`CHUNK = 65536`, ~16 MiB/s). Every tool here sets it.
+The client enforces 64 KiB USB transfers (`CHUNK = 65536`, about 16 MiB/s). The former 1 MiB
+default EIO'd on this Mac during both upload and download; research tools rely on the shared safe
+default rather than overriding it independently.
 
 ## Recon (read-only)
 

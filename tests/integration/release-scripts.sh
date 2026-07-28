@@ -14,6 +14,12 @@ calls="$tmp/curl.log"
 cat > "$tmp/curl" <<EOF
 #!/usr/bin/env bash
 printf 'curl %s\n' "\$*" >> "$calls"
+prev=""; out=""
+for arg in "\$@"; do
+  [ "\$prev" = -o ] && out="\$arg"
+  prev="\$arg"
+done
+if [ -n "\$out" ]; then printf 'previous asset bytes' > "\$out"; exit 0; fi
 u="\$*"
 case "\$u" in
   *assets*)
@@ -92,7 +98,7 @@ case "\$u" in
   *assets*)
     case "\$u" in
       *"attachment=@"*|*"--data-binary"*) : ;;
-      *) printf '[{"name":"dreame-valetudo_amd64.deb","id":42}]\n' ;;
+      *) printf '[{"name":"dreame-valetudo_amd64.deb","id":42,"browser_download_url":"https://old.example/asset"}]\n' ;;
     esac ;;
   *"/releases/tags/"*) printf '{"id":999}\n' ;;
   *"/releases"*) printf '{"id":999}\n' ;;
@@ -114,6 +120,57 @@ bash "$root/packaging/forgejo-release.sh" forge.example tok v9.9.9 "$notes" "$as
 grep -Eq 'DELETE .*forge\.example/api/v1/repos/SisyphusMD/dreame-valetudo/releases/999/assets/42' "$calls" \
   || fail "forgejo: same-named asset delete must hit /releases/<id>/assets/<id>"
 echo "  forgejo-release.sh: asset delete uses the /releases/<id>/assets/<id> URL OK"
+
+# ---- failed asset REPLACE: restore the preserved old bytes before returning failure -----------
+# Both APIs require delete-before-upload for a same-named asset. If the new upload fails after the
+# delete, the helper must restore the prior bytes or a two-copy quorum can collapse to one copy.
+cat > "$tmp/curl" <<EOF
+#!/usr/bin/env bash
+printf 'curl %s\n' "\$*" >> "$calls"
+prev=""; out=""
+for arg in "\$@"; do
+  [ "\$prev" = -o ] && out="\$arg"
+  prev="\$arg"
+done
+if [ -n "\$out" ]; then printf ORIGINAL > "\$out"; exit 0; fi
+u="\$*"
+case "\$u" in
+  *"-X DELETE"*) : > "$tmp/deleted" ;;
+  *"attachment=@$asset"*|*"--data-binary @$asset"*) exit 22 ;;
+  *"attachment=@"*|*"--data-binary @"*)
+    upload=""
+    for arg in "\$@"; do
+      case "\$arg" in attachment=@*) upload="\${arg#attachment=@}" ;; @*) upload="\${arg#@}" ;; esac
+    done
+    [ "\$(cat "\$upload")" = ORIGINAL ] || exit 23
+    printf 'RESTORED %s\n' "\$upload" >> "$calls" ;;
+  *assets*)
+    if [ -e "$tmp/deleted" ]; then
+      printf '[]\n'
+    else
+      printf '[{"name":"dreame-valetudo_amd64.deb","id":42,"browser_download_url":"https://old.example/asset"}]\n'
+    fi ;;
+  *"/releases/tags/"*) printf '{"id":999}\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/curl"
+
+for forge in forgejo github; do
+  rm -f "$tmp/deleted"
+  : > "$calls"
+  if [ "$forge" = forgejo ]; then
+    command=(bash "$root/packaging/forgejo-release.sh" forge.example tok v9.9.9 "$notes" "$asset")
+  else
+    command=(bash "$root/packaging/github-release.sh" tok v9.9.9 "$notes" "$asset")
+  fi
+  if "${command[@]}" >/dev/null 2>&1; then
+    fail "$forge reported success after the replacement upload failed"
+  fi
+  grep -q '^RESTORED ' "$calls" \
+    || fail "$forge did not restore the preserved asset after replacement failed"
+done
+echo "  failed replacement: previous asset restored before both publishers return failure OK"
 
 # ---- concurrent creator: lookup misses, create loses the race, second lookup must recover ----
 cat > "$tmp/curl" <<EOF

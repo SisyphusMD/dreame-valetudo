@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 
 from ..console import die
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..log import scrub
+from ..platform_env import open_url
 from ..profiles import impl_class_for_model
 from ..ssh import (
     is_dreame_ap,
@@ -24,7 +24,7 @@ from ..ssh import (
     ssh_failure_guidance,
 )
 from ..util import parse_mikey, repair_did
-from .push import _MIKEY_RE, _apply_did_fix, _apply_key_fix
+from .push import _MIKEY_RE, _apply_did_fix, _apply_key_fix, _device_conf_value
 
 _TARGET = f"root@{ROBOT_AP_IP}"
 _DEVICE_CONF = "/data/config/miio/device.conf"
@@ -79,16 +79,26 @@ def fix_did(ctx: Context) -> bool:
         robot_ssh(ctx.runner, _TARGET, f"cat {_DID_TXT} 2>/dev/null", key=key, check=False)
         .stdout.split()
     )
+    configured = _device_conf_value(ctx, key, "did")
     if not did:
         die(f"Couldn't read {_DID_TXT} on the robot.")
     ctx.console.info(f"Factory deviceId ({_DID_TXT}): {did}")
-    if re.fullmatch(r"[0-9]+", did):
+    if re.fullmatch(r"[0-9]+", did) and configured == did:
         ctx.console.info("That deviceId is already a positive integer — the negative-did bug "
                          "isn't your issue.")
         return True
-    if not re.fullmatch(r"-[0-9]+", did):
+    if re.fullmatch(r"[0-9]+", did) and configured is None:
+        die("Couldn't inspect device.conf, so the positive factory deviceId cannot be classified "
+            "as matching or stale. Nothing was changed; fix the SSH/read error and retry.")
+    pos: str | None
+    if re.fullmatch(r"[0-9]+", did):
+        pos = did
+        ctx.console.warn("did.txt is positive but device.conf does not match; a prior repair was "
+                         "interrupted and needs to be completed.")
+    elif not re.fullmatch(r"-[0-9]+", did):
         die(f"deviceId '{did}' isn't a plain integer — refusing to touch it. Share this output.")
-    pos = repair_did(did)
+    else:
+        pos = repair_did(did)
     if pos is None:
         die(f"deviceId '{did}' doesn't map to a valid uint32 — refusing to write it.")
 
@@ -118,14 +128,25 @@ def fix_key(ctx: Context) -> bool:
         robot_ssh(ctx.runner, _TARGET, f"cat {_KEY_TXT} 2>/dev/null", key=key, check=False)
         .stdout.split()
     )
-    if cur:
+    configured = _device_conf_value(ctx, key, "key")
+    if cur and configured == cur:
         ctx.console.info(f"Factory key.txt already holds a key ({_KEY_TXT}) — the empty-key issue "
                          "isn't yours.")
         return True
-    mikey = parse_mikey(
-        robot_ssh(ctx.runner, _TARGET, "dreame_release.na -c 7 2>/dev/null", key=key, check=False)
-        .stdout
-    )
+    if cur and configured is None:
+        die("Couldn't inspect device.conf, so the populated factory key cannot be classified as "
+            "matching or stale. Nothing was changed; fix the SSH/read error and retry.")
+    mikey: str | None
+    if cur:
+        mikey = cur
+        ctx.console.warn("key.txt is populated but device.conf does not match; a prior repair was "
+                         "interrupted and needs to be completed.")
+    else:
+        mikey = parse_mikey(
+            robot_ssh(
+                ctx.runner, _TARGET, "dreame_release.na -c 7 2>/dev/null", key=key, check=False
+            ).stdout
+        )
     if mikey is None:
         die("Couldn't read a MI_KEY from secure storage (dreame_release.na -c 7). Share this "
             "output and try the manual steps in the model's supported-robots comments.")
@@ -241,9 +262,11 @@ def fix_impl(ctx: Context) -> None:
         if not up:
             p.close(done=False)
     if up:
-        if shutil.which("open"):
-            ctx.runner.run(["open", f"http://{ROBOT_AP_IP}"], check=False)
-        ctx.console.say(f"Valetudo is UP — opened http://{ROBOT_AP_IP}")
+        url = f"http://{ROBOT_AP_IP}"
+        if open_url(ctx.runner, ctx.system, url):
+            ctx.console.say(f"Valetudo is UP — opened {url}")
+        else:
+            ctx.console.say(f"Valetudo is UP — open {url}")
         ctx.console.info("Persistent: the fix is in /data/valetudo_config.json, so it survives "
                          "reboots.")
         return
