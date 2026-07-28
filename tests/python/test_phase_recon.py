@@ -201,8 +201,8 @@ def test_auxiliary_identity_read_revalidates_a_stale_sunxi_cache(
         raise Die("pin revalidation reached")
 
     monkeypatch.setattr(recon_module, "doctor", pin_revalidation)
-    with pytest.raises(Die, match="pin revalidation reached"):
-        read_identity_from_robot(ctx)
+    assert read_identity_from_robot(ctx) == {}
+    assert "pin revalidation reached" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_auxiliary_identity_read_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
@@ -213,8 +213,8 @@ def test_auxiliary_identity_read_checks_the_fastboot_host_before_fel(make_ctx: C
 
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder)
     _dist_ready(ctx)
-    with pytest.raises(Die, match="fastboot client"):
-        read_identity_from_robot(ctx)
+    assert read_identity_from_robot(ctx) == {}
+    assert "fastboot client" in ctx.console.text()  # type: ignore[attr-defined]
     assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
 
 

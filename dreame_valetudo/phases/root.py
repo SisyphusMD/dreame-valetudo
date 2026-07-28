@@ -127,7 +127,8 @@ def root(ctx: Context, *, force: bool = False) -> None:
     # A real first flash (or explicit --force reflash) still self-provisions its prerequisites.
     if not _sunxi_ready(ctx):
         doctor(ctx)
-    if not robot.state_has("image"):
+    if (not robot.state_has("image")
+            or any(not (robot.fw_dir / name).is_file() for name in FEL_IMAGE_FILES)):
         image(ctx)
     ctx.console.phase("Flash the rooted image — DESTRUCTIVE", index=2, total=3)
     missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]

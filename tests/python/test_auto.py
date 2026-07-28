@@ -77,6 +77,26 @@ def test_auto_pushes_then_installs_valetudo_when_rooted(
     assert any("resuming" in msg for _k, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_auto_does_not_offer_the_dropped_ap_immediately_after_push(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_phases(monkeypatch)
+
+    def successful_push(ctx: object) -> bool:
+        calls.append(("push-success", (), {}))
+        ctx.robot.state_set("valetudo")  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(cli, "push", successful_push)
+    ctx = make_ctx(robot_name="Bot")
+    ctx.need_robot().state_set("rooted")
+
+    cli.auto(ctx, [])
+
+    assert [name for name, _a, _k in calls] == ["push-success"]
+    assert "All phases complete" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
 def test_auto_propagates_ssh_auth_failure_without_showing_ap_fallback(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
