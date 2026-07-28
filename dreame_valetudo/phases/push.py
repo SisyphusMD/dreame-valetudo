@@ -20,7 +20,7 @@ from ..console import die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..session import records_step
-from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base
+from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
 from ..util import parse_mikey, repair_did
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
 from .fetch import fetch
@@ -139,15 +139,15 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     robot = ctx.need_robot()
     if key is None:
         resolved = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base)
+        if ctx.env.get("DREAME_SSHKEY") and not Path(resolved).is_file():
+            die(f"SSH key not found: {resolved} (from DREAME_SSHKEY).")
         key = resolved if Path(resolved).is_file() else None
         if key:
             ctx.console.info(f"SSH key: {key}")
     else:
-        # A caller-supplied key adds `-i` only if it names a real file; otherwise drop it and
-        # fall back to the default identity.
-        key = key if Path(key).is_file() else None
-        if key:
-            ctx.console.info(f"SSH key: {key}")
+        if not Path(key).is_file():
+            die(f"SSH key not found: {key} (from the command line).")
+        ctx.console.info(f"SSH key: {key}")
 
     if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
         fetch(ctx)  # self-provision the binary, then re-check
@@ -169,7 +169,11 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
         die("No problem — do steps 1-3 above, then re-run.")
 
-    if not robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False).ok:
+    probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)
+    if not probe.ok:
+        guidance = ssh_failure_guidance(probe, key, ctx.home)
+        if guidance is not None:
+            die(guidance)
         ctx.console.warn(f"Can't reach {_TARGET}. Join the ROBOT's own Wi-Fi AP (hold the two "
                          "OUTER buttons), then re-run.")
         return False

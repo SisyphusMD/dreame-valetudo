@@ -31,6 +31,40 @@ def _reachable_dreame(argv: tuple[str, ...]) -> Result | None:
     return None
 
 
+def test_fix_refuses_a_missing_env_override_before_ssh(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-key"
+    ctx = make_ctx(env={"DREAME_SSHKEY": str(missing)})
+    with pytest.raises(Die, match=r"SSH key not found: .*missing-key.*DREAME_SSHKEY"):
+        fix_did(ctx)
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_fix_reports_auth_failure_with_the_offered_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = tmp_path / "id_robot"
+    key.write_text("PRIVATE")
+    ctx = make_ctx(
+        env={"DREAME_SSHKEY": str(key)},
+        responder=lambda argv: Result(argv, 255, "", "Too many authentication failures"),
+    )
+    with pytest.raises(Die, match="SSH authentication failed") as exc:
+        fix_did(ctx)
+    assert str(key) in str(exc.value)
+    assert "usually your router" in str(exc.value)
+    assert "If already on the robot AP" in str(exc.value)
+
+
+def test_fix_keeps_ap_advice_for_connection_failures(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(
+        responder=lambda argv: Result(argv, 255, "", "ssh: connect timed out"),
+    )
+    with pytest.raises(Die, match="join the robot's Wi-Fi AP"):
+        fix_did(ctx)
+
+
 def test_fix_did_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None:
     """A piped (non-tty) run must ABORT at the confirm, never rewrite did.txt or reboot."""
     def responder(argv: tuple[str, ...]) -> Result:

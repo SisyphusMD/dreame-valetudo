@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from .console import Console, die
 from .constants import ROBOT_SSH_OPTS
+from .log import scrub
 from .run import Result, Runner
 
 if TYPE_CHECKING:
@@ -27,6 +28,22 @@ def ssh_base(target: str, key: str | Path | None) -> list[str]:
         argv += ["-i", str(key)]
     argv.append(target)
     return argv
+
+
+def ssh_failure_guidance(result: Result, key: str | Path | None, home: Path) -> str | None:
+    """Actionable guidance for failures that prove SSH was reached; connection failures return
+    None so callers can keep their robot-AP instructions."""
+    detail = scrub(" ".join(result.stderr.split()), home)
+    lowered = detail.lower()
+    offered = f" using SSH key {scrub(str(key), home)}" if key else " using agent/default keys"
+    network = (" First confirm you're on the ROBOT's Wi-Fi AP; on your home network this address "
+               "is usually your router.")
+    if "permission denied" in lowered or "too many authentication failures" in lowered:
+        return (f"SSH authentication failed{offered}: {detail or 'the SSH server rejected the key.'}"
+                f"{network} If already on the robot AP, it did not receive or accept this key.")
+    if "no matching host key" in lowered:
+        return f"SSH negotiation failed{offered}: {detail}.{network}"
+    return None
 
 
 def robot_ssh(

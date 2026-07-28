@@ -16,7 +16,13 @@ from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..log import scrub
 from ..profiles import impl_class_for_model
-from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base
+from ..ssh import (
+    is_dreame_ap,
+    resolve_sshkey,
+    robot_ssh,
+    ssh_base,
+    ssh_failure_guidance,
+)
 from ..util import parse_mikey, repair_did
 from .push import _MIKEY_RE, _apply_did_fix, _apply_key_fix
 
@@ -37,11 +43,17 @@ def _key(ctx: Context) -> Path | None:
     if Path(k).is_file():
         ctx.console.info(f"SSH key: {k}")
         return k
+    if ctx.env.get("DREAME_SSHKEY"):
+        die(f"SSH key not found: {k} (from DREAME_SSHKEY).")
     return None
 
 
 def _require_robot_ap(ctx: Context, key: Path | None) -> None:
-    if not robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False).ok:
+    probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)
+    if not probe.ok:
+        guidance = ssh_failure_guidance(probe, key, ctx.home)
+        if guidance is not None:
+            die(guidance)
         die(f"Can't reach {_TARGET} — join the robot's Wi-Fi AP (hold the two OUTER buttons), "
             "then re-run.")
     if not is_dreame_ap(ctx.runner, _TARGET, key):

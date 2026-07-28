@@ -8,6 +8,7 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo import cli
+from dreame_valetudo.console import Die
 
 _PHASE_NAMES = ("doctor", "fetch", "recon", "image", "root", "push", "valetudo", "uart")
 
@@ -73,6 +74,27 @@ def test_auto_pushes_then_installs_valetudo_when_rooted(
     cli.auto(ctx, [])
     names = [name for name, _a, _k in calls]
     assert names == ["doctor", "fetch", "recon", "push", "valetudo"]
+
+
+def test_auto_propagates_ssh_auth_failure_without_showing_ap_fallback(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_phases(monkeypatch)
+
+    def auth_failure(_ctx: object) -> bool:
+        calls.append(("push-auth-failure", (), {}))
+        raise Die("SSH authentication failed using SSH key /wrong/key")
+
+    monkeypatch.setattr(cli, "push", auth_failure)
+    ctx = make_ctx(robot_name="Bot")
+    assert ctx.robot is not None
+    ctx.robot.state_set("rooted")
+
+    with pytest.raises(Die, match="SSH authentication failed"):
+        cli.auto(ctx, [])
+    names = [name for name, _a, _k in calls]
+    assert "push-auth-failure" in names
+    assert "valetudo" not in names
 
 
 def test_auto_reports_complete_when_valetudo_already_installed(
