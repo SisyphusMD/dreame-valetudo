@@ -1,8 +1,5 @@
 name: DustBuilder forms
 
-permissions:
-  contents: read
-
 # The rooting flow never depends on this network check. It runs weekly, on demand, and whenever
 # its parser/goldens change; only an all-model pass advances the date shown by the installed tool.
 on:

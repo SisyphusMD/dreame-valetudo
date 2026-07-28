@@ -1,8 +1,5 @@
 name: Prerelease
 
-permissions:
-  contents: read
-
 # On-demand dev/test build, same idea as Release but without cutting a real version. Dispatch from
 # any branch and pick the target bump; this stamps an `-rc.N` version onto a TAG only — the branch,
 # CHANGELOG, and README are never touched. The tag triggers publish.yml + release-macos.yml, which

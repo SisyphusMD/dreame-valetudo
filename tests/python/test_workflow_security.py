@@ -51,12 +51,14 @@ def test_temporary_apple_credentials_are_removed_by_the_consuming_steps() -> Non
     assert "rm -f notary.p8" in _step(text, "Sign, assemble, package, notarize, staple")
 
 
-def test_workflow_tokens_default_read_only_and_only_macos_publish_can_write() -> None:
-    for workflow in (*_FORGEJO, _MACOS):
-        text = workflow.read_text()
-        assert "\npermissions:\n  contents: read\n" in text, workflow
+def test_forgejo_workflows_do_not_use_unsupported_permissions_field() -> None:
+    for workflow in _FORGEJO:
+        assert "permissions:" not in workflow.read_text(), workflow
 
+
+def test_github_token_defaults_read_only_and_only_macos_publish_can_write() -> None:
     macos = _MACOS.read_text()
+    assert "\npermissions:\n  contents: read\n" in macos
     build = macos[macos.index("  build:\n"):macos.index("\n  publish:\n")]
     publish = macos[macos.index("  publish:\n"):]
     assert "contents: write" not in build
