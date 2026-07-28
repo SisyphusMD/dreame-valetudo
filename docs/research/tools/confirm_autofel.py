@@ -7,7 +7,9 @@ FEL device appears with no human touching the robot, that directly confirms boot
 On confirmed FEL it auto-recovers to recovery_toc1.img.
 """
 from __future__ import annotations
-import importlib.util, subprocess, sys, time, urllib.request, urllib.error
+import argparse, importlib.util, subprocess, sys, time, urllib.request, urllib.error
+
+from research_safety import compute_dust_token, require_expected_config
 
 SF         = "<work>/cache/sunxi-tools/sunxi-fel"
 DIST       = "<work>/cache/dist"
@@ -16,8 +18,9 @@ PAYLOAD    = f"{DIST}/payload.bin"
 SELFSIGNED = "<research>/d10s-test/selfsigned_test_toc1.img"
 RECOVERY   = "<research>/d10s-test/recovery_toc1.img"
 IP         = "<robot-ip>"
-EXPECT_PREFIX = "d1770b9a"
-TOKENS     = ["18dbb75c", "bypass"]
+parser = argparse.ArgumentParser()
+parser.add_argument("--expect-config-prefix", required=True)
+args = parser.parse_args()
 
 
 def sf(*a): return subprocess.run([SF, *a], capture_output=True, text=True)
@@ -57,13 +60,15 @@ else:
 
 fb = bring_up_fastboot()
 if fb is None: log("ERROR: no fastboot after payload load."); sys.exit(1)
-cfg = fb.getvar("config"); log("config: " + cfg)
-if not cfg.startswith(EXPECT_PREFIX): log("ABORT: wrong robot."); sys.exit(2)
-for tok in TOKENS:
-    try: fb.oem("dust " + tok); log(f"oem dust OK ({tok})"); break
-    except Exception as e: log(f"dust {tok}: {e}")
-else:
-    log("ABORT: no dust token."); sys.exit(1)
+try:
+    cfg = require_expected_config(fb.getvar("config"), args.expect_config_prefix)
+except ValueError as exc:
+    log(f"ABORT: {exc}"); sys.exit(2)
+log("config verified: " + cfg[:8] + "…")
+try:
+    fb.oem("dust " + compute_dust_token(cfg)); log("oem dust OK (config-derived token)")
+except Exception as exc:
+    log(f"ABORT: config-derived dust token rejected ({exc})"); sys.exit(1)
 log("Flashing SELF-SIGNED toc1 (no prep)...")
 fb.flash("toc1", SELFSIGNED); log("FLASHED self-signed toc1.")
 
@@ -99,10 +104,15 @@ if result == "AUTO-FEL":
     log("PHASE 4: recovering to recovery_toc1.img (device is already in FEL)...")
     fb2 = bring_up_fastboot()
     if fb2 is None: log("recovery: no fastboot; re-enter FEL manually."); sys.exit(1)
-    log("config: " + fb2.getvar("config"))
-    for tok in TOKENS:
-        try: fb2.oem("dust " + tok); break
-        except Exception: pass
+    try:
+        cfg2 = require_expected_config(fb2.getvar("config"), args.expect_config_prefix)
+    except ValueError as exc:
+        log(f"recovery ABORT: {exc}; nothing written"); sys.exit(2)
+    log("recovery config verified: " + cfg2[:8] + "…")
+    try:
+        fb2.oem("dust " + compute_dust_token(cfg2))
+    except Exception as exc:
+        log(f"recovery ABORT: dust token rejected ({exc}); nothing written"); sys.exit(1)
     fb2.flash("toc1", RECOVERY); log("FLASHED recovery_toc1.img.")
     try: fb2.reboot(); log("reboot sent — robot should return to Valetudo.")
     except Exception as e: log(f"reboot note: {e}")

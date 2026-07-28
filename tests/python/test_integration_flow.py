@@ -42,7 +42,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
             dest = Path(argv[argv.index("-d") + 1])
             for f in _FW:
                 if f == "check.txt":
-                    (dest / f).write_text("DUST\n")
+                    (dest / f).write_text("626153c7\n")
                 else:
                     with (dest / f).open("wb") as image_file:
                         image_file.truncate(_FW_SIZES[f])
@@ -87,7 +87,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
                  if c[:2] == ("python3", "/x/fastboot-libusb.py") and len(c) > 3
                  and c[2] in ("oem", "flash")]
     assert flash_ops == [
-        ("oem", "dust", "DUST"), ("oem", "prep"),
+        ("oem", "dust", "626153c7"), ("oem", "prep"),
         ("flash", "toc1", "toc1.img"),
         ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
         ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),

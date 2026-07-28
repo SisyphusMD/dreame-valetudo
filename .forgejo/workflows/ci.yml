@@ -28,7 +28,7 @@ jobs:
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh)
+            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
           docker cp . "$cid":/work
           check_rc=0
           docker start -a "$cid" || check_rc=$?
@@ -61,6 +61,8 @@ jobs:
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
           ruff check dreame_valetudo libexec tests/python
           mypy
+          python -m compileall -q docs/research/tools
+          python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
   build:

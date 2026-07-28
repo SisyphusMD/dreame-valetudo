@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # read_efuse.sh — NON-DESTRUCTIVELY read the ROTPK / secure-boot state of a Dreame gen3 (MR813,
-# Allwinner sun50i, SID @ 0x03006000) over USB FEL, and report BURNED vs UNBURNED.
+# Allwinner sun50i, SID @ 0x03006000) over USB FEL, and report BURNED vs INCONCLUSIVE.
 #
 # This performs ONLY MMIO reads plus SID_PRCTL "read-key" writes (which select a key to shadow into
 # SID_RDKEY — they are NOT fuse burns). Nothing is flashed. It replicates stock boot0's exact
@@ -25,8 +25,20 @@ words=()
 for off in 0x70 0x74 0x78 0x7c 0x80 0x84 0x88 0x8c; do
     prctl=$(printf '0x%08x' $(( (off << 16) | 0xac02 )) )   # key 0xAC | read-start 0x2
     "$FEL" writel "$SID_PRCTL" "$prctl"
+    ready=0
+    for _ in {1..100}; do
+        ctl=$("$FEL" readl "$SID_PRCTL")
+        ctl=${ctl##*0x}
+        [[ "$ctl" =~ ^[0-9a-fA-F]{1,8}$ ]] \
+            || { echo "ERROR: malformed SID_PRCTL read: $ctl" >&2; exit 1; }
+        if (( (16#$ctl & 2) == 0 )); then ready=1; break; fi
+    done
+    (( ready == 1 )) || { echo "ERROR: SID read stayed busy at eFuse offset $off" >&2; exit 1; }
     w=$("$FEL" readl "$SID_RDKEY")                            # e.g. "0x78b2c0ac"
-    w=${w##*0x}; w=${w:-0}; w=$(printf '%08x' "0x${w}")
+    w=${w##*0x}
+    [[ "$w" =~ ^[0-9a-fA-F]{1,8}$ ]] \
+        || { echo "ERROR: malformed SID_RDKEY read: $w" >&2; exit 1; }
+    w=$(printf '%08x' "0x${w}")
     words+=("$w")
 done
 
@@ -45,8 +57,9 @@ echo
 
 # --- verdict ---
 if [[ "$hash" =~ ^0*$ ]]; then
-    echo "==> ROTPK is ALL-ZERO  =>  UNBURNED (secure boot NOT enforced)."
-    echo "    boot0 takes 'don't have rotpk, skip check' -> a self-signed toc1 WILL boot on this unit."
+    echo "==> ROTPK read is ALL-ZERO  =>  INCONCLUSIVE."
+    echo "    Secure-read masking can return zeros for a burned fuse. This does NOT authorize a"
+    echo "    self-signed flash; hardware acceptance or a trusted secure-context read is required."
 else
     echo "==> ROTPK is NON-ZERO  =>  BURNED (secure boot ENFORCED)."
     echo "    boot0 takes 'have rotpk, do check' -> only the matching signing key boots."

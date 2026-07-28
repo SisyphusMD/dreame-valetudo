@@ -69,7 +69,9 @@ jobs:
           # supply one. Built against the SYSTEM ncurses (every Mac has it, and its terminfo), so
           # only libevent has to travel with the bundle.
           TMUX="$(read_pin TMUX_VERSION)"
+          TMUX_SHA="$(read_pin TMUX_SHA256)"
           curl -fsSL "https://github.com/tmux/tmux/releases/download/${TMUX}/tmux-${TMUX}.tar.gz" -o /tmp/tmux.tgz
+          printf '%s  %s\n' "$TMUX_SHA" /tmp/tmux.tgz | shasum -a 256 -c -
           tar -xzf /tmp/tmux.tgz -C /tmp
           (cd "/tmp/tmux-${TMUX}" && ./configure >/dev/null && make -j3 >/dev/null)
           cp "/tmp/tmux-${TMUX}/tmux" .

@@ -23,8 +23,13 @@ rel_wait_for_tag "$api/git/ref/tags/$tag" || { echo "tag $tag never appeared on 
 pre=false; case "$tag" in *-*) pre=true ;; esac
 id="$(rel_release_id "$api/releases" "$tag")"
 if [ -z "$id" ]; then
-  id=$(curl -sSf "${auth[@]}" -X POST "$api/releases" \
-    -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,prerelease:$pre}')" | jq -r .id)
+  if created=$(curl -sSf "${auth[@]}" -X POST "$api/releases" \
+      -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,prerelease:$pre}')"); then
+    id=$(jq -r .id <<<"$created")
+  else
+    # Another publisher can create the same release after our lookup but before this POST.
+    id="$(rel_release_id "$api/releases" "$tag")"
+  fi
 fi
 [ -n "$id" ] && [ "$id" != "null" ] || { echo "could not create/find GitHub release for $tag" >&2; exit 1; }
 echo "GitHub release id: $id"

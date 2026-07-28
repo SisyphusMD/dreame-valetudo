@@ -477,7 +477,13 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
             raise Die("The model cannot be changed after rooting — the flashed image was built "
                       "for the saved model.")
         # The command exists specifically to replace a saved choice, so it must not silently load it.
+        prior_model = ctx.profile.key
         select_model(ctx, use_env=False)
+        if ctx.profile.key != prior_model and robot.state_has("image"):
+            robot.remember_image()
+            robot.state_clear("image")
+            ctx.console.warn("The model changed, so the previously staged firmware was disarmed. "
+                             "Run 'image' again for the new model before flashing.")
         return 0
     if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
         raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "

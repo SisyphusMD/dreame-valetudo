@@ -22,9 +22,9 @@ The BROM/FEL sits below toc0, so every writable layer is reversible over USB. Re
 chain with:
 
 ```
-run_chain.py  <genuine device_toc0>  <genuine recovery_toc1>
+run_chain.py --expect-config-prefix <8hex> <genuine device_toc0> <genuine recovery_toc1>
 # or, without the 399 MiB read-back (more reliable — the read-back EIO'd on 2 of 3 flashes):
-recover_stock.py
+recover_stock.py --expect-config-prefix <8hex> <genuine device_toc0> <genuine recovery_toc1>
 ```
 
 ([`tools/run_chain.py`](tools/run_chain.py), [`tools/recover_stock.py`](tools/recover_stock.py).) The

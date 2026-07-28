@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import json
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +24,33 @@ _BK1 = f"dreame-r2416-{_CFG}-20200101-000000"                 # consolidated: co
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
     return {"HOME": str(home), **extra}
+
+
+def test_current_workspace_self_heals_private_state_and_backup_modes(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    base = tmp_path / "dreame-valetudo"
+    robot = base / "work" / "robots" / "kitchen"
+    state = robot / "state"
+    state.mkdir(parents=True)
+    state.chmod(0o755)
+    (state / "name").write_text("Kitchen\n")
+    (state / "recon").write_text(f"config={_CFG} backup=obtained\n")
+    backup = base / "backups" / _BK1
+    backup.mkdir(parents=True)
+    backup.chmod(0o755)
+    (backup / "files.tar.gz").write_bytes(SENTINEL)
+    (base / ".layout").write_text(
+        json.dumps({"layout_version": M.LAYOUT_VERSION, "min_tool_version": "0.2.0"})
+    )
+
+    M.migrate(env, ScriptedConsole())
+
+    assert Robot(robot).state_get("recon") == "backup=obtained"
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in state.iterdir())
+    assert stat.S_IMODE((base / "backups").stat().st_mode) == 0o700
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in backup.iterdir())
 
 
 def _cross_device_then_publish(src: Path, dst: Path) -> None:

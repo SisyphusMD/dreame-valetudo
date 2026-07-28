@@ -8,18 +8,19 @@ a signal-masked window so a stray Ctrl+C can't interrupt it.
 
 from __future__ import annotations
 
+import json
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from ..console import abort, die
-from ..constants import FEL_IMAGE_FILES, RECOVERY_DUMP_NAMES
+from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
 from ..session import describe_run, records_step
-from ..util import parse_config
-from ..workspace import RECOVERY_BACKUP_ZIP
+from ..util import parse_config, sha256_of
+from ..workspace import recovery_backup_valid
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .image import image
 
@@ -92,11 +93,15 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
 
     The check.txt token is the only identity the staged image carries, and the config cross-check
     below it cannot see the image at all — both of its operands come from the connected robot.
-    FAILS OPEN on anything that is not an 8-hex token: a future dustbuilder format must never
-    block a legitimate flash.
+    A format change is not safe to guess through: without this token there is no remaining link
+    between the staged image and the robot it was built for.
     """
     if len(dust) != 8 or not _HEX_DIGITS.issuperset(dust) or len(expect_cfg) < 8:
-        return
+        die(
+            "SAFETY STOP: the staged image's check.txt is not the expected 8-hex identity token. "
+            "Its target robot cannot be verified, so refusing to flash. Re-run 'image --force' "
+            "to stage a current build; if the builder changed this format, update the tool first."
+        )
     built_for = int(dust, 16) ^ _DUST_XOR
     if built_for != int(expect_cfg[:8], 16):
         die(f"SAFETY STOP: the staged image was built for config {built_for:08x}… but this robot's "
@@ -105,13 +110,30 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
 
 
 def _has_recovery_backup(ctx: Context) -> bool:
+    return recovery_backup_valid(ctx.need_robot().recon_dir)
+
+
+def _check_staged_integrity(ctx: Context) -> None:
     robot = ctx.need_robot()
-    archive = robot.recon_dir / RECOVERY_BACKUP_ZIP
-    if archive.is_file() and archive.stat().st_size > 0:
-        return True
-    return all((robot.recon_dir / name).is_file()
-               and (robot.recon_dir / name).stat().st_size > 0
-               for name in (f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES))
+    marker = robot.state_get("image") or ""
+    if f"model={ctx.profile.key}" not in marker:
+        die("SAFETY STOP: the staged image is not recorded for the currently selected model. "
+            "Re-run 'image --force' before flashing.")
+    path = robot.fw_dir / STAGED_IMAGE_MANIFEST
+    try:
+        data = json.loads(path.read_text())
+        files = data["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        die("SAFETY STOP: the staged image has no readable integrity record. Re-run "
+            "'image --force' before flashing.")
+    if data.get("model_key") != ctx.profile.key or not isinstance(files, dict):
+        die("SAFETY STOP: the staged image integrity record belongs to another model. Re-run "
+            "'image --force' before flashing.")
+    for name in FEL_IMAGE_FILES:
+        expected = files.get(name)
+        if not isinstance(expected, str) or sha256_of(robot.fw_dir / name) != expected:
+            die(f"SAFETY STOP: staged {name} changed after extraction. Refusing to flash; re-run "
+                "'image --force' to stage a clean build.")
 
 
 @records_step("flashing the rooted image")
@@ -142,6 +164,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
         die("SAFETY STOP: the staged image contains implausibly short files: "
             f"{', '.join(undersized)}. Refusing to flash; re-run 'image --force' to stage a "
             "complete build.")
+    _check_staged_integrity(ctx)
     # Strip ALL whitespace (not just the ends), only the POSIX class — the token feeds the
     # `oem dust` flash-authorization argument, so any stray whitespace must not reach the wire.
     dust = (robot.fw_dir / "check.txt").read_text().translate(_POSIX_SPACE_DELETE)

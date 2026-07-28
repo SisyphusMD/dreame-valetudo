@@ -1,3 +1,4 @@
+#!/bin/sh
 # On-device eFuse/SID read attempt — run ON the robot (UART root shell or SSH), NOT on the Mac.
 # Reads the ROTPK region (SID offset 0x70, 32B) three ways: nvmem sysfs, devmem RO-shadow
 # 0x03006270, plus secure-boot dmesg/sysinfo hints. NOTE: this is a NON-secure Linux read; the

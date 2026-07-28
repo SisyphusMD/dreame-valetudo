@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **fix**: the destructive flash now requires an exactly formed image identity token, a staged
+  model matching the selected robot, unchanged SHA-256-verified image members, and a complete
+  aligned three-part recovery capture before treating the backup as usable.
+- **fix**: Phase 3 now proves that the Wi-Fi robot is the same physical unit recon inspected, not
+  merely the same model, and publishes a factory backup only when both factory trees and every raw
+  partition transfer validate.
+- **fix**: the shipped Valetudo binaries and bundled tmux source now have release-specific pinned
+  SHA-256 digests. An explicitly selected unpinned Valetudo version remains usable only after a
+  clear interactive warning and confirmation.
+- **fix**: robot identity, state, pending prompts, session captures, and historical backups are now
+  private to the current user; existing workspaces repair older permissions and remove duplicated
+  config secrets from state markers. Log scrubbing also covers all-letter and all-digit miio keys.
+- **fix**: research flash/recovery tools now require the expected physical robot identity, never
+  fall back to a universal authorization token, stop on incomplete eMMC pulls, and report an
+  all-zero or malformed eFuse read as inconclusive rather than safe.
+- **fix**: release creation recovers when another publisher wins the create race, stable branch and
+  tag publication is atomic, and reconciliation accepts only the exact artifact matrix backed by
+  matching SHA-256 content on two registries. A same-size corrupted or unexpected asset is never
+  propagated.
+- **fix**: installed RPM builds now give native update and uninstall commands for zypper, dnf, yum,
+  or rpm instead of Debian-only advice.
+- **test**: weekly CI now compares all 13 fastboot models, implementation identities, binary
+  architectures, Secure Boot methods, and the ordered rooting procedure against the latest
+  official Valetudo source. This monitor never runs in or blocks the local rooting flow.
 - **fix**: a changed stage1 archive pin now invalidates and atomically replaces the unpacked FEL
   payload, so a successfully verified new download can never be paired with stale boot files.
 - **fix**: legacy recovery-image decryption now streams and memory-maps the multi-gigabyte inputs
@@ -41,9 +65,8 @@
 - **fix**: the dustbuilder walkthrough now names the unselected key-upload radio and keeps
   prepackaged Valetudo off, discloses the sensitive contents of recovery-image uploads, repairs a
   stale staged-image marker automatically, and no longer points at an AP dropped by the reboot.
-- **fix**: release reconciliation now compares registry metadata before downloading assets, so a
-  fully consistent tag transfers nothing while missing, truncated, and size-unknown uploads are
-  still downloaded once and repaired on only the affected registry.
+- **fix**: release reconciliation now repairs missing and inconsistent historical assets across
+  Forgejo, NAS, and GitHub while refusing to choose one registry's bytes without corroboration.
 - **fix**: release and prerelease gates now use the same pinned test tools and complete shell-script
   coverage as CI, every package declares the libc required by its bundled binaries, and the macOS
   build reads the sunxi-tools revision from the package's single source of truth.

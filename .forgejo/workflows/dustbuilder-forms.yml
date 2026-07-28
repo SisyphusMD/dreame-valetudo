@@ -15,6 +15,7 @@ on:
       - dreame_valetudo/phases/recon.py
       - dreame_valetudo/profiles.py
       - libexec/dustbuilder-forms/**
+      - libexec/verify_valetudo_contract.py
       - pyproject.toml
   push:
     branches: [main]
@@ -26,6 +27,7 @@ on:
       - dreame_valetudo/phases/recon.py
       - dreame_valetudo/profiles.py
       - libexec/dustbuilder-forms/**
+      - libexec/verify_valetudo_contract.py
       - pyproject.toml
 
 concurrency:
@@ -45,6 +47,10 @@ jobs:
           python-version: "3.14.6"
       - name: compare every live form with its per-model golden
         run: python -m dreame_valetudo verify-forms
+      - name: compare model and rooting contracts with official Valetudo
+        run: |
+          git clone --depth=1 https://github.com/Hypfer/Valetudo.git /tmp/upstream-valetudo
+          python -m libexec.verify_valetudo_contract /tmp/upstream-valetudo
       - name: record the last successful live verification
         if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:

@@ -55,7 +55,7 @@ Wrapped as [`tools/read_efuse.sh`](tools/read_efuse.sh) and [`tools/sid_read.sh`
 
 | ROTPK reads | Means | Consequence |
 |---|---|---|
-| all-zero (`00…00`) | **UNBURNED** — boot0 takes "don't have rotpk, skip check" | a self-signed toc1 **boots**; owner-key root works on this unit |
+| all-zero (`00…00`) | **INCONCLUSIVE** — either empty or secure-read-masked | does **not** authorize a self-signed flash; hardware acceptance or a trusted secure-context read is required |
 | a non-zero 32-byte value | **BURNED** — boot0 does `memcmp(sha256(rootkey), ROTPK)` | only a toc1 whose root cert pubkey hashes to the fuse boots; a self-signed one **bricks** (recover via FEL) |
 
 **All-zero is not proof of empty.** The key sub-region (offset ≥ `0x50`) may be **secure-read-masked**

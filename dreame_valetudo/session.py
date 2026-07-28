@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from functools import wraps
 from pathlib import Path
@@ -227,6 +228,20 @@ OUTCOME = ".last-run"
 SCREEN = ".last-screen"
 
 
+def _atomic_private_text(path: Path, value: str) -> None:
+    fd, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def record_outcome(base: Path, rc: int, log: Path | None) -> None:
     """Leave behind how the run ended, for the invocation that has to report it.
 
@@ -235,7 +250,9 @@ def record_outcome(base: Path, rc: int, log: Path | None) -> None:
     (the terminal is restored when the session ends).
     """
     with contextlib.suppress(OSError):
-        (base / OUTCOME).write_text(json.dumps({"rc": rc, "log": str(log) if log else ""}))
+        _atomic_private_text(
+            base / OUTCOME, json.dumps({"rc": rc, "log": str(log) if log else ""})
+        )
 
 
 def clear_outcome(base: Path) -> None:
@@ -247,17 +264,24 @@ def clear_outcome(base: Path) -> None:
 
 def capture_pane(tmux: Path, session: str, base: Path) -> bool:
     """Save the pane exactly as the attached client rendered it."""
+    temporary: Path | None = None
     try:
-        with (base / SCREEN).open("wb") as screen:
+        fd, temporary_name = tempfile.mkstemp(dir=base, prefix=f".{SCREEN}.")
+        temporary = Path(temporary_name)
+        with os.fdopen(fd, "wb") as screen:
             res = subprocess.run(
                 [*tmux_argv(tmux), "capture-pane", "-p", "-e", "-S", "-", "-t", session],
                 stdout=screen, stderr=subprocess.DEVNULL, timeout=5, check=False,
             )
         if res.returncode == 0:
+            temporary.chmod(0o600)
+            temporary.replace(base / SCREEN)
             return True
     except (OSError, subprocess.SubprocessError):
         pass
     with contextlib.suppress(OSError):
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
         (base / SCREEN).unlink(missing_ok=True)
     return False
 

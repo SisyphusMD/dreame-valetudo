@@ -4,11 +4,13 @@ read-back verify (that read EIOs unreliably on this Mac and was blocking recover
 BOTH images are genuine and every failure is FEL-recoverable — the read-back is a self-root safety
 gate (don't half-commit a self-signed chain), not something stock recovery needs.
 
-  recover_stock.py <device_toc0_exact.img> <recovery_toc1.img>
+  recover_stock.py --expect-config-prefix <8hex> <device_toc0_exact.img> <recovery_toc1.img>
 Run: cd <repo> && uv run --with pyusb==1.3.1 python3 <this> <toc0> <toc1>
 """
 from __future__ import annotations
-import importlib.util, subprocess, sys, time, hashlib
+import argparse, importlib.util, subprocess, sys, time, hashlib
+
+from research_safety import compute_dust_token, require_expected_config
 
 sys.path.insert(0, "<repo>")
 
@@ -17,9 +19,12 @@ DIST = "<work>/cache/dist"
 FSBL = f"{DIST}/fsbl_ddr3.bin"
 PAYLOAD = "<research>/d10s-test/payload_recovery_write.bin"
 
-if len(sys.argv) != 3:
-    print("usage: recover_stock.py <toc0_img> <toc1_img>"); sys.exit(2)
-TOC0_IMG, TOC1_IMG = sys.argv[1], sys.argv[2]
+parser = argparse.ArgumentParser()
+parser.add_argument("--expect-config-prefix", required=True)
+parser.add_argument("toc0_img")
+parser.add_argument("toc1_img")
+args = parser.parse_args()
+TOC0_IMG, TOC1_IMG = args.toc0_img, args.toc1_img
 
 
 def sf(*a):
@@ -65,15 +70,16 @@ while time.time() < dl:
 if fb is None:
     log("no fastboot"); sys.exit(1)
 
-cfg = fb.getvar("config"); log("config: " + cfg)
-computed = "%08x" % (int(cfg[:8], 16) ^ 0xC9ACBCC6)
-for tok in [computed, "bypass"]:
-    try:
-        fb.oem("dust " + tok); log(f"unlocked (oem dust {tok})"); break
-    except Exception as e:
-        log(f"oem dust {tok} -> {e}")
-else:
-    log("ABORT: no dust token; nothing written"); sys.exit(1)
+try:
+    cfg = require_expected_config(fb.getvar("config"), args.expect_config_prefix)
+except ValueError as exc:
+    log(f"ABORT: {exc}; nothing written"); sys.exit(2)
+log("config verified: " + cfg[:8] + "…")
+computed = compute_dust_token(cfg)
+try:
+    fb.oem("dust " + computed); log("unlocked with the config-derived token")
+except Exception as exc:
+    log(f"ABORT: config-derived dust token rejected ({exc}); nothing written"); sys.exit(1)
 
 log("downloading toc0..."); fb.download(toc0)
 tag, body = fb.command("flash:UDISK", timeout=120000)

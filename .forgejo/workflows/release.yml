@@ -40,7 +40,7 @@ jobs:
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh)
+            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
           docker cp . "$cid":/work
           check_rc=0
           docker start -a "$cid" || check_rc=$?
@@ -227,8 +227,8 @@ jobs:
             || { echo "::error::release commit is missing the __version__ bump"; exit 1; }
           git tag "${TAG}"
           AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
-          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "HEAD:${{ github.ref_name }}"
-          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "${TAG}"
+          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push --atomic origin \
+            "HEAD:${{ github.ref_name }}" "${TAG}"
 
       - name: Force the push-mirrors to propagate the commit + tag now (GitHub + NAS)
         env:

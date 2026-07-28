@@ -11,6 +11,7 @@ import pytest
 from conftest import FB, CtxFactory
 
 from dreame_valetudo import console
+from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
@@ -23,9 +24,15 @@ from dreame_valetudo.phases.recon import (
 )
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
-from dreame_valetudo.workspace import Robot
+from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, Robot
 
 _CFG = "abcdef0123456789abcdef0123456789"
+
+
+@pytest.fixture(autouse=True)
+def _small_recovery_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 1)
 
 
 def test_reported_model_is_confirmed(make_ctx: CtxFactory) -> None:
@@ -44,6 +51,17 @@ def test_unreported_model_is_plainly_unverified(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="x40-ultra")
     _verify_reported_model(ctx, {"version-bootloader": "1.0.3"})
     assert "does not report a recognisable model" in ctx.console.text()
+
+
+@pytest.mark.parametrize("model", [
+    "l10s-pro-ultra-heat", "l10s-pro-ultra-heat-h", "l20-ultra",
+])
+def test_unreported_hazardous_model_fails_closed_non_interactively(
+    make_ctx: CtxFactory, model: str,
+) -> None:
+    ctx = make_ctx(model=model, interactive=False)
+    with pytest.raises(Die, match="requires a positive hardware-revision match"):
+        _verify_reported_model(ctx, {"version-bootloader": "1.0.3"})
 
 
 def test_r2338h_report_stops_plain_r2338_choice(make_ctx: CtxFactory) -> None:
@@ -480,7 +498,7 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert any("Backup:" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
+    assert robot.state_get("recon") == "backup=obtained"
 
 
 def test_recon_refreshes_decrypted_images_after_a_fresh_recovery_pull(
@@ -544,12 +562,24 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
     assert robot is not None
     assert not (robot.recon_dir / "dreame_recovery_backup.zip").exists()
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert robot.state_get("recon") == f"config={_CFG} backup=missing"
+    assert robot.state_get("recon") == "backup=missing"
     assert stat.S_IMODE(robot.recon_dir.stat().st_mode) == 0o700
     assert all(
         stat.S_IMODE(path.stat().st_mode) == 0o600
         for path in robot.recon_dir.glob("dustx*.bin")
     )
+
+
+def test_recon_refuses_nonempty_but_truncated_recovery_slices(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_MIN_BYTES", 1024)
+    monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_ALIGNMENT", 512)
+    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"x" * 513))
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=True)
+    assert ctx.need_robot().state_get("recon") == "backup=missing"
+    assert not (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).exists()
 
 
 def test_recon_refuses_a_zip_that_does_not_contain_all_three_exact_samples(
@@ -568,7 +598,7 @@ def test_recon_refuses_a_zip_that_does_not_contain_all_three_exact_samples(
     _dist_ready(ctx)
     recon(ctx, recovery_backup=True)
 
-    assert ctx.need_robot().state_get("recon") == f"config={_CFG} backup=missing"
+    assert ctx.need_robot().state_get("recon") == "backup=missing"
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
@@ -576,7 +606,7 @@ def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> No
     ctx = make_ctx(model="x40-ultra", responder=_responder())
     _dist_ready(ctx)
     recon(ctx, recovery_backup=False)
-    assert ctx.need_robot().state_get("recon") == f"config={_CFG} backup=not-requested"
+    assert ctx.need_robot().state_get("recon") == "backup=not-requested"
 
 
 def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
@@ -602,7 +632,7 @@ def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
     assert all((robot.recon_dir / name).read_bytes() == b"factory flash"
                for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"))
     assert recovery_zip.read_bytes() == b"factory recovery archive"
-    assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
+    assert robot.state_get("recon") == "backup=obtained"
     fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
                 if call[:len(FB)] == FB]
     assert not any(call[0] == "get_staged" or call[:2] == ("oem", "stage1")

@@ -24,7 +24,7 @@ from ..context import Context
 from ..profiles import known_model_key_for_code
 from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
-from ..util import parse_mikey, repair_did
+from ..util import parse_config, parse_mikey, repair_did
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
 from .doctor import check_external_tools
 from .fetch import fetch_valetudo
@@ -57,6 +57,21 @@ def _tar_gz_is_complete(path: Path) -> bool:
     except (EOFError, OSError, tarfile.TarError):
         return False
     return True
+
+
+def _tar_has_factory_data(path: Path) -> bool:
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            files = {
+                member.name.lstrip("./")
+                for member in archive
+                if member.isfile()
+            }
+    except (EOFError, OSError, tarfile.TarError):
+        return False
+    return any(name.startswith("mnt/private/") for name in files) and any(
+        name.startswith("mnt/misc/") for name in files
+    )
 
 
 def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
@@ -145,12 +160,15 @@ def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) ->
         ctx.console.info(f"  {', '.join(copied)} — your SSH access to this robot")
 
 
-def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]:
+def _live_robot_identity(
+    ctx: Context, key: str | Path | None, expected_config: str,
+) -> dict[str, str]:
     """Read only the non-secret identity fields needed to bind a backup to the selected profile."""
     result = robot_ssh(
         ctx.runner,
         _TARGET,
-        "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null",
+        "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
+        "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null",
         key=key,
         check=False,
     )
@@ -159,8 +177,16 @@ def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]
     identity = {}
     for line in result.stdout.splitlines():
         field, separator, value = line.partition("=")
-        if separator and field in {"model", "did"} and value.strip():
+        if separator and field in {"model", "did", "factory_config"} and value.strip():
             identity[field] = value.strip()
+    live_config = parse_config(identity.get("factory_config", ""))
+    if live_config is None:
+        die("Could not read this robot's factory config identity — no backup or install was "
+            "attempted.")
+    if live_config.lower() != expected_config.lower():
+        die("SAFETY STOP: the connected robot's factory config does not match the selected "
+            "robot. Join the selected robot's Wi-Fi AP and re-run; no backup or install was "
+            "attempted.")
     reported = identity.get("model")
     if not reported:
         if not ctx.interactive:
@@ -199,6 +225,7 @@ def _capture_factory_backup(
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     final = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg)}-{ts}"
     ctx.backups_dir.mkdir(parents=True, exist_ok=True)
+    ctx.backups_dir.chmod(0o700)
     staging = Path(tempfile.mkdtemp(
         dir=ctx.backups_dir,
         prefix=f".{final.name}.",
@@ -227,13 +254,16 @@ def _capture_factory_backup(
             die("backup came back empty — is the robot fully booted? Re-run.")
         if not _tar_gz_is_complete(files_gz):
             die("files.tar.gz is corrupt or truncated — rejoin the robot's AP and re-run.")
+        if not _tar_has_factory_data(files_gz):
+            die("files.tar.gz does not contain both /mnt/private and /mnt/misc factory data — "
+                "refusing to publish an unusable backup.")
         ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
 
         for part in ("private", "misc"):
             dd = staging / f"{part}.dd.gz"
             with ctx.console.progress(f"Pulling the raw {part} partition"):
                 dd_result = ctx.runner.run_redirect(
-                    [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
+                    [*ssh_base(_TARGET, key), f"gzip -1c /dev/by-name/{part} 2>/dev/null"],
                     stdout_path=str(dd),
                     check=False,
                 )
@@ -348,10 +378,10 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
             "usually your ROUTER. Connect to the ROBOT's own AP and re-run.")
     ctx.console.info("Confirmed: Dreame robot (/mnt/private/ULI/factory present).")
 
-    live_identity = _live_robot_identity(ctx, key)
     cfg = ctx.robot_config()
     if not cfg:
         die("No recorded config identity for the selected robot — re-run recon before push.")
+    live_identity = _live_robot_identity(ctx, key, cfg)
     backup = _capture_factory_backup(ctx, key, cfg, live_identity)
 
     ctx.console.say("Copying the Valetudo binary onto the robot...")

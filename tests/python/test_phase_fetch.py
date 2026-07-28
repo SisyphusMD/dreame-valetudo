@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import CtxFactory
 
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.fetch import fetch, fetch_valetudo
@@ -67,9 +67,9 @@ def test_fetch_verifies_and_reaches_cache_ready(
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     _mark_stage1(ctx, digest)
-    # Treat Valetudo as "couldn't verify" to exercise the warn-and-proceed branch here (the
-    # digest match itself is covered by the download/util tests).
-    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: hashlib.sha256(b"s1").hexdigest()}
+    )
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -96,7 +96,7 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     _mark_stage1(ctx, digest)
-    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: "deadbeef" * 8)
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -171,7 +171,10 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
 ) -> None:
     ctx = make_ctx()
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
-    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fetch_mod, "VALETUDO_SHA256",
+        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+    )
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -195,6 +198,7 @@ def test_fetch_valetudo_reuses_a_matching_published_digest_offline(
     ctx.valetudo_bin.write_bytes(b"verified valetudo")
     digest = hashlib.sha256(b"verified valetudo").hexdigest()
     ctx.valetudo_bin.with_name(f"{ctx.valetudo_bin.name}.sha256").write_text(f"{digest}\n")
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {})
     monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
 
     fetch_valetudo(ctx)
@@ -210,8 +214,28 @@ def test_fetch_valetudo_does_not_trust_a_sidecar_for_different_bytes(
     ctx.ws.dist.mkdir(parents=True)
     ctx.valetudo_bin.write_bytes(b"changed valetudo")
     ctx.valetudo_bin.with_name(f"{ctx.valetudo_bin.name}.sha256").write_text("0" * 64 + "\n")
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {})
     monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
 
-    fetch_valetudo(ctx)
+    with pytest.raises(UserAbort, match="Refused the unverified"):
+        fetch_valetudo(ctx)
 
     assert "UNVERIFIED" in ctx.console.text()
+    assert not ctx.valetudo_bin.exists()
+
+
+def test_fetch_valetudo_can_explicitly_accept_an_unverified_override(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(confirms=[True], env={"VALETUDO_VERSION": "custom"})
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {})
+    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl" and "-o" in argv:
+            _write_curl_target(argv, b"custom valetudo")
+        return Result(argv, 0, "", "")
+
+    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    fetch_valetudo(ctx)
+    assert ctx.valetudo_bin.read_bytes() == b"custom valetudo"

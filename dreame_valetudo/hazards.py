@@ -11,6 +11,10 @@ from .console import abort
 from .context import Context
 
 
+def requires_positive_model_verification(model_key: str) -> bool:
+    return model_key.startswith("l10s-pro-ultra-heat") or model_key == "l20-ultra"
+
+
 def model_hazard_check(ctx: Context) -> None:
     key = ctx.profile.key
     if key.startswith("l10s-pro-ultra-heat"):

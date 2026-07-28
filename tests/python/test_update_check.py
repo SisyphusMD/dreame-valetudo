@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo import __version__
@@ -47,11 +48,41 @@ def test_detect_install_method_uses_the_frozen_executable_for_deb(
     monkeypatch.setattr(sys, "executable", "/usr/bin/dreame-valetudo")
     monkeypatch.setattr(sys, "argv", ["dreame-valetudo"])
     monkeypatch.setattr(U.sys, "platform", "linux")
-    assert U.detect_install_method({}) == "deb"
+    (tmp_path / "usr/bin").mkdir(parents=True)
+    (tmp_path / "usr/bin/dpkg-query").write_text("")
+    assert U.detect_install_method({}, tmp_path) == "deb"
+
+
+@pytest.mark.parametrize(
+    ("tool", "method", "command"),
+    [
+        ("zypper", "rpm-zypper", "zypper install"),
+        ("dnf", "rpm-dnf", "dnf upgrade"),
+        ("yum", "rpm-yum", "yum update"),
+        ("rpm", "rpm", "rpm -U"),
+    ],
+)
+def test_frozen_linux_rpm_install_uses_the_available_package_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str, method: str, command: str,
+) -> None:
+    isolated = tmp_path / "installed/update_check.py"
+    isolated.parent.mkdir()
+    isolated.write_text("")
+    (tmp_path / "usr/bin").mkdir(parents=True)
+    (tmp_path / "usr/bin" / tool).write_text("")
+    monkeypatch.setattr(U, "__file__", str(isolated))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/usr/bin/dreame-valetudo")
+    monkeypatch.setattr(U.sys, "platform", "linux")
+
+    assert U.detect_install_method({}, tmp_path) == method
+    assert command in U._upgrade_hint(method)
 
 
 def test_upgrade_hint_covers_every_method() -> None:
-    for method in ("source", "brew", "deb", "unknown"):
+    for method in (
+        "source", "brew", "deb", "rpm-zypper", "rpm-dnf", "rpm-yum", "rpm", "unknown",
+    ):
         assert U._upgrade_hint(method)
     assert "dreame-valetudo-rc" in U._upgrade_hint("brew", "0.3.0-rc.2")
     assert "dreame-valetudo-rc" not in U._upgrade_hint("brew", "0.3.0")

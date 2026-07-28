@@ -47,6 +47,7 @@ from .workspace import (
     Robot,
     home_dir,
     protect_recon_artifacts,
+    protect_state_artifacts,
     robot_dirs,
 )
 from .workspace import base_dir as workspace_base_dir
@@ -544,6 +545,20 @@ def _backfill_names(env: Mapping[str, str]) -> None:
             Robot(d).set_display_name(d.name)
 
 
+def _heal_robot_state_privacy(env: Mapping[str, str]) -> None:
+    """Restrict old markers and remove the config copy that early recon markers duplicated."""
+    for d in robot_dirs(env):
+        robot = Robot(d)
+        protect_state_artifacts(robot.state_dir)
+        marker = robot.state_get("recon")
+        if marker is None:
+            continue
+        fields = [field for field in marker.split() if not field.startswith("config=")]
+        cleaned = " ".join(fields) or "done"
+        if cleaned != marker:
+            robot.state_set("recon", cleaned)
+
+
 def _sync_backup_robot_names(env: Mapping[str, str], console: Console) -> None:
     """Self-heal: set each backup's recorded robot name to its robot's CURRENT name (joined by
     `config`), so a backfilled backup gains a name and every backup tracks a rename even without one.
@@ -740,7 +755,9 @@ def migrate(
     # (gaps-only, idempotent) so nothing is left half-migrated — a legacy backup gets a manifest and
     # a nameless robot gets its slug recorded — without a version bump (which only gates old builds).
     manifest.backfill_manifests(env, console)
+    manifest.protect_backups(env, console)
     _backfill_names(env)
+    _heal_robot_state_privacy(env)
     _sync_backup_robot_names(env, console)
     _heal_recon_backups(env, console)
     return complete

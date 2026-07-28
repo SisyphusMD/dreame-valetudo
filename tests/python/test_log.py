@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from conftest import ScriptedConsole
 
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
@@ -88,6 +89,18 @@ def test_scrub_redacts_a_miio_key_shaped_token() -> None:
     # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
     assert "valetudo" in scrub("== valetudo running? == RUNNING")
     assert "RUNNING" in scrub("== valetudo running? == RUNNING")
+
+
+@pytest.mark.parametrize("assignment", [
+    "key=ABCDEFGH",
+    "MI_KEY=12345678",
+    "mikey: ABCDEFGHIJKLMNOP",
+    "Key = abcdefgh",
+])
+def test_scrub_redacts_every_valid_key_shape_in_assignment_context(assignment: str) -> None:
+    value = assignment.replace(" = ", "=").replace(": ", "=").split("=", 1)[1]
+    assert value not in scrub(assignment)
+    assert "<redacted-id>" in scrub(assignment)
 
 
 def test_scrub_keeps_the_recon_dump_filenames() -> None:

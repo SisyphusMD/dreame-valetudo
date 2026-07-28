@@ -76,7 +76,7 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
         text = workflow.read_text()
         for name, value in pins.items():
             assert f'{name}="{value}"' in text, workflow
-        assert "packaging/*.sh tests/integration/*.sh" in text, workflow
+        assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in text, workflow
         assert "apt-get install -y shellcheck" not in text, workflow
         assert '-v "$PWD:' not in text, workflow
         assert 'docker create -w /work "$SHELLCHECK"' in text, workflow
@@ -89,6 +89,21 @@ def test_macos_build_reads_the_sunxi_pin_from_constants() -> None:
     assert 'SREF="$(read_pin SUNXI_TOOLS_REF)"' in build
     assert 'checkout "$SREF"' in build
     assert not re.search(r"checkout [0-9a-f]{40}", build)
+
+
+def test_macos_build_verifies_the_pinned_tmux_release_tarball() -> None:
+    text = _MACOS.read_text()
+    assert 'TMUX="$(read_pin TMUX_VERSION)"' in text
+    assert 'TMUX_SHA="$(read_pin TMUX_SHA256)"' in text
+    assert "shasum -a 256 -c -" in text
+    assert text.index("shasum -a 256 -c -") < text.index("tar -xzf /tmp/tmux.tgz")
+
+
+def test_stable_release_pushes_commit_and_tag_atomically() -> None:
+    text = _RELEASE.read_text()
+    step = text[text.index("      - name: Commit, tag, push") :]
+    assert "push --atomic origin" in step
+    assert '"HEAD:${{ github.ref_name }}" "${TAG}"' in step
 
 
 def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:

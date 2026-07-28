@@ -22,10 +22,9 @@ re-signed). Offline analysis (recon task C) exhausted PKCS1v15-SHA256 and RSASSA
 cert's own embedded key -- the scheme is unidentified (likely an older/proprietary Allwinner
 boot0-signing convention, not the "sunxi-secure" X.509 tooling TOC1 uses). Since this cert is
 verified only by the mask-ROM BROM -- which cannot be statically disassembled and which recon
-task B's hardware evidence (unburned eFuse ROTPK) already established SKIPS toc0-signature
-verification entirely on this unit -- leaving stale signature bytes is harmless for the
-unburned-eFuse bench-test path. It would NOT be valid on a burned-eFuse unit; do not assume
-otherwise. This tool refuses to claim the field is valid: see verify_toc0_generic.py.
+task B's non-secure all-zero eFuse read could not establish whether the key region was empty or
+secure-read-masked. Leaving stale signature bytes was only an experiment and hardware later rejected
+the self-signed chain. It is not valid evidence for flashing any unit; see verify_toc0_generic.py.
 
 Run:  uv run --with cryptography python3 resign_toc0.py --in IN.img --out OUT.img \
           [--root-key-in KEY.pem | --root-key-out KEY.pem]

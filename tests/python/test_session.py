@@ -717,6 +717,7 @@ def test_the_outcome_survives_the_session_it_was_produced_in(tmp_path: Path) -> 
     assert read_outcome(tmp_path) is None            # nothing yet: still running
     record_outcome(tmp_path, 1, tmp_path / "logs" / "run-x.log")
     assert read_outcome(tmp_path) == (1, tmp_path / "logs" / "run-x.log")
+    assert (tmp_path / OUTCOME).stat().st_mode & 0o777 == 0o600
     clear_outcome(tmp_path)
     assert read_outcome(tmp_path) is None            # cleared, so a stale record can't be reported
 
@@ -729,6 +730,7 @@ def test_capture_pane_keeps_terminal_bytes_and_clearing_an_outcome_clears_it(
     tmux.chmod(0o755)
     assert capture_pane(tmux, _SESSION, tmp_path)
     assert read_captured_pane(tmp_path) == b"\x1b[31mreal pane\x1b[0m\nanswer from user\n"
+    assert (tmp_path / SCREEN).stat().st_mode & 0o777 == 0o600
     clear_outcome(tmp_path)
     assert not (tmp_path / SCREEN).exists()
 
