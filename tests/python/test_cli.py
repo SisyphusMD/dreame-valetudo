@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import ScriptedConsole
+from conftest import CtxFactory, ScriptedConsole
 
 from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
-from dreame_valetudo.console import UserAbort
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
@@ -68,9 +68,11 @@ def test_main_status_survives_a_robot_from_a_newer_release(tmp_path: Path) -> No
 
 def test_main_unknown_command_returns_1(tmp_path: Path) -> None:
     con = ScriptedConsole()
-    env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "x40-ultra", "DREAME_ROBOT": "t"}
+    env = {"DREAME_WORK": str(tmp_path)}
     assert main(["bogus"], env=env, console=con, runner=RecordingRunner()) == 1
     assert _has(con, "Unknown command")
+    assert not _has(con, "Which Dreame robot")
+    assert not (tmp_path / "robots").exists()
 
 
 def test_fix_wifi_prints_without_forcing_a_robot_selection(tmp_path: Path) -> None:
@@ -170,6 +172,20 @@ def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:
     assert main(["auto"], env=env2, console=con2, runner=RecordingRunner()) == 0
     assert _has(con2, "no reset button")
     assert not _has(con2, "dock tip")
+
+
+def test_auto_cannot_hide_an_uncertain_reflash_behind_an_old_rooted_marker(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("flash-attempt", "model=x40-ultra config=dreame_config_x40")
+
+    with pytest.raises(Die, match="prior flash attempt"):
+        cli.auto(ctx, [])
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
 
 
 def test_main_dispatches_into_fetch_and_verifies_stage1(tmp_path: Path) -> None:

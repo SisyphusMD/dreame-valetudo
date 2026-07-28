@@ -83,6 +83,37 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
         assert 'docker cp . "$cid":/work' in text, workflow
 
 
+def test_release_cutters_serialize_without_sharing_the_tag_publish_queue() -> None:
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        assert re.search(
+            r"\nconcurrency:\n(?:  #.*\n)+  group: release-cut\n"
+            r"  cancel-in-progress: false\n",
+            text,
+        )
+    publish = _PUBLISH.read_text()
+    assert "group: publish-${{ github.ref_name }}" in publish
+    assert "group: release\n" not in publish
+
+
+def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> None:
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        gate = text[text.index("      - name: Test gate") :]
+        assert "apt-get install -y -qq tmux" in gate
+        assert 'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .' in gate
+
+
+def test_stable_release_uses_renovate_pinned_uv_and_limits_the_lock_diff() -> None:
+    text = _RELEASE.read_text()
+    sync = text[text.index("      - name: Sync uv.lock") :]
+    assert "# renovate: datasource=pypi depName=uv" in sync
+    assert re.search(r'UV="\d+\.\d+\.\d+"', sync)
+    assert 'python -m pip install "uv==$UV"' in sync
+    assert "uv.lock.before" in sync
+    assert "after != expected" in sync
+
+
 def test_macos_build_reads_the_sunxi_pin_from_constants() -> None:
     text = _MACOS.read_text()
     build = text[text.index("      - name: Build sunxi-fel") : text.index("      - name: Bundle libusb")]

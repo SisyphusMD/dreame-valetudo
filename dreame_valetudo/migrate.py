@@ -364,7 +364,15 @@ def _safe_merge(
         return False
     dst.rename(bak)  # set the in-the-way copy aside — same directory, atomic, no EXDEV
     console.warn(f"{dst} already existed — kept the migrated copy, saved the previous one as {bak.name}.")
-    return _safe_move(src, dst, console)  # canonical path now vacated -> plain move
+    try:
+        moved = _safe_move(src, dst, console)  # canonical path now vacated -> plain move
+    except BaseException:
+        if not dst.exists() and not dst.is_symlink():
+            bak.rename(dst)
+        raise
+    if not moved and not dst.exists() and not dst.is_symlink():
+        bak.rename(dst)
+    return moved
 
 
 def _move_work_symlink(

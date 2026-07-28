@@ -26,8 +26,11 @@ Exit status is 0 only on OKAY; anything else is non-zero, so shell callers can g
 from __future__ import annotations
 
 import contextlib
+import mmap
+import os
 import struct
 import sys
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -36,8 +39,8 @@ from typing import Any
 import usb.core
 import usb.util
 
-CHUNK = 1 << 20          # 1 MiB per bulk write during download
-CMD_TIMEOUT = 30000      # ms; individual ops must stay well under the 160s watchdog
+CHUNK = 1 << 16          # 64 KiB; larger libusb transfers EIO on the Dreame gadget on macOS
+CMD_TIMEOUT = 30000      # ms; individual ops must stay well under the external rail-cycle window
 DATA_TIMEOUT = 120000    # ms; large flash/upload transfers
 
 
@@ -78,7 +81,7 @@ def _subsparse(seg: bytes, block_size: int, start_blk: int, total_blks: int) -> 
     return hdr + chunks
 
 
-def iter_sparse(data: bytes, maxdl: int, block_size: int = 4096) -> Iterator[bytes]:
+def iter_sparse(data: bytes | mmap.mmap, maxdl: int, block_size: int = 4096) -> Iterator[bytes]:
     """Yield sparse sub-images covering `data`, each <= maxdl bytes."""
     total_blks = (len(data) + block_size - 1) // block_size
     seg_bytes = ((maxdl - SPARSE_HDR - 3 * CHUNK_HDR) // block_size) * block_size
@@ -127,14 +130,17 @@ def _is_fastboot_intf(intf: Any) -> bool:
 
 
 def find_device() -> tuple[Any, Any, Any]:
-    """Return the first USB device exposing a fastboot interface, or (None, None, None)."""
+    """Return the sole USB fastboot interface, refusing an ambiguous hardware target."""
+    matches: list[tuple[Any, Any, Any]] = []
     try:
         for dev in usb.core.find(find_all=True):
             try:
+                match = None
                 for cfg in dev:
-                    for intf in cfg:
-                        if _is_fastboot_intf(intf):
-                            return dev, cfg, intf
+                    match = next((intf for intf in cfg if _is_fastboot_intf(intf)), None)
+                    if match is not None:
+                        matches.append((dev, cfg, match))
+                        break
             except usb.core.USBError:
                 continue  # unreadable descriptors aren't the target device
     except usb.core.NoBackendError as exc:
@@ -144,7 +150,12 @@ def find_device() -> tuple[Any, Any, Any]:
         ) from exc
     except OSError as exc:
         raise FastbootError(f"libusb could not load: {exc}") from exc
-    return None, None, None
+    if len(matches) > 1:
+        raise FastbootError(
+            f"{len(matches)} fastboot devices found — disconnect every other fastboot device "
+            "before continuing so the robot target is unambiguous"
+        )
+    return matches[0] if matches else (None, None, None)
 
 
 class Fastboot:
@@ -203,21 +214,20 @@ class Fastboot:
             raise FastbootError(f"oem {arg} -> {tag} {body.decode('latin1', 'replace')}")
         return body.decode("latin1", "replace")
 
-    def download(self, data: bytes) -> None:
+    def download(self, data: bytes | mmap.mmap) -> None:
         tag, body = self.command(f"download:{len(data):08x}")
         if tag != "DATA":
             raise FastbootError(f"download rejected: {tag} {body.decode('latin1', 'replace')}")
         want = int(body[:8], 16)
         if want != len(data):
             raise FastbootError(f"device wants {want} bytes, have {len(data)}")
-        mv = memoryview(data)
         for off in range(0, len(data), CHUNK):
-            self.ep_out.write(mv[off:off + CHUNK], timeout=DATA_TIMEOUT)
+            self.ep_out.write(data[off:off + CHUNK], timeout=DATA_TIMEOUT)
         tag, body = self._read(timeout=DATA_TIMEOUT)
         if tag != "OKAY":
             raise FastbootError(f"download failed: {tag} {body.decode('latin1', 'replace')}")
 
-    def _flash_one(self, part: str, blob: bytes, note: str = "") -> None:
+    def _flash_one(self, part: str, blob: bytes | mmap.mmap, note: str = "") -> None:
         self.download(blob)
         tag, body = self.command("flash:" + part, timeout=DATA_TIMEOUT)
         if tag != "OKAY":
@@ -225,25 +235,33 @@ class Fastboot:
                 f"flash {part}{note} -> {tag} {body.decode('latin1', 'replace')}")
 
     def flash(self, part: str, path: str) -> None:
-        data = Path(path).read_bytes()
-        try:
-            maxdl = int(self.getvar("max-download-size").strip() or "0", 0)
-        except Exception:  # any probe failure means "unknown" — fall back to a single download
-            maxdl = 0
-        maxdl_str = _mib(maxdl) if maxdl else "unknown"
-        if maxdl and len(data) > maxdl:
-            # Too big for one download — send Android sparse sub-images, each <= maxdl,
-            # exactly as Google fastboot would.
-            approx = (len(data) + maxdl - 1) // maxdl
-            print(f"  {part}: image {_mib(len(data))} > max-download-size {maxdl_str} -> "
-                  f"sparse split into ~{approx}", file=sys.stderr)
-            for i, sub in enumerate(iter_sparse(data, maxdl), 1):
-                print(f"  {part}: sparse chunk {i}/~{approx} ({_mib(len(sub))})", file=sys.stderr)
-                self._flash_one(part, sub, f" (sparse {i})")
-            return
-        print(f"  {part}: image {_mib(len(data))} <= max-download-size {maxdl_str} -> "
-              "single raw download", file=sys.stderr)
-        self._flash_one(part, data)
+        with Path(path).open("rb") as source:
+            size = os.fstat(source.fileno()).st_size
+            if size == 0:
+                raise FastbootError(f"refusing to flash empty image {path}")
+            data = mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                try:
+                    maxdl = int(self.getvar("max-download-size").strip() or "0", 0)
+                except Exception:  # any probe failure means "unknown" — use one download
+                    maxdl = 0
+                maxdl_str = _mib(maxdl) if maxdl else "unknown"
+                if maxdl and len(data) > maxdl:
+                    # Each emitted sparse member is bounded by maxdl; the partition-sized source
+                    # stays file-backed instead of being copied into RAM.
+                    approx = (len(data) + maxdl - 1) // maxdl
+                    print(f"  {part}: image {_mib(len(data))} > max-download-size {maxdl_str} -> "
+                          f"sparse split into ~{approx}", file=sys.stderr)
+                    for i, sub in enumerate(iter_sparse(data, maxdl), 1):
+                        print(f"  {part}: sparse chunk {i}/~{approx} ({_mib(len(sub))})",
+                              file=sys.stderr)
+                        self._flash_one(part, sub, f" (sparse {i})")
+                    return
+                print(f"  {part}: image {_mib(len(data))} <= max-download-size {maxdl_str} -> "
+                      "single raw download", file=sys.stderr)
+                self._flash_one(part, data)
+            finally:
+                data.close()
 
     def upload(self, outpath: str) -> int:
         tag, body = self.command("upload")
@@ -252,14 +270,32 @@ class Fastboot:
         size = int(body[:8], 16)
         if size <= 0:  # match Google fastboot: a 0-byte staged blob is an error, not an empty pull
             raise FastbootError(f"device reports {size} bytes staged — nothing to pull")
-        got = bytearray()
-        while len(got) < size:
-            got += bytes(self.ep_in.read(min(CHUNK, size - len(got)), timeout=DATA_TIMEOUT))
-        tag, body = self._read(timeout=DATA_TIMEOUT)
-        if tag != "OKAY":
-            raise FastbootError(f"upload failed: {tag} {body.decode('latin1', 'replace')}")
-        Path(outpath).write_bytes(got)
-        return len(got)
+        destination = Path(outpath)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".partial", dir=destination.parent
+        )
+        temp_path = Path(temporary)
+        got = 0
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                while got < size:
+                    chunk = bytes(
+                        self.ep_in.read(min(CHUNK, size - got), timeout=DATA_TIMEOUT)
+                    )
+                    if not chunk:
+                        continue
+                    stream.write(chunk)
+                    got += len(chunk)
+                stream.flush()
+                os.fsync(stream.fileno())
+            tag, body = self._read(timeout=DATA_TIMEOUT)
+            if tag != "OKAY":
+                raise FastbootError(f"upload failed: {tag} {body.decode('latin1', 'replace')}")
+            os.replace(temp_path, destination)  # noqa: PTH105 - atomic publication
+            return got
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def reboot(self) -> None:
         self.ep_out.write(b"reboot", timeout=CMD_TIMEOUT)

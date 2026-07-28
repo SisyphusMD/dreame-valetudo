@@ -16,7 +16,9 @@ on:
         options: [patch, minor, major]
 
 concurrency:
-  group: release          # serialize with real releases so version computation never races
+  # Stable and RC tag creation share one producer slot. Tag publishing has a per-tag group of its
+  # own: sharing this group could displace a queued publish run before it ever builds its assets.
+  group: release-cut
   cancel-in-progress: false
 
 jobs:
@@ -107,8 +109,9 @@ jobs:
           MYPY="2.3.0"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
           ruff check dreame_valetudo libexec tests/python
           mypy
           pytest -q tests/python

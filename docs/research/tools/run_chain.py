@@ -12,7 +12,7 @@ Run: cd <repo> && uv run --with pyusb==1.3.1 python3 <this> <toc0> <toc1>
 from __future__ import annotations
 import argparse, importlib.util, subprocess, sys, time, hashlib
 
-from research_safety import compute_dust_token, require_expected_config
+from research_safety import compute_dust_token, require_expected_config, require_fel_ok
 
 sys.path.insert(0, "<repo>")
 from dreame_valetudo import dust_decrypt
@@ -36,14 +36,23 @@ def sf(*a):
     return subprocess.run([SF, *a], capture_output=True, text=True)
 
 
+def checked_sf(*a):
+    result = sf(*a)
+    require_fel_ok(result.returncode, result.stdout + result.stderr, tuple(a))
+
+
 def log(m):
     print(m, flush=True)
 
 
 toc0 = open(TOC0_IMG, "rb").read()
 toc1 = open(TOC1_IMG, "rb").read()
-assert len(toc0) == 98304 and toc0[:4] == b"TOC0", (len(toc0), toc0[:4])
-assert toc1[:4] == b"sunx", toc1[:4]
+if len(toc0) != 98304 or toc0[:4] != b"TOC0":
+    log(f"ABORT: toc0 must be a 98304-byte TOC0 image, got {len(toc0)} bytes/{toc0[:4]!r}")
+    sys.exit(2)
+if toc1[:4] != b"sunx":
+    log(f"ABORT: toc1 must start with sunx, got {toc1[:4]!r}")
+    sys.exit(2)
 log("CHAIN WRITE (toc0 -> boot0 via stub, verified; then toc1 -> native pkg path)")
 log(f"  toc0: {TOC0_IMG}")
 log(f"        {len(toc0)} B  sha={hashlib.sha256(toc0).hexdigest()[:16]}")
@@ -59,12 +68,14 @@ while time.time() < dl:
     time.sleep(1)
 else:
     log("no FEL"); sys.exit(1)
-log("FSBL..."); sf("write", "0x28000", FSBL); sf("exe", "0x28000"); time.sleep(6)
-log("payload..."); sf("write", "0x4a000000", PAYLOAD); sf("exe", "0x4a000000")
+try:
+    log("FSBL..."); checked_sf("write", "0x28000", FSBL); checked_sf("exe", "0x28000"); time.sleep(6)
+    log("payload..."); checked_sf("write", "0x4a000000", PAYLOAD); checked_sf("exe", "0x4a000000")
+except RuntimeError as exc:
+    log(f"ABORT: {exc}; nothing was intentionally written to flash"); sys.exit(1)
 
 spec = importlib.util.spec_from_file_location("fbmod", "libexec/fastboot-libusb.py")
 fbmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(fbmod)
-fbmod.CHUNK = 65536
 log("Waiting for fastboot..."); fb = None; dl = time.time() + 60
 while time.time() < dl:
     dev, _, _ = fbmod.find_device()

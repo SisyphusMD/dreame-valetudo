@@ -15,6 +15,8 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
+from .run import Runner
+
 
 def library_path_overlay(
     libexec: str | Path,
@@ -62,3 +64,12 @@ def apply_library_path(libexec: str | Path) -> None:
         libexec, system=platform.system(), brew_libusb_lib=brew_lib, existing=os.environ
     )
     os.environ.update(overlay)
+
+
+def open_url(runner: Runner, system: str, url: str) -> bool:
+    """Open a URL with the host desktop, returning whether the launcher accepted it."""
+    command = "open" if system == "Darwin" else "xdg-open" if system == "Linux" else None
+    if command is None:
+        return False
+    executable = shutil.which(command)
+    return executable is not None and runner.run([executable, url], check=False).ok

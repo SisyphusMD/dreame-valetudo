@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **fix**: a rejected or interrupted recon can no longer leave enough trusted identity behind to
+  authorize a later flash. Destructive runs also refuse ambiguous multi-device USB setups, journal
+  every flash attempt before the first write, and stop instead of automatically reflashing when
+  host state could not record a completed hardware run.
+- **fix**: the libusb transport now uses the hardware-proven 64 KiB transfer size, streams recovery
+  captures and memory-maps flash images instead of holding partition-sized copies in RAM, publishes
+  uploads atomically, and accepts recovery slices only at the pinned payload's exact size.
+- **fix**: interrupted deviceId/key repairs and migration collisions now resume without stranding
+  stale robot configuration or the prior workspace. State markers are crash-safe, and temporary
+  miio keys are private from creation and cannot follow a pre-existing symlink.
+- **fix**: Linux now opens browser steps with `xdg-open` and all platforms report truthfully when a
+  page could not be opened. Tmux preserves every documented build override, and mistyped commands
+  fail before asking for or creating a robot.
+- **fix**: release replacement failures restore the previous registry asset, release cuts are
+  serialized without allowing one tag to displace another tag's publication, release gates must
+  exercise real tmux, and the release-time lockfile tool is Renovate-pinned and forbidden from
+  changing anything beyond the project version.
+- **fix**: the upstream monitor now distinguishes R2338 exactly from incompatible R2338H. Research
+  flashers stop on every failed FEL transfer, stock recovery requires the manifest-pinned genuine
+  images, and the experimental `oem prep` prohibition is explicitly scoped away from the required
+  production DustBuilder sequence.
+- **fix**: live robot identity checks now recognize Valetudo's current regional L20/L40 model
+  suffixes, while unknown suffixes still stop before the factory backup or installation begins.
 - **fix**: the destructive flash now requires an exactly formed image identity token, a staged
   model matching the selected robot, unchanged SHA-256-verified image members, and a complete
   aligned three-part recovery capture before treating the backup as usable.

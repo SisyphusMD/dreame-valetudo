@@ -78,6 +78,11 @@ _FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push",
 # so a command can't end up pure for one purpose and not the other.
 _NO_WORKSPACE = PURE_COMMANDS
 
+_ROBOT_COMMANDS = frozenset({
+    "auto", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
+    "model", "push", "recon", "root", "sshkey", "valetudo", "verify-form",
+})
+
 
 def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True) -> bool:
     forced = ctx.env.get("DREAME_MODEL") if use_env else None
@@ -351,6 +356,10 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         _auto_intro(ctx)
     robot = ctx.robot
     force = "--force" in rest
+    if robot is not None and robot.state_has("flash-attempt") and not force:
+        # Do not let an older rooted marker hide a newer uncertain reflash. root() reports the
+        # recovery stop before provisioning, recon, network work, or another device command.
+        root(ctx)
     if robot is None or not robot.state_has("rooted") or force:
         doctor(ctx)
         fetch(ctx)
@@ -459,6 +468,13 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1
+
+    # Reject typos before selecting or naming a robot. Selection is persistent: on a first run it
+    # can create state/name, so letting an unknown command reach it leaves an orphan robot behind.
+    if cmd not in _ROBOT_COMMANDS:
+        ctx.console.err(f"Unknown command: {cmd}")
+        usage(ctx.console)
+        return 1
 
     select_robot(ctx)
     if cmd == "diagnose":

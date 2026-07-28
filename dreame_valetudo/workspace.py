@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import RECOVERY_DUMP_ALIGNMENT, RECOVERY_DUMP_MIN_BYTES, RECOVERY_DUMP_NAMES
+from .constants import (
+    RECOVERY_DUMP_BYTES,
+    RECOVERY_DUMP_NAMES,
+)
 from .util import parse_config
 
 # The ~/dreame-valetudo/ umbrella holding work/, backups/, and the .layout marker. Shared by
@@ -34,7 +38,7 @@ def recovery_dump_valid(path: Path) -> bool:
         size = path.stat().st_size
     except OSError:
         return False
-    return size >= RECOVERY_DUMP_MIN_BYTES and size % RECOVERY_DUMP_ALIGNMENT == 0
+    return size == RECOVERY_DUMP_BYTES
 
 
 def recovery_zip_valid(path: Path) -> bool:
@@ -45,11 +49,7 @@ def recovery_zip_valid(path: Path) -> bool:
                 f"{name}.bin" for name in RECOVERY_DUMP_NAMES
             ):
                 return False
-            if any(
-                member.file_size < RECOVERY_DUMP_MIN_BYTES
-                or member.file_size % RECOVERY_DUMP_ALIGNMENT != 0
-                for member in members
-            ):
+            if any(member.file_size != RECOVERY_DUMP_BYTES for member in members):
                 return False
             return archive.testzip() is None
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile):
@@ -112,11 +112,24 @@ def protect_state_artifacts(state_dir: Path) -> None:
 def _write_private_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o700)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        stream.write(value)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)  # noqa: PTH105 - dir-fd durability uses the os-level operation
+        # Persist the directory entry as well as the marker contents. These markers decide whether
+        # destructive hardware phases run again after an abrupt host power loss.
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def slugify(name: str) -> str:

@@ -34,10 +34,33 @@ fi
 [ -n "$id" ] && [ "$id" != "null" ] || { echo "could not create/find GitHub release for $tag" >&2; exit 1; }
 echo "GitHub release id: $id"
 
+upload_asset() {
+  curl -sSf -H "Authorization: Bearer $token" -H "Content-Type: application/octet-stream" \
+    --data-binary @"$1" \
+    "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$2" >/dev/null
+}
+
+rel_had_old=false
 for f in "$@"; do
   name=$(basename "$f")
-  rel_delete_asset "$api/releases/$id/assets" "$api/releases/assets" "$name"
-  curl -sSf -H "Authorization: Bearer $token" -H "Content-Type: application/octet-stream" \
-    --data-binary @"$f" "https://uploads.github.com/repos/$repo/releases/$id/assets?name=$name" >/dev/null
+  backup=$(mktemp)
+  if ! rel_preserve_and_delete_asset \
+      "$api/releases/$id/assets" "$api/releases/assets" "$name" "$backup"; then
+    rm -f "$backup"
+    echo "could not safely prepare replacement for $name on GitHub" >&2
+    exit 1
+  fi
+  if ! upload_asset "$f" "$name"; then
+    echo "upload failed for $name on GitHub" >&2
+    if [ "$rel_had_old" = true ]; then
+      rel_delete_asset "$api/releases/$id/assets" "$api/releases/assets" "$name" \
+        && upload_asset "$backup" "$name" \
+        && echo "  restored previous $name -> GitHub" \
+        || echo "WARNING: could not restore previous $name on GitHub" >&2
+    fi
+    rm -f "$backup"
+    exit 1
+  fi
+  rm -f "$backup"
   echo "  uploaded $name -> GitHub"
 done

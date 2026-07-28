@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.phases.misc import sshkey, status, ui, valetudo
@@ -31,6 +32,39 @@ def test_ui_returns_true_and_opens_when_valetudo_answers(make_ctx: CtxFactory) -
     ctx = make_ctx(responder=responder)
     assert ui(ctx) is True
     assert _said(ctx, "Valetudo is up")
+
+
+def test_ui_uses_xdg_open_on_linux(make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dreame_valetudo.platform_env.shutil.which",
+        lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None,
+    )
+    ctx = make_ctx(
+        system="Linux",
+        responder=lambda argv: Result(
+            argv, 0, "X-Valetudo-Version: 2026.07.0\r\n", ""
+        ),
+    )
+
+    assert ui(ctx) is True
+    assert ("/usr/bin/xdg-open", "http://192.168.5.1") in ctx.runner.calls  # type: ignore[attr-defined]
+    assert _said(ctx, "opened http://192.168.5.1")
+
+
+def test_ui_does_not_claim_it_opened_a_browser_when_no_launcher_exists(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dreame_valetudo.platform_env.shutil.which", lambda _name: None)
+    ctx = make_ctx(
+        system="Linux",
+        responder=lambda argv: Result(
+            argv, 0, "X-Valetudo-Version: 2026.07.0\r\n", ""
+        ),
+    )
+
+    assert ui(ctx) is True
+    assert _said(ctx, "Valetudo is up — open http://192.168.5.1")
+    assert not _said(ctx, "opened http://192.168.5.1")
 
 
 def test_ui_returns_false_on_timeout(make_ctx: CtxFactory) -> None:

@@ -7,7 +7,14 @@ import re
 import sys
 from pathlib import Path
 
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.profiles import (
+    SUPPORTED_MODELS,
+    impl_class_for_model,
+    known_model_base_for_code,
+    load_profile,
+    model_family_candidate_for_code,
+    reviewed_model_identities_for_key,
+)
 
 GUIDE_STEPS = (
     "fsbl_ddr3.bin",
@@ -100,6 +107,30 @@ def _section(markdown: str, model: str) -> str | None:
     return None
 
 
+def _implementation_model_family(
+    source: str, model_code: str, model_key: str, impl_class: str,
+) -> tuple[bool, list[str], list[str]]:
+    """Accept Valetudo's regional/colour suffixes without conflating another local profile."""
+    present = False
+    unknown: list[str] = []
+    reported_identities = {
+        f"{vendor}.{reported_code}"
+        for vendor, reported_code in re.findall(
+        r'"((?:dreame|mova)\.vacuum)\.([0-9a-z]+)"', source,
+        )
+    }
+    for full_identity in reported_identities:
+        candidate = model_family_candidate_for_code(full_identity)
+        if (candidate is not None and candidate[2] == model_key
+                and known_model_base_for_code(full_identity) is None):
+            unknown.append(full_identity)
+        if (known_model_base_for_code(full_identity) == model_code
+                and impl_class_for_model(full_identity) == impl_class):
+            present = True
+    missing = sorted(reviewed_model_identities_for_key(model_key) - reported_identities)
+    return present, unknown, missing
+
+
 def verify(upstream: Path) -> list[str]:
     robot_dir = upstream / "backend/lib/robots/dreame"
     supported_path = upstream / "docs/pages/general/supported-robots.md"
@@ -174,11 +205,20 @@ def verify(upstream: Path) -> list[str]:
             issues.append(f"{key}: upstream implementation disappeared: {profile.impl_class}")
         else:
             source = implementation.read_text()
-            identities = (
-                f'"dreame.vacuum.{profile.model_code}',
-                f'"mova.vacuum.{profile.model_code}',
+            family_present, unknown_identities, missing_identities = _implementation_model_family(
+                source, profile.model_code, profile.key, profile.impl_class,
             )
-            if not any(identity in source for identity in identities):
+            if unknown_identities:
+                issues.append(
+                    f"{key}: upstream implementation added unreviewed model identities: "
+                    + ", ".join(sorted(set(unknown_identities)))
+                )
+            if missing_identities:
+                issues.append(
+                    f"{key}: upstream implementation dropped reviewed model identities: "
+                    + ", ".join(missing_identities)
+                )
+            if not family_present:
                 issues.append(
                     f"{key}: {profile.model_code} is no longer an identity of {profile.impl_class}"
                 )

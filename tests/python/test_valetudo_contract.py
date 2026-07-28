@@ -6,7 +6,11 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.profiles import (
+    SUPPORTED_MODELS,
+    load_profile,
+    reviewed_model_identities_for_key,
+)
 from libexec import verify_valetudo_contract as contract
 from libexec.verify_valetudo_contract import (
     DDR3_MODEL_KEYS,
@@ -30,7 +34,9 @@ def _upstream_fixture(root: Path) -> Path:
         profile = load_profile(key)
         if profile.method != "fastboot":
             continue
-        classes.setdefault(profile.impl_class, []).append(profile.model_code)
+        identities = classes.setdefault(profile.impl_class, [])
+        identities.append(f"dreame.vacuum.{profile.model_code}")
+        identities.extend(reviewed_model_identities_for_key(profile.key))
         title = profile.model.split(" (", 1)[0].removeprefix("Dreame ").removeprefix("Mova ")
         sections.setdefault(
             title,
@@ -39,9 +45,9 @@ def _upstream_fixture(root: Path) -> Path:
             + "\n".join(MODEL_SECTION_MARKERS[key])
             + "\n",
         )
-    for implementation, codes in classes.items():
-        identities = ", ".join(f'"dreame.vacuum.{code}"' for code in codes)
-        (robots / f"{implementation}.js").write_text(identities)
+    for implementation, identities in classes.items():
+        source = ", ".join(f'"{identity}"' for identity in sorted(set(identities)))
+        (robots / f"{implementation}.js").write_text(source)
     (docs / "general/supported-robots.md").write_text("\n".join(sections.values()))
     (docs / "installation/dreame.md").write_text(DDR_RULE + "\n" + "\n".join(GUIDE_STEPS))
     return root
@@ -81,6 +87,79 @@ def test_model_identity_and_method_drift_turn_the_monitor_red(tmp_path: Path) ->
     issues = verify(upstream)
     assert any("r2416 is no longer an identity" in issue for issue in issues)
     assert any("official model section no longer says [Fastboot]" in issue for issue in issues)
+
+
+def test_regional_model_suffix_is_part_of_the_same_implementation_family(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameX40MasterValetudoRobot.js"
+    implementation.write_text(
+        implementation.read_text().replace('"dreame.vacuum.r2465", ', "")
+    )
+
+    assert verify(upstream) == []
+
+
+def test_unknown_model_suffix_turns_the_monitor_red(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameX40MasterValetudoRobot.js"
+    implementation.write_text(
+        implementation.read_text().replace("dreame.vacuum.r2465", "dreame.vacuum.r2465x")
+    )
+
+    assert any("x40-master: r2465 is no longer an identity" in issue for issue in verify(upstream))
+
+
+def test_added_unknown_model_suffix_turns_the_monitor_red(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameX40MasterValetudoRobot.js"
+    implementation.write_text(implementation.read_text() + ', "dreame.vacuum.r2465x"')
+
+    assert any(
+        "x40-master: upstream implementation added unreviewed model identities: "
+        "dreame.vacuum.r2465x" in issue
+        for issue in verify(upstream)
+    )
+
+
+def test_removed_reviewed_model_suffix_turns_the_monitor_red(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameL40UltraValetudoRobot.js"
+    implementation.write_text(
+        implementation.read_text().replace(', "dreame.vacuum.r2492b"', "")
+    )
+
+    assert any(
+        "l40-ultra: upstream implementation dropped reviewed model identities: "
+        "dreame.vacuum.r2492b" in issue
+        for issue in verify(upstream)
+    )
+
+
+def test_same_model_alias_cannot_mask_a_missing_profile_code(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameX40UltraValetudoRobot.js"
+    implementation.write_text(
+        implementation.read_text().replace("dreame.vacuum.r2416", "dreame.vacuum.r2449a")
+    )
+
+    assert any("x40-ultra: r2416 is no longer an identity" in issue for issue in verify(upstream))
+
+
+def test_r2338h_identity_cannot_mask_a_missing_r2338_identity(tmp_path: Path) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = (
+        upstream / "backend/lib/robots/dreame/DreameL10SProUltraHeatValetudoRobot.js"
+    )
+    implementation.write_text(
+        implementation.read_text()
+        .replace('"dreame.vacuum.r2338", ', "")
+        .replace('"dreame.vacuum.r2338a", ', "")
+    )
+
+    assert any(
+        "l10s-pro-ultra-heat: r2338 is no longer an identity" in issue
+        for issue in verify(upstream)
+    )
 
 
 def test_model_specific_guidance_drift_turns_the_monitor_red(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import os
 import re
 import shutil
 import tarfile
@@ -85,7 +86,9 @@ def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
         "mount -o remount,rw /mnt/private 2>/dev/null || true\n"
         f"[ -f '{factory}/did_orig.txt' ] || cp '{didtxt}' '{factory}/did_orig.txt'\n"
         f"printf '%s' '{pos}' > '{didtxt}'\n"
-        f"if [ -f '{dconf}' ]; then sed -i 's/^did=.*/did={pos}/' '{dconf}'; fi\n"
+        f"if [ -f '{dconf}' ]; then sed -i 's/^did=.*/did={pos}/' '{dconf}'; "
+        f"grep -qxF 'did={pos}' '{dconf}'; fi\n"
+        f"[ \"$(cat '{didtxt}')\" = '{pos}' ]\n"
         "sync\n"
     )
     return robot_ssh(ctx.runner, _TARGET, script, key=key, check=False).ok
@@ -104,32 +107,51 @@ def _apply_key_fix(ctx: Context, key: str | Path | None, mikey: str) -> bool:
         return False
     dconf = "/data/config/miio/device.conf"
     factory = "/mnt/private/ULI/factory"
-    keyfile = ctx.ws.base / ".mikey"
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
-    keyfile.write_text(mikey)
-    keyfile.chmod(0o600)  # briefly holds the secret before it's streamed + unlinked
-    # awk replaces an existing key= line or ADDS one when device.conf has none (empty-key units can
-    # lack the line entirely — a plain sed can only rewrite, so this honors the diagnose promise).
-    script = (
-        "set -e\n"
-        "K=$(cat)\n"
-        "mount -o remount,rw /mnt/private 2>/dev/null || true\n"
-        f"[ -f '{factory}/key_orig.txt' ] || cp '{_KEY_TXT}' '{factory}/key_orig.txt' "
-        "2>/dev/null || true\n"
-        f"printf '%s' \"$K\" > '{_KEY_TXT}'\n"
-        f"if [ -f '{dconf}' ]; then\n"
-        f"  awk -v k=\"$K\" '/^key=/{{print \"key=\" k; f=1; next}} {{print}} "
-        f"END{{if (!f) print \"key=\" k}}' '{dconf}' > '{dconf}.new' && "
-        f"cat '{dconf}.new' > '{dconf}' && rm -f '{dconf}.new'\n"
-        f"fi\n"
-        "sync\n"
-    )
+    fd, temporary = tempfile.mkstemp(prefix=".mikey.", dir=ctx.ws.base)
+    keyfile = Path(temporary)
     try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(mikey)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # awk replaces an existing key= line or ADDS one when device.conf has none (empty-key units
+        # can lack the line entirely — a plain sed can only rewrite).
+        script = (
+            "set -e\n"
+            "K=$(cat)\n"
+            "mount -o remount,rw /mnt/private 2>/dev/null || true\n"
+            f"[ -f '{factory}/key_orig.txt' ] || cp '{_KEY_TXT}' "
+            f"'{factory}/key_orig.txt' 2>/dev/null || true\n"
+            f"printf '%s' \"$K\" > '{_KEY_TXT}'\n"
+            f"if [ -f '{dconf}' ]; then\n"
+            f"  awk -v k=\"$K\" '/^key=/{{print \"key=\" k; f=1; next}} {{print}} "
+            f"END{{if (!f) print \"key=\" k}}' '{dconf}' > '{dconf}.new' && "
+            f"cat '{dconf}.new' > '{dconf}' && rm -f '{dconf}.new'\n"
+            f"  grep -qxF \"key=$K\" '{dconf}'\n"
+            f"fi\n"
+            f"[ \"$(cat '{_KEY_TXT}')\" = \"$K\" ]\n"
+            "sync\n"
+        )
         return ctx.runner.run_redirect(
             [*ssh_base(_TARGET, key), script], stdin_path=str(keyfile), check=False
         ).ok
     finally:
         keyfile.unlink(missing_ok=True)
+
+
+def _device_conf_value(ctx: Context, key: str | Path | None, field: str) -> str | None:
+    """Read one device.conf field; None means the file could not be inspected."""
+    result = robot_ssh(
+        ctx.runner,
+        _TARGET,
+        f"awk -F= '$1 == \"{field}\" {{sub(/^[^=]*=/, \"\"); print; exit}}' "
+        "/data/config/miio/device.conf 2>/dev/null",
+        key=key,
+        check=False,
+    )
+    return "".join(result.stdout.split()) if result.ok else None
 
 
 def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) -> None:
@@ -445,6 +467,7 @@ def _repair_did_if_needed(ctx: Context, key: str | Path | None) -> None:
             check=False,
         ).stdout.split()
     )
+    configured = _device_conf_value(ctx, key, "did")
     pos = repair_did(did)
     if pos is not None:
         ctx.console.say(f"Repairing negative factory deviceId ({did} -> {pos}) so Valetudo can "
@@ -454,6 +477,16 @@ def _repair_did_if_needed(ctx: Context, key: str | Path | None) -> None:
         else:
             ctx.console.warn("deviceId repair failed — if the UI is blank after reboot, run "
                              "'fix-did'.")
+    elif re.fullmatch(r"[0-9]+", did) and configured is None:
+        ctx.console.warn("Couldn't inspect device.conf, so the positive factory deviceId could "
+                         "not be compared. Skipping automatic repair; retry after checking SSH.")
+    elif re.fullmatch(r"[0-9]+", did) and configured != did:
+        ctx.console.say("Factory did.txt is positive, but device.conf is stale — completing the "
+                        "interrupted deviceId repair...")
+        if _apply_did_fix(ctx, key, did):
+            ctx.console.info("deviceId copies now agree.")
+        else:
+            ctx.console.warn("deviceId repair is still incomplete — run 'fix-did'.")
     elif re.fullmatch(r"[0-9]+", did):
         ctx.console.info(f"Factory deviceId is already positive ({did}) — no repair needed.")
     elif re.fullmatch(r"-[0-9]+", did):
@@ -472,7 +505,20 @@ def _populate_key_if_needed(ctx: Context, key: str | Path | None) -> None:
         robot_ssh(ctx.runner, _TARGET, f"cat {_KEY_TXT} 2>/dev/null", key=key, check=False)
         .stdout.split()
     )
+    configured = _device_conf_value(ctx, key, "key")
+    if cur and configured == cur:
+        return
+    if cur and configured is None:
+        ctx.console.warn("Couldn't inspect device.conf, so the populated factory key could not be "
+                         "compared. Skipping automatic repair; retry after checking SSH.")
+        return
     if cur:
+        ctx.console.say("Factory key.txt is populated, but device.conf is stale — completing the "
+                        "interrupted miio-key repair...")
+        if _apply_key_fix(ctx, key, cur):
+            ctx.console.info("miio key copies now agree.")
+        else:
+            ctx.console.warn("miio key repair is still incomplete — run 'fix-key'.")
         return
     mikey = parse_mikey(
         robot_ssh(ctx.runner, _TARGET, "dreame_release.na -c 7 2>/dev/null", key=key, check=False)

@@ -12,9 +12,12 @@ paths used here:
   `SID_PRCTL 0x03006040` + two flags) — it physically cannot burn ([04](04-boot0-write-and-verify.md)).
 - Reading the fuse is **non-destructive** and safe on any unit ([05](05-efuse-rotpk-secure-boot.md)).
 
-Keep it that way: never `go`/inject a call to `0x4a0026a4`, never arm `burn_secure_mode`, never
-`oem prep` (the historical `rotpk_status` risk). And never `getvar config` between `oem dust` and
-`flash` — it re-locks the device ([03](03-flash-authorization-token.md)).
+Keep it that way in the experimental self-root/recovery path: never `go`/inject a call to
+`0x4a0026a4`, never arm `burn_secure_mode`, and never add `oem prep` to those research scripts (the
+historical `rotpk_status` risk). The normal DustBuilder rooting path is a different, upstream-defined
+payload contract that explicitly requires `oem dust` then `oem prep`; the production tool preserves
+that sequence. And never `getvar config` between `oem dust` and `flash` — it re-locks the device
+([03](03-flash-authorization-token.md)).
 
 ## Recovery — always available
 

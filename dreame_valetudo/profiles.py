@@ -257,6 +257,23 @@ _DIR_PREFIX_TO_KEY: list[tuple[str, str]] = [
     ("p2156-", "mova-z500"),
 ]
 
+# Static copy of the one-letter identities Valetudo currently assigns to regional/colour variants.
+# Full vendor bases are deliberate: a Dreame suffix never authorizes an invented Mova identity.
+# Unknown identities stop at the live-model gate until the upstream monitor makes them visible.
+_MODEL_IDENTITY_SUFFIXES: dict[str, frozenset[str]] = {
+    "dreame.vacuum.r2416": frozenset({"a", "c"}),
+    "dreame.vacuum.r2449": frozenset({"a", "k"}),
+    "dreame.vacuum.r2465": frozenset({"a"}),
+    "dreame.vacuum.r9316": frozenset({"k", "t"}),
+    "dreame.vacuum.r2492": frozenset({"a", "b", "j"}),
+    "dreame.vacuum.r2394": frozenset({"j", "k", "s"}),
+    "dreame.vacuum.r2228": frozenset({"o"}),
+    "dreame.vacuum.r2338": frozenset({"a"}),
+    "dreame.vacuum.r2385": frozenset({"a"}),
+    "dreame.vacuum.r2491": frozenset({"a"}),
+    "mova.vacuum.r2491": frozenset({"a"}),
+}
+
 
 def key_from_dirname(basename: str) -> str:
     """Infer a model key from a robot work-dir basename, falling back to the default key."""
@@ -280,20 +297,66 @@ def known_model_key_for_dir(dir_path: str | os.PathLike[str]) -> str | None:
     return None
 
 
-def known_model_key_for_code(code: str) -> str | None:
-    """Resolve a robot-reported model code and its known one-letter regional suffix."""
+def _reported_model_code(code: str) -> tuple[str, str] | None:
     normalized = code.lower()
     namespace, separator, normalized = normalized.rpartition(".")
     if not separator or namespace not in {"dreame.vacuum", "mova.vacuum"}:
         return None
+    return namespace, normalized
+
+
+def model_family_candidate_for_code(code: str) -> tuple[str, str, str] | None:
+    """Longest plausible base/key for CI drift detection; this does not authorize the suffix."""
+    reported = _reported_model_code(code)
+    if reported is None:
+        return None
+    namespace, normalized = reported
     candidates = sorted(_DIR_PREFIX_TO_KEY, key=lambda item: len(item[0]), reverse=True)
     for prefix, key in candidates:
         base = prefix.removesuffix("-")
-        if normalized == base or (
-            normalized.startswith(base) and normalized[len(base):] in {"a", "c", "k", "o", "t"}
-        ):
-            return key
+        suffix = normalized[len(base):] if normalized.startswith(base) else ""
+        if normalized == base or (suffix and suffix.isalpha()):
+            return namespace, base, key
     return None
+
+
+def reviewed_model_identities_for_key(key: str) -> frozenset[str]:
+    """Regional identities copied from Valetudo for one local model profile."""
+    identities: set[str] = set()
+    for full_base, suffixes in _MODEL_IDENTITY_SUFFIXES.items():
+        candidate = model_family_candidate_for_code(full_base)
+        if candidate is not None and candidate[2] == key:
+            identities.update(f"{full_base}{suffix}" for suffix in suffixes)
+    return frozenset(identities)
+
+
+def _known_model_code(code: str) -> tuple[str, str] | None:
+    reported = _reported_model_code(code)
+    candidate = model_family_candidate_for_code(code)
+    if reported is None or candidate is None:
+        return None
+    namespace, normalized = reported
+    _candidate_namespace, base, key = candidate
+    suffix = normalized[len(base):]
+    full_base = f"{namespace}.{base}"
+    namespace_is_known = impl_class_for_model(full_base) is not None
+    if namespace_is_known and (
+        normalized == base or suffix in _MODEL_IDENTITY_SUFFIXES.get(full_base, ())
+    ):
+        return base, key
+    return None
+
+
+def known_model_base_for_code(code: str) -> str | None:
+    """The exact supported base behind a robot identity, preserving same-model aliases."""
+    resolved = _known_model_code(code)
+    return resolved[0] if resolved is not None else None
+
+
+def known_model_key_for_code(code: str) -> str | None:
+    """Resolve an exact robot code or a Valetudo-pinned one-letter regional suffix."""
+    resolved = _known_model_code(code)
+    return resolved[1] if resolved is not None else None
 
 
 def model_key_for_dir(dir_path: str | os.PathLike[str]) -> str:
