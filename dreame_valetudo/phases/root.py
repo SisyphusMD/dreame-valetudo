@@ -12,8 +12,8 @@ import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from ..console import die
-from ..constants import FEL_IMAGE_FILES
+from ..console import abort, die
+from ..constants import FEL_IMAGE_FILES, RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
@@ -28,7 +28,6 @@ _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
 # identity of the config the image was built for (see log.py's redact_dust_token).
 _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
-_RECOVERY_DUMPS = ("dustx100.bin", "dustx101.bin", "dustx102.bin")
 
 # These are deliberately well below the current builder artifacts, but high enough that a hollow
 # or grossly truncated member cannot reach either rootfs slot with an OKAY response. All supported
@@ -112,7 +111,7 @@ def _has_recovery_backup(ctx: Context) -> bool:
         return True
     return all((robot.recon_dir / name).is_file()
                and (robot.recon_dir / name).stat().st_size > 0
-               for name in _RECOVERY_DUMPS)
+               for name in (f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES))
 
 
 @records_step("flashing the rooted image")
@@ -177,7 +176,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
         ctx.console.warn(f"{backup_warning} Flashing without it removes a recovery option. Run "
                          "'dreame-valetudo recon --force' to capture it before flashing.")
         if not ctx.console.confirm("Flash without a disaster-recovery backup anyway?"):
-            die("Aborted — nothing was written to the robot.")
+            abort("Aborted — nothing was written to the robot.")
 
     ctx.console.warn("The robot's power MCU cuts and restores the SoC rail roughly 210s after the "
                      "PCB button sequence, leaving about 180s of usable FEL. This is not a "
@@ -189,7 +188,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     model_hazard_check(ctx)
     if not ctx.console.confirm(f"Flash {ctx.profile.model} now? (you're accepting the risk of "
                                "bricking)"):
-        die("Aborted — nothing was written to the robot.")
+        abort("Aborted — nothing was written to the robot.")
 
     check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)

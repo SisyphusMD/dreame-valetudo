@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -10,8 +11,9 @@ from ..context import Context
 from ..profiles import known_model_key_for_dir, load_profile
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
-from ..util import parse_config
 from ..workspace import Robot
+
+_PHASES = ("recon", "image", "rooted", "valetudo")
 
 
 @records_step("installing Valetudo")
@@ -33,7 +35,14 @@ def ui(ctx: Context) -> bool:
     up = False
     with ctx.console.progress("Waiting for the web UI (first boot can take a couple minutes)") as p:
         for _ in range(40):
-            if ctx.runner.run(["curl", "-sf", "-m", "3", "-o", "/dev/null", url], check=False).ok:
+            probe = ctx.runner.run(
+                ["curl", "-sS", "-m", "3", "-D", "-", "-o", "/dev/null", url], check=False
+            )
+            # Valetudo adds this header before its optional HTTP-auth middleware, so this proves
+            # the responder is Valetudo without depending on the separate SSH key still working.
+            if probe.ok and re.search(
+                r"(?im)^x-valetudo-version\s*:", probe.stdout + probe.stderr
+            ):
                 up = True
                 break
             ctx.sleep(3)
@@ -44,7 +53,9 @@ def ui(ctx: Context) -> bool:
             ctx.runner.run(["open", url], check=False)
         ctx.console.say(f"Valetudo is up — opened {url}")
         return True
-    ctx.console.warn(f"Valetudo didn't respond at {url} after ~2 min. Run: diagnose")
+    ctx.console.warn(f"Valetudo didn't identify itself at {url} after ~2 min. If a different "
+                     "page answered, it is usually your router; join the robot's AP. Otherwise "
+                     "run: diagnose")
     return False
 
 
@@ -60,13 +71,9 @@ def sshkey(ctx: Context) -> None:
                        "DREAME_SSHKEY=...")
 
 
-def _summary(base: Path) -> str:
-    d = base
-    cfg = "?"
-    cfg_file = d / "recon" / "config.txt"
-    if cfg_file.is_file():
-        cfg = parse_config(cfg_file.read_text()) or "?"
-    key = known_model_key_for_dir(d)
+def _summary(robot: Robot) -> str:
+    cfg = robot.config() or "?"
+    key = known_model_key_for_dir(robot.work)
     if key:
         try:
             model = load_profile(key).model
@@ -75,8 +82,8 @@ def _summary(base: Path) -> str:
     else:
         model = "model not chosen yet"
     last = "none"
-    for s in ("valetudo", "rooted", "image", "recon"):
-        if (d / "state" / s).is_file():
+    for s in reversed(_PHASES):
+        if robot.state_has(s):
             last = s
             break
     summary = f"{model}  config={cfg}  furthest={last}"
@@ -84,7 +91,7 @@ def _summary(base: Path) -> str:
     # what finished, which is not the same as what it was in the middle of asking. Kept on one
     # line: an embedded newline fights the console's hanging indent and renders ragged.
     asked = ""
-    pending = d / "state" / "pending"
+    pending = robot.state_dir / "pending"
     if pending.is_file():
         asked = " ".join(pending.read_text().split())
     if asked:
@@ -97,12 +104,12 @@ def status(ctx: Context) -> None:
     robots_dir.mkdir(parents=True, exist_ok=True)
     found = False
     for d in sorted(robots_dir.iterdir()):
-        if not d.is_dir() or d.name.startswith("."):  # skip dot-directories
+        if not d.is_dir() or d.name.startswith("."):
             continue
         found = True
-        ctx.console.say(f"Robot: {d.name}   {_summary(d)}")
         robot = Robot(d)
-        for s in ("recon", "image", "rooted", "valetudo"):
+        ctx.console.say(f"Robot: {d.name}   {_summary(robot)}")
+        for s in _PHASES:
             if robot.state_has(s):
                 ctx.console.info(f"   [x] {s:<8} {robot.state_get(s)}")
             else:

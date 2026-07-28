@@ -24,6 +24,32 @@ disk is refused rather than reverse-migrated.
 | 0 | (pre-versioning) | Legacy: work dir at `~/dreame-valetudo-work`, factory backups scattered as `~/dreame-<tag>-backup-<ts>` directly in `$HOME`. No marker. |
 | 1 | 0.2.0 | Consolidated under one `~/dreame-valetudo/` umbrella: `work/` (cache + robots) and `backups/`, plus the `.layout` marker. The old `~/dreame-valetudo-work` path is removed, not symlinked forward — downgrading isn't supported, so an old build starts fresh rather than reading a moved layout it can't understand. |
 
+## Current layout
+
+```text
+~/dreame-valetudo/
+├── .layout                         layout compatibility marker
+├── .last_version                   last version whose release notes were shown
+├── .update_check                   once-daily update-check cache
+├── work/
+│   ├── cache/                      replaceable downloads and built tools
+│   ├── logs/                       scrubbed run logs
+│   └── robots/<robot>/
+│       ├── state/                  model, display name, and completed-phase markers
+│       ├── recon/                  recorded identity and pre-root recovery captures
+│       └── fw/                     staged DustBuilder image for this robot
+└── backups/
+    └── dreame-<model>-<config>-<timestamp>/
+        ├── manifest.json           provenance, robot identity, creation time, and contents
+        └── files.tar.gz            irreplaceable post-root factory/identity backup
+```
+
+`DREAME_WORK` and `DREAME_BACKUPS` can relocate those two directories. The umbrella-level markers
+remain under `~/dreame-valetudo/`. Recon keeps both the sealed `dustx10{0,1,2}.bin` slices and their
+locally restorable `.dd.gz` forms; `dreame_recovery_backup.zip` is the portable pre-root copy. A
+backup manifest is deliberately self-describing so a copied backup can be identified years later
+without the original workspace.
+
 ## Self-healing invariants (not versioned)
 
 Some upkeep runs on **every** launch, right after the versioned steps above — gaps-only and

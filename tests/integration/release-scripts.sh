@@ -80,10 +80,9 @@ done
 echo "  prerelease flag: rc tag -> prerelease:true, stable tag -> prerelease:false (both forges) OK"
 
 # ---- asset REPLACE: deleting a same-named asset must hit each forge's CORRECT delete URL ----
-# Regression: GitHub deletes at /releases/assets/<id> (no release id); Forgejo at
+# GitHub deletes at /releases/assets/<id> (no release id); Forgejo at
 # /releases/<id>/assets/<id>. A wrong URL silently no-ops, so the re-upload 422s (reconcile does this
-# for every already-present asset). The prior stub returned an EMPTY asset list, so this path — and
-# the bug — went untested. This stub returns an EXISTING same-named asset so the delete actually fires.
+# for every already-present asset). Return an existing same-named asset so the delete path executes.
 cat > "$tmp/curl" <<EOF
 #!/usr/bin/env bash
 printf 'curl %s\n' "\$*" >> "$calls"

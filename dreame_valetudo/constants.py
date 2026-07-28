@@ -15,6 +15,9 @@ STAGE1_SHA256 = "d53292fa35a4241aa6ce3ed6f391f0ab53a248c10cd28fbb8e00e6c0e56f193
 # shipped, but its known digest distinguishes the real key from a plausible constant-XOR offset.
 DUST_KEYSTREAM_SHA256 = "f4aba17061faca41e1425624b7ba120b1b3856f9bbc0e3eb09aa36dc4aefbe71"
 
+# Consecutive eMMC slices pulled by recon and decrypted together with their shared keystream.
+RECOVERY_DUMP_NAMES = ("dustx100", "dustx101", "dustx102")
+
 # sunxi-tools is built from source; pin to a commit for reproducible builds.
 # renovate: datasource=git-refs depName=https://github.com/linux-sunxi/sunxi-tools
 SUNXI_TOOLS_REF = "d7bbd172a5da601a08f94479de308c6fb714a19a"

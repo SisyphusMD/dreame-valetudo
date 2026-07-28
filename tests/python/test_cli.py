@@ -9,6 +9,7 @@ from conftest import ScriptedConsole
 
 from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
+from dreame_valetudo.console import UserAbort
 from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
@@ -83,6 +84,20 @@ def test_fix_wifi_prints_without_forcing_a_robot_selection(tmp_path: Path) -> No
     ) == 0
     assert _has(con, "rooted robot won't stay on your Wi-Fi")
     assert not _has(con, "Which robot")
+
+
+def test_ui_runs_without_selecting_or_creating_a_robot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "ui", lambda _ctx: called.append(True) or True)
+
+    assert main(
+        ["ui"], env={"DREAME_WORK": str(tmp_path)},
+        console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == 0
+    assert called == [True]
+    assert not (tmp_path / "robots").exists()
 
 
 @pytest.mark.parametrize("command", ("diagnose", "fix-impl", "fix-did", "fix-key"))
@@ -187,6 +202,25 @@ def _stub_production_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "resolve_libexec", lambda *a, **k: None)
     monkeypatch.setattr(cli, "show_whats_new", lambda *a, **k: None)
     monkeypatch.setattr(cli, "check_for_update", lambda *a, **k: None)
+
+
+def test_deliberate_stop_is_successful_and_does_not_invite_an_issue_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_dispatch", lambda *_args: (_ for _ in ()).throw(UserAbort("Stopped safely."))
+    )
+    env = {"HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_DECRYPT": "1"}
+    assert main(["status"], env=env, console=ScriptedConsole(), runner=SubprocessRunner()) == 0
+    terminal = capsys.readouterr().out
+    assert "Stopped safely." in terminal
+    assert "report the problem" not in terminal
+    log = next((tmp_path / "dreame-valetudo" / "work" / "logs").glob("run-*.log"))
+    log_text = log.read_text()
+    assert "Stopped safely." in log_text and "# exit 0" in log_text
+    assert "report the problem" not in log_text
 
 
 def test_main_migrates_before_opening_the_run_log(

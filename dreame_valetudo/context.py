@@ -25,7 +25,7 @@ from .fel import Fel
 from .profiles import Profile
 from .run import Runner
 from .session import describe_run, name_the_robot_on_the_bar, session_name, working_tmux
-from .workspace import WORKSPACE_SUBDIR, Robot, Workspace
+from .workspace import Robot, Workspace, backups_dir
 
 
 def _local_now() -> str:
@@ -145,8 +145,7 @@ class Context:
     def backups_dir(self) -> Path:
         """Where irreplaceable factory backups go: ~/dreame-valetudo/backups by default (a SIBLING
         of the work dir, so clearing work never touches a backup). DREAME_BACKUPS overrides."""
-        override = self.env.get("DREAME_BACKUPS")
-        return Path(override) if override else self.home / WORKSPACE_SUBDIR / "backups"
+        return backups_dir(self.env)
 
     def robot_config(self) -> str | None:
         """This robot's recorded 'config' identity, with the env fallbacks applied uniformly."""

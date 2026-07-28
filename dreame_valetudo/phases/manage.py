@@ -34,7 +34,8 @@ def _pick_robot(ctx: Context, verb: str) -> str:
         die(f"usage: dreame-valetudo {verb} <name>  (stdin isn't a terminal, so can't pick one)")
     ctx.console.say(f"Which robot to {verb}?")
     for i, d in enumerate(dirs, 1):
-        ctx.console.info(f"   {i}) {Robot(d).display_name()}   {_summary(d)}")
+        robot = Robot(d)
+        ctx.console.info(f"   {i}) {robot.display_name()}   {_summary(robot)}")
     choice = ctx.console.ask(f"[1-{len(dirs)}]?").strip()
     if not re.fullmatch(r"[0-9]+", choice) or not 1 <= int(choice) <= len(dirs):
         die(f"Invalid choice: {choice}")
@@ -108,7 +109,7 @@ def forget(ctx: Context, rest: Sequence[str]) -> None:
     target = _resolve_robot(ctx, name)
     disp = Robot(target).display_name()
     ctx.console.say(f"About to remove the working dir for robot '{disp}':")
-    ctx.console.info(f"  {target}   {_summary(target)}")
+    ctx.console.info(f"  {target}   {_summary(Robot(target))}")
     dumps = list((target / "recon").glob("dust*.bin"))
     if dumps:
         total = sum(d.stat().st_size for d in dumps) / (1 << 20)

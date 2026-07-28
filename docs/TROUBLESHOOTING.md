@@ -33,7 +33,7 @@ Back to the [README](../README.md).
 - **`device.conf` missing/empty on first root** → Valetudo can't start (same null-parse as the
   negative `did`). Regenerate it: `rm /data/config/miio/device.conf && reboot`. Only if that
   doesn't repopulate it do a factory reset (which also wipes Valetudo; reinstall after).
-  `diagnose` now checks `did`/`key`/`model` presence and reports exactly which is wrong.
+  `diagnose` checks `did`/`key`/`model` presence and reports exactly which is wrong.
 - **L10s Pro Ultra Heat won't dock / no cleaning modes** → a known MCU↔Linux firmware mismatch
   (rooting flashes newer firmware than the factory MCU expects). Build a "manual installation"
   image on the dustbuilder and install it over SSH; that runs the normal OTA path and resyncs
@@ -43,7 +43,8 @@ Back to the [README](../README.md).
 - **Robot suddenly "reset itself" / Valetudo vanished** → usually ext4 corruption of `/data`
   (the stock firmware recreates the filesystem, wiping Valetudo; see
   [#2410](https://github.com/Hypfer/Valetudo/discussions/2410)). Not caused by Valetudo and not
-  preventable, so the factory/identity backup `push` writes to `~/` (plus the recon recovery-backup zip)
-  **is your recovery path**: reinstall from it over SSH. Keep it. (The robot's Wi-Fi AP also
+  preventable, so the factory/identity backup under `~/dreame-valetudo/backups/` (or
+  `DREAME_BACKUPS`) plus `work/robots/<robot>/recon/dreame_recovery_backup.zip` **is your recovery
+  path**: reinstall from it over SSH. Keep it. (The robot's Wi-Fi AP also
   auto-disables ~30 min after boot; hold the two outer buttons to bring it back; see
   [#2158](https://github.com/Hypfer/Valetudo/discussions/2158).)

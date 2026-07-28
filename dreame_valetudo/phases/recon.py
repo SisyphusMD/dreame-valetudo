@@ -11,6 +11,7 @@ import re
 import zipfile
 
 from ..console import Die, die, warn_if_low_disk
+from ..constants import RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry
 from ..migrate import decrypt_recovery_backup
@@ -19,7 +20,7 @@ from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace, protect_recon_artifacts
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
-from .fetch import fetch_stage1
+from .fetch import fetch_stage1, stage1_ready
 
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
 # asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
@@ -112,7 +113,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     try:
         if not _sunxi_ready(ctx):
             doctor(ctx)
-        if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
+        if not stage1_ready(ctx):
             fetch_stage1(ctx)
         check_fastboot_client(ctx)
         print_fel_entry(ctx.console, ctx.host)
@@ -167,7 +168,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # Self-provision before the already-done check: toolchain, then stage1.
     if not _sunxi_ready(ctx):
         doctor(ctx)
-    if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
+    if not stage1_ready(ctx):
         fetch_stage1(ctx)
     if ctx.robot is not None and ctx.robot.state_has("recon") and not force:
         prior = ctx.robot.state_get("recon")
@@ -181,7 +182,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         else:
             ctx.console.info(f"Recon already done — {prior}. Re-run with '--force' to repeat.")
             return
-    if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
+    if not stage1_ready(ctx):
         die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
     check_fastboot_client(ctx)
@@ -284,31 +285,33 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
 
 def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
     rd = robot.recon_dir
-    d100, d101, d102 = rd / "dustx100.bin", rd / "dustx101.bin", rd / "dustx102.bin"
+    dumps = [rd / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
     try:
-        with ctx.console.progress("Pulling dustx100.bin (1 of 3, over USB)"):
-            ctx.fastboot.fbt("get_staged", str(d100))
-        ctx.fastboot.fbt("oem", "stage1")
-        with ctx.console.progress("Pulling dustx101.bin (2 of 3)"):
-            ctx.fastboot.fbt("get_staged", str(d101))
-        ctx.fastboot.fbt("oem", "stage2")
-        with ctx.console.progress("Pulling dustx102.bin (3 of 3)"):
-            ctx.fastboot.fbt("get_staged", str(d102))
+        total_dumps = len(dumps)
+        for index, dump in enumerate(dumps, 1):
+            suffix = ", over USB" if index == 1 else ""
+            with ctx.console.progress(
+                f"Pulling {dump.name} ({index} of {total_dumps}{suffix})"
+            ):
+                ctx.fastboot.fbt("get_staged", str(dump))
+            if index < total_dumps:
+                ctx.fastboot.fbt("oem", f"stage{index}")
     except Exception:
         return False
     # A staged blob that came back empty (or missing) is a hollow backup — refuse to pass it off
     # as a recovery copy even if every command reported OKAY.
-    if any(not f.is_file() or f.stat().st_size == 0 for f in (d100, d101, d102)):
+    if any(not dump.is_file() or dump.stat().st_size == 0 for dump in dumps):
         return False
     # Record the pulled sizes (MiB survives the log scrubber; a raw byte count would be redacted)
     # so a shared run log shows the backup is real, without needing the workspace on hand.
-    sizes = ", ".join(f"{f.name} {f.stat().st_size / (1 << 20):.1f} MiB" for f in (d100, d101, d102))
-    total = sum(f.stat().st_size for f in (d100, d101, d102)) / (1 << 20)
+    sizes = ", ".join(f"{dump.name} {dump.stat().st_size / (1 << 20):.1f} MiB"
+                      for dump in dumps)
+    total = sum(dump.stat().st_size for dump in dumps) / (1 << 20)
     ctx.console.info(f"Recovery backup pulled: {sizes} (total {total:.1f} MiB)")
     zip_path = rd / RECOVERY_BACKUP_ZIP
     with ctx.console.progress("Zipping the recovery backup"):
         zipped = ctx.runner.run(
-            ["zip", "-q", "-j", str(zip_path), str(d100), str(d101), str(d102)], check=False
+            ["zip", "-q", "-j", str(zip_path), *(str(dump) for dump in dumps)], check=False
         ).ok
     if not zipped:
         return False
@@ -317,10 +320,9 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
             members = archive.infolist()
     except (OSError, zipfile.BadZipFile):
         return False
-    expected = (d100, d101, d102)
-    if (tuple(member.filename for member in members) != tuple(path.name for path in expected)
+    if (tuple(member.filename for member in members) != tuple(path.name for path in dumps)
             or tuple(member.file_size for member in members)
-            != tuple(path.stat().st_size for path in expected)):
+            != tuple(path.stat().st_size for path in dumps)):
         return False
     ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
                      "rejects your config)")

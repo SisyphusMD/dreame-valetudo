@@ -135,7 +135,7 @@ def test_rename_non_interactive_needs_both_names(make_ctx: CtxFactory) -> None:
 def test_rename_brings_the_name_current_in_matching_backups(
     make_ctx: CtxFactory, tmp_path: Path
 ) -> None:
-    cfg = "d97c4de6f64818765e2faf9f14309818"
+    cfg = "abcdef0123456789abcdef0123456789"
     ctx = make_ctx(env={"HOME": str(tmp_path)})  # so backups_dir lands under the tmp home
     r = Robot(ctx.ws.robots_dir / "old")
     r.recon_dir.mkdir(parents=True)

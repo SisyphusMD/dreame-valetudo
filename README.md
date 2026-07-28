@@ -7,7 +7,7 @@ cloud-free robot firmware, with one guided command.** The Valetudo docs assume a
 the whole flow on **macOS** (Apple Silicon or Intel), working around the USB quirks that stop Google's
 `fastboot` from even seeing the robot on Apple Silicon. It runs on **Linux** (amd64/arm64) too. One
 command takes you from a stock robot to a Valetudo web UI over a USB cable, pausing only for the few
-steps a script physically can't do: the FEL button sequence, the web image build, and the go/no-go
+steps a tool physically can't do: the FEL button sequence, the web image build, and the go/no-go
 before flashing.
 
 ![dreame-valetudo running in Terminal on macOS: Phase 2 flashes the rooted image (OKAY-checked, with the flash-authorization token redacted in the shareable log), then Phase 3 installs Valetudo over the robot's own Wi-Fi AP, pausing at a highlighted ACTION banner for the one hands-on step.](docs/terminal-demo.svg)
@@ -43,7 +43,8 @@ helper that drives the robot's FEL mode) once.
 
 > [!NOTE]
 > **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev` (it asks for your password) (macOS
-> needs nothing). If you forget, any rooting command stops with this exact reminder. The `.deb` and
+> needs nothing). Until it is installed, every command except help, version, and the installer
+> itself stops with this reminder; set `DREAME_NO_UDEV_CHECK=1` for Wi-Fi-only work. The `.deb` and
 > `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
 
 ---
@@ -149,11 +150,11 @@ non-destructive, so an Untested model still validates the whole USB path before 
 > **L10s Pro Ultra Heat owners:** there are **two hardware revisions, R2338 and R2338H**, that need
 > **different firmware** and are told apart by a **single character in the serial number**. Flashing
 > the wrong image **bricks the robot**. Check the serial under the dustbin and pick the matching
-> entry. The script warns and asks you to confirm before proceeding.
+> entry. The tool warns and asks you to confirm before proceeding.
 
 > [!WARNING]
 > **L20 Ultra owners:** only the **R2394 (MR813)** hardware is rootable. An identical-looking
-> **R2253** unit is **not supported** and can brick. The script confirms before proceeding, and recon
+> **R2253** unit is **not supported** and can brick. The tool confirms before proceeding, and recon
 > reads the real model code non-destructively.
 
 **UART-method models (guided manual, not yet automated).** Older/smaller Dreames root over a UART
@@ -180,8 +181,9 @@ git pull                                             # from source
 ```
 
 The **first time you run the tool** after upgrading, it migrates the workspace to any new on-disk
-layout automatically: atomic moves that never overwrite anything, leaving a compatibility symlink at
-the old location so an older build still works during the transition. There is nothing extra to do; to
+layout automatically with atomic, never-clobber moves. The legacy path is removed after a successful
+move, not left as a compatibility symlink, and a build that sees a newer layout refuses to alter it.
+There is nothing extra to do; to
 run it deliberately (you upgraded but have no rooting task yet), run `dreame-valetudo migrate`. Your
 factory backups are preserved; [`docs/LAYOUT.md`](docs/LAYOUT.md) documents every layout version.
 
@@ -306,6 +308,14 @@ There is no config or secrets file; every knob is an optional environment variab
 | `DREAME_NO_LOG` | Set `1` to turn off the run log |
 | `DREAME_NO_TMUX` | Set `1` to run in the terminal directly, instead of in a session that survives it closing |
 | `DREAME_IDLE_TIMEOUT` | Seconds an unanswered question waits once nobody is watching (default `3600`, `0` to wait forever) |
+| `DREAME_NO_UPDATE_CHECK` | Set `1` to disable the once-daily release check |
+| `DREAME_NO_DECRYPT` | Set `1` to skip local decryption of recon recovery dumps |
+| `DREAME_NO_UDEV_CHECK` | Set `1` to bypass the Linux udev-rule gate for Wi-Fi-only work |
+| `DREAME_FASTBOOT` | Set `system` to use Android's `fastboot` instead of the validated libusb client |
+
+Once per day, the tool asks GitHub's releases API whether a newer dreame-valetudo release exists.
+The request times out after three seconds, failures are ignored, and it never downloads or installs
+an update. Set `DREAME_NO_UPDATE_CHECK=1` to disable the request.
 
 How the tool handles your SSH key and the scrubbed run log is in [How it works](docs/DESIGN.md).
 

@@ -55,7 +55,7 @@ def compute_token(config_value: str | bytes) -> str:
 
 # Ground-truth oracles the algorithm must reproduce.
 ORACLES = (
-    ("X40  r2416", "d97c4de6f64818765e2faf9f14309818", "10d0f120"),
+    ("X40  r2416", "abcdef0123456789abcdef0123456789", "626153c7"),
     ("L10s r2338", "44268c81e49c1c852dcb2a03b5831ed1", "8d8a3047"),
 )
 

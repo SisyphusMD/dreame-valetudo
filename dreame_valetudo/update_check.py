@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import re
 import sys
 from collections.abc import Mapping
 from datetime import date
@@ -27,18 +29,14 @@ from .migrate import base_dir
 _LATEST_URL = "https://api.github.com/repos/SisyphusMD/dreame-valetudo/releases/latest"
 
 
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Leading integer of each dot-segment (so `0.2.0` and `0.2.0-rc.1` both parse); non-numeric
-    tails count as 0. Enough to order real releases without a semver dependency."""
-    out: list[int] = []
-    for seg in v.strip().lstrip("vV").split("."):
-        digits = ""
-        for ch in seg:
-            if not ch.isdigit():
-                break
-            digits += ch
-        out.append(int(digits) if digits else 0)
-    return tuple(out)
+def _version_tuple(v: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
+    """A dependency-free ordering for this project's numeric releases and ``-rc.N`` tags."""
+    version = v.strip().lstrip("vV")
+    core_text, separator, suffix = version.partition("-")
+    core = tuple(int(part) if part.isdigit() else 0 for part in core_text.split("."))
+    core += (0,) * max(0, 3 - len(core))
+    prerelease = tuple(int(part) for part in re.findall(r"\d+", suffix))
+    return core, 0 if separator else 1, prerelease
 
 
 def _is_newer(latest: str, current: str) -> bool:
@@ -62,9 +60,14 @@ def detect_install_method(env: Mapping[str, str]) -> str:
     # all of them are source checkouts.
     if (Path(__file__).resolve().parent.parent / ".git").exists():
         return "source"
-    exe = (sys.argv[0] or sys.executable or "").lower()
-    with contextlib.suppress(OSError):
-        exe = str(Path(exe).resolve()).lower()
+    if getattr(sys, "frozen", False):
+        exe = sys.executable or ""
+    else:
+        exe = sys.argv[0] or sys.executable or ""
+    exe = exe.lower()
+    if os.sep in exe:
+        with contextlib.suppress(OSError):
+            exe = str(Path(exe).resolve()).lower()
     if "homebrew" in exe or "cellar" in exe:
         return "brew"
     if sys.platform.startswith("linux") and exe.startswith("/usr/"):
@@ -72,10 +75,15 @@ def detect_install_method(env: Mapping[str, str]) -> str:
     return "unknown"
 
 
-def _upgrade_hint(method: str) -> str:
+def _upgrade_hint(method: str, current: str = __version__, latest: str | None = None) -> str:
+    target = latest or current
+    brew_formula = "dreame-valetudo-rc" if "-" in target else "dreame-valetudo"
+    if method == "brew" and "-" in current and "-" not in target:
+        return ("Update: brew uninstall dreame-valetudo-rc && "
+                "brew install sisyphusmd/tap/dreame-valetudo")
     return {
         "source": "Update: git pull (you're running from a source checkout).",
-        "brew": "Update: brew upgrade sisyphusmd/tap/dreame-valetudo",
+        "brew": f"Update: brew upgrade sisyphusmd/tap/{brew_formula}",
         "deb": "Update: download the new .deb from the releases page and `sudo apt install ./<file>.deb`.",
         "unknown": "Update via your install method — see "
         "https://github.com/SisyphusMD/dreame-valetudo#upgrading",
@@ -118,4 +126,6 @@ def check_for_update(ctx: Context, *, today: str | None = None) -> None:
         _write_cache(ctx.env, today, latest or "")
     if latest and _is_newer(latest, __version__):
         ctx.console.warn(f"Update available: dreame-valetudo {latest} (you have {__version__}).")
-        ctx.console.info(f"   {_upgrade_hint(detect_install_method(ctx.env))}")
+        ctx.console.info(
+            f"   {_upgrade_hint(detect_install_method(ctx.env), __version__, latest)}"
+        )

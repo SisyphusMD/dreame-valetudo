@@ -10,7 +10,7 @@ from dreame_valetudo.phases.misc import sshkey, status, ui, valetudo
 from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import Robot
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 
 
 def _said(ctx: object, needle: str) -> bool:
@@ -23,7 +23,9 @@ def test_ui_returns_true_and_opens_when_valetudo_answers(make_ctx: CtxFactory) -
     def responder(argv: tuple[str, ...]) -> Result:
         if argv and argv[0] == "curl":
             calls["n"] += 1
-            return Result(argv, 0 if calls["n"] >= 3 else 7, "", "")  # up on the 3rd poll
+            if calls["n"] >= 3:
+                return Result(argv, 0, "HTTP/1.1 200 OK\r\nX-Valetudo-Version: 2026.06.0\r\n", "")
+            return Result(argv, 7, "", "")
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(responder=responder)
@@ -34,7 +36,36 @@ def test_ui_returns_true_and_opens_when_valetudo_answers(make_ctx: CtxFactory) -
 def test_ui_returns_false_on_timeout(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(responder=lambda a: Result(a, 7, "", ""))  # curl always fails
     assert ui(ctx) is False
-    assert any(k == "warn" and "didn't respond" in m for k, m in ctx.console.lines)  # type: ignore[attr-defined]
+    assert any(k == "warn" and "didn't identify itself" in m
+               for k, m in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_ui_refuses_a_router_that_answers_without_valetudo_header(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\nServer: router\r\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(responder=responder)
+    assert ui(ctx) is False
+    assert _said(ctx, "usually your router")
+    assert not _said(ctx, "Valetudo is up")
+
+
+def test_ui_does_not_require_the_dustbuilder_ssh_key(make_ctx: CtxFactory) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        calls.append(argv)
+        if argv[0] == "curl":
+            # The version header is installed before Valetudo's optional basic-auth middleware.
+            return Result(argv, 0, "HTTP/1.1 401 Unauthorized\r\nx-valetudo-version: 1.2.3\r\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(responder=responder)
+    assert ui(ctx) is True
+    assert _said(ctx, "Valetudo is up")
+    assert all(argv[0] != "ssh" for argv in calls)
 
 
 def test_valetudo_prints_phase3_guidance(make_ctx: CtxFactory) -> None:

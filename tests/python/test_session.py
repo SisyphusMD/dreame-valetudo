@@ -778,6 +778,30 @@ def test_an_interactive_run_inside_the_session_holds_its_final_screen(
     assert con.lines[-1] == ("confirm", "Set up another robot?")
 
 
+def test_a_deliberately_cancelled_run_does_not_ask_to_set_up_another_robot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+
+    def fake_run(*_args: object, **_kwargs: object) -> tuple[int, None]:
+        _record_bound_robot(work)
+        record = json.loads(work.joinpath(".lock").read_text())
+        record["user_abort"] = True
+        work.joinpath(".lock").write_text(json.dumps(record))
+        return 0, None
+
+    con = ScriptedConsole()
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+    assert main(
+        ["auto"],
+        env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(work)},
+        console=con,
+    ) == 0
+    assert not [line for line in con.lines if line[0] == "confirm"]
+
+
 @pytest.mark.parametrize(
     ("rc", "prompt"),
     [(0, "Set up another robot?"), (1, "Continue with 'Test Bench #1'?")],

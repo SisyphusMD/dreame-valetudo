@@ -26,6 +26,33 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
 
 
+def home_dir(env: Mapping[str, str]) -> Path:
+    return Path(env.get("HOME") or Path.home())
+
+
+def base_dir(env: Mapping[str, str]) -> Path:
+    """The umbrella holding the work dir, backups, and layout/update markers."""
+    return home_dir(env) / WORKSPACE_SUBDIR
+
+
+def work_dir(env: Mapping[str, str]) -> Path:
+    override = env.get("DREAME_WORK")
+    return Path(override) if override else base_dir(env) / "work"
+
+
+def backups_dir(env: Mapping[str, str]) -> Path:
+    override = env.get("DREAME_BACKUPS")
+    return Path(override) if override else base_dir(env) / "backups"
+
+
+def robot_dirs(env: Mapping[str, str]) -> list[Path]:
+    robots = work_dir(env) / "robots"
+    if not robots.is_dir():
+        return []
+    return [path for path in sorted(robots.iterdir())
+            if path.is_dir() and not path.name.startswith(".")]
+
+
 def protect_recon_artifacts(recon_dir: Path) -> None:
     """Restrict an existing recon directory and every regular artifact directly inside it."""
     if recon_dir.is_symlink() or not recon_dir.is_dir():
@@ -54,10 +81,7 @@ class Workspace:
         """Resolve the base work dir from DREAME_WORK, else ~/dreame-valetudo/work. The single
         source of this policy — cli.main resolves the workspace through here. (migrate.py moves a
         legacy ~/dreame-valetudo-work here on first run.)"""
-        base = env.get("DREAME_WORK")
-        if not base:
-            base = str(Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "work")
-        return cls(Path(base))
+        return cls(work_dir(env))
 
     @property
     def robots_dir(self) -> Path:

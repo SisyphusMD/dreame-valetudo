@@ -41,7 +41,15 @@ from pathlib import Path
 
 from . import __version__, dust_decrypt, manifest
 from .console import Console, die
-from .workspace import RECOVERY_BACKUP_ZIP, WORKSPACE_SUBDIR, Robot, protect_recon_artifacts
+from .constants import RECOVERY_DUMP_NAMES
+from .workspace import (
+    RECOVERY_BACKUP_ZIP,
+    Robot,
+    home_dir,
+    protect_recon_artifacts,
+    robot_dirs,
+)
+from .workspace import base_dir as workspace_base_dir
 
 BeforePublish = Callable[[Path], None]
 
@@ -55,12 +63,12 @@ class Layout:
 
 
 def _home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("HOME") or Path.home())
+    return home_dir(env)
 
 
 def base_dir(env: Mapping[str, str]) -> Path:
     """The ~/dreame-valetudo/ umbrella holding work/, backups/, and the .layout marker."""
-    return _home(env) / WORKSPACE_SUBDIR
+    return workspace_base_dir(env)
 
 
 def _marker(env: Mapping[str, str]) -> Path:
@@ -531,12 +539,8 @@ def _backfill_names(env: Mapping[str, str]) -> None:
     on-disk state uniformly current every launch. This does NOT bump the layout version: an older
     build reads the same workspace fine and just ignores the file, so bumping would only lock older
     builds out for no real incompatibility."""
-    work = Path(env["DREAME_WORK"]) if env.get("DREAME_WORK") else base_dir(env) / "work"
-    robots = work / "robots"
-    if not robots.is_dir():
-        return
-    for d in sorted(robots.iterdir()):
-        if d.is_dir() and not d.name.startswith(".") and not (d / "state" / "name").is_file():
+    for d in robot_dirs(env):
+        if not (d / "state" / "name").is_file():
             Robot(d).set_display_name(d.name)
 
 
@@ -544,16 +548,11 @@ def _sync_backup_robot_names(env: Mapping[str, str], console: Console) -> None:
     """Self-heal: set each backup's recorded robot name to its robot's CURRENT name (joined by
     `config`), so a backfilled backup gains a name and every backup tracks a rename even without one.
     Only the manifest label is touched; a backup whose config matches no current robot is left as-is."""
-    work = Path(env["DREAME_WORK"]) if env.get("DREAME_WORK") else base_dir(env) / "work"
-    robots = work / "robots"
-    if not robots.is_dir():
-        return
-    for d in sorted(robots.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            r = Robot(d)
-            cfg = r.config()
-            if cfg:
-                manifest.retag_robot(env, cfg, r.display_name(), console=console)
+    for d in robot_dirs(env):
+        r = Robot(d)
+        cfg = r.config()
+        if cfg:
+            manifest.retag_robot(env, cfg, r.display_name(), console=console)
 
 
 # The sealed disaster-recovery dumps `get_staged` pulls during recon (phases/recon._pull_recovery_backup).
@@ -561,7 +560,6 @@ def _sync_backup_robot_names(env: Mapping[str, str], console: Console) -> None:
 # decrypted form is kept gzip-compressed as `<name>.dd.gz` (matching the backups/ convention) — a
 # decrypted flash is mostly 0x00 fill so it compresses ~100x, unlike the sealed dump, whose 0x20000
 # obfuscation period exceeds deflate's 32 KiB window and so will not compress at all.
-_RECON_DUMPS = ("dustx100", "dustx101", "dustx102")
 _LEGACY_RECOVERY_BACKUP_ZIP = "dreame_samples.zip"  # pre-rename archive name; migrated forward
 
 
@@ -598,17 +596,17 @@ def decrypt_recovery_backup(
     if env.get("DREAME_NO_DECRYPT") == "1":
         return 0
     pending: list[tuple[Path, Path]] = []
-    for name in _RECON_DUMPS:
+    for name in RECOVERY_DUMP_NAMES:
         src, dst = recon_dir / f"{name}.bin", recon_dir / f"{name}.dd.gz"
         if src.is_file() and (refresh or not dst.exists()):
             pending.append((src, dst))
     if not pending:
         return 0
     robot_name = Robot(recon_dir.parent).display_name()
-    # A refresh keeps every staged output until the whole generation is ready; a gaps-only pass
-    # publishes each file immediately and therefore needs headroom only for its largest input.
     sizes = [src.stat().st_size for src, _ in pending]
-    need = sum(sizes) if refresh else max(sizes)
+    # Dense flash images may barely compress, and every published output remains on the same volume.
+    # Reserve for the whole pending generation instead of assuming the sparse-image compression ratio.
+    need = sum(sizes)
     try:
         free = shutil.disk_usage(recon_dir).free
     except OSError:
@@ -625,11 +623,15 @@ def decrypt_recovery_backup(
     # recovery — a dense rootfs/userdata slice can't be decrypted on its own. Pool EVERY sealed slice
     # still on disk (even one already decrypted to .dd.gz, whose .bin is left in place) so the sparse
     # boot slice carries the vote for the dense ones.
-    sealed = [recon_dir / f"{name}.bin" for name in _RECON_DUMPS if (recon_dir / f"{name}.bin").is_file()]
+    sealed = [recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES
+              if (recon_dir / f"{name}.bin").is_file()]
     try:
-        keystream = dust_decrypt.recover_shared_keystream([p.read_bytes() for p in sealed])
-    except (ValueError, OSError) as exc:
-        console.warn(f"  could not decrypt {robot_name}'s recovery backup: {exc}")
+        keystream = dust_decrypt.recover_shared_keystream_files(sealed)
+    except (MemoryError, ValueError, OSError) as exc:
+        console.warn(
+            f"  could not decrypt {robot_name}'s recovery backup: {exc}. Free memory and re-run, "
+            "or set DREAME_NO_DECRYPT=1 to skip it."
+        )
         return 0
     done = 0
     staged: list[tuple[Path, Path, Path]] = []
@@ -637,13 +639,12 @@ def decrypt_recovery_backup(
         tmp = dst.with_name(dst.name + (".refresh.tmp" if refresh else ".tmp"))
         try:
             with console.progress(f"Decrypting {src.name}"):
-                plain = dust_decrypt.xor_stream(src.read_bytes(), keystream)
-                with gzip.open(tmp, "wb") as fh:
-                    fh.write(plain)
+                with src.open("rb") as source, gzip.open(tmp, "wb") as destination:
+                    dust_decrypt.xor_file(source, destination.write, keystream)
                 tmp.chmod(0o600)
                 if not refresh:
                     tmp.replace(dst)  # atomic on the same directory/filesystem
-        except OSError as exc:
+        except (MemoryError, OSError) as exc:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             for _staged_src, _staged_dst, staged_tmp in staged:
@@ -695,15 +696,10 @@ def _heal_recon_backups(env: Mapping[str, str], console: Console) -> None:
     than being unable to read the workspace — bumping the layout version would lock old builds out
     for no real incompatibility. Runs AFTER the structural moves, so it sees each robot dir in its
     final location."""
-    work = Path(env["DREAME_WORK"]) if env.get("DREAME_WORK") else base_dir(env) / "work"
-    robots = work / "robots"
-    if not robots.is_dir():
-        return
-    for d in sorted(robots.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            recon = d / "recon"
-            _rename_legacy_recovery_backup(recon, console)
-            decrypt_recovery_backup(recon, env, console)
+    for d in robot_dirs(env):
+        recon = d / "recon"
+        _rename_legacy_recovery_backup(recon, console)
+        decrypt_recovery_backup(recon, env, console)
 
 
 def migrate(
@@ -718,7 +714,8 @@ def migrate(
         die(
             f"This workspace is layout v{on_disk}, newer than this build (dreame-valetudo "
             f"{__version__}) understands (up to v{LAYOUT_VERSION}). Upgrade to dreame-valetudo "
-            f">= {need}, or run with DREAME_WORK pointed at a separate directory."
+            f">= {need}. To run this older build without touching the newer workspace, give it a "
+            "separate home directory with HOME=<separate-directory>."
         )
     # Early v1 builds could stamp the layout after skipping legacy paths hidden by an environment
     # override or symlink. Re-running this idempotent step heals those already-stamped workspaces;

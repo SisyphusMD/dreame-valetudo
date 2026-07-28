@@ -7,6 +7,7 @@ from pathlib import Path
 
 from conftest import ScriptedConsole
 
+from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.log import (
     BufferingConsole,
     LoggingConsole,
@@ -16,7 +17,6 @@ from dreame_valetudo.log import (
     scrub,
     tail_transcript,
 )
-from dreame_valetudo.migrate import _RECON_DUMPS
 from dreame_valetudo.profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import RecordingRunner, Result
 
@@ -39,9 +39,9 @@ def test_scrub_redacts_the_home_path() -> None:
 
 
 def test_scrub_redacts_config_and_identity_hex() -> None:
-    assert "d97c4de6f64818765e2faf9f14309818" not in scrub(
-        "config value d97c4de6f64818765e2faf9f14309818")
-    assert "d97c4de6f648" not in scrub("robot r2416-d97c4de6f648")  # the 12-hex robot-tag suffix
+    assert "abcdef0123456789abcdef0123456789" not in scrub(
+        "config value abcdef0123456789abcdef0123456789")
+    assert "abcdef012345" not in scrub("robot r2416-abcdef012345")  # the 12-hex robot-tag suffix
 
 
 def test_scrub_redacts_device_ids() -> None:
@@ -103,7 +103,7 @@ def test_scrub_keeps_the_recon_dump_filenames() -> None:
 def test_recon_dump_names_all_survive_scrub() -> None:
     # Drift guard: every dump name migrate actually pulls must be allowlisted, so adding a slice can't
     # silently start redacting it into an unreadable <redacted-id>.
-    for name in _RECON_DUMPS:
+    for name in RECOVERY_DUMP_NAMES:
         assert name in scrub(f"Decrypting {name}.bin")
 
 
@@ -128,9 +128,9 @@ def test_scrub_masks_an_echoed_oem_dust_token() -> None:
 # --- redact_dust_token: the 8-hex flash token scrub()'s length rule can't catch ---------------
 def test_redact_dust_token_masks_only_the_token_argument() -> None:
     # Only the single argument after `oem dust` is masked; every other command is untouched.
-    assert redact_dust_token(("oem", "dust", "10d0f120")) == ["oem", "dust", "<redacted-id>"]
+    assert redact_dust_token(("oem", "dust", "626153c7")) == ["oem", "dust", "<redacted-id>"]
     assert redact_dust_token(
-        ("dreame-fastboot", "oem", "dust", "10d0f120")
+        ("dreame-fastboot", "oem", "dust", "626153c7")
     ) == ["dreame-fastboot", "oem", "dust", "<redacted-id>"]
     assert redact_dust_token(("flash", "toc1", "toc1.img")) == ["flash", "toc1", "toc1.img"]
     assert redact_dust_token(("oem", "prep")) == ["oem", "prep"]
@@ -139,10 +139,10 @@ def test_redact_dust_token_masks_only_the_token_argument() -> None:
 def test_command_masks_the_oem_dust_flash_token(tmp_path: Path) -> None:
     # The token is only 8 hex, below scrub()'s >=12-hex threshold, so the argv logger must mask it.
     log = _open(tmp_path, tmp_path / "home")
-    log.command(Result(("/x/dreame-fastboot", "oem", "dust", "10d0f120"), 0, "OKAY", ""))
+    log.command(Result(("/x/dreame-fastboot", "oem", "dust", "626153c7"), 0, "OKAY", ""))
     log.close()
     text = log.path.read_text()
-    assert "10d0f120" not in text
+    assert "626153c7" not in text
     assert "$ dreame-fastboot oem dust <redacted-id>" in text
 
 
@@ -225,12 +225,12 @@ def test_logging_runner_masks_the_oem_dust_token(tmp_path: Path) -> None:
     log = _open(tmp_path, tmp_path / "home")
     inner = RecordingRunner()
     runner = LoggingRunner(inner, log)
-    runner.run(["/x/dreame-fastboot", "oem", "dust", "10d0f120"])
+    runner.run(["/x/dreame-fastboot", "oem", "dust", "626153c7"])
     log.close()
     text = log.path.read_text()
-    assert "10d0f120" not in text                        # masked in the shareable log
+    assert "626153c7" not in text                        # masked in the shareable log
     assert "oem dust <redacted-id>" in text
-    assert inner.calls[0] == ("/x/dreame-fastboot", "oem", "dust", "10d0f120")  # real argv intact
+    assert inner.calls[0] == ("/x/dreame-fastboot", "oem", "dust", "626153c7")  # real argv intact
 
 
 # --- LoggingConsole: mirrors every message into the log, scrubbed -----------------------------
@@ -255,11 +255,11 @@ def test_logging_console_mirrors_the_new_output_kinds(tmp_path: Path) -> None:
 def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:
     log = _open(tmp_path, Path("/Users/bob"))
     con = LoggingConsole(log)
-    con.warn("backup at /Users/bob/r2416-d97c4de6f648-backup")
+    con.warn("backup at /Users/bob/r2416-abcdef012345-backup")
     log.close()
     text = log.path.read_text()
     assert "/Users/bob" not in text
-    assert "d97c4de6f648" not in text
+    assert "abcdef012345" not in text
     assert "!! backup at ~/r2416-<redacted-id>-backup" in text
 
 

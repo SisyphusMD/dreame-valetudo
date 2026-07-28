@@ -16,7 +16,7 @@ from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts,
 from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 _MIN_IMAGE_BYTES = {
     "fsbl.bin": 32 * 1024,
     "payload.bin": 4 * 1024 * 1024,
@@ -224,7 +224,7 @@ def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> 
     different config must stop the flash — the live/recon cross-check cannot catch this, because
     both of its operands come from the connected robot."""
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
-    _stage_image(ctx, dust="d88e8f82")  # built for 11223344…, not this robot's d97c4de6…
+    _stage_image(ctx, dust="d88e8f82")  # built for 11223344…, not this robot's abcdef01…
     _write_recon(ctx, _CFG)
     with pytest.raises(Die, match="SAFETY STOP: the staged image was built for config 11223344"):
         root(ctx)
@@ -234,7 +234,7 @@ def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> 
 
 def test_root_accepts_the_image_built_for_this_robot(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
-    _stage_image(ctx, dust="10d0f120")  # hex8(d97c4de6 ^ C9ACBCC6)
+    _stage_image(ctx, dust="626153c7")  # hex8(abcdef01 ^ C9ACBCC6)
     _write_recon(ctx, _CFG)
     root(ctx)
     assert ctx.need_robot().state_has("rooted")

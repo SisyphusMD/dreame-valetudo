@@ -30,6 +30,7 @@ def test_install_udev_escalates_and_reloads(make_ctx: CtxFactory) -> None:
     assert calls[0][-1] == udev.RULE_DEST                      # -> /etc/udev/rules.d/99-...rules
     assert calls[1] == ("sudo", "udevadm", "control", "--reload-rules")
     assert calls[2] == ("sudo", "udevadm", "trigger")
+    assert any("plugdev" in message for _kind, message in ctx.console.lines)  # type: ignore[attr-defined]
 
 
 def test_install_udev_reports_needs_root_when_the_write_fails(make_ctx: CtxFactory) -> None:

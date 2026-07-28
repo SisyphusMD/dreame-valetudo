@@ -1,11 +1,10 @@
 """Shareable, scrubbed run log.
 
-Every production run writes a plain-text log under the work dir capturing the console narrative and
-the external commands issued (their names + exit codes, never their stdin/stdout), so a user who
-hits a problem can send it back to get a fix. Personal + identifying values are redacted before a
-line is written: the home path, the robot's config/identity hex, device IDs, SSH public keys, and
-email addresses. The miio key and the SSH private key never reach here — the key is streamed to the
-robot over stdin (not argv), and only the key's PATH (not its bytes) is ever used.
+Every production run writes a plain-text log under the work dir capturing the console narrative,
+full external-command argv (with argv[0] shortened), exit codes, and truncated stderr on failure.
+Command stdin and stdout are never recorded. Every line is scrubbed by the patterns below before it
+is written. The miio key is streamed over stdin rather than argv; the credential-shaped-token rule
+is a backstop for any robot output echoed through the console.
 
 Wiring: ``LoggingConsole`` / ``LoggingRunner`` wrap the real ``Console`` / ``SubprocessRunner`` in
 ``cli.main``; tests inject their own seams, so nothing is logged under test.
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import ClassVar, TextIO
 
 from .console import Console, Progress, _fmt_elapsed
+from .constants import RECOVERY_DUMP_NAMES
 from .profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from .run import Result, RunError, Runner
 
@@ -48,7 +48,7 @@ _MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]
 # diagnostic meaning without exempting arbitrary credential-shaped strings. Drift guards cover the
 # dump names and every profile-derived value.
 _PUBLIC_TOKENS = frozenset({
-    "dustx100", "dustx101", "dustx102", "toc0hash", "toc1hash",
+    *RECOVERY_DUMP_NAMES, "toc0hash", "toc1hash",
     *(load_profile(key).fsbl_addr for key in SUPPORTED_MODELS),
     *(load_profile(key).payload_addr for key in SUPPORTED_MODELS),
     *KNOWN_IMPL_CLASSES,

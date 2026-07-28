@@ -14,13 +14,13 @@ from pathlib import Path
 import pytest
 from conftest import CtxFactory
 
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.push import push
 from dreame_valetudo.run import Result
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 
 
 def _valetudo_bin(ctx: Context) -> None:
@@ -328,7 +328,7 @@ def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_decline
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
 
-    with pytest.raises(Die, match=r"not physically confirmed.*No backup or install"):
+    with pytest.raises(UserAbort, match=r"not physically confirmed.*No backup or install"):
         push(ctx)
 
     assert not ctx.backups_dir.exists()
@@ -571,7 +571,7 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     assert (backups[0] / "id_dreame.pub").read_text() == "PUB"
     m = json.loads((backups[0] / "manifest.json").read_text())   # provenance manifest written
     assert m["model"] == ctx.profile.model
-    assert m["robot"] == "r2416-d97c4de6f648"
+    assert m["robot"] == "r2416-abcdef012345"
     assert m["live_model"] == "dreame.vacuum.r2416"
     assert m["live_did"] == "-117604433"
     assert "id_dreame" in m["contents"]

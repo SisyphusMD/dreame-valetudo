@@ -97,12 +97,12 @@ def test_recording_runner_records_calls() -> None:
 def test_recording_runner_scripts_output() -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[:2] == ("fbt", "getvar"):
-            return Result(argv, 0, "OKAY d97c4de6f64818765e2faf9f14309818", "")
+            return Result(argv, 0, "OKAY abcdef0123456789abcdef0123456789", "")
         return Result(argv, 0, "", "")
 
     rr = RecordingRunner(responder)
     got = rr.run(["fbt", "getvar", "config"])
-    assert "d97c4de6f64818765e2faf9f14309818" in got.stdout
+    assert "abcdef0123456789abcdef0123456789" in got.stdout
 
 
 def test_recording_runner_check_raises_on_scripted_failure() -> None:

@@ -326,6 +326,12 @@ def test_diagnose_remote_reports_key_presence_only_never_its_value() -> None:
     assert "value withheld" in _DIAGNOSE_REMOTE              # presence reported without the value
 
 
+def test_diagnose_does_not_launch_a_second_valetudo_when_one_is_running() -> None:
+    assert "VALETUDO_RUNNING=1" in _DIAGNOSE_REMOTE
+    assert 'if [ "$VALETUDO_RUNNING" = 1 ]' in _DIAGNOSE_REMOTE
+    assert "skipped: Valetudo is already running" in _DIAGNOSE_REMOTE
+
+
 def test_diagnose_scrubs_a_key_shaped_token_from_the_report(make_ctx: CtxFactory) -> None:
     """Defence in depth: even if the robot returns a key-shaped token, scrub() keeps it out of the
     written diagnose.log AND the printed output."""

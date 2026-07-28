@@ -206,6 +206,26 @@ def test_wait_fastboot_surfaces_the_clients_host_error(capsys: pytest.CaptureFix
     assert "no libusb backend available" in captured.out + captured.err
 
 
+def test_wait_fastboot_uses_the_resolved_system_transport() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        calls.append(argv)
+        output = "" if len(calls) == 1 else "SERIAL\tfastboot\n"
+        return Result(argv, 0, output, "")
+
+    runner = RecordingRunner(responder)
+    console = Console(color=False)
+    fastboot = Fastboot(runner, console, Transport("system", ("/custom/bin/fastboot",)))
+    fel = Fel(runner, console, SUNXI, fastboot, sleep=lambda _seconds: None)
+
+    assert fel.wait_fastboot(secs=2) is True
+    assert calls == [
+        ("/custom/bin/fastboot", "devices"),
+        ("/custom/bin/fastboot", "devices"),
+    ]
+
+
 def test_a_sunxi_fel_that_cannot_load_is_not_a_live_device() -> None:
     """The .pkg shipped a sunxi-fel missing a library. Its loader error says nothing about "not
     found", so the poll read it as a device that had appeared: "FEL up", then an unexplained

@@ -12,6 +12,7 @@ from conftest import FB, CtxFactory
 
 from dreame_valetudo import console
 from dreame_valetudo.console import Die
+from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
@@ -24,7 +25,7 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
 from dreame_valetudo.workspace import Robot
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 
 
 def test_reported_model_is_confirmed(make_ctx: CtxFactory) -> None:
@@ -84,6 +85,7 @@ def _dist_ready(ctx: Context) -> None:
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text("p")
     (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
+    (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
 
 
 def _responder(cfg: str = _CFG) -> object:
@@ -103,6 +105,7 @@ def test_recon_ddr3_model_boots_the_ddr3_fsbl(make_ctx: CtxFactory) -> None:
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text("p")
     (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")
+    (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
     assert ctx.fsbl_name == "fsbl_ddr3.bin"
     recon(ctx, recovery_backup=False)
     sunxi_writes = [" ".join(str(a) for a in c) for c in ctx.runner.calls  # type: ignore[attr-defined]
@@ -123,6 +126,22 @@ def test_standalone_recon_revalidates_a_stale_sunxi_cache(
 
     monkeypatch.setattr(recon_module, "doctor", pin_revalidation)
     with pytest.raises(Die, match="pin revalidation reached"):
+        recon(ctx, recovery_backup=False)
+
+
+def test_standalone_recon_revalidates_staged_payloads_against_the_current_pin(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=_responder())
+    _dist_ready(ctx)
+    (ctx.ws.dist / ".stage1-sha256").write_text("old-pin\n")
+    monkeypatch.setattr(recon_module, "_sunxi_ready", lambda _ctx: True)
+
+    def pin_revalidation(_ctx: Context) -> None:
+        raise Die("stage1 pin revalidation reached")
+
+    monkeypatch.setattr(recon_module, "fetch_stage1", pin_revalidation)
+    with pytest.raises(Die, match="stage1 pin revalidation reached"):
         recon(ctx, recovery_backup=False)
 
 

@@ -91,6 +91,25 @@ def test_decrypt_dense_slices_via_shared_keystream(tmp_path: Path) -> None:
         assert gzip.decompress((recon / f"{name}.dd.gz").read_bytes()) == plain
 
 
+def test_decrypt_streams_sealed_images_in_bounded_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    plains = _seed_mixed(recon)
+    chunk_sizes: list[int] = []
+    original = dust_decrypt.xor_stream
+
+    def record_chunk(data: bytes, keystream: bytes) -> bytes:
+        chunk_sizes.append(len(data))
+        return original(data, keystream)
+
+    monkeypatch.setattr(dust_decrypt, "xor_stream", record_chunk)
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 3
+    assert chunk_sizes and max(chunk_sizes) <= PERIOD * 8
+    for name, plain in plains.items():
+        assert gzip.decompress((recon / f"{name}.dd.gz").read_bytes()) == plain
+
+
 def test_decrypt_reheals_dense_slices_after_partial_run(tmp_path: Path) -> None:
     """Re-run recovery when only the dense slices are pending (a prior run decrypted the sparse boot
     slice). Its .bin is still on disk and must be pooled back into the vote — otherwise the dense
@@ -231,6 +250,31 @@ def test_decrypt_skips_when_low_disk(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(M.shutil, "disk_usage", lambda _p: types.SimpleNamespace(free=1))
     assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 0
     assert not (recon / "dustx100.dd.gz").exists()
+
+
+def test_decrypt_reserves_for_every_pending_output(tmp_path: Path, monkeypatch) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100", "dustx101", "dustx102")
+    one_dump = (recon / "dustx100.bin").stat().st_size
+    monkeypatch.setattr(
+        M.shutil, "disk_usage", lambda _p: types.SimpleNamespace(free=one_dump * 2)
+    )
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 0
+    assert not list(recon.glob("*.dd.gz"))
+
+
+def test_decrypt_memory_failure_is_nonfatal_and_names_the_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100")
+    monkeypatch.setattr(
+        dust_decrypt, "recover_shared_keystream_files",
+        lambda _paths: (_ for _ in ()).throw(MemoryError("allocation failed")),
+    )
+    console = ScriptedConsole()
+    assert M.decrypt_recovery_backup(recon, {}, console) == 0
+    assert "DREAME_NO_DECRYPT=1" in console.text()
 
 
 def test_decrypt_missing_recon_dir_is_noop(tmp_path: Path) -> None:

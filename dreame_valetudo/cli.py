@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die, idle_timeout
+from .console import Console, Die, UserAbort, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .dustbuilder import verify_all_forms, verify_form
@@ -46,6 +46,7 @@ from .session import (
     capture_pane,
     clear_outcome,
     client_attached,
+    describe_run,
     ensure_workspace_lock,
     hold_additional_workspace_lock,
     hold_workspace_lock,
@@ -204,7 +205,6 @@ def select_robot(ctx: Context) -> None:
             raise Die("Model selection cancelled.")
         return
 
-    # Skip dot-directories; only real robot dirs count.
     dirs = [d for d in sorted(ctx.ws.robots_dir.iterdir())
             if d.is_dir() and not d.name.startswith(".")]
     if not dirs:
@@ -221,7 +221,8 @@ def select_robot(ctx: Context) -> None:
     while True:
         ctx.console.say(f"Found {len(dirs)} prior robot(s):")
         for i, d in enumerate(dirs, 1):
-            ctx.console.info(f"   {i}) {Robot(d).display_name()}   {_summary(d)}")
+            robot = Robot(d)
+            ctx.console.info(f"   {i}) {robot.display_name()}   {_summary(robot)}")
         fresh = len(dirs) + 1
         ctx.console.info(f"   {fresh}) start a FRESH robot")
         ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
@@ -419,7 +420,8 @@ def usage(console: Console) -> None:
         "  dreame-valetudo help       this help\n\n"
         "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_BACKUPS, DREAME_SSHKEY,\n"
         "                 DREAME_CONFIG, VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG,\n"
-        "                 DREAME_NO_UDEV_CHECK.\n"
+        "                 DREAME_NO_TMUX, DREAME_IDLE_TIMEOUT, DREAME_NO_UPDATE_CHECK,\n"
+        "                 DREAME_NO_DECRYPT, DREAME_NO_UDEV_CHECK, DREAME_FASTBOOT.\n"
     )
 
 
@@ -452,11 +454,11 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd == "clean":
         clean(ctx, rest)
         return 0
-    if cmd == "ui":
-        return 0 if ui(ctx) else 1
     if cmd == "fix-wifi":
         fix_wifi(ctx)
         return 0
+    if cmd == "ui":
+        return 0 if ui(ctx) else 1
 
     select_robot(ctx)
     if cmd == "diagnose":
@@ -782,6 +784,7 @@ def main(
             robot_dir = run_state.get("robot_dir")
             robot_label = run_state.get("robot")
             step = run_state.get("step")
+            user_aborted = run_state.get("user_abort") is True
             pending = ""
             if isinstance(robot_dir, str) and robot_dir:
                 pending_file = base / "robots" / robot_dir / "state" / "pending"
@@ -795,7 +798,7 @@ def main(
             # about a robot that does not exist.
             engaged = isinstance(robot_label, str) and bool(robot_label)
             again = False
-            if engaged and sys.stdout.isatty():
+            if engaged and not user_aborted and sys.stdout.isatty():
                 with contextlib.suppress(Die):
                     if rc == 0:
                         question = "Set up another robot?"
@@ -908,8 +911,8 @@ def _run(
                         migration_console.flush_into(log)
                         con, run = LoggingConsole(log), LoggingRunner(run, log)
 
-        # An unknown DREAME_MODEL raises ValueError, and any checked command that fails raises
-        # RunError — both must read as a clean die, not a raw traceback, so build ctx inside the try.
+        # Expected input, command, and filesystem failures must surface as clean errors, so context
+        # construction and dispatch both stay inside this handler.
         profile = load_profile(resolved_env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY)
         ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
 
@@ -931,9 +934,14 @@ def _run(
         if log is not None:
             log.finish(rc)
         return rc, log.path if log else None
-    # A present-but-unreadable file (permission, non-UTF-8, etc.) or any checked command failure
-    # must read as a clean error, not a raw traceback — the tool always fails before a write.
-    # (UnicodeDecodeError is a ValueError; an unknown DREAME_MODEL raises ValueError too.)
+    except UserAbort as exc:
+        describe_run(user_abort=True)
+        con.say(str(exc))
+        if log is not None:
+            log.finish(0)
+        return 0, log.path if log else None
+    # Expected failures still surface cleanly even when they occur after an earlier phase wrote
+    # durable state or a destructive operation partially completed.
     except (Die, ValueError, RunError, OSError) as exc:
         con.err(str(exc))
         if log is not None:
