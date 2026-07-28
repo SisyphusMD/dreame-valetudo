@@ -336,23 +336,26 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         return
     # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
     # "resuming" (recon is the first hardware phase, so its marker is what distinguishes the two).
-    if ctx.robot is not None and ctx.robot.state_has("recon"):
+    if (ctx.robot is not None
+            and (ctx.robot.state_has("recon") or ctx.robot.state_has("rooted"))):
         ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming: "
                         "every remaining phase runs guided, in order.")
     else:
         _auto_intro(ctx)
-    doctor(ctx)
-    fetch(ctx)
-    recon(ctx, force="--force" in rest, recovery_backup="--no-recovery-backup" not in rest)
-    robot = ctx.need_robot()
+    robot = ctx.robot
+    force = "--force" in rest
+    if robot is None or not robot.state_has("rooted") or force:
+        doctor(ctx)
+        fetch(ctx)
+        recon(ctx, force=force, recovery_backup="--no-recovery-backup" not in rest)
+        robot = ctx.need_robot()
     if not robot.state_has("rooted"):
         image(ctx)
         root(ctx)
-    if (robot is not None and robot.state_has("rooted") and not robot.state_has("valetudo")
-            and not push(ctx)):
+    if (robot.state_has("rooted") and not robot.state_has("valetudo") and not push(ctx)):
         valetudo(ctx)
         return
-    if robot is not None and robot.state_has("valetudo"):
+    if robot.state_has("valetudo"):
         ctx.console.say(f"All phases complete — open http://{ROBOT_AP_IP}")
 
 

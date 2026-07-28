@@ -10,7 +10,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases import fetch as fetch_mod
-from dreame_valetudo.phases.fetch import fetch
+from dreame_valetudo.phases.fetch import fetch, fetch_valetudo
 from dreame_valetudo.run import Result
 
 
@@ -97,3 +97,24 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     with pytest.raises(Die, match="digest mismatch"):
         fetch(ctx)
     assert not ctx.valetudo_bin.exists()  # refused + removed
+
+
+def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
+    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl" and "-o" in argv:
+            _write_curl_target(argv, b"valetudo")
+        return Result(argv, 0, "", "")
+
+    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    fetch_valetudo(ctx)
+
+    assert ctx.valetudo_bin.read_bytes() == b"valetudo"
+    calls = ctx.runner.calls  # type: ignore[attr-defined]
+    assert not any(c[0] in {"git", "make", "tar"} for c in calls)
+    assert not any(ctx.profile.stage1_url in c for c in calls)

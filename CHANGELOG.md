@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: installing Valetudo on an already-rooted robot now fetches only the Valetudo binary,
+  without compiling or downloading the unused FEL toolchain, and gives explicit network-switching
+  recovery steps when that binary is not cached.
 - **fix**: robot SSH can no longer open its own password prompt, explicit missing key paths now stop
   before connecting, and authentication or host-key negotiation failures name the offered key and
   real SSH error instead of incorrectly blaming the robot's Wi-Fi AP.
