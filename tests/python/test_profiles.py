@@ -6,6 +6,7 @@ source of truth for the supported-model data; any drift in the table fails these
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -27,27 +28,21 @@ def test_supported_models_matches_golden_order() -> None:
 
 def test_profile_fields_match_golden() -> None:
     header, *rows = _rows("profiles.tsv")
+    columns = ["key" if field.name == "key" else field.name.upper() for field in fields(P.Profile)]
+    columns += ["STAGE1_URL", "DUSTBUILDER_PAGE"]
+    assert header == columns
     seen = set()
     for row in rows:
         rec = dict(zip(header, row, strict=True))
         p = P.load_profile(rec["key"])
         seen.add(rec["key"])
-        assert p.model == rec["MODEL"], rec["key"]
-        assert p.dust_code == rec["DUST_CODE"], rec["key"]
-        assert p.model_code == rec["MODEL_CODE"], rec["key"]
-        assert p.impl_class == rec["IMPL_CLASS"], rec["key"]
-        assert p.autodetect_ok == rec["AUTODETECT_OK"], rec["key"]
-        assert p.method == rec["METHOD"], rec["key"]
-        assert p.arch == rec["ARCH"], rec["key"]
-        assert p.dram == rec["DRAM"], rec["key"]
-        assert p.secure_boot == rec["SECURE_BOOT"], rec["key"]
-        assert p.baud == rec["BAUD"], rec["key"]
-        assert p.fsbl_addr == rec["FSBL_ADDR"], rec["key"]
-        assert p.payload_addr == rec["PAYLOAD_ADDR"], rec["key"]
+        for field in fields(P.Profile):
+            column = "key" if field.name == "key" else field.name.upper()
+            assert getattr(p, field.name) == rec[column], rec["key"]
         assert p.stage1_url == rec["STAGE1_URL"], rec["key"]
         assert p.dustbuilder_page == rec["DUSTBUILDER_PAGE"], rec["key"]
-    # No model in the roster is missing from the golden (and vice versa).
-    assert seen == set(P.SUPPORTED_MODELS)
+    # Neither the picker, the backing table, nor the golden may carry an unrepresented model.
+    assert seen == set(P.SUPPORTED_MODELS) == set(P._PROFILES)
 
 
 def test_load_profile_rejects_unknown_key() -> None:
@@ -60,16 +55,33 @@ def test_load_profile_rejects_unknown_key() -> None:
 
 
 def test_impl_class_for_model_matches_golden() -> None:
-    for code, expected in _rows("impl_class.tsv"):
+    rows = _rows("impl_class.tsv")
+    for code, expected in rows:
         got = P.impl_class_for_model(code)
         assert (got or "FAIL") == expected, f"{code!r} -> {got!r}, want {expected}"
+    golden = dict(rows)
+    for prefix, expected in P._IMPL_PREFIXES:
+        assert golden.get(prefix) == expected, f"{prefix!r} is not pinned exactly in the golden"
+
+
+def test_impl_prefix_order_cannot_swallow_a_different_class() -> None:
+    for index, (prefix, impl_class) in enumerate(P._IMPL_PREFIXES):
+        for later, later_class in P._IMPL_PREFIXES[index + 1:]:
+            assert not (later.startswith(prefix) and later_class != impl_class), (
+                f"{prefix!r} would swallow later {later!r}"
+            )
 
 
 def test_model_key_for_dir_matches_golden(tmp_path: Path) -> None:
-    for dirname, expected in _rows("model_key.tsv"):
+    rows = _rows("model_key.tsv")
+    for dirname, expected in rows:
         d = tmp_path / dirname
         d.mkdir()
         assert P.model_key_for_dir(d) == expected, dirname
+    for prefix, expected in P._DIR_PREFIX_TO_KEY:
+        assert any(dirname.startswith(prefix) and key == expected for dirname, key in rows), (
+            f"{prefix!r} is not pinned in the golden"
+        )
 
 
 def test_model_key_for_dir_prefers_saved_marker(tmp_path: Path) -> None:

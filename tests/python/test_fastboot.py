@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from dreame_valetudo.console import Console, Die
+from dreame_valetudo.constants import PYUSB_VERSION
 from dreame_valetudo.fastboot import Fastboot, Transport, find_helper, resolve_transport
 from dreame_valetudo.log import LoggingConsole, RunLog
 from dreame_valetudo.run import RecordingRunner, Result
@@ -167,7 +168,8 @@ def test_transport_prefers_uv_over_current_interpreter(tmp_path: Path) -> None:
     )
     assert t == Transport(
         "uv",
-        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with", "pyusb==1.3.1",
+        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with",
+         f"pyusb=={PYUSB_VERSION}",
          "python3", str(tmp_path / "fastboot-libusb.py")),
     )
 
@@ -179,7 +181,8 @@ def test_transport_falls_back_to_uv(tmp_path: Path) -> None:
     )
     assert t == Transport(
         "uv",
-        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with", "pyusb==1.3.1",
+        ("uv", "run", "--quiet", "--no-project", "--isolated", "--with",
+         f"pyusb=={PYUSB_VERSION}",
          "python3", str(tmp_path / "fastboot-libusb.py")),
     )
 

@@ -38,16 +38,21 @@ def _cross_device_then_publish(src: Path, dst: Path) -> None:
 # Add a SEEDS[N] whenever you add a LAYOUTS version N; test_every_layout_version_has_a_seed enforces
 # it, so "migrate from every prior version to current" coverage can never silently lapse.
 
-def _seed_v0(home: Path) -> None:
+def _seed_v0(home: Path) -> dict[Path, bytes]:
     """Legacy: ~/dreame-valetudo-work + a scattered ~/dreame-*-backup-* dir."""
     state = home / "dreame-valetudo-work" / "robots" / "kitchen" / "state"
     state.mkdir(parents=True)
     (state / "recon").write_bytes(SENTINEL)
     (home / _BK0).mkdir()
     (home / _BK0 / "files.tar.gz").write_bytes(SENTINEL)
+    base = home / "dreame-valetudo"
+    return {
+        base / "work" / "robots" / "kitchen" / "state" / "recon": SENTINEL,
+        base / "backups" / _BK1 / "files.tar.gz": SENTINEL,
+    }
 
 
-def _seed_v1(home: Path) -> None:
+def _seed_v1(home: Path) -> dict[Path, bytes]:
     """Consolidated ~/dreame-valetudo/{work,backups} + a v1 marker."""
     base = home / "dreame-valetudo"
     state = base / "work" / "robots" / "kitchen" / "state"
@@ -56,22 +61,24 @@ def _seed_v1(home: Path) -> None:
     (base / "backups" / _BK1).mkdir(parents=True)
     (base / "backups" / _BK1 / "files.tar.gz").write_bytes(SENTINEL)
     (base / ".layout").write_text(json.dumps({"layout_version": 1, "min_tool_version": "0.2.0"}))
+    return {
+        base / "work" / "robots" / "kitchen" / "state" / "recon": SENTINEL,
+        base / "backups" / _BK1 / "files.tar.gz": SENTINEL,
+    }
 
 
-SEEDS: dict[int, Callable[[Path], None]] = {0: _seed_v0, 1: _seed_v1}
+SEEDS: dict[int, Callable[[Path], dict[Path, bytes]]] = {0: _seed_v0, 1: _seed_v1}
 
 
 @pytest.mark.parametrize("from_version", sorted(SEEDS))
 def test_migrates_from_every_layout_to_current(tmp_path: Path, from_version: int) -> None:
-    SEEDS[from_version](tmp_path)
+    expected = SEEDS[from_version](tmp_path)
     M.migrate(_env(tmp_path), ScriptedConsole())
     marker = json.loads((tmp_path / "dreame-valetudo" / ".layout").read_text())
     assert marker["layout_version"] == M.LAYOUT_VERSION
-    survived = any(
-        p.is_file() and p.read_bytes() == SENTINEL
-        for p in (tmp_path / "dreame-valetudo").rglob("*")
-    )
-    assert survived, f"sentinel data lost migrating from layout v{from_version}"
+    for path, contents in expected.items():
+        assert path.is_file(), f"{path} lost migrating from layout v{from_version}"
+        assert path.read_bytes() == contents, f"{path} changed migrating from layout v{from_version}"
 
 
 def test_every_layout_version_has_a_seed() -> None:
