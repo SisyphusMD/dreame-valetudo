@@ -565,11 +565,19 @@ _RECON_DUMPS = ("dustx100", "dustx101", "dustx102")
 _LEGACY_RECOVERY_BACKUP_ZIP = "dreame_samples.zip"  # pre-rename archive name; migrated forward
 
 
-def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Console) -> int:
+def decrypt_recovery_backup(
+    recon_dir: Path,
+    env: Mapping[str, str],
+    console: Console,
+    *,
+    refresh: bool = False,
+) -> int:
     """Decrypt a robot's sealed recon disaster-recovery dumps into restorable, gzip-compressed
-    `<name>.dd.gz` images, in place. Gaps-only + idempotent (skips a dump whose `.dd.gz` already
-    exists), never-clobber (atomic temp-then-replace), and non-fatal: a dump that can't be decrypted
-    or won't fit is skipped with a warning, never raising. Returns how many it decrypted.
+    `<name>.dd.gz` images, in place. Normally gaps-only + idempotent; ``refresh=True`` stages a
+    complete new generation before replacing prior images. A durable marker makes an interrupted
+    publication retry the whole generation on the next normal self-heal. Non-fatal: a dump that
+    can't be decrypted or won't fit is skipped with a warning, never raising. Returns how many it
+    decrypted.
 
     Shared by the launch self-heal (old dumps) and recon (fresh dumps captured by a re-run), so
     calling either is safe and repeatable. Opt out entirely with ``DREAME_NO_DECRYPT=1``."""
@@ -578,19 +586,29 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
     except OSError as exc:
         console.warn(f"  could not restrict recovery-backup permissions in {recon_dir}: {exc}")
         return 0
+    refresh_marker = recon_dir / ".decrypt-refresh"
+    if refresh:
+        try:
+            refresh_marker.write_text("pending\n")
+            refresh_marker.chmod(0o600)
+        except OSError as exc:
+            console.warn(f"  could not record the recovery refresh in {recon_dir}: {exc}")
+            return 0
+    refresh = refresh or refresh_marker.is_file()
     if env.get("DREAME_NO_DECRYPT") == "1":
         return 0
     pending: list[tuple[Path, Path]] = []
     for name in _RECON_DUMPS:
         src, dst = recon_dir / f"{name}.bin", recon_dir / f"{name}.dd.gz"
-        if src.is_file() and not dst.exists():
+        if src.is_file() and (refresh or not dst.exists()):
             pending.append((src, dst))
     if not pending:
         return 0
     robot_name = Robot(recon_dir.parent).display_name()
-    # Conservative headroom: the gzip output never exceeds the sealed input, so requiring the largest
-    # input's size free is a safe upper bound (the decrypted image usually compresses to a fraction).
-    need = max(src.stat().st_size for src, _ in pending)
+    # A refresh keeps every staged output until the whole generation is ready; a gaps-only pass
+    # publishes each file immediately and therefore needs headroom only for its largest input.
+    sizes = [src.stat().st_size for src, _ in pending]
+    need = sum(sizes) if refresh else max(sizes)
     try:
         free = shutil.disk_usage(recon_dir).free
     except OSError:
@@ -614,22 +632,48 @@ def decrypt_recovery_backup(recon_dir: Path, env: Mapping[str, str], console: Co
         console.warn(f"  could not decrypt {robot_name}'s recovery backup: {exc}")
         return 0
     done = 0
+    staged: list[tuple[Path, Path, Path]] = []
     for src, dst in pending:
-        tmp = dst.with_name(dst.name + ".tmp")
+        tmp = dst.with_name(dst.name + (".refresh.tmp" if refresh else ".tmp"))
         try:
             with console.progress(f"Decrypting {src.name}"):
                 plain = dust_decrypt.xor_stream(src.read_bytes(), keystream)
                 with gzip.open(tmp, "wb") as fh:
                     fh.write(plain)
                 tmp.chmod(0o600)
-                tmp.replace(dst)  # atomic on the same directory/filesystem
+                if not refresh:
+                    tmp.replace(dst)  # atomic on the same directory/filesystem
         except OSError as exc:
             with contextlib.suppress(OSError):
                 tmp.unlink()
+            for _staged_src, _staged_dst, staged_tmp in staged:
+                with contextlib.suppress(OSError):
+                    staged_tmp.unlink()
             console.warn(f"  could not decrypt {src.name}: {exc}")
+            if refresh:
+                return 0
+            continue
+        if refresh:
+            staged.append((src, dst, tmp))
             continue
         console.info(f"  {src.name} -> {dst.name} ({dst.stat().st_size // (1 << 20)} MB)")
         done += 1
+    if refresh:
+        try:
+            for src, dst, tmp in staged:
+                tmp.replace(dst)
+                console.info(
+                    f"  {src.name} -> {dst.name} ({dst.stat().st_size // (1 << 20)} MB)"
+                )
+                done += 1
+        except OSError as exc:
+            for _staged_src, _staged_dst, staged_tmp in staged:
+                with contextlib.suppress(OSError):
+                    staged_tmp.unlink()
+            console.warn(f"  recovery refresh publication is incomplete and will retry: {exc}")
+            return done
+        with contextlib.suppress(OSError):
+            refresh_marker.unlink()
     return done
 
 

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: factory backups are now published only after their contents and manifest are complete,
+  cross-checked against the connected robot's live model, and preserve corrupt prior manifests for
+  inspection; refreshed recon captures also atomically refresh their decrypted restore images.
 - **fix**: renaming a legacy robot now preserves the model encoded in its old folder name, and
   capitalization-only renames work correctly on case-insensitive filesystems.
 - **fix**: FEL permission failures now keep polling instead of being mistaken for a connected

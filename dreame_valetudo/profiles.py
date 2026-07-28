@@ -280,6 +280,22 @@ def known_model_key_for_dir(dir_path: str | os.PathLike[str]) -> str | None:
     return None
 
 
+def known_model_key_for_code(code: str) -> str | None:
+    """Resolve a robot-reported model code and its known one-letter regional suffix."""
+    normalized = code.lower()
+    namespace, separator, normalized = normalized.rpartition(".")
+    if not separator or namespace not in {"dreame.vacuum", "mova.vacuum"}:
+        return None
+    candidates = sorted(_DIR_PREFIX_TO_KEY, key=lambda item: len(item[0]), reverse=True)
+    for prefix, key in candidates:
+        base = prefix.removesuffix("-")
+        if normalized == base or (
+            normalized.startswith(base) and normalized[len(base):] in {"a", "c", "k", "o", "t"}
+        ):
+            return key
+    return None
+
+
 def model_key_for_dir(dir_path: str | os.PathLike[str]) -> str:
     """The saved state/model_key marker if present and non-empty, else inferred from the dir name."""
     return known_model_key_for_dir(dir_path) or DEFAULT_MODEL_KEY

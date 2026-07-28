@@ -461,6 +461,24 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert robot.state_get("recon") == f"config={_CFG} backup=obtained"
 
 
+def test_recon_refreshes_decrypted_images_after_a_fresh_recovery_pull(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
+    _dist_ready(ctx)
+    refreshes: list[bool] = []
+
+    def decrypt(_recon: Path, _env: object, _console: object, *, refresh: bool = False) -> int:
+        refreshes.append(refresh)
+        return 3
+
+    monkeypatch.setattr(recon_module, "decrypt_recovery_backup", decrypt)
+
+    recon(ctx, recovery_backup=True)
+
+    assert refreshes == [True]
+
+
 def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> None:
     """Recon promises zero writes to flash, so pin every fastboot verb it is allowed to issue.
 

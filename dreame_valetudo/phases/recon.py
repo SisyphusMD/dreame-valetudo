@@ -260,7 +260,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                 # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch
                 # migration already ran), so the restorable image exists without waiting for the
                 # next launch.
-                decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console)
+                decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console, refresh=True)
             else:
                 backup_state = "missing"
                 ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "

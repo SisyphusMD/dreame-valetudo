@@ -53,6 +53,54 @@ def test_backfill_never_overwrites_an_existing_manifest(tmp_path: Path) -> None:
     assert json.loads((b / "manifest.json").read_text())["model"] == "keep me"
 
 
+@pytest.mark.parametrize("broken", ["", "{\"model\":", "[]"])
+def test_backfill_preserves_a_broken_manifest_and_rebuilds_provenance(
+    tmp_path: Path, broken: str,
+) -> None:
+    b = _backup(tmp_path)
+    target = b / "manifest.json"
+    target.write_text(broken)
+
+    assert manifest.backfill_if_missing(b) is True
+
+    assert json.loads(target.read_text())["backfilled"] is True
+    corrupt = b / "manifest.json.corrupt"
+    assert corrupt.read_text() == broken
+    assert "manifest.json.corrupt" not in json.loads(target.read_text())["contents"]
+
+
+def test_backfill_leaves_an_unreadable_manifest_in_place_for_a_later_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b = _backup(tmp_path)
+    target = b / "manifest.json"
+    target.write_text('{"model": "still authoritative"}\n')
+    before = target.read_bytes()
+    real_read_text = Path.read_text
+
+    def fail_target(path: Path, *args: object, **kwargs: object) -> str:
+        if path == target:
+            raise PermissionError("temporarily unreadable")
+        return real_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", fail_target)
+
+    with pytest.raises(PermissionError, match="temporarily unreadable"):
+        manifest.backfill_if_missing(b)
+
+    assert target.read_bytes() == before
+    assert not list(b.glob("manifest.json.corrupt*"))
+
+
+def test_backfill_never_promotes_an_interrupted_partial_backup(tmp_path: Path) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    partial = _backup(backups, ".dreame-r2416-incomplete.123.partial")
+
+    manifest.backfill_manifests({"HOME": str(tmp_path)}, ScriptedConsole())
+
+    assert not (partial / "manifest.json").exists()
+
+
 def test_failed_manifest_replace_preserves_the_existing_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
