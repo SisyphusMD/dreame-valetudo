@@ -16,6 +16,8 @@ from dreame_valetudo.ssh import (
     discover_keys,
     ensure_sshkey,
     resolve_sshkey,
+    ssh_base,
+    ssh_failure_guidance,
     stage_pub_for_upload,
 )
 
@@ -25,6 +27,37 @@ def _keypair(d: Path, name: str) -> Path:
     (d / name).write_text("PRIV")
     (d / f"{name}.pub").write_text(f"ssh-ed25519 AAAA {name}\n")
     return d / name
+
+
+def test_robot_ssh_never_falls_back_to_a_password_prompt() -> None:
+    argv = ssh_base("root@192.168.5.1", None)
+    option = argv.index("BatchMode=yes")
+    assert argv[option - 1] == "-o"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "message"),
+    [
+        ("Permission denied (publickey,password).", "SSH authentication failed"),
+        ("Too many authentication failures", "SSH authentication failed"),
+        ("no matching host key type found. Their offer: ssh-rsa", "SSH negotiation failed"),
+    ],
+)
+def test_ssh_failure_guidance_names_actionable_failures(
+    tmp_path: Path, stderr: str, message: str,
+) -> None:
+    key = tmp_path / "id_robot"
+    result = Result(("ssh",), 255, "", stderr)
+    guidance = ssh_failure_guidance(result, key, tmp_path)
+    assert guidance is not None
+    assert message in guidance
+    assert "~/id_robot" in guidance
+    assert "home network this address is usually your router" in guidance
+
+
+def test_ssh_failure_guidance_leaves_connection_failures_to_ap_advice(tmp_path: Path) -> None:
+    result = Result(("ssh",), 255, "", "ssh: connect to host 192.168.5.1: Operation timed out")
+    assert ssh_failure_guidance(result, None, tmp_path) is None
 
 
 # --- resolve_sshkey precedence: DREAME_SSHKEY > recorded pointer > default > dedicated ---------

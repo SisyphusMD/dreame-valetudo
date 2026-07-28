@@ -98,7 +98,49 @@ def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None
 
     ctx.runner._responder = responder  # type: ignore[attr-defined]
     assert push(ctx) is False
+    assert "Join the ROBOT's own Wi-Fi AP" in ctx.console.text()  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("valetudo")
+
+
+def test_push_refuses_a_missing_env_override_before_ssh(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-key"
+    ctx = make_ctx(
+        robot_name=f"r2416-{_CFG[:12]}",
+        env={"DREAME_SSHKEY": str(missing)},
+    )
+    with pytest.raises(Die, match=r"SSH key not found: .*missing-key.*DREAME_SSHKEY"):
+        push(ctx)
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_push_refuses_a_missing_cli_key_before_ssh(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-cli-key"
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    with pytest.raises(Die, match=r"SSH key not found: .*missing-cli-key.*command line"):
+        push(ctx, missing)
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_push_reports_auth_failure_with_the_offered_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = tmp_path / "id_robot"
+    key.write_text("PRIVATE")
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 255, "", "Permission denied (publickey)."
+    )
+
+    with pytest.raises(Die, match="SSH authentication failed") as exc:
+        push(ctx, key)
+    assert str(key) in str(exc.value)
+    assert "usually your router" in str(exc.value)
+    assert "If already on the robot AP" in str(exc.value)
 
 
 def test_push_refuses_the_router(make_ctx: CtxFactory) -> None:

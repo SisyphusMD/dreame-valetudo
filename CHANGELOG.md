@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **fix**: robot SSH can no longer open its own password prompt, explicit missing key paths now stop
+  before connecting, and authentication or host-key negotiation failures name the offered key and
+  real SSH error instead of incorrectly blaming the robot's Wi-Fi AP.
 - **fix**: release reconciliation now compares registry metadata before downloading assets, so a
   fully consistent tag transfers nothing while missing, truncated, and size-unknown uploads are
   still downloaded once and repaired on only the affected registry.
