@@ -10,7 +10,7 @@ from dreame_valetudo.console import Die, reset_print_once
 from dreame_valetudo.phases.misc import _summary
 from dreame_valetudo.workspace import Robot
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 
 
 def test_select_model_from_env_skips_the_picker(make_ctx: CtxFactory) -> None:
@@ -58,7 +58,7 @@ def test_saved_hazardous_model_is_checked_once_per_process(make_ctx: CtxFactory)
 def test_summary_does_not_invent_a_model(make_ctx: CtxFactory) -> None:
     robot = make_ctx().ws.robots_dir / "Test-Bench-1"
     robot.mkdir(parents=True)
-    assert _summary(robot).startswith("model not chosen yet")
+    assert _summary(Robot(robot)).startswith("model not chosen yet")
 
 
 def test_robot_picker_can_resume_a_known_robot_beside_an_unknown_one(

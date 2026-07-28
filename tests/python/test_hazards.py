@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from conftest import CtxFactory
 
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import UserAbort
 from dreame_valetudo.hazards import model_hazard_check
 
 
@@ -20,7 +20,7 @@ def _warned(ctx: object, needle: str) -> bool:
 
 def test_heat_revision_aborts_when_serial_not_confirmed(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="l10s-pro-ultra-heat", confirms=[False])
-    with pytest.raises(Die, match="Verify the serial"):
+    with pytest.raises(UserAbort, match="Verify the serial"):
         model_hazard_check(ctx)
     assert _warned(ctx, "R2338H")
 
@@ -33,7 +33,7 @@ def test_heat_revision_proceeds_when_serial_confirmed(make_ctx: CtxFactory) -> N
 
 def test_l20_variant_aborts_when_declined(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(model="l20-ultra", confirms=[False])
-    with pytest.raises(Die, match="R2394"):
+    with pytest.raises(UserAbort, match="R2394"):
         model_hazard_check(ctx)
     assert _warned(ctx, "R2253")
 

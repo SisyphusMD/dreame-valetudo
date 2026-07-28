@@ -21,7 +21,7 @@ from pathlib import Path
 from . import __version__
 from .console import Console
 from .profiles import profile_for_model_code
-from .workspace import WORKSPACE_SUBDIR
+from .workspace import backups_dir
 
 MANIFEST_VERSION = 1
 _CONFIG_RE = re.compile(r"[0-9a-f]{32}")  # the 32-hex 'config' identity, if it's in the dir name
@@ -155,20 +155,13 @@ def backfill_if_missing(backup_dir: Path) -> bool:
     return True
 
 
-def _backups_dir(env: Mapping[str, str]) -> Path:
-    override = env.get("DREAME_BACKUPS")
-    if override:
-        return Path(override)
-    return Path(env.get("HOME") or Path.home()) / WORKSPACE_SUBDIR / "backups"
-
-
 def retag_robot(
     env: Mapping[str, str], config: str | None, new_name: str, console: Console | None = None,
 ) -> int:
     """Bring the recorded robot name current in every backup matching `config` (the durable join) —
     a rename updates each backup's authoritative record. Only the manifest's name label is touched;
     the backup DATA (tar/dd) is never modified. Returns how many were updated."""
-    backups = _backups_dir(env)
+    backups = backups_dir(env)
     if not config or not backups.is_dir():
         return 0
     n = 0
@@ -201,7 +194,7 @@ def retag_robot(
 def backfill_manifests(env: Mapping[str, str], console: Console) -> None:
     """Self-heal invariant (runs every launch, gaps-only + idempotent): ensure every backup under
     the backups dir carries a manifest.json, backfilling any legacy backup that predates them."""
-    backups = _backups_dir(env)
+    backups = backups_dir(env)
     if not backups.is_dir():
         return
     try:

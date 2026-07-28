@@ -27,7 +27,7 @@ def _marker(env: Mapping[str, str]) -> Path:
 
 
 def _read_last_version(env: Mapping[str, str]) -> str | None:
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(OSError, ValueError):
         v = _marker(env).read_text().strip()
         return v or None
     return None
@@ -61,8 +61,13 @@ def _sections(text: str) -> list[tuple[str | None, str]]:
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
         ver = m.group(1)
-        out.append((None if ver.lower() == "unreleased" else ver, text[m.start() : end].strip()))
+        section = text[m.start() : end].strip()
+        out.append((None if ver.lower() == "unreleased" else ver, section))
     return out
+
+
+def _has_body(section: str) -> bool:
+    return bool(section.partition("\n")[2].strip())
 
 
 def _is_prerelease(version: str) -> bool:
@@ -81,17 +86,20 @@ def changelog_delta(text: str, last: str, current: str) -> str:
     include_unreleased = _is_prerelease(current)
     if last not in {v for v, _ in secs if v is not None}:
         if include_unreleased:
-            return next((body for v, body in secs if v is None), "").strip()
-        return next((body for v, body in secs if v == current), "").strip()
+            body = next((body for v, body in secs if v is None), "")
+        else:
+            body = next((body for v, body in secs if v == current), "")
+        return body.strip() if _has_body(body) else ""
     out: list[str] = []
     for v, body in secs:
         if v is None:  # [Unreleased]
-            if include_unreleased:
+            if include_unreleased and _has_body(body):
                 out.append(body)
             continue
         if v == last:
             break
-        out.append(body)
+        if _has_body(body):
+            out.append(body)
     return "\n\n".join(out).strip()
 
 
@@ -101,7 +109,7 @@ _MAX_SECTIONS = 3
 
 def _cap_delta(delta: str) -> tuple[str, int]:
     """(the newest ``_MAX_SECTIONS`` sections of a delta, how many older ones were dropped)."""
-    secs = _sections(delta)
+    secs = [(version, body) for version, body in _sections(delta) if _has_body(body)]
     if len(secs) <= _MAX_SECTIONS:
         return delta, 0
     return "\n\n".join(body for _v, body in secs[:_MAX_SECTIONS]), len(secs) - _MAX_SECTIONS

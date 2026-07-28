@@ -77,7 +77,7 @@ class Transport:
     """A resolved way to invoke fastboot: a mode + the command prefix to prepend to the args."""
 
     mode: TransportMode
-    cmd: tuple[str, ...]  # prefix; empty for "system" (which runs Google's `fastboot`)
+    cmd: tuple[str, ...]  # executable plus any fixed arguments
 
 
 def _default_python_imports_usb(py: str) -> bool:
@@ -100,9 +100,10 @@ def resolve_transport(
     fblibusb = str(libexec / "fastboot-libusb.py")
 
     if env.get("DREAME_FASTBOOT") == "system":
-        if not which("fastboot"):
+        system_fastboot = which("fastboot")
+        if not system_fastboot:
             die("DREAME_FASTBOOT=system, but no 'fastboot' is on PATH.")
-        return Transport("system", ())
+        return Transport("system", (system_fastboot,))
 
     binary = find_helper("dreame-fastboot", env)
     if binary is not None:
@@ -142,8 +143,7 @@ class Fastboot:
         self.transport = transport
 
     def _argv(self, args: tuple[object, ...]) -> list[str]:
-        prefix = ("fastboot",) if self.transport.mode == "system" else self.transport.cmd
-        return [*prefix, *(str(a) for a in args)]
+        return [*self.transport.cmd, *(str(a) for a in args)]
 
     def fbt(self, *args: object, check: bool = True) -> Result:
         """Drop-in for `fastboot`: devices|getvar|oem|flash|get_staged|reboot|wait."""

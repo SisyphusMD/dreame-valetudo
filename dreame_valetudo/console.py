@@ -28,8 +28,16 @@ class Die(Exception):
     """Abort with a message. Caught in main() -> print + exit 1."""
 
 
+class UserAbort(Die):
+    """A deliberate user stop: successful, quiet, and not an issue-reporting failure."""
+
+
 def die(message: str) -> NoReturn:
     raise Die(message)
+
+
+def abort(message: str) -> NoReturn:
+    raise UserAbort(message)
 
 
 def warn_if_low_disk(console: Console, dest: Path, need_bytes: int) -> None:

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **fix**: a changed stage1 archive pin now invalidates and atomically replaces the unpacked FEL
+  payload, so a successfully verified new download can never be paired with stale boot files.
+- **fix**: legacy recovery-image decryption now streams and memory-maps the multi-gigabyte inputs
+  instead of holding them and thousands of ciphers in RAM, reserves space for every pending output,
+  and leaves launch usable if the host still cannot allocate enough memory.
+- **fix**: declining a safety prompt is now a normal successful cancellation without an issue-report
+  invitation; informational commands, update checks, udev setup, and post-root diagnosis now report
+  their real state without stale-version, router, second-Valetudo, or headless-access false positives.
+- **fix**: a Valetudo binary that was previously verified remains verifiably usable while connected
+  to the offline robot AP, with a digest sidecar binding the cached claim to those exact bytes.
+- **fix**: workspace paths now come from one policy, newer-layout recovery points at a separate
+  home directory that actually works, and the layout, migration, recovery, release-channel, and
+  macOS library documentation now match the shipped behavior.
 - **ux**: the DustBuilder walkthrough now prints the exact current firmware choice and only the
   options present for each model. Config-rejection recovery now mirrors the support upload form,
   its privacy warning, processing window, and follow-up email. Rooting uses a static

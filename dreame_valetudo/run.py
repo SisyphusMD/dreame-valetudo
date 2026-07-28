@@ -1,7 +1,7 @@
 """Central external-command runner — the seam the transcript-equivalence tests hang on.
 
 Every robot- or network-affecting external tool (sunxi-fel, the fastboot client, ssh, curl, tar,
-zip, git, brew, ssh-keygen, ...) is executed through a Runner. In production that's
+zip, git, ssh-keygen, ...) is executed through a Runner. In production that's
 ``SubprocessRunner``; in tests ``RecordingRunner`` captures the exact argv sequence and returns
 scripted output, so a phase can be proven to issue the SAME external commands off-hardware, before
 it ever drives a real robot.

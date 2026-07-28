@@ -1,9 +1,8 @@
 """Phase: doctor — set up + verify the toolchain (idempotent).
 
 Resolves the fastboot transport (dies with guidance if none) and builds sunxi-fel from the pinned
-source if a prebuilt one isn't already present;
-the platform-specific brew/Xcode install OFFERS are intentionally left to fail with a clear error
-(the build surfaces exactly which dev dep is missing).
+source if a prebuilt one isn't already present. Dependencies are not installed implicitly; a build
+failure names the development packages the host must provide.
 """
 
 from __future__ import annotations

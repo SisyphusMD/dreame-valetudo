@@ -104,7 +104,7 @@ def _upload_client(mod: Any, data_reply: bytes, ep_packets: list[bytes]) -> Any:
 
 def test_upload_rejects_a_zero_byte_staged_blob(tmp_path: Path) -> None:
     # Google fastboot's get_staged fails (BAD_DEV_RESP -> die) when the device reports 0 bytes;
-    # ours must too, so recon never zips a hollow disaster-recovery backup and calls it saved.
+    # matching that behavior prevents recon from treating a hollow recovery backup as saved.
     fb = _upload_client(fbl, b"00000000", [])
     with pytest.raises(fbl.FastbootError):
         fb.upload(str(tmp_path / "out.bin"))

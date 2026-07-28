@@ -66,8 +66,8 @@ def test_zip_matches_model(name: str, code: str, ok: bool) -> None:
 
 # --- parse_config: first 32-hex token, case-insensitive --------------------------------------
 def test_parse_config_finds_the_hex_token() -> None:
-    assert util.parse_config("config: d97c4de6f64818765e2faf9f14309818\n") == (
-        "d97c4de6f64818765e2faf9f14309818"
+    assert util.parse_config("config: abcdef0123456789abcdef0123456789\n") == (
+        "abcdef0123456789abcdef0123456789"
     )
 
 

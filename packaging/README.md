@@ -1,6 +1,6 @@
 # Packaging & release
 
-Four distribution channels, one release flow:
+Six distribution channels, one release flow:
 
 | Channel | Artifact | Built by | Signing |
 |---|---|---|---|
@@ -19,11 +19,6 @@ runs after every release and fans every asset out to all three registries (Forge
 backfilling any historical gap — assets are produced in two places (`.deb`/tarball on Forgejo, `.pkg`
 on GitHub), so a registry can otherwise fall behind. `brew install sisyphusmd/tap/dreame-valetudo-rc`
 installs the newest candidate for hardware testing without touching the stable formula.
-
-`packaging/` files: `homebrew/dreame-valetudo.rb` (formula template), `nfpm.yaml` (.deb),
-`build-tarball.sh`, `entitlements.plist` (hardened-runtime exceptions for the `.pkg`'s native
-bits), `update-tap.sh`, and the `changelog-section.sh` / `forgejo-release.sh` / `github-release.sh`
-release helpers.
 
 ## How a release flows
 
@@ -96,10 +91,10 @@ Forgejo/NAS releases still complete.
   sibling helpers via the tool's own libexec search (`find_helper`) — the `.deb` at
   `/usr/lib/dreame-valetudo` needs no wrapper; the `.pkg`/brew set `DREAME_LIBEXEC`. Build scripts:
   `packaging/build-bundle.sh` (main) + `packaging/build-fastboot-client.sh` (client).
-- **The `.pkg` libusb bundling is the only piece not dry-runnable off-CI.** `release-macos.yml`
-  rewrites `sunxi-fel`'s libusb reference to `@loader_path`; the frozen `dreame-fastboot` links
-  libusb the same way. If the first `.pkg` can't load libusb at runtime, adjust the
-  `install_name_tool` / signing steps.
+- **The `.pkg` native-library bundling is the only piece not dry-runnable off-CI.**
+  `release-macos.yml` rewrites `sunxi-fel`'s libusb reference to its co-located `@loader_path`
+  dylib. PyInstaller's pyusb hook separately embeds libusb inside the frozen `dreame-fastboot`
+  onefile, so hardened-runtime removal of `DYLD_*` variables does not affect that client.
 - **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`).** amd64 builds natively on
   the runner; arm64 emulates inside BuildKit's builder (the `docker-container` driver carries QEMU),
   because the Talos runner node has no usable host binfmt for a plain `docker run --platform arm64`

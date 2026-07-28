@@ -21,8 +21,12 @@ see ``recover_shared_keystream``.
 from __future__ import annotations
 
 import hashlib
+import mmap
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from contextlib import ExitStack
+from pathlib import Path
+from typing import BinaryIO
 
 from .constants import DUST_KEYSTREAM_SHA256
 
@@ -31,7 +35,10 @@ from .constants import DUST_KEYSTREAM_SHA256
 PERIOD = 0x20000
 
 
-def _vote_keystream(dumps: Iterable[bytes], sample_blocks: int = 512) -> bytes:
+_ByteSource = bytes | mmap.mmap
+
+
+def _vote_keystream(dumps: Iterable[_ByteSource], sample_blocks: int = 512) -> bytes:
     """Per-position majority vote for the repeating XOR keystream, pooled across every slice in
     ``dumps``.
 
@@ -41,20 +48,27 @@ def _vote_keystream(dumps: Iterable[bytes], sample_blocks: int = 512) -> bytes:
     many blocks per dump are voted over — a few hundred is ample and keeps the pure-Python vote quick
     on a 400 MB dump.
     """
-    cols: list[Counter[int]] = [Counter() for _ in range(PERIOD)]
-    saw = False
+    samples: list[bytes] = []
     for data in dumps:
         blocks = len(data) // PERIOD
         if blocks < 2:
             continue
-        saw = True
         step = max(1, blocks // sample_blocks)
-        sample = b"".join(data[b * PERIOD : (b + 1) * PERIOD] for b in range(0, blocks, step))
-        for pos in range(PERIOD):
-            cols[pos].update(sample[pos::PERIOD])
-    if not saw:
+        samples.append(
+            b"".join(bytes(data[b * PERIOD : (b + 1) * PERIOD])
+                     for b in range(0, blocks, step))
+        )
+    if not samples:
         raise ValueError("dump too small to recover a keystream")
-    return bytes(c.most_common(1)[0][0] for c in cols)
+    key = bytearray(PERIOD)
+    # Holding one Counter at a time bounds this vote to the sampled bytes. Keeping one Counter for
+    # every key position costs more than a gigabyte once dense slices populate all 256 byte values.
+    for pos in range(PERIOD):
+        votes: Counter[int] = Counter()
+        for sample in samples:
+            votes.update(sample[pos::PERIOD])
+        key[pos] = votes.most_common(1)[0][0]
+    return bytes(key)
 
 
 def recover_keystream(data: bytes, sample_blocks: int = 512) -> bytes:
@@ -76,6 +90,13 @@ def xor_stream(data: bytes, keystream: bytes) -> bytes:
     return bytes(out)
 
 
+def xor_file(source: BinaryIO, write: Callable[[bytes], object], keystream: bytes) -> None:
+    """Stream a file through the repeating keystream without materializing the whole image."""
+    chunk_size = PERIOD * 8
+    while chunk := source.read(chunk_size):
+        write(xor_stream(chunk, keystream))
+
+
 def _sample_stride(length: int) -> int:
     # A shared factor with the repeating key period would inspect only a subset of its offsets and
     # could mistake a periodic byte pattern for the distribution of the whole decrypted image.
@@ -90,6 +111,32 @@ def _zero_fraction(data: bytes) -> float:
     return sample.count(0) / len(sample) if sample else 0.0
 
 
+def _xored_sample_has_fill(data: _ByteSource, keystream: bytes, threshold: float = 0.2) -> bool:
+    """Whether a uniform sample would decrypt to at least ``threshold`` zero fill."""
+    step = _sample_stride(len(data))
+    total = (len(data) + step - 1) // step
+    needed = int(total * threshold + 0.999999)
+    zeros = 0
+    period = len(keystream)
+    for offset in range(0, len(data), step):
+        if data[offset] == keystream[offset % period]:
+            zeros += 1
+            if zeros >= needed:
+                return True
+    return False
+
+
+def _recover_shared_keystream(
+    dumps: Sequence[_ByteSource], sample_blocks: int = 512,
+) -> bytes:
+    key = _vote_keystream(dumps, sample_blocks)
+    if hashlib.sha256(key).hexdigest() != DUST_KEYSTREAM_SHA256:
+        raise ValueError("keystream recovery failed: result does not match the known transport keystream")
+    if any(_xored_sample_has_fill(dump, key) for dump in dumps):
+        return key
+    raise ValueError("keystream recovery failed: no slice is dominated by 0x00 fill")
+
+
 def recover_shared_keystream(dumps: Sequence[bytes], sample_blocks: int = 512) -> bytes:
     """Recover the one fixed keystream shared by a group of flash slices, pooled into a single vote
     and validated once.
@@ -100,12 +147,17 @@ def recover_shared_keystream(dumps: Sequence[bytes], sample_blocks: int = 512) -
     0x00 fill, so data that is not this obfuscation scheme fails loudly instead of yielding plausible
     garbage.
     """
-    key = _vote_keystream(dumps, sample_blocks)
-    if hashlib.sha256(key).hexdigest() != DUST_KEYSTREAM_SHA256:
-        raise ValueError("keystream recovery failed: result does not match the known transport keystream")
-    if any(_zero_fraction(xor_stream(d, key)) >= 0.2 for d in dumps):
-        return key
-    raise ValueError("keystream recovery failed: no slice is dominated by 0x00 fill")
+    return _recover_shared_keystream(dumps, sample_blocks)
+
+
+def recover_shared_keystream_files(paths: Sequence[Path], sample_blocks: int = 512) -> bytes:
+    """Recover a shared keystream from read-only file mappings rather than whole-file copies."""
+    with ExitStack() as stack:
+        dumps: list[mmap.mmap] = []
+        for path in paths:
+            source = stack.enter_context(path.open("rb"))
+            dumps.append(stack.enter_context(mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ)))
+        return _recover_shared_keystream(dumps, sample_blocks)
 
 
 def decrypt_dump(data: bytes) -> bytes:

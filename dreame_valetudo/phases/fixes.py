@@ -275,7 +275,7 @@ _DIAGNOSE_REMOTE = r"""
 echo "== uname =="; uname -a 2>&1
 echo "== /data/valetudo (expect ~37M) =="; ls -l /data/valetudo 2>&1
 echo "== postboot hook =="; ls -l /data/_root_postboot.sh 2>&1; echo "--- contents:"; head -n 30 /data/_root_postboot.sh 2>&1
-echo "== valetudo running? =="; if pgrep valetudo >/dev/null 2>&1; then echo RUNNING; pgrep valetudo; else echo "NOT RUNNING"; fi
+echo "== valetudo running? =="; if pgrep valetudo >/dev/null 2>&1; then VALETUDO_RUNNING=1; echo RUNNING; pgrep valetudo; else VALETUDO_RUNNING=0; echo "NOT RUNNING"; fi
 echo "== listening on :80 =="; netstat -tln 2>/dev/null | grep ":80" || echo "nothing on :80"
 echo "== config =="; ls -l /data/valetudo_config.json 2>&1
 echo "== device.conf (Valetudo parses this; did/key/model must ALL be present + clean) =="
@@ -306,9 +306,13 @@ echo "== memory =="; free 2>/dev/null || head -3 /proc/meminfo 2>/dev/null
 echo "== processes =="; ps 2>/dev/null | grep -iE "valetudo|miio|ava" | grep -v grep
 echo "== kernel tail (OOM/crash?) =="; dmesg 2>/dev/null | tail -n 25
 echo "== valetudo 25s FOREGROUND test with real config =="
-VALETUDO_CONFIG_PATH=/data/valetudo_config.json timeout 25 /data/valetudo > /tmp/vlog 2>&1
-echo "exit=$? (124 = survived 25s = GOOD; anything else = it exited/crashed on its own)"
-echo "--- its output (first 60 lines): ---"; head -n 60 /tmp/vlog 2>/dev/null; echo "--- (end) ---"
+if [ "$VALETUDO_RUNNING" = 1 ]; then
+  echo "skipped: Valetudo is already running (see above)"
+else
+  VALETUDO_CONFIG_PATH=/data/valetudo_config.json timeout 25 /data/valetudo > /tmp/vlog 2>&1
+  echo "exit=$? (124 = survived 25s = GOOD; anything else = it exited/crashed on its own)"
+  echo "--- its output (first 60 lines): ---"; head -n 60 /tmp/vlog 2>/dev/null; echo "--- (end) ---"
+fi
 """
 
 

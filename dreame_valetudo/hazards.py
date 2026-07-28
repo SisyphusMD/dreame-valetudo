@@ -7,7 +7,7 @@ pre-flight sanity checks, not the last line of defence.
 
 from __future__ import annotations
 
-from .console import die
+from .console import abort
 from .context import Context
 
 
@@ -22,7 +22,7 @@ def model_hazard_check(ctx: Context) -> None:
         if ctx.interactive and not ctx.console.confirm(
             f"Does the serial confirm this is '{ctx.profile.model}'?"
         ):
-            die("Verify the serial, then re-run and choose the matching entry.")
+            abort("Verify the serial, then re-run and choose the matching entry.")
     elif key == "l20-ultra":
         ctx.console.warn("The L20 Ultra ships in TWO look-alike variants: only the MR813 hardware "
                          "(model code R2394) is rootable. An identical-looking R2253 unit is NOT "
@@ -31,5 +31,5 @@ def model_hazard_check(ctx: Context) -> None:
         if ctx.interactive and not ctx.console.confirm(
             "Continue with the L20 Ultra (R2394 / MR813)?"
         ):
-            die("Verify the model code first (recon is non-destructive), then continue only if "
-                "it's R2394.")
+            abort("Verify the model code first (recon is non-destructive), then continue only if "
+                  "it's R2394.")

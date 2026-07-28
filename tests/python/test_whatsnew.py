@@ -69,6 +69,36 @@ def test_prerelease_shows_the_ungraduated_unreleased_notes() -> None:
     assert W.changelog_delta(_RC_CHANGELOG, "0.1.1", "0.2.0") == ""
 
 
+def test_prerelease_does_not_print_an_empty_unreleased_heading() -> None:
+    changelog = """# Changelog
+
+## [Unreleased]
+
+## [0.1.1] - 2026-07-22
+- prior release
+"""
+    assert W.changelog_delta(changelog, "0.1.1", "0.2.0-rc.1") == ""
+
+
+def test_empty_released_section_still_bounds_the_upgrade_history() -> None:
+    changelog = """# Changelog
+
+## [Unreleased]
+
+## [0.3.0]
+- current
+
+## [0.2.0]
+- intermediate
+
+## [0.1.0]
+
+"""
+    delta = W.changelog_delta(changelog, "0.1.0", "0.3.0")
+    assert "current" in delta and "intermediate" in delta
+    assert "## [0.1.0]" not in delta
+
+
 def test_cap_delta_keeps_only_the_newest_sections() -> None:
     many = "\n\n".join(f"## [0.{i}.0] - 2026-01-0{i}\n- change {i}" for i in range(9, 0, -1))
     shown, dropped = W._cap_delta(many)
@@ -91,6 +121,16 @@ def test_noop_when_marker_is_current(tmp_path: Path) -> None:
     con = ScriptedConsole()
     W.show_whats_new({"HOME": str(tmp_path)}, con)
     assert con.lines == []
+
+
+def test_non_utf8_marker_degrades_to_a_fresh_install(tmp_path: Path) -> None:
+    marker = tmp_path / "dreame-valetudo" / ".last_version"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"\xff\xfe")
+    con = ScriptedConsole()
+    W.show_whats_new({"HOME": str(tmp_path)}, con)
+    assert con.lines == []
+    assert marker.read_text().strip() == __version__
 
 
 def test_prints_delta_on_upgrade_then_restamps(tmp_path: Path, monkeypatch) -> None:

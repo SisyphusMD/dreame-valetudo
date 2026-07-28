@@ -12,7 +12,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from ..console import die
+from ..console import abort, die
 from ..constants import FEL_IMAGE_FILES
 from ..context import Context
 from ..dustbuilder import (
@@ -95,7 +95,7 @@ def _open_dustbuilder(ctx: Context) -> None:
         # Fail closed: declining (or a non-tty EOF) STOPS here rather than silently watching
         # ~/Downloads for a build the user never started.
         if not ctx.console.confirm("Open the dustbuilder in your browser now?"):
-            die("No problem — re-run 'dreame-valetudo' for this robot when ready.")
+            abort("No problem — re-run 'dreame-valetudo' for this robot when ready.")
         if shutil.which("open"):
             ctx.runner.run(["open", ctx.dustbuilder_page], check=False)
         else:
@@ -270,8 +270,8 @@ def image(ctx: Context, *, force: bool = False) -> None:
     # hour. Ask first; on 'no', print the check.builder rescue block and stop cleanly.
     if not ctx.console.confirm("Did the dustbuilder accept your config and start the build?"):
         _config_rejected_help(ctx)
-        die("Config not recognized yet — follow the steps above, then re-run 'dreame-valetudo' "
-            "for this robot once you have a working FEL image.")
+        abort("Config not recognized yet — follow the steps above, then re-run 'dreame-valetudo' "
+              "for this robot once you have a working FEL image.")
 
     # A zip downloaded BEFORE this robot's build was ordered is almost always the previous robot's
     # build: same model code, same filename, still sitting in ~/Downloads. This robot's own build

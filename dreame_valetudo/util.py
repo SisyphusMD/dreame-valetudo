@@ -64,11 +64,12 @@ def repair_did(did: str) -> str | None:
     return None
 
 
-# The miio device key line from `dreame_release.na -c 7`, e.g. "MI_KEY = a1b2c3...". Some units
-# (the W10 Pro) keep the cloudKey only in secure storage, leaving the factory key.txt empty so
-# Valetudo can't talk to the robot; this pulls the real key back out to restore it.
 def parse_mikey(output: str) -> str | None:
-    """The MI_KEY value from `dreame_release.na -c 7` output, or None if not present/empty."""
+    """The MI_KEY value from ``dreame_release.na -c 7``, or None if absent/empty.
+
+    Some W10 Pro units retain the cloud key only in secure storage while factory ``key.txt`` is
+    empty; this value restores Valetudo's ability to reach the robot.
+    """
     for line in output.splitlines():
         head, sep, val = line.partition("=")
         if sep and head.strip() == "MI_KEY":

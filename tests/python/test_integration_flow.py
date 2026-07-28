@@ -10,12 +10,13 @@ from pathlib import Path
 
 from conftest import CtxFactory
 
+from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.phases.image import image
 from dreame_valetudo.phases.recon import recon
 from dreame_valetudo.phases.root import root
 from dreame_valetudo.run import Result
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 _FW = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
 _FW_SIZES = {
     "fsbl.bin": 32 * 1024,
@@ -56,6 +57,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text("p")
     (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
+    (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
 
     # 1) recon: no robot yet -> creates it, named by device identity
     assert ctx.robot is None

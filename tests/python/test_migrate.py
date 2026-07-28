@@ -205,8 +205,10 @@ def test_refuses_a_newer_on_disk_layout(tmp_path: Path) -> None:
     (base / ".layout").write_text(
         json.dumps({"layout_version": M.LAYOUT_VERSION + 1, "min_tool_version": "9.9.9"})
     )
-    with pytest.raises(Die, match=r"9\.9\.9"):
+    with pytest.raises(Die, match=r"9\.9\.9") as exc:
         M.migrate(_env(tmp_path), ScriptedConsole())
+    assert "HOME=<separate-directory>" in str(exc.value)
+    assert "DREAME_WORK" not in str(exc.value)
 
 
 def test_respects_dreame_work_but_still_consolidates_backups(tmp_path: Path) -> None:
@@ -667,7 +669,7 @@ def test_backfills_a_display_name_for_a_nameless_robot(tmp_path: Path) -> None:
 def test_syncs_the_current_robot_name_into_its_backups(tmp_path: Path) -> None:
     # A backfilled backup (no recorded name) gains the robot's CURRENT name, joined by config, on
     # migrate — so backups track the robot without needing an explicit rename.
-    cfg = "d97c4de6f64818765e2faf9f14309818"
+    cfg = "abcdef0123456789abcdef0123456789"
     base = tmp_path / "dreame-valetudo"
     recon = base / "work" / "robots" / "kitchen" / "recon"
     recon.mkdir(parents=True)

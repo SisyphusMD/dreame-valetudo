@@ -4,15 +4,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dreame_valetudo.workspace import Robot, Workspace, robot_tag, slugify
+from dreame_valetudo.workspace import (
+    Robot,
+    Workspace,
+    backups_dir,
+    base_dir,
+    robot_dirs,
+    robot_tag,
+    slugify,
+    work_dir,
+)
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 
 
 # --- Workspace paths -------------------------------------------------------------------------
 def test_workspace_defaults_under_home(tmp_path: Path) -> None:
-    ws = Workspace.from_env({"HOME": str(tmp_path)})
+    env = {"HOME": str(tmp_path)}
+    ws = Workspace.from_env(env)
     assert ws.base == tmp_path / "dreame-valetudo" / "work"
+    assert base_dir(env) == tmp_path / "dreame-valetudo"
+    assert work_dir(env) == ws.base
+    assert backups_dir(env) == tmp_path / "dreame-valetudo" / "backups"
     assert ws.robots_dir == ws.base / "robots"
     assert ws.dist == ws.base / "cache" / "dist"
     assert ws.sunxi_fel == ws.base / "cache" / "sunxi-tools" / "sunxi-fel"
@@ -20,6 +33,18 @@ def test_workspace_defaults_under_home(tmp_path: Path) -> None:
 
 def test_workspace_honors_dreame_work(tmp_path: Path) -> None:
     assert Workspace.from_env({"DREAME_WORK": str(tmp_path / "custom")}).base == tmp_path / "custom"
+
+
+def test_workspace_helpers_share_overrides_and_robot_filtering(tmp_path: Path) -> None:
+    work = tmp_path / "custom-work"
+    backups = tmp_path / "custom-backups"
+    (work / "robots" / "kitchen").mkdir(parents=True)
+    (work / "robots" / ".partial").mkdir()
+    (work / "robots" / "not-a-dir").write_text("x")
+    env = {"DREAME_WORK": str(work), "DREAME_BACKUPS": str(backups)}
+    assert work_dir(env) == work
+    assert backups_dir(env) == backups
+    assert robot_dirs(env) == [work / "robots" / "kitchen"]
 
 
 # --- state markers ---------------------------------------------------------------------------

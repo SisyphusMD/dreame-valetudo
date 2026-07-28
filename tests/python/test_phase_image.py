@@ -18,6 +18,7 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
+from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
 from dreame_valetudo.phases.image import _print_checklist, image
@@ -27,7 +28,7 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import Robot
 
-_CFG = "d97c4de6f64818765e2faf9f14309818"
+_CFG = "abcdef0123456789abcdef0123456789"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
 
 _FASTBOOT_MODELS = tuple(
@@ -95,6 +96,7 @@ def _reject_ctx(
         ctx.ws.dist.mkdir(parents=True, exist_ok=True)
         (ctx.ws.dist / "payload.bin").write_text("p")
         (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
+        (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")

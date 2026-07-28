@@ -94,6 +94,8 @@ def install_udev(ctx: Context) -> int:
         return 1
     ctx.runner.run([*sudo, "udevadm", "control", "--reload-rules"], check=False)
     ctx.runner.run([*sudo, "udevadm", "trigger"], check=False)
-    ctx.console.say("USB access granted — the udev rule is installed (no sudo needed from now on).")
+    ctx.console.say("The USB udev rule is installed.")
     ctx.console.info("If the robot is already plugged in, unplug and replug the cable once.")
+    ctx.console.info("Headless or SSH sessions also require your login in the plugdev group: "
+                     "sudo usermod -aG plugdev $USER, then log out and back in.")
     return 0

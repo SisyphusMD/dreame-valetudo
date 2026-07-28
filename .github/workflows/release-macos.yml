@@ -7,10 +7,8 @@ name: Release (macOS pkg)
 # nothing else to install. The publish job appends both .pkgs to the GitHub + public-Forgejo
 # releases (the only two it can reach); publish.yml's nas-pkg job bridges them to the NAS.
 #
-# NOTE: the libusb bundling + codesign of the native binaries is the one piece that can't be
-# dry-run off-CI; if a release's .pkg fails to load libusb at runtime, adjust the
-# install_name_tool / DYLD steps below (see packaging/README.md). The x86_64 leg is built + signed
-# the same way but is untested on real Intel hardware.
+# NOTE: the native-library bundling + codesign is the one piece that can't be dry-run off-CI.
+# The x86_64 leg is built and signed the same way but is untested on real Intel hardware.
 on:
   push:
     # Stable and prerelease (v1.2.3-rc.N) tags both build the signed .pkg; the publish step marks
@@ -47,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
-          # call; we install only homebrew-core formulae, so drop the stray tap instead.
+          # call; only homebrew-core formulae are installed, so drop the stray tap instead.
           brew untap aws/tap 2>/dev/null || true
           brew install libusb dtc pkg-config libevent
           read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
@@ -83,8 +81,8 @@ jobs:
           LIBUSB="$(brew --prefix libusb)/lib/libusb-1.0.0.dylib"
           cp "$LIBUSB" ./libusb-1.0.0.dylib
           chmod u+w ./libusb-1.0.0.dylib
-          # Point sunxi-fel's libusb reference at the co-located copy (absolute Homebrew path
-          # won't exist on a user's Mac). The client finds it via DYLD_LIBRARY_PATH the script sets.
+          # Point sunxi-fel's libusb reference at the co-located copy; the absolute Homebrew path
+          # will not exist on a user's Mac. PyInstaller separately embeds libusb in dreame-fastboot.
           OLD="$(otool -L sunxi-fel | awk '/libusb-1.0/{print $1; exit}')"
           install_name_tool -change "$OLD" "@loader_path/libusb-1.0.0.dylib" sunxi-fel
           install_name_tool -id "@loader_path/libusb-1.0.0.dylib" ./libusb-1.0.0.dylib

@@ -4,6 +4,7 @@ opt-out, fail-silent orchestration over the runner seam."""
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from conftest import CtxFactory
@@ -17,6 +18,9 @@ def test_is_newer() -> None:
     assert U._is_newer("0.2.0", "0.1.1")
     assert U._is_newer("1.0.0", "0.9.9")
     assert U._is_newer("0.2.0-rc.1", "0.1.9")  # prerelease suffix tolerated
+    assert U._is_newer("0.2.2", "0.2.2-rc.1")  # stable release supersedes its rc
+    assert U._is_newer("0.2.2-rc.2", "0.2.2-rc.1")
+    assert not U._is_newer("0.2.2-rc.1", "0.2.2")
     assert not U._is_newer("0.1.1", "0.1.1")
     assert not U._is_newer("0.1.0", "0.1.1")
 
@@ -32,9 +36,29 @@ def test_detect_install_method_is_source_in_repo() -> None:
     assert U.detect_install_method({}) == "source"  # the repo checkout has a .git dir
 
 
+def test_detect_install_method_uses_the_frozen_executable_for_deb(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    isolated = tmp_path / "installed" / "update_check.py"
+    isolated.parent.mkdir()
+    isolated.write_text("")
+    monkeypatch.setattr(U, "__file__", str(isolated))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/usr/bin/dreame-valetudo")
+    monkeypatch.setattr(sys, "argv", ["dreame-valetudo"])
+    monkeypatch.setattr(U.sys, "platform", "linux")
+    assert U.detect_install_method({}) == "deb"
+
+
 def test_upgrade_hint_covers_every_method() -> None:
     for method in ("source", "brew", "deb", "unknown"):
         assert U._upgrade_hint(method)
+    assert "dreame-valetudo-rc" in U._upgrade_hint("brew", "0.3.0-rc.2")
+    assert "dreame-valetudo-rc" not in U._upgrade_hint("brew", "0.3.0")
+    stable = U._upgrade_hint("brew", "0.3.0-rc.2", "0.3.0")
+    assert "uninstall dreame-valetudo-rc" in stable
+    assert "install sisyphusmd/tap/dreame-valetudo" in stable
+    assert "dreame-valetudo-rc" not in stable.rsplit("install ", 1)[-1]
 
 
 def _responder_returning(tag: str, rc: int = 0):
@@ -96,4 +120,4 @@ def test_network_failure_is_swallowed_but_day_is_stamped(make_ctx: CtxFactory, t
     U.check_for_update(ctx, today="2026-01-01")
     assert ctx.console.lines == []  # type: ignore[attr-defined]  # failure -> no nudge, no crash
     cache = json.loads((tmp_path / "dreame-valetudo" / ".update_check").read_text())
-    assert cache["checked"] == "2026-01-01"  # stamped, so we don't retry every launch
+    assert cache["checked"] == "2026-01-01"  # the daily cache prevents a retry on every launch

@@ -25,7 +25,7 @@ Reference implementation: [`tools/compute_dust_token.py`](tools/compute_dust_tok
 
 | Model | config (first 8 hex) | token |
 |---|---|---|
-| X40 `r2416` | `d97c4de6` | `10d0f120` |
+| X40 `r2416` | `abcdef01` | `626153c7` |
 | L10s `r2338` | `44268c81` | `8d8a3047` |
 | D10S `r2240` | (per unit) | `18dbb75c` |
 | D10S (other retailer) | (per unit) | `11c2e33d` |

@@ -18,7 +18,7 @@ RUN apt-get update -qq \
 RUN pip install --quiet --root-user-action=ignore "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
 # sunxi-fel: cloned + built before the repo COPY so it caches independently of source edits.
 # Pre-generate version.h so make skips its own version.h target (it has no prerequisites, so an
-# existing file counts as up to date). We must, because that target runs `./autoversion.sh`, which
+# existing file counts as up to date). This is required because that target runs `./autoversion.sh`, which
 # has no shebang — qemu-user (the arm64 emulation) doesn't do the shell's ENOEXEC fallback, so the
 # make-invoked exec fails under emulation (it works natively). Running the SAME script via an explicit
 # `sh` reads it instead of exec-ing it, so it works under qemu and keeps upstream's exact version logic.
@@ -30,8 +30,8 @@ WORKDIR /w
 COPY . /w
 # The build scripts smoke-test the frozen binaries by running them (dreame-valetudo version, the
 # fastboot client's usage). Under the emulated arm64 leg this runs a PyInstaller onefile through
-# qemu-user; keeping it as a real check — if qemu genuinely can't run it, the failure here tells us,
-# and only then would we make it native-only.
+# qemu-user; keeping it as a real check makes an emulation limitation explicit before deciding
+# whether the smoke must become native-only.
 RUN bash packaging/build-bundle.sh /w/dist \
  && bash packaging/build-fastboot-client.sh /w/dist \
  && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel

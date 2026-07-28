@@ -45,7 +45,7 @@ def print_fel_entry(console: Console, host: str = "computer") -> None:
             "After ~5s release power; keep holding the PCB button ~3s more.",
             "LEDs pulse — the robot is in FEL mode.",
         ])
-        console.detail("(No key to press here — the script auto-detects the FEL device.)")
+        console.detail("(No key to press here — the tool auto-detects the FEL device.)")
 
     if not console.once("fel-entry", full):
         console.action("Redo the PCB button sequence (steps above).")
@@ -128,7 +128,7 @@ class Fel:
                     p.close(done=False)
                 return result.ok
             for _ in range(secs):
-                res = self.runner.run(["fastboot", "devices"], check=False)
+                res = self.fastboot.fbt("devices", check=False)
                 if res.stdout.strip():
                     self.console.info(f"fastboot device: {res.stdout.strip()}")
                     return True

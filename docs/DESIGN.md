@@ -51,7 +51,7 @@ the exact log path. Turn it off with `DREAME_NO_LOG=1`.
 ## macOS toolchain
 
 - **`sunxi-fel`**: talks to the Allwinner chip in FEL mode over USB; loads the payload that
-  boots the fastboot gadget. No Homebrew formula, so the script builds it from source (build
+  boots the fastboot gadget. No Homebrew formula, so the tool builds it from source (build
   dep **`dtc`** for `libfdt`, runtime dep `libusb`). Native arm64. Works reliably on macOS.
 - **`fastboot-libusb.py`**: a small fastboot client that speaks the protocol over **libusb**
   (via `uv run --with pyusb`). See below for why this exists instead of Google's `fastboot`.
@@ -61,7 +61,7 @@ the exact log path. Turn it off with `DREAME_NO_LOG=1`.
 Google's `fastboot` (Homebrew `android-platform-tools`) uses an IOKit USB backend that fails
 to enumerate the Dreame U-Boot fastboot gadget on Apple Silicon / macOS
 (Google issuetracker 245622179), so this tool speaks fastboot over libusb instead, the same
-stack `sunxi-fel` already uses. The script uses that **same libusb client on every OS**,
+stack `sunxi-fel` already uses. The tool uses that **same libusb client on every OS**,
 macOS *and* Linux, rather than falling back to Google's `fastboot` anywhere: it's the one
 transport actually validated against this gadget, so every install path exercises the
 same tested code (`DREAME_FASTBOOT=system` is an explicit, never-automatic escape hatch for
@@ -77,9 +77,13 @@ Measured on an M-series Mac / macOS 26:
   1.2 GB flash backup and a `getvar config` over it.
 
 `fastboot-libusb.py` matches by the fastboot **interface signature** (not VID/PID), so it
-survives the FEL→fastboot re-enumeration. Before the timed flash, throughput is pre-measured
-so the whole `oem`+flash+reboot sequence fits inside the roughly 180 seconds of usable FEL before
-the power MCU cycles the SoC rail.
+survives the FEL→fastboot re-enumeration. The timed `oem`+flash+reboot sequence runs back-to-back
+with interrupts masked and every operation gated on an `OKAY`; elapsed times in the run log show
+the margin against the roughly 180 seconds of usable FEL before the power MCU cycles the SoC rail.
+
+The only routine outbound request is a best-effort check of GitHub's releases API, at most once per
+day. It has a three-second timeout, never updates the tool, and is disabled with
+`DREAME_NO_UPDATE_CHECK=1`.
 
 ## Low-level internals & research
 

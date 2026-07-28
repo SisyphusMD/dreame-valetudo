@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import manifest
-from ..console import Die, die, warn_if_low_disk
+from ..console import Die, abort, die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..profiles import known_model_key_for_code
@@ -172,8 +172,8 @@ def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]
             f"Does the label on the connected robot confirm {ctx.profile.model} "
             f"({ctx.profile.model_code})?"
         ):
-            die("The connected robot was not physically confirmed as the selected model. "
-                "No backup or install was attempted.")
+            abort("The connected robot was not physically confirmed as the selected model. "
+                  "No backup or install was attempted.")
         identity["model_verification"] = "physical-label"
         ctx.console.info(f"Physical model confirmed: {ctx.profile.model} "
                          f"({ctx.profile.model_code}).")
@@ -320,7 +320,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
          "'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal."),
     ])
     if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
-        die("No problem — do steps 1-3 above, then re-run.")
+        abort("No problem — do steps 1-3 above, then re-run.")
 
     probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)
     if not probe.ok:
