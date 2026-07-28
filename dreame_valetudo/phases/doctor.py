@@ -44,14 +44,20 @@ def _sunxi_ready(ctx: Context) -> bool:
         return False
 
 
-def _check_external_tools(ctx: Context) -> None:
-    missing = [t for t in _REQUIRED_TOOLS if not shutil.which(t)]
+def check_external_tools(
+    ctx: Context, tools: tuple[str, ...] = _REQUIRED_TOOLS, *, required: bool = False,
+) -> None:
+    """Name missing host commands without provisioning any part of the USB toolchain."""
+    missing = [tool for tool in tools if not shutil.which(tool)]
     if missing:
-        ctx.console.warn(
-            f"Missing external tools: {', '.join(missing)} — the phases that use them will fail "
-            f"when they run. Install them with "
-            f"{'brew' if ctx.system == 'Darwin' else 'your package manager'} and re-run."
+        message = (
+            f"Missing {'required ' if required else ''}external tools: {', '.join(missing)}. "
+            f"Install them with {'brew' if ctx.system == 'Darwin' else 'your package manager'} "
+            "and re-run."
         )
+        if required:
+            die(message)
+        ctx.console.warn(message)
 
 
 def check_fastboot_client(ctx: Context) -> None:
@@ -80,7 +86,7 @@ def doctor(ctx: Context) -> None:
         )
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    _check_external_tools(ctx)
+    check_external_tools(ctx)
 
     # A broken install (no flash client) must fail HERE with reinstall guidance, not later as a
     # bogus "robot never appeared in fastboot" at FEL time.

@@ -548,7 +548,7 @@ def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
 
 
 def test_recon_self_provisions_stage1_via_fetch(make_ctx: CtxFactory) -> None:
-    # recon self-provisions: on missing stage1 it RUNS fetch, which then dies at its own
+    # recon self-provisions: on missing stage1 it runs the stage1 fetch, which then dies at its own
     # pinned-sha256 gate on the (here bogus) download. Proves the self-provision chain fired.
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:

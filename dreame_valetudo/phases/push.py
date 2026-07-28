@@ -16,14 +16,15 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import manifest
-from ..console import die, warn_if_low_disk
+from ..console import Die, die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
 from ..util import parse_mikey, repair_did
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
-from .fetch import fetch
+from .doctor import check_external_tools
+from .fetch import fetch_valetudo
 
 _TARGET = f"root@{ROBOT_AP_IP}"
 _KEY_TXT = "/mnt/private/ULI/factory/key.txt"
@@ -149,8 +150,16 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
             die(f"SSH key not found: {key} (from the command line).")
         ctx.console.info(f"SSH key: {key}")
 
-    if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
-        fetch(ctx)  # self-provision the binary, then re-check
+    binary_missing = not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0
+    check_external_tools(ctx, ("ssh",), required=True)
+    check_external_tools(ctx, ("curl",), required=binary_missing)
+    try:
+        # Re-check a cached binary too: a moving `latest` release keeps the same filename, so only
+        # the published digest reveals that the cached bytes are now stale.
+        fetch_valetudo(ctx)
+    except Die as exc:
+        die(f"{exc}\nRejoin your normal Wi-Fi and run 'dreame-valetudo push' again. It will "
+            "download only Valetudo, then prompt you to join the robot's Wi-Fi AP.")
     if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
         die("Valetudo binary missing — run 'fetch'.")
 

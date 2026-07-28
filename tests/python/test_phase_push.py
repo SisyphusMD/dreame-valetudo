@@ -15,6 +15,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
+from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.push import push
 from dreame_valetudo.run import Result
 
@@ -100,6 +101,82 @@ def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None
     assert push(ctx) is False
     assert "Join the ROBOT's own Wi-Fi AP" in ctx.console.text()  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("valetudo")
+
+
+def test_push_fetches_only_valetudo_when_the_cache_is_empty(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _ctx(make_ctx)
+    monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
+    monkeypatch.setattr(fetch_mod, "valetudo_published_sha256", lambda *a, **k: None)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl" and "-o" in argv:
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"valetudo")
+            return Result(argv, 0, "", "")
+        return Result(argv, 255, "", "ssh: connect timed out")
+
+    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    assert push(ctx) is False
+
+    calls = ctx.runner.calls  # type: ignore[attr-defined]
+    assert ctx.valetudo_bin.read_bytes() == b"valetudo"
+    assert not any(c[0] in {"git", "make", "tar"} for c in calls)
+    assert not any(ctx.profile.stage1_url in c for c in calls)
+
+
+def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 7, "", "Could not resolve host"
+    )
+
+    with pytest.raises(Die, match="Rejoin your normal Wi-Fi") as exc:
+        push(ctx)
+
+    message = str(exc.value)
+    assert "dreame-valetudo fetch" not in message
+    assert "robot's Wi-Fi AP" in message
+    assert "dreame-valetudo push" in message
+    assert "download only Valetudo" in message
+    assert not any(ctx.profile.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("missing", "cached"), [("curl", False), ("ssh", True)])
+def test_push_names_a_missing_required_host_tool_before_running_commands(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, missing: str, cached: bool,
+) -> None:
+    ctx = _ctx(make_ctx)
+    if cached:
+        _valetudo_bin(ctx)
+    monkeypatch.setattr(
+        "dreame_valetudo.phases.doctor.shutil.which",
+        lambda tool: None if tool == missing else f"/usr/bin/{tool}",
+    )
+
+    with pytest.raises(Die, match=rf"Missing required external tools: {missing}"):
+        push(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_push_warns_when_a_cached_binary_cannot_be_reverified_without_curl(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    monkeypatch.setattr(
+        "dreame_valetudo.phases.doctor.shutil.which",
+        lambda tool: None if tool == "curl" else f"/usr/bin/{tool}",
+    )
+    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 255, "", "ssh: connect timed out"
+    )
+
+    assert push(ctx) is False
+    assert "Missing external tools: curl" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_push_refuses_a_missing_env_override_before_ssh(

@@ -28,16 +28,12 @@ def _flatten_stage1(dist: Path, fsbl_name: str) -> None:
                 p.replace(target)
 
 
-def fetch(ctx: Context) -> None:
+def fetch_stage1(ctx: Context) -> None:
+    """Fetch and verify the FEL payloads, provisioning sunxi-fel when necessary."""
     if not _sunxi_ready(ctx):
         doctor(ctx)
     dist = ctx.ws.dist
     dist.mkdir(parents=True, exist_ok=True)
-    if (not ctx.stage1_tgz.is_file() or not ctx.valetudo_bin.is_file()
-            or not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file()):
-        ctx.console.say("Fetching to the cache (skips anything already present)")
-
-    # Stage1 FEL package — verified before extraction, since it runs on the SoC.
     tgz = ctx.stage1_tgz
     download(ctx.runner, ctx.console, ctx.profile.stage1_url, tgz)
     got = sha256_of(tgz)
@@ -61,7 +57,10 @@ def fetch(ctx: Context) -> None:
             f"stage1 package didn't yield payload.bin + {ctx.fsbl_name} — check {dist} contents."
         )
 
-    # Valetudo binary — verify against GitHub's own published digest.
+
+def fetch_valetudo(ctx: Context) -> None:
+    """Fetch the architecture-specific Valetudo binary without provisioning USB tooling."""
+    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     vbin = ctx.valetudo_bin
     download(ctx.runner, ctx.console, ctx.valetudo_url, vbin)
     with contextlib.suppress(OSError):
@@ -85,4 +84,12 @@ def fetch(ctx: Context) -> None:
             f"{ctx.profile.arch}; installing UNVERIFIED (the HTTPS download itself is unchecked). "
             "Re-run with network access to verify."
         )
+
+
+def fetch(ctx: Context) -> None:
+    if (not ctx.stage1_tgz.is_file() or not ctx.valetudo_bin.is_file()
+            or not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file()):
+        ctx.console.say("Fetching to the cache (skips anything already present)")
+    fetch_stage1(ctx)
+    fetch_valetudo(ctx)
     ctx.console.say("Cache ready.")

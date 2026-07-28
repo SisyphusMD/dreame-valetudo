@@ -73,7 +73,8 @@ def test_auto_pushes_then_installs_valetudo_when_rooted(
     ctx.robot.state_set("rooted")  # rooted but not yet installed -> push, then valetudo on push-fail
     cli.auto(ctx, [])
     names = [name for name, _a, _k in calls]
-    assert names == ["doctor", "fetch", "recon", "push", "valetudo"]
+    assert names == ["push", "valetudo"]
+    assert any("resuming" in msg for _k, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
 def test_auto_propagates_ssh_auth_failure_without_showing_ap_fallback(
@@ -93,8 +94,24 @@ def test_auto_propagates_ssh_auth_failure_without_showing_ap_fallback(
     with pytest.raises(Die, match="SSH authentication failed"):
         cli.auto(ctx, [])
     names = [name for name, _a, _k in calls]
-    assert "push-auth-failure" in names
-    assert "valetudo" not in names
+    assert names == ["push-auth-failure"]
+
+
+def test_auto_force_keeps_the_rooted_recon_refresh_path(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_phases(monkeypatch)
+    ctx = make_ctx(robot_name="Bot")
+    assert ctx.robot is not None
+    ctx.robot.state_set("rooted")
+
+    cli.auto(ctx, ["--force"])
+
+    assert [name for name, _a, _k in calls] == [
+        "doctor", "fetch", "recon", "push", "valetudo",
+    ]
+    recon_call = next(k for name, _a, k in calls if name == "recon")
+    assert recon_call["force"] is True
 
 
 def test_auto_reports_complete_when_valetudo_already_installed(
@@ -106,7 +123,7 @@ def test_auto_reports_complete_when_valetudo_already_installed(
     ctx.robot.state_set("rooted")
     ctx.robot.state_set("valetudo")  # already installed -> no push, just the completion note
     cli.auto(ctx, [])
-    assert "push" not in [name for name, _a, _k in calls]
+    assert calls == []
     assert any("All phases complete" in msg for _k, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 

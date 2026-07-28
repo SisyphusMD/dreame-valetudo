@@ -18,7 +18,7 @@ from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, Workspace, protect_recon_artifacts
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
-from .fetch import fetch
+from .fetch import fetch_stage1
 
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
 # asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
@@ -111,7 +111,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
     if not _sunxi_ready(ctx):
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
-        fetch(ctx)
+        fetch_stage1(ctx)
     check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
     if not _wait_for_fel(ctx):
@@ -167,7 +167,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if not _sunxi_ready(ctx):
         doctor(ctx)
     if not ctx.payload_bin.is_file() or not ctx.fsbl_bin.is_file():
-        fetch(ctx)
+        fetch_stage1(ctx)
     if ctx.robot is not None and ctx.robot.state_has("recon") and not force:
         prior = ctx.robot.state_get("recon")
         # The standalone `recon` command (offer_update=True) offers to refresh a prior recon by
