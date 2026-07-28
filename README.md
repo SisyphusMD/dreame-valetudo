@@ -129,21 +129,21 @@ is rooted end-to-end on real hardware; **🧪 Untested** is the same flow with m
 from Valetudo's source and the dustbuilder, but not yet run on that exact model. Recon is
 non-destructive, so an Untested model still validates the whole USB path before anything is flashed.
 
-| Key | Model | Code | DRAM | Status |
-|---|---|---|---|---|
-| `x40-ultra` | [Dreame X40 Ultra](https://valetudo.cloud/pages/general/supported-robots/#x40-ultra) | `r2416` | ddr4 | 🧪 Untested |
-| `x40-master` | [Dreame X40 Master](https://valetudo.cloud/pages/general/supported-robots/#x40-master) | `r2465` | ddr4 | 🧪 Untested |
-| `x30-ultra` | [Dreame X30 Ultra](https://valetudo.cloud/pages/general/supported-robots/#x30-ultra) | `r9316` | ddr4 | 🧪 Untested |
-| `l40-ultra` | [Dreame L40 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l40-ultra) | `r2492` | ddr4 | 🧪 Untested |
-| `l20-ultra` | [Dreame L20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l20-ultra) | `r2394` | ddr4 | 🧪 Untested |
-| `l10s-ultra` | [Dreame L10s Ultra](https://valetudo.cloud/pages/general/supported-robots/#l10s-ultra) | `r2228` | ddr4 | 🧪 Untested |
-| `l10s-pro-ultra-heat` | [Dreame L10s Pro Ultra Heat](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338` | ddr4 | 🧪 Untested |
-| `l10s-pro-ultra-heat-h` | [Dreame L10s Pro Ultra Heat (**R2338H** rev.)](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338h` | ddr4 | 🧪 Untested |
-| `d10s-pro` | [Dreame D10s Pro](https://valetudo.cloud/pages/general/supported-robots/#d10s-pro) | `r2250` | ddr3 | 🧪 Untested |
-| `d10s-plus` | [Dreame D10s Plus](https://valetudo.cloud/pages/general/supported-robots/#d10s-plus) | `r2240` | ddr3 | 🧪 Untested |
-| `w10-pro` | [Dreame W10 Pro](https://valetudo.cloud/pages/general/supported-robots/#w10-pro) | `r2104` | ddr3 | 🧪 Untested |
-| `mova-s20-ultra` | [Mova S20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#s20-ultra) | `r2385` | ddr4 | 🧪 Untested |
-| `mova-p10-pro-ultra` | [Mova P10 Pro Ultra](https://valetudo.cloud/pages/general/supported-robots/#p10-pro-ultra) | `r2491` | ddr4 | 🧪 Untested |
+| Key | Model | Code | Status |
+|---|---|---|---|
+| `x40-ultra` | [Dreame X40 Ultra](https://valetudo.cloud/pages/general/supported-robots/#x40-ultra) | `r2416` | ✅ Verified |
+| `x40-master` | [Dreame X40 Master](https://valetudo.cloud/pages/general/supported-robots/#x40-master) | `r2465` | 🧪 Untested |
+| `x30-ultra` | [Dreame X30 Ultra](https://valetudo.cloud/pages/general/supported-robots/#x30-ultra) | `r9316` | ✅ Verified |
+| `l40-ultra` | [Dreame L40 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l40-ultra) | `r2492` | 🧪 Untested |
+| `l20-ultra` | [Dreame L20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l20-ultra) | `r2394` | 🧪 Untested |
+| `l10s-ultra` | [Dreame L10s Ultra](https://valetudo.cloud/pages/general/supported-robots/#l10s-ultra) | `r2228` | 🧪 Untested |
+| `l10s-pro-ultra-heat` | [Dreame L10s Pro Ultra Heat](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338` | ✅ Verified |
+| `l10s-pro-ultra-heat-h` | [Dreame L10s Pro Ultra Heat (**R2338H** rev.)](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338h` | 🧪 Untested |
+| `d10s-pro` | [Dreame D10s Pro](https://valetudo.cloud/pages/general/supported-robots/#d10s-pro) | `r2250` | 🧪 Untested |
+| `d10s-plus` | [Dreame D10s Plus](https://valetudo.cloud/pages/general/supported-robots/#d10s-plus) | `r2240` | 🧪 Untested |
+| `w10-pro` | [Dreame W10 Pro](https://valetudo.cloud/pages/general/supported-robots/#w10-pro) | `r2104` | 🧪 Untested |
+| `mova-s20-ultra` | [Mova S20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#s20-ultra) | `r2385` | 🧪 Untested |
+| `mova-p10-pro-ultra` | [Mova P10 Pro Ultra](https://valetudo.cloud/pages/general/supported-robots/#p10-pro-ultra) | `r2491` | 🧪 Untested |
 
 > [!WARNING]
 > **L10s Pro Ultra Heat owners:** there are **two hardware revisions, R2338 and R2338H**, that need
