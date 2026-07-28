@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **ux**: the DustBuilder walkthrough now prints the exact current firmware choice and only the
+  options present for each model. Config-rejection recovery now mirrors the support upload form,
+  its privacy warning, processing window, and follow-up email. Rooting uses a static
+  last-known-good guide, while separate CI checks every live fastboot-model form, support form,
+  and linked-guide destinations against committed goldens and advances the displayed verification
+  date only after all sources still match.
 - **fix**: factory backups are now published only after their contents and manifest are complete,
   cross-checked against the connected robot's live model, and preserve corrupt prior manifests for
   inspection; refreshed recon captures also atomically refresh their decrypted restore images.

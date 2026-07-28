@@ -1,0 +1,20 @@
+input	type=text	name=voucher	value=roborock	checked=no
+input	type=text	name=sender_email	placeholder=Your email...	checked=no
+input	type=hidden	name=MAX_FILE_SIZE	value=30000	checked=no
+input	type=radio	name=key	value=upload	checked=no	label=Your SSH-Public key:
+input	type=file	name=userfile	checked=no
+input	type=radio	name=key	value=generate	checked=no	label=Let DustBuilder generate a SSH Keypair for you
+input	type=text	name=sn	value=P/R	checked=no
+input	type=text	name=config	value=	checked=no
+input	type=checkbox	name=diff	value=yes	checked=no	label=Create diff between original and modified image
+input	type=checkbox	name=patch_dns	value=yes	checked=yes	label=Patch DNS (requirement for valetudo deployment, disables real cloud!!)
+input	type=checkbox	name=preinstall_tools	value=yes	checked=yes	label=Preinstall Nano texteditor, curl, wget, htop, hexdump
+input	type=radio	name=format	value=installer	checked=yes	label=Build for manual installation (requires SSH to install)
+input	type=radio	name=format	value=fel	checked=no	label=Create FEL image (for initial rooting via USB)
+input	type=hidden	name=model	value=dreame_r2338	checked=no
+input	type=hidden	name=auth	value=<dynamic>	checked=no
+input	type=radio	name=image	value=1633	checked=yes	label=r2338 (ver 1633, 05/2025) latest
+input	type=checkbox	name=confirm	value=yes	checked=no	label=Click here to confirm that you own the device model that uses this firmware.
+input	type=checkbox	name=affidavit	value=yes	checked=no	label=Affidavit: "Under penalty of perjury and risk of being ignored when requesting assistance, I hereby promise that I will create or have created backups of configurations and calibration files before I try to root the device. I also promise to stop and report back if any problems occur in the process. I confirm that I read the FAQ (Updated 10.2024) ."
+button	type=submit	checked=no	label=Create Job
+hcaptcha

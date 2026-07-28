@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the self-contained `dreame-valetudo` bundle: one Python-free binary per
-# OS/arch, with the fastboot libusb client + form baseline frozen in. Run from anywhere; freezes
+# OS/arch, with the fastboot libusb client + form goldens frozen in. Run from anywhere; freezes
 # whatever `python` is active (the release pins Python 3.14 — the latest stable). PyInstaller must
 # already be installed in that python (pip install pyinstaller).
 #
@@ -20,7 +20,7 @@ pyinstaller --onefile --clean --noconfirm \
   --specpath "$(mktemp -d)" \
   --paths "$ROOT" \
   --add-data "$ROOT/libexec/fastboot-libusb.py:libexec" \
-  --add-data "$ROOT/libexec/dustbuilder-form.sig:libexec" \
+  --add-data "$ROOT/libexec/dustbuilder-forms:libexec/dustbuilder-forms" \
   --add-data "$ROOT/CHANGELOG.md:dreame_valetudo" \
   "$ROOT/packaging/pyinstaller-entry.py"
 

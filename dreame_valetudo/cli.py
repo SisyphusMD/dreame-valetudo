@@ -17,6 +17,7 @@ from . import __version__
 from .console import Console, Die, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
+from .dustbuilder import verify_all_forms, verify_form
 from .fastboot import resolve_libexec
 from .hazards import model_hazard_check
 from .installs import find_installs
@@ -25,7 +26,7 @@ from .migrate import migrate, pre_migration_lock_path, pre_migration_session_pat
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
-from .phases.image import image, verify_form
+from .phases.image import image
 from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
@@ -68,7 +69,7 @@ from .whatsnew import show_whats_new
 from .workspace import Robot, Workspace, slugify
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
-_FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push"})
+_FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push", "verify-form"})
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
 # install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
@@ -411,7 +412,8 @@ def usage(console: Console) -> None:
         "  dreame-valetudo fix-key    restore the miio key some units keep only in secure storage\n"
         "  dreame-valetudo fix-wifi   post-root Wi-Fi drop-out helper\n"
         "  dreame-valetudo sshkey     show/generate the SSH public key for the dustbuilder\n"
-        "  dreame-valetudo verify-form check the dustbuilder form hasn't drifted from the baseline\n"
+        "  dreame-valetudo verify-form  check this model's live DustBuilder form against its golden\n"
+        "  dreame-valetudo verify-forms check every fastboot model's live form (CI/maintenance)\n"
         "  dreame-valetudo install-udev  Linux only, one-time, needs sudo: grant sudo-less USB access\n"
         "  dreame-valetudo version    print the version\n"
         "  dreame-valetudo help       this help\n\n"
@@ -433,6 +435,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "install-udev":
         return install_udev(ctx)
+    if cmd == "verify-forms":
+        return 0 if verify_all_forms(ctx) else 1
     if cmd == "status":
         status(ctx)
         return 0

@@ -19,8 +19,10 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
-from dreame_valetudo.phases.image import image
+from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
+from dreame_valetudo.phases.image import _print_checklist, image
 from dreame_valetudo.phases.manage import clean
+from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import Robot
@@ -28,10 +30,30 @@ from dreame_valetudo.workspace import Robot
 _CFG = "d97c4de6f64818765e2faf9f14309818"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
 
+_FASTBOOT_MODELS = tuple(
+    key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"
+)
+
+
+@pytest.mark.parametrize("model", _FASTBOOT_MODELS)
+def test_every_model_checklist_is_static_and_matches_its_exact_guide(
+    make_ctx: CtxFactory, model: str,
+) -> None:
+    ctx = make_ctx(model=model)
+    ctx._libexec = Path(__file__).resolve().parents[2] / "libexec"
+
+    _print_checklist(ctx, "00112233445566778899aabbccddeeff", Path("/tmp/upload.pub"))
+
+    guide = FORM_GUIDES[ctx.profile.dust_code]
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert f"Firmware version ..... SELECT '{guide.firmware_label}'" in text
+    assert ("Prepackage Valetudo" in text) is guide.prepackage_valetudo
+    assert f"last verified: {forms_verified_on(ctx.libexec)}" in text
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]  # no website can gate rooting
+
 
 def _curl_only(argv: tuple[str, ...]) -> Result:
-    # curl of the dustbuilder page must be non-empty (verify_form dies on empty); the unsupported
-    # list is empty (no match); everything else is a benign OKAY.
+    # The unsupported list is empty (no match); everything else is a benign OKAY.
     if argv and argv[0] == "curl":
         if any("unsupported.txt" in a for a in argv):
             return Result(argv, 0, "", "")
@@ -97,14 +119,51 @@ def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory,
     assert "dreame_recovery_backup.zip" in text         # the get_staged image to upload
     assert "fastboot getvar" not in text                # the tool never punts a command to the user
     assert "SELECT this upload radio" in text           # neither radio is selected by the page
-    assert "Prepackage Valetudo .. leave UNCHECKED" in text
+    assert "Prepackage Valetudo" not in text             # absent from this X30 form
+    assert "Firmware version ..... SELECT 'r9316 (ver 1726, 05/2024)'" in text
     assert "I am human ........... complete the hCaptcha check" in text
     assert "Patch DNS ............ leave CHECKED (the default" in text
     assert "Preinstall tools ..... leave CHECKED (the default" in text
     assert "raw copy of the robot's flash" in text
     assert "miio device key" in text
+    assert "DustBuilder form instructions last verified:" in text
+    assert "Model radio            SELECT 'X30 Ultra'" in text
+    assert "up to 24 hours" in text
+    assert "subject 'config'" in text
+    assert "Wi-Fi SSIDs/passwords and camera frames" in text
     assert any(kind == "action" for kind, _ in ctx.console.lines)  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("image")      # not staged -> re-run resumes
+
+
+def test_prepackage_instruction_appears_only_for_a_model_whose_page_has_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _reject_ctx(
+        make_ctx, tmp_path, identity=True, zip_=True, confirms=[True, False],
+        model="d10s-pro", model_code="r2250",
+    )
+    with pytest.raises(Die, match="not recognized"):
+        image(ctx)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "Prepackage Valetudo .. leave UNCHECKED" in text
+    assert "Firmware version ..... SELECT 'r2250 (ver 1413, 08/2024) latest'" in text
+
+
+def test_r2338h_checker_help_never_invents_the_incompatible_r2338_radio(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _reject_ctx(
+        make_ctx, tmp_path, identity=True, zip_=True, confirms=[True, False],
+        model="l10s-pro-ultra-heat-h", model_code="r2338h",
+    )
+    with pytest.raises(Die, match="not recognized"):
+        image(ctx)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "no 'R2338H' choice exists" in text
+    assert "before choosing a different revision" in text
+    assert "Model radio            SELECT 'L10S Pro Ultra Heat'" not in text
 
 
 def test_missing_values_are_read_off_the_robot_by_the_tool(make_ctx: CtxFactory, tmp_path: Path) -> None:

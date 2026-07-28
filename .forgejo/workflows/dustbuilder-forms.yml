@@ -1,0 +1,65 @@
+name: DustBuilder forms
+
+# The rooting flow never depends on this network check. It runs weekly, on demand, and whenever
+# its parser/goldens change; only an all-model pass advances the date shown by the installed tool.
+on:
+  schedule:
+    - cron: "17 10 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .forgejo/workflows/dustbuilder-forms.yml
+      - dreame_valetudo/dustbuilder.py
+      - dreame_valetudo/cli.py
+      - dreame_valetudo/phases/image.py
+      - dreame_valetudo/phases/recon.py
+      - dreame_valetudo/profiles.py
+      - libexec/dustbuilder-forms/**
+      - pyproject.toml
+  push:
+    branches: [main]
+    paths:
+      - .forgejo/workflows/dustbuilder-forms.yml
+      - dreame_valetudo/dustbuilder.py
+      - dreame_valetudo/cli.py
+      - dreame_valetudo/phases/image.py
+      - dreame_valetudo/phases/recon.py
+      - dreame_valetudo/profiles.py
+      - libexec/dustbuilder-forms/**
+      - pyproject.toml
+
+concurrency:
+  group: dustbuilder-forms
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Never execute fork-supplied Python on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # renovate: datasource=github-tags depName=python/cpython versioning=pep440
+          python-version: "3.14.6"
+      - name: compare every live form with its per-model golden
+        run: python -m dreame_valetudo verify-forms
+      - name: record the last successful live verification
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          verified_on=$(date -u +%Y.%m.%d)
+          stamp=libexec/dustbuilder-forms/verified-on.txt
+          if [ "$(cat "$stamp")" = "$verified_on" ]; then
+            exit 0
+          fi
+          printf '%s\n' "$verified_on" > "$stamp"
+          git config user.name "Forgejo Actions"
+          git config user.email "actions@forgejo.local"
+          git add libexec/dustbuilder-forms/verified-on.txt
+          git commit -m "chore(dustbuilder): record verified forms on $verified_on"
+          auth_b64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c "http.extraheader=Authorization: Basic ${auth_b64}" push origin HEAD:main

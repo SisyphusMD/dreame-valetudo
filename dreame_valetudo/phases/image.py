@@ -15,7 +15,12 @@ from pathlib import Path
 from ..console import die
 from ..constants import FEL_IMAGE_FILES
 from ..context import Context
-from ..dustbuilder import form_signature
+from ..dustbuilder import (
+    CONFIG_CHECKER_URL,
+    checker_model_choice,
+    form_guide,
+    forms_verified_on,
+)
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
@@ -23,35 +28,13 @@ from ..workspace import RECOVERY_BACKUP_ZIP, Robot
 from .recon import read_identity_from_robot
 
 
-def verify_form(ctx: Context) -> bool:
-    ctx.console.say("Checking the dustbuilder form for drift...")
-    res = ctx.runner.run(["curl", "-fsSL", "-m", "15", ctx.dustbuilder_page], check=False)
-    if not res.ok or not res.stdout.strip():
-        die(f"couldn't fetch/parse {ctx.dustbuilder_page}")
-    cur = form_signature(res.stdout)
-    if not cur:
-        die("form signature was empty — page structure is unexpected; inspect it manually.")
-    sig_file = ctx.libexec / "dustbuilder-form.sig"
-    if not sig_file.is_file():
-        try:
-            sig_file.write_text(cur + "\n")
-            ctx.console.info(f"Recorded baseline signature -> {sig_file}")
-        except OSError:
-            # A read-only installed libexec: the live form was still checked, just not cached.
-            ctx.console.warn(f"couldn't record baseline signature at {sig_file} — continuing")
-        return True
-    if sig_file.read_text().strip() == cur:
-        ctx.console.info("Form matches the baseline this runbook was written against. Safe to "
-                         "proceed.")
-        return True
-    ctx.console.warn("The dustbuilder form CHANGED since this runbook was written — re-check the "
-                     "field names/options before trusting the list below.")
-    return False
-
-
 def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     say, info, warn = ctx.console.say, ctx.console.info, ctx.console.warn
+    guide = form_guide(ctx.profile.dust_code)
     say("Build the rooted image on the dustbuilder — fill the web form TOP-TO-BOTTOM as below")
+    verified = forms_verified_on(ctx.libexec)
+    warn(f"DustBuilder form instructions last verified: {verified}. The site can change "
+         "independently; compare the labels on the page carefully before submitting.")
     info("   Your Voucher ......... leave as 'roborock' (the default)")
     info("   Your Email ........... your email — the build link is emailed here")
     info("   Your SSH-Public key .. SELECT this upload radio (neither key option is pre-selected)")
@@ -67,12 +50,13 @@ def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
          "first.")
     info(f"   Config value ......... {cfg}")
     info("   Create diff .......... leave UNCHECKED")
-    info("   Prepackage Valetudo .. leave UNCHECKED if present (this tool installs it in Phase 3)")
+    if guide.prepackage_valetudo:
+        info("   Prepackage Valetudo .. leave UNCHECKED (this tool installs it in Phase 3)")
     info("   Patch DNS ............ leave CHECKED (the default; required for Valetudo)")
     info("   Preinstall tools ..... leave CHECKED (the default; nano/curl/wget/htop/hexdump)")
     info("   Build type ........... SELECT 'Create FEL image (for initial rooting via USB)'")
     info("                          NOT the default 'Build for manual installation'")
-    info(f"   Firmware version ..... leave the pre-selected latest '{ctx.profile.dust_code} ...'")
+    info(f"   Firmware version ..... SELECT '{guide.firmware_label}'")
     info("   I am human ........... complete the hCaptcha check")
     info("   Confirm + Affidavit .. TICK BOTH boxes, then click 'Create Job'.")
 
@@ -92,7 +76,7 @@ def _open_dustbuilder(ctx: Context) -> None:
                          "field.")
     ctx.console.warn("If the builder rejects your config with 'Error: unknown config value', this "
                      "robot isn't auto-recognized yet — recoverable; the check-in right after this "
-                     "step prints exactly what to send Dennis.")
+                     "step prints the exact support-upload form.")
     ctx.console.warn("Either way, do NOT fake the serial or patch the installer to force a build — "
                      "that BRICKS the robot.")
 
@@ -128,6 +112,9 @@ def _open_dustbuilder(ctx: Context) -> None:
 _RESCUE_VARS = (("Device serial number", "serialno"),
                 ("toc0hash value", "toc0hash"),
                 ("toc1hash value", "toc1hash"))
+_PDF_DIAGNOSTIC_VARS = (("dustversion", "dustversion"),
+                        ("ramsize", "ramsize"),
+                        ("toc1version", "toc1version"))
 
 
 def _config_rejected_help(ctx: Context) -> None:
@@ -148,34 +135,51 @@ def _config_rejected_help(ctx: Context) -> None:
 
     cfg = ctx.robot_config()
     zip_path = robot.recon_dir / RECOVERY_BACKUP_ZIP
-    ctx.console.action("Config not recognized — here's exactly what check.builder.dontvacuum.me "
-                       "needs")
-    ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). It's "
-                     "recoverable: send Dennis a 'get_staged' image plus the values below so "
-                     "support can be added. Do NOT fake the serial or patch the installer.")
-    ctx.console.info(f"   {'Page':<22} https://check.builder.dontvacuum.me")
+    ctx.console.action("Config not recognized — fill the support checker exactly as below")
+    ctx.console.warn(f"Support-form instructions last verified: {forms_verified_on(ctx.libexec)}. "
+                     "The site can change independently; compare its labels carefully.")
+    ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). "
+                     "Upload the recovery sample so support can add it. Do NOT fake the serial or "
+                     "patch the installer.")
+    ctx.console.info(f"   {'Page':<22} {CONFIG_CHECKER_URL}")
     if zip_path.is_file():
         size = zip_path.stat().st_size / (1 << 20)
-        ctx.console.info(f"   {'get_staged image':<22} {zip_path}  ({size:.1f} MiB)")
-        ctx.console.warn("That recovery image is a raw copy of the robot's flash, including its "
-                         "userdata partition and miio device key. Share it only intentionally.")
+        ctx.console.info(f"   {'Choose File':<22} {zip_path}  ({size:.1f} MiB)")
+        ctx.console.warn("This recovery ZIP is a raw copy of the robot's flash. The site warns it "
+                         "can contain sensitive data, including Wi-Fi SSIDs/passwords and camera "
+                         "frames; it also includes the userdata partition and miio device key. "
+                         "Upload it only intentionally.")
     else:
         ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
                          "--force' (keep the recovery backup on) to build it, then come back.")
-    ctx.console.info(f"   {'Model':<22} {ctx.profile.model} "
-                     f"(dreame.vacuum.{ctx.profile.model_code})")
-    ctx.console.info(f"   {'config value':<22} {cfg or '(re-run recon to capture)'}")
+    choice = checker_model_choice(ctx.profile.dust_code)
+    if choice is None:
+        ctx.console.warn(f"   {'Model radio':<22} no '{ctx.profile.dust_code.upper()}' choice "
+                         f"exists on the current form. Email check@dontvacuum.me with model "
+                         f"{ctx.profile.dust_code} before choosing a different revision.")
+    else:
+        ctx.console.info(f"   {'Model radio':<22} SELECT '{choice}'")
+    ctx.console.info(f"   {'Config value':<22} {cfg or '(re-run recon to capture)'}")
     for label, var in _RESCUE_VARS:
         val = ident.get(var)
-        shown = val or "(not recorded — re-run recon and the tool will read it off the robot)"
-        ctx.console.info(f"   {label:<22} {shown}")
-        # Some models (e.g. the X30) don't expose a serial over fastboot at all; flag that it's
-        # expected so a "not supported" value doesn't read as a missing field the user must chase.
         if var == "serialno" and val and "not supported" in val.lower():
-            ctx.console.info(f"   {'':<22} (this model doesn't expose a serial — expected; Dennis "
-                             "can add support without it)")
-    ctx.console.info("When Dennis adds support (you'll get a working FEL build), re-run "
-                     "'dreame-valetudo' for this robot to continue.")
+            shown = "use the physical serial under the dustbin (fastboot cannot read it)"
+        else:
+            shown = val or "(not recorded — re-run recon and the tool will read it off the robot)"
+        ctx.console.info(f"   {label:<22} {shown}")
+    extras = [(label, ident.get(var)) for label, var in _PDF_DIAGNOSTIC_VARS if ident.get(var)]
+    if extras:
+        ctx.console.info("   Saved diagnostics      the linked Dreame PDF also requests these "
+                         "for debugging (the current web form has no fields for them):")
+        for label, value in extras:
+            ctx.console.info(f"   {label:<22} {value}")
+    ctx.console.info(f"   {'Submit':<22} click 'Upload File' (maximum shown by the page: 1536 MiB)")
+    ctx.console.info("Processing can take up to 24 hours. Then retry the original DustBuilder "
+                     "form with the same config value.")
+    ctx.console.info("If it is still rejected, email check@dontvacuum.me with subject 'config'. "
+                     f"Include model {ctx.profile.dust_code}, the config value above, and the last "
+                     "6 digits of the physical under-dustbin serial. Then re-run "
+                     "'dreame-valetudo' once the FEL build is accepted.")
 
 
 def _when(ts: float) -> str:
@@ -260,8 +264,6 @@ def image(ctx: Context, *, force: bool = False) -> None:
         ctx.console.warn(f"{ctx.profile.model_code}/{ctx.profile.dust_code} appears on the "
                          "dustbuilder's unsupported list — the build may be rejected.")
 
-    if not verify_form(ctx):
-        ctx.console.warn("Proceeding despite form drift — go by the on-page labels.")
     _open_dustbuilder(ctx)
 
     # Check in: a rejected config never produces a zip, so watching would just time out for an

@@ -8,6 +8,7 @@ disaster-recovery backup.
 from __future__ import annotations
 
 import re
+import zipfile
 
 from ..console import Die, die, warn_if_low_disk
 from ..context import Context
@@ -23,8 +24,8 @@ from .fetch import fetch_stage1
 # The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
 # asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
 _IDENTITY_VARS = (
-    "serialno", "toc0hash", "toc1hash", "product", "model", "variant", "hw-revision",
-    "version-bootloader",
+    "serialno", "dustversion", "ramsize", "toc0hash", "toc1hash", "toc1version", "product",
+    "model", "variant", "hw-revision", "version-bootloader",
 )
 
 
@@ -310,6 +311,16 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
             ["zip", "-q", "-j", str(zip_path), str(d100), str(d101), str(d102)], check=False
         ).ok
     if not zipped:
+        return False
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            members = archive.infolist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+    expected = (d100, d101, d102)
+    if (tuple(member.filename for member in members) != tuple(path.name for path in expected)
+            or tuple(member.file_size for member in members)
+            != tuple(path.stat().st_size for path in expected)):
         return False
     ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
                      "rejects your config)")

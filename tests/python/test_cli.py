@@ -113,7 +113,9 @@ def test_main_invalid_model_is_clean_error_not_traceback(tmp_path: Path) -> None
     assert _has(con, "Unknown model key")
 
 
-@pytest.mark.parametrize("command", ("doctor", "fetch", "recon", "image", "root", "push"))
+@pytest.mark.parametrize(
+    "command", ("doctor", "fetch", "recon", "image", "root", "push", "verify-form")
+)
 def test_main_refuses_every_fastboot_phase_on_uart_model(
     tmp_path: Path, command: str,
 ) -> None:
@@ -122,6 +124,22 @@ def test_main_refuses_every_fastboot_phase_on_uart_model(
     env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "z10-pro", "DREAME_ROBOT": "t"}
     assert main([command], env=env, console=con, runner=RecordingRunner()) == 1
     assert _has(con, "UART method")
+
+
+def test_verify_all_forms_runs_without_selecting_or_creating_a_robot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "verify_all_forms", lambda _ctx: called.append(True) or True)
+    con = ScriptedConsole()
+
+    assert main(
+        ["verify-forms"], env={"DREAME_WORK": str(tmp_path)},
+        console=con, runner=RecordingRunner(),
+    ) == 0
+    assert called == [True]
+    assert not (tmp_path / "robots").exists()
+    assert not _has(con, "Which Dreame robot")
 
 
 def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:

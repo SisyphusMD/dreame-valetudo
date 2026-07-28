@@ -1159,7 +1159,8 @@ def test_the_pure_command_list_is_pinned_to_a_literal() -> None:
     """Every other test of this set is parametrised OVER it, so removing an entry removes its own
     test cases along with the protection. This is the one assertion that notices."""
     assert frozenset(
-        {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall"}
+        {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall",
+         "verify-forms"}
     ) == PURE_COMMANDS
 
 

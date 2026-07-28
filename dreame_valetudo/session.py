@@ -83,7 +83,8 @@ IN_SESSION = "DREAME_IN_SESSION"
 # wrapping it would have the run delete its own terminal multiplexer — and it would create a
 # workspace and take a lock moments before removing the program that owns them.
 PURE_COMMANDS = frozenset(
-    {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall"}
+    {"help", "-h", "--help", "version", "--version", "-V", "install-udev", "uninstall",
+     "verify-forms"}
 )
 
 # Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
