@@ -188,6 +188,87 @@ def test_auto_cannot_hide_an_uncertain_reflash_behind_an_old_rooted_marker(
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("args", [[], ["--force"]])
+def test_auto_cannot_continue_from_an_uncertain_restore(
+    make_ctx: CtxFactory,
+    args: list[str],
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo")
+    robot.state_set("restore-attempt", "uncertain stock restore")
+
+    with pytest.raises(Die, match="prior stock-restore attempt"):
+        cli.auto(ctx, args)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("args", [[], ["--force"]])
+def test_auto_never_re_roots_a_stock_restored_robot(
+    make_ctx: CtxFactory,
+    args: list[str],
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("restored-stock")
+
+    cli.auto(ctx, args)
+
+    assert _has(ctx.console, "No rooting step will run automatically")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_treats_completion_as_authoritative_over_stale_restore_attempt(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("restore-attempt", "cleanup did not finish")
+    robot.state_set("restored-stock", "every flash completed")
+
+    cli.auto(ctx, [])
+
+    assert _has(ctx.console, "No rooting step will run automatically")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("args", [[], ["--force"]])
+def test_stock_marker_cannot_hide_a_newer_uncertain_reroot(
+    make_ctx: CtxFactory,
+    args: list[str],
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("restored-stock")
+    robot.state_set("flash-attempt", "uncertain reroot")
+
+    with pytest.raises(Die, match="prior flash attempt"):
+        cli.auto(ctx, args)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_main_dispatches_restore_with_explicit_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = Robot(tmp_path / "robots" / "bench")
+    robot.state_set("model_key", "x40-ultra")
+    called: list[tuple[str, bool]] = []
+
+    def capture(ctx: object, *, force: bool = False) -> None:
+        called.append((ctx.robot.work.name, force))  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli, "restore", capture)
+    assert main(
+        ["restore", "--force"],
+        env={"DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "bench"},
+        console=ScriptedConsole(),
+        runner=RecordingRunner(),
+    ) == 0
+    assert called == [("bench", True)]
+
+
 def test_main_dispatches_into_fetch_and_verifies_stage1(tmp_path: Path) -> None:
     con = ScriptedConsole()
     # Provide a ready sunxi-fel so fetch's self-provision chain skips the toolchain build and

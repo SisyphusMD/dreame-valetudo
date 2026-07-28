@@ -31,10 +31,23 @@ even if the work dir is lost.
 
 There is no config or secrets file; device profiles live in the tool, and everything else has a
 sensible default. Everything the tool creates lives under `~/dreame-valetudo/`: `work/` holds the
-cache and per-robot state (config value, keys), and `backups/` holds the factory backups — named by
-hardware, each with a `manifest.json`. Backups sit **beside** the work dir, never inside it, so
-clearing work can never lose one. **Back a backup up off this machine; it is the robot's identity and
-cannot be regenerated.** See [LAYOUT.md](LAYOUT.md) for the full workspace layout.
+cache and per-robot state (config value, keys), and `backups/` holds the factory identity backups
+plus any stock-restore kit, named by hardware and carrying a `manifest.json`. Backups sit **beside**
+the work dir, never inside it, so clearing work can never lose one. **Back them up off this machine;
+the robot's identity cannot be regenerated.** See [LAYOUT.md](LAYOUT.md) for the full workspace
+layout.
+
+The pre-root recon capture consists of three contiguous 399 MiB slices from the beginning of the
+eMMC. That covers every boot-critical partition but not all of the roughly 3.9 GB disk. `restore`
+validates the gzip streams, GPT header and entry-table CRCs, redundant toc0/toc1 copies, and equal
+A/B boot/rootfs partitions before publishing a smaller durable kit. Recon records same-session
+source hashes tied to the saved model and `config`. Because compressed firmware cannot prove that a
+different tool never modified the robot before capture, the user must also attest that it was still
+on untouched factory firmware. Unknown-history captures remain useful evidence but are not stock
+restore sources. A legacy capture additionally requires a one-time typed origin attestation and is
+labeled as such instead of being silently treated as proven. On hardware restore verifies the live
+`config`, leaves toc0 untouched, restores private/misc and both stock A/B pairs, then writes stock
+toc1 last. UDISK is intentionally not replayed; a normal factory reset clears it after stock boots.
 
 ## The run log
 

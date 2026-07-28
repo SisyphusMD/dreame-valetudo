@@ -43,8 +43,10 @@ Back to the [README](../README.md).
 - **Robot suddenly "reset itself" / Valetudo vanished** → usually ext4 corruption of `/data`
   (the stock firmware recreates the filesystem, wiping Valetudo; see
   [#2410](https://github.com/Hypfer/Valetudo/discussions/2410)). Not caused by Valetudo and not
-  preventable, so the factory/identity backup under `~/dreame-valetudo/backups/` (or
-  `DREAME_BACKUPS`) plus `work/robots/<robot>/recon/dreame_recovery_backup.zip` **is your recovery
-  path**: reinstall from it over SSH. Keep it. (The robot's Wi-Fi AP also
+  preventable. Reinstall Valetudo normally; the factory/identity backup under
+  `~/dreame-valetudo/backups/` (or `DREAME_BACKUPS`) preserves the irreplaceable identity data.
+  If you intentionally want to return the robot to stock instead, use `dreame-valetudo restore`;
+  it derives and validates the stock firmware from the pre-root recon capture before writing. Keep
+  both kinds of backup. (The robot's Wi-Fi AP also
   auto-disables ~30 min after boot; hold the two outer buttons to bring it back; see
   [#2158](https://github.com/Hypfer/Valetudo/discussions/2158).)

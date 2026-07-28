@@ -18,11 +18,14 @@ before flashing.
 > [valetudo.cloud](https://valetudo.cloud/pages/installation/dreame/#fastboot) first.
 
 It is built to fail safe: Phase 1 (recon) only reads, so the whole USB path is validated at zero brick
-risk before Phase 2 writes anything, and a full factory backup is taken before any change.
+risk before Phase 2 writes anything. Recon captures the stock boot-critical flash prefix before the
+firmware changes; Phase 3 separately captures the robot's private/misc identity before changing its
+configuration.
 
 > [!IMPORTANT]
-> **Keep that backup off this machine.** It is the robot's identity, it cannot be regenerated, and it
-> is your only recovery path if the robot ever looks bricked.
+> **Keep both backups off this machine.** The private/misc backup is the robot's identity and cannot
+> be regenerated. The recon capture is what `restore` uses to reconstruct its original stock
+> firmware. They solve different recovery problems.
 
 ## Install
 
@@ -283,6 +286,7 @@ dreame-valetudo recon      # Phase 1 NON-DESTRUCTIVE: validate USB + record `con
 dreame-valetudo image      # opens the model's dustbuilder page, auto-unpacks the built zip
 dreame-valetudo root       # Phase 2 DESTRUCTIVE: flash the rooted image (guided, OKAY-checked)
 dreame-valetudo push [key] # Phase 3: SSH-pipe backup + binary + reboot onto the rooted robot
+dreame-valetudo restore    # DESTRUCTIVE: restore this robot's captured stock firmware
 dreame-valetudo ui         # on the robot's AP: wait for Valetudo, open http://192.168.5.1
 dreame-valetudo status     # what's done / what's left, for every robot
 
@@ -292,6 +296,30 @@ dreame-valetudo forget <name>       # remove a robot's working dir (factory back
 dreame-valetudo clean [--all]       # delete cache (--all: staged firmware too; recovery + keys kept)
 dreame-valetudo help                # full help
 ```
+
+### Returning a fastboot robot to stock
+
+The robot's physical factory reset does **not** restore stock firmware. On rooted firmware it clears
+the writable `/data` area, including Wi-Fi, maps, settings, and `/data/valetudo`, so Valetudo must be
+installed again afterward. Returning to stock is two separate operations: restore the firmware with
+this tool, then use the physical factory reset to clear the prior rooted installation's data.
+
+`dreame-valetudo restore` reconstructs a durable stock-restore kit from the pre-root recon capture,
+validates its gzip streams and GPT checksums, proves the stock A/B boot and rootfs copies match, and
+binds the captured source hashes, saved model, recorded identity, and connected robot together.
+Firmware contents alone cannot prove that some other tool never rooted the robot before the
+capture, so recon also asks whether it was still on untouched factory firmware and records the
+answer. An unknown-history capture is preserved as disaster-recovery evidence but cannot be used by
+`restore`. An older capture requires both a one-time typed confirmation of which robot it came from
+and the same explicit stock-history attestation; the tool never silently labels files as stock.
+Restore then writes private/misc, both boot/rootfs slots, and the original toc1, stopping on the
+first command that does not return `OKAY`.
+
+It deliberately does not rewrite toc0 because the normal DustBuilder rooting flow never changes it.
+It also does not replay all of UDISK (`/data`): the recon capture contains the complete
+boot-critical prefix, not the whole roughly 3.9 GB eMMC. Perform the robot's normal full factory
+reset after it boots stock to clear Valetudo's old files and local data. This command does not cover
+the separate experimental toc0/self-root research path.
 
 There is no config or secrets file; every knob is an optional environment variable:
 

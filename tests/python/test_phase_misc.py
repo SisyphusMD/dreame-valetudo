@@ -131,6 +131,19 @@ def test_status_lists_prior_robots_with_furthest_phase(make_ctx: CtxFactory) -> 
     assert any("[ ] valetudo" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_status_identifies_a_robot_returned_to_stock(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("recon")
+    robot.state_set("restored-stock", "verified")
+
+    status(ctx)
+
+    assert _said(ctx, "furthest=restored-stock")
+    assert any("[x] restored-stock" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
+
+
 def test_status_hides_dot_directories(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)

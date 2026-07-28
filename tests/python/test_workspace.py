@@ -100,6 +100,26 @@ def test_failed_atomic_state_replacement_preserves_the_prior_marker(
     assert not list(robot.state_dir.glob(".*.tmp"))
 
 
+def test_state_marker_deletion_is_directory_fsynced_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = Robot(tmp_path / "r2416-abc")
+    robot.state_set("restored-stock")
+    real_fsync = workspace_module.os.fsync
+    synced: list[int] = []
+
+    def record_fsync(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(workspace_module.os, "fsync", record_fsync)
+    robot.state_clear("restored-stock")
+
+    assert not robot.state_has("restored-stock")
+    assert len(synced) == 1
+
+
 @pytest.mark.parametrize("error", [RuntimeError("encrypted"), NotImplementedError("compression")])
 def test_recovery_zip_validation_treats_unsupported_members_as_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception,

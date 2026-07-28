@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **feat**: `restore` now reconstructs and manifests an identity-bound stock recovery kit from the
+  pre-root flash capture, validates GPT/gzip/redundant firmware evidence, and restores private/misc,
+  both boot/rootfs slots, and toc1 through the same live-config and `OKAY` flash gates. It leaves
+  untouched toc0 and uncaptured UDISK alone, never silently roots a stock-restored robot again,
+  cryptographically binds new captures to their recon session, records an explicit untouched-stock
+  attestation, and refuses unknown-history captures instead of silently labeling them stock.
 - **fix**: a rejected or interrupted recon can no longer leave enough trusted identity behind to
   authorize a later flash. Destructive runs also refuse ambiguous multi-device USB setups, journal
   every flash attempt before the first write, and stop instead of automatically reflashing when

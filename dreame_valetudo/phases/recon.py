@@ -16,6 +16,7 @@ from ..fel import print_fel_entry
 from ..hazards import requires_positive_model_verification
 from ..migrate import decrypt_recovery_backup
 from ..profiles import SUPPORTED_MODELS, Profile, load_profile
+from ..recovery import begin_recovery_refresh, finish_recovery_refresh, write_recovery_provenance
 from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import (
@@ -214,7 +215,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     ctx.console.say("Reading the 'config' value...")
     res = ctx.fastboot.fbt("getvar", "config", check=False)
     cfg = parse_config(res.stdout + res.stderr)
-    if not cfg:
+    if not ctx.fastboot.getvar_succeeded(res) or not cfg:
         ctx.fastboot.report_failure(res)
         die("Could not read the config value from the robot — aborting.")
 
@@ -267,24 +268,82 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
 
     backup_state = _saved_backup_state(robot)
     if recovery_backup:
-        if robot.state_has("rooted"):
-            ctx.console.warn("This robot is already marked rooted, so its current flash is no "
+        write_history = [
+            state for state in (
+                "rooted", "restored-stock", "flash-attempt", "restore-attempt",
+            )
+            if robot.state_has(state)
+        ]
+        if write_history:
+            ctx.console.warn("This robot has firmware-write history, so its current flash is no "
                              "longer a trustworthy factory source. Skipping the recovery pull and "
-                             "preserving any pre-root capture already on disk.")
+                             "preserving any pre-root capture already on disk (state: "
+                             + ", ".join(write_history) + ").")
         else:
             warn_if_low_disk(ctx.console, robot.recon_dir, 4 * (1 << 30))  # 3 bins + the zip copy
             ctx.console.say("Pulling ~1.2GB flash disaster-recovery backup (slow; skip with "
                             "--no-recovery-backup)...")
-            if _pull_recovery_backup(ctx, robot):
+            pulled: bool | None = None
+            try:
+                begin_recovery_refresh(robot.recon_dir)
+            except OSError as exc:
+                backup_state = "missing"
+                ctx.console.warn("Could not record the recovery-capture refresh safely, so no "
+                                 f"existing capture was touched ({exc}).")
+            else:
+                pulled = _pull_recovery_backup(ctx, robot)
+            if pulled is True:
                 backup_state = "obtained"
                 # Decrypt the fresh sealed dumps now (a re-run captures new ones after launch
                 # migration already ran), so the restorable image exists without waiting for the
                 # next launch.
-                decrypt_recovery_backup(robot.recon_dir, ctx.env, ctx.console, refresh=True)
-            else:
+                refreshed = decrypt_recovery_backup(
+                    robot.recon_dir, ctx.env, ctx.console, refresh=True,
+                )
+                stock_attested = False
+                if ctx.interactive:
+                    ctx.console.warn(
+                        "The backup proves what was captured, but it cannot inspect compressed "
+                        "firmware deeply enough to prove that another rooting tool never changed "
+                        "the robot before today. Only label it stock if you know its history."
+                    )
+                    stock_attested = ctx.console.confirm(
+                        "At the moment this backup was captured, was the robot still running "
+                        "untouched factory firmware and never previously rooted or flashed?"
+                    )
+                if not stock_attested:
+                    ctx.console.warn(
+                        "The recovery capture was preserved, but it is NOT authorized as a stock "
+                        "restore source. Rooting can continue; 'restore' will refuse this capture."
+                    )
+                try:
+                    captured_bytes = (robot.recon_dir / f"{RECOVERY_DUMP_NAMES[0]}.bin").stat().st_size
+                    write_recovery_provenance(
+                        robot.recon_dir,
+                        config=cfg,
+                        model_key=ctx.profile.key,
+                        binding="captured-same-session",
+                        firmware_state=(
+                            "stock-user-attested" if stock_attested else "unverified"
+                        ),
+                        expected_bytes=captured_bytes,
+                        include_decrypted=(
+                            refreshed == len(RECOVERY_DUMP_NAMES)
+                            and not (robot.recon_dir / ".decrypt-refresh").exists()
+                        ),
+                    )
+                    finish_recovery_refresh(robot.recon_dir)
+                except (OSError, ValueError) as exc:
+                    backup_state = "missing"
+                    ctx.console.warn("The recovery files were saved, but their same-session "
+                                     f"provenance could not be published ({exc}). Re-run recon "
+                                     "before attempting stock restore; the incomplete-generation "
+                                     "marker prevents these files from being trusted.")
+            elif pulled is False:
                 backup_state = "missing"
                 ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
-                                 "recovery backup was saved.")
+                                 "recovery backup was saved. Re-run recon before "
+                                 "attempting stock restore.")
 
     robot.state_set("recon", f"backup={backup_state}")
     ctx.console.say("Phase 1 done.")

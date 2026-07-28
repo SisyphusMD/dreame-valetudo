@@ -18,6 +18,7 @@ from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
+from ..recovery import RECOVERY_REFRESH_FILE
 from ..session import describe_run, records_step
 from ..util import parse_config, sha256_of
 from ..workspace import recovery_backup_valid
@@ -110,7 +111,9 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
 
 
 def _has_recovery_backup(ctx: Context) -> bool:
-    return recovery_backup_valid(ctx.need_robot().recon_dir)
+    recon_dir = ctx.need_robot().recon_dir
+    return (not (recon_dir / RECOVERY_REFRESH_FILE).exists()
+            and recovery_backup_valid(recon_dir))
 
 
 def _check_staged_integrity(ctx: Context) -> None:
@@ -144,6 +147,12 @@ def root(ctx: Context, *, force: bool = False) -> None:
             "robot may already be fully or partly flashed, so this tool will not repeat the write "
             "automatically. Inspect the robot and recovery evidence first; use 'root --force' only "
             "after deliberately deciding that another complete flash is safe.")
+    if robot.state_has("restored-stock") and not force:
+        die("This robot is recorded as restored to stock. Refusing to root it again automatically; "
+            "use 'root --force' only when starting a new, intentional rooting run.")
+    if robot.state_has("restore-attempt") and not robot.state_has("restored-stock"):
+        die("SAFETY STOP: a prior stock-restore attempt did not record completion. Complete the "
+            "stock recovery with 'dreame-valetudo restore --force' before starting another root.")
     if robot.state_has("rooted") and not force:
         ctx.console.warn("Marker says this robot is already rooted. Re-run with '--force' to "
                          "flash again.")
@@ -239,7 +248,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     # ('OKAY <hex>'), Google's fastboot on stderr ('config: <hex>') — either must satisfy the gate.
     res = ctx.fastboot.fbt("getvar", "config", check=False)
     live_cfg = parse_config(res.stdout + res.stderr)
-    if not live_cfg:
+    if not ctx.fastboot.getvar_succeeded(res) or not live_cfg:
         ctx.fastboot.report_failure(res)
         die("Couldn't read the connected robot's config value — aborting before any write.")
     if live_cfg != expect_cfg:
@@ -258,6 +267,8 @@ def root(ctx: Context, *, force: bool = False) -> None:
         # Written before the first device mutation. If the host dies anywhere below, the next run
         # stops instead of blindly repeating a possibly complete or partial flash.
         robot.state_set("flash-attempt", f"model={ctx.profile.key} config={live_cfg}")
+        robot.state_clear("restore-attempt")
+        robot.state_clear("valetudo")
         # A forced reflash supersedes the prior success. Clear it only after the durable attempt
         # marker exists, so a host failure between these writes still leaves the attempt dominant.
         robot.state_clear("rooted")
@@ -273,6 +284,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
         ctx.console.say("All flashes OKAY. Rebooting...")
         try:
             robot.state_set("rooted")
+            robot.state_clear("restored-stock")
         except OSError as exc:
             marker_error = exc
         ctx.fastboot.fbt("reboot", check=False)

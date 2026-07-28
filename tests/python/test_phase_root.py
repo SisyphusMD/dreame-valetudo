@@ -22,6 +22,7 @@ from dreame_valetudo.context import Context
 from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import _FLASH_WINDOW_SIGNALS, _mask_interrupts, root
 from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.recovery import begin_recovery_refresh
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
@@ -127,6 +128,52 @@ def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> 
     assert ctx.runner.calls == []  # no doctor, dustbuilder image flow, FEL, or fastboot command
 
 
+def test_root_does_not_reverse_a_completed_stock_restore_without_force(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx.need_robot().state_set("restored-stock")
+
+    with pytest.raises(Die, match="restored to stock"):
+        root(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_root_refuses_an_uncertain_stock_restore_even_when_forced(
+    make_ctx: CtxFactory,
+    force: bool,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx.need_robot().state_set("restore-attempt", "uncertain stock restore")
+
+    with pytest.raises(Die, match="prior stock-restore attempt"):
+        root(ctx, force=force)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_forced_new_root_clears_the_stock_restore_marker(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(
+        robot_name=f"r2416-{_CFG[:12]}",
+        responder=_ok_responder(),
+        confirms=[True],
+    )
+    _stage_image(ctx)
+    _write_recon(ctx)
+    ctx.need_robot().state_set("restored-stock")
+    ctx.need_robot().state_set("restore-attempt", "stale cleanup marker")
+    ctx.need_robot().state_set("valetudo", "stale stock-era marker")
+
+    root(ctx, force=True)
+
+    assert ctx.need_robot().state_has("rooted")
+    assert not ctx.need_robot().state_has("restored-stock")
+    assert not ctx.need_robot().state_has("restore-attempt")
+    assert not ctx.need_robot().state_has("valetudo")
+
+
 def test_root_revalidates_a_stale_sunxi_cache_before_flash(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -185,6 +232,21 @@ def test_root_checks_backup_evidence_instead_of_trusting_the_obtained_marker(
     with pytest.raises(Die, match="Aborted"):
         root(ctx)
     assert "recorded a disaster-recovery backup, but its files are missing" in ctx.console.text()
+    assert "recon --force" in ctx.console.text()
+    assert _flash_ops(ctx) == []
+
+
+def test_root_does_not_treat_an_incomplete_capture_refresh_as_recovery(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    begin_recovery_refresh(ctx.need_robot().recon_dir)
+
+    with pytest.raises(Die, match="Aborted"):
+        root(ctx)
+
     assert "recon --force" in ctx.console.text()
     assert _flash_ops(ctx) == []
 
@@ -439,10 +501,15 @@ def test_root_reads_config_from_stderr_like_system_fastboot(make_ctx: CtxFactory
     exactly like recon (stdout+stderr merged) so the system transport can flash."""
     def responder(argv: tuple[str, ...]) -> Result:
         if "getvar config" in " ".join(argv):
-            return Result(argv, 0, "", f"config: {_CFG}\nOKAY\n")
+            return Result(argv, 0, "", f"config: {_CFG}\nFinished. Total time: 0.001s\n")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(
+        robot_name=f"r2416-{_CFG[:12]}",
+        responder=responder,
+        confirms=[True],
+        transport_mode="system",
+    )
     _stage_image(ctx)
     _write_recon(ctx)
     root(ctx)
@@ -461,6 +528,24 @@ def test_root_surfaces_a_failed_pre_flash_identity_read(make_ctx: CtxFactory) ->
     with pytest.raises(Die, match="connected robot's config"):
         root(ctx)
     assert "Access denied" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_root_rejects_failed_config_reply_even_when_error_contains_matching_identity(
+    make_ctx: CtxFactory,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "getvar config" in " ".join(argv):
+            return Result(argv, 1, f"FAIL {_CFG}\n", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+
+    with pytest.raises(Die, match="connected robot's config"):
+        root(ctx)
+
+    assert not ctx.need_robot().state_has("flash-attempt")
 
 
 def test_standalone_root_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
