@@ -34,6 +34,7 @@ def _contents(backup_dir: Path) -> list[str]:
         p.name
         for p in backup_dir.iterdir()
         if p.name != "manifest.json"
+        and not p.name.startswith("manifest.json.corrupt")
         and not (
             p.name.startswith(".manifest.")
             and (p.name.endswith(".tmp") or p.name.endswith(".owner"))
@@ -46,6 +47,7 @@ def looks_like_backup(backup_dir: Path) -> bool:
     return (
         backup_dir.is_dir()
         and not backup_dir.is_symlink()
+        and not backup_dir.name.endswith(".partial")
         and (
             (backup_dir / "files.tar.gz").exists()
             or (backup_dir / "manifest.json").exists()
@@ -116,8 +118,20 @@ def backfill_if_missing(backup_dir: Path) -> bool:
     """For a pre-manifest backup, write a best-effort manifest inferred from the dir name + files,
     honestly marked backfilled. GAPS ONLY — never overwrites an existing manifest. Returns True if
     it wrote one."""
-    if (backup_dir / "manifest.json").is_file():
-        return False
+    target = backup_dir / "manifest.json"
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text())
+        except ValueError:
+            existing = None
+        if isinstance(existing, dict):
+            return False
+        corrupt = backup_dir / "manifest.json.corrupt"
+        suffix = 1
+        while corrupt.exists():
+            corrupt = backup_dir / f"manifest.json.corrupt.{suffix}"
+            suffix += 1
+        target.replace(corrupt)
     name = backup_dir.name
     cfg = _CONFIG_RE.search(name)
     created = _CREATED_RE.search(name)

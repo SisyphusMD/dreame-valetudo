@@ -7,10 +7,12 @@ same pass, install the postboot hook, and reboot.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import re
 import shutil
 import tarfile
+import tempfile
 import zlib
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,7 @@ from .. import manifest
 from ..console import Die, die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
+from ..profiles import known_model_key_for_code
 from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
 from ..util import parse_mikey, repair_did
@@ -122,15 +125,156 @@ def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) ->
     kp = Path(key)
     if not kp.is_relative_to(ctx.ws.base):  # only the tool's own workspace key, never a personal one
         return
+    copied: list[str] = []
+    for src in (kp, Path(f"{kp}.pub")):
+        if not src.is_file():
+            continue
+        dst = backup / src.name
+        try:
+            shutil.copyfile(src, dst)
+            if dst.stat().st_size != src.stat().st_size:
+                raise OSError("copied size does not match the source")
+            dst.chmod(0o600)
+            copied.append(src.name)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                dst.unlink(missing_ok=True)
+            ctx.console.warn(f"  could not preserve SSH key file {src.name}: {exc}. Keep the "
+                             f"workspace copy at {src} safe.")
+    if copied:
+        ctx.console.info(f"  {', '.join(copied)} — your SSH access to this robot")
+
+
+def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]:
+    """Read only the non-secret identity fields needed to bind a backup to the selected profile."""
+    result = robot_ssh(
+        ctx.runner,
+        _TARGET,
+        "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null",
+        key=key,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        die("Could not read this robot's model identity — no backup or install was attempted.")
+    identity = {}
+    for line in result.stdout.splitlines():
+        field, separator, value = line.partition("=")
+        if separator and field in {"model", "did"} and value.strip():
+            identity[field] = value.strip()
+    reported = identity.get("model")
+    if not reported:
+        if not ctx.interactive:
+            die("This robot did not report model= from device.conf, so a physical model check is "
+                "required. Re-run interactively; no backup or install was attempted.")
+        ctx.console.warn("This first-root robot has no live model= value yet, so its AP cannot be "
+                         "matched automatically. Check the physical label before continuing.")
+        if not ctx.console.confirm(
+            f"Does the label on the connected robot confirm {ctx.profile.model} "
+            f"({ctx.profile.model_code})?"
+        ):
+            die("The connected robot was not physically confirmed as the selected model. "
+                "No backup or install was attempted.")
+        identity["model_verification"] = "physical-label"
+        ctx.console.info(f"Physical model confirmed: {ctx.profile.model} "
+                         f"({ctx.profile.model_code}).")
+        return identity
+    exact_key = known_model_key_for_code(reported)
+    if exact_key != ctx.profile.key:
+        die(f"SAFETY STOP: the selected robot is {ctx.profile.model} "
+            f"({ctx.profile.model_code}), but the connected robot reports {reported}. Join the "
+            "selected robot's Wi-Fi AP and re-run.")
+    ctx.console.info(f"Live model verified: {reported} matches {ctx.profile.model}.")
+    identity["model_verification"] = "device.conf"
+    return identity
+
+
+def _capture_factory_backup(
+    ctx: Context,
+    key: str | Path | None,
+    cfg: str,
+    live_identity: dict[str, str],
+) -> Path:
+    """Capture, validate, and manifest a backup before atomically publishing its directory."""
+    robot = ctx.need_robot()
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    final = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg)}-{ts}"
+    ctx.backups_dir.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(
+        dir=ctx.backups_dir,
+        prefix=f".{final.name}.",
+        suffix=".partial",
+    ))
+    staging.chmod(0o700)
     try:
-        for src in (kp, Path(f"{kp}.pub")):
-            if src.is_file():
-                dst = backup / src.name
-                dst.write_bytes(src.read_bytes())
-                dst.chmod(0o600)
-        ctx.console.info("  ssh key + .pub — your SSH access to this robot")
-    except OSError:
-        pass
+        warn_if_low_disk(ctx.console, staging, 2 * (1 << 30))
+        ctx.console.say(f"Backing up the robot -> {final} (config + keys + raw partitions)...")
+        files_gz = staging / "files.tar.gz"
+        with ctx.console.progress("Pulling files.tar.gz (config + keys, over the robot's Wi-Fi)"):
+            files_result = ctx.runner.run_redirect(
+                [*ssh_base(_TARGET, key),
+                 "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null"],
+                stdout_path=str(files_gz),
+                check=False,
+            )
+        # ssh propagates tar's ordinary 0/1/2 statuses, but 255 is its own connection failure.
+        if files_result.returncode not in (0, 1, 2):
+            die("connection failed while pulling the backup — rejoin the robot's AP and re-run.")
+        if files_gz.is_file():
+            files_gz.chmod(0o600)
+        # A missing /etc/*.pem can make tar nonzero even when its archive is complete, so validate
+        # the bytes rather than requiring rc=0.
+        if not files_gz.is_file() or files_gz.stat().st_size <= 1000:
+            die("backup came back empty — is the robot fully booted? Re-run.")
+        if not _tar_gz_is_complete(files_gz):
+            die("files.tar.gz is corrupt or truncated — rejoin the robot's AP and re-run.")
+        ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
+
+        for part in ("private", "misc"):
+            dd = staging / f"{part}.dd.gz"
+            with ctx.console.progress(f"Pulling the raw {part} partition"):
+                dd_result = ctx.runner.run_redirect(
+                    [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
+                    stdout_path=str(dd),
+                    check=False,
+                )
+            if not dd_result.ok:
+                die(f"connection failed while pulling backup {dd.name} — rejoin the robot's AP "
+                    "and re-run.")
+            if dd.is_file() and dd.stat().st_size > 1000:
+                if not _gzip_is_complete(dd):
+                    die(f"{dd.name} is corrupt or truncated — rejoin the robot's AP and re-run.")
+                dd.chmod(0o600)
+                ctx.console.info(f"  {part}.dd.gz — raw partition")
+            else:
+                dd.unlink(missing_ok=True)
+                ctx.console.warn(f"  raw {part} partition not captured — files.tar.gz still has "
+                                 "the mounted data.")
+
+        _backup_dedicated_key(ctx, key, staging)
+        manifest.write(
+            staging,
+            {
+                "created": ts,
+                "model": ctx.profile.model,
+                "model_key": ctx.profile.key,
+                "model_code": ctx.profile.model_code,
+                "config": cfg,
+                "robot": robot.display_name(),
+                "live_model": live_identity.get("model"),
+                "live_did": live_identity.get("did"),
+                "model_verification": live_identity["model_verification"],
+                "valetudo_version": ctx.valetudo_version,
+            },
+        )
+        if final.exists():
+            die(f"Backup destination already exists: {final}. Re-run in a moment.")
+        staging.rename(final)
+    except BaseException:
+        # A directory without a published name must never look like a complete, legacy backup on
+        # the next launch. The manifest scanner also ignores .partial after an unclean power loss.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return final
 
 
 @records_step("installing Valetudo")
@@ -204,76 +348,11 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
             "usually your ROUTER. Connect to the ROBOT's own AP and re-run.")
     ctx.console.info("Confirmed: Dreame robot (/mnt/private/ULI/factory present).")
 
+    live_identity = _live_robot_identity(ctx, key)
     cfg = ctx.robot_config()
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # Config-based, name-free folder: stable + hardware-identified, so a robot rename never has to
-    # move the backup DATA — it only updates the robot name recorded in each backup's manifest.
-    backup = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg)}-{ts}"
-    backup.mkdir(parents=True, exist_ok=True)
-    backup.chmod(0o700)
-    warn_if_low_disk(ctx.console, backup, 2 * (1 << 30))  # files.tar.gz + two raw partition dumps
-
-    ctx.console.say(f"Backing up the robot -> {backup} (config + keys + raw partitions)...")
-    files_gz = backup / "files.tar.gz"
-    with ctx.console.progress("Pulling files.tar.gz (config + keys, over the robot's Wi-Fi)"):
-        files_result = ctx.runner.run_redirect(
-            [*ssh_base(_TARGET, key), "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null"],
-            stdout_path=str(files_gz),
-            check=False,
-        )
-    # ssh propagates tar's ordinary 0/1/2 statuses, but 255 is its own connection failure. Missing
-    # host tooling similarly cannot produce a usable archive regardless of how many bytes landed.
-    if files_result.returncode not in (0, 1, 2):
-        shutil.rmtree(backup, ignore_errors=True)
-        die("connection failed while pulling the backup — rejoin the robot's AP and re-run.")
-    if files_gz.is_file():
-        files_gz.chmod(0o600)
-    # A missing /etc/*.pem can make tar nonzero even when its archive is complete, so validate the
-    # bytes rather than requiring rc=0.
-    if not files_gz.is_file() or files_gz.stat().st_size <= 1000:
-        shutil.rmtree(backup, ignore_errors=True)
-        die("backup came back empty — is the robot fully booted? Re-run.")
-    if not _tar_gz_is_complete(files_gz):
-        shutil.rmtree(backup, ignore_errors=True)
-        die("files.tar.gz is corrupt or truncated — rejoin the robot's AP and re-run.")
-    ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
-
-    for part in ("private", "misc"):
-        dd = backup / f"{part}.dd.gz"
-        with ctx.console.progress(f"Pulling the raw {part} partition"):
-            dd_result = ctx.runner.run_redirect(
-                [*ssh_base(_TARGET, key), f"dd if=/dev/by-name/{part} 2>/dev/null | gzip"],
-                stdout_path=str(dd),
-                check=False,
-            )
-        if not dd_result.ok:
-            shutil.rmtree(backup, ignore_errors=True)
-            die(f"connection failed while pulling backup {dd.name} — rejoin the robot's AP and "
-                "re-run.")
-        if dd.is_file() and dd.stat().st_size > 1000:
-            if not _gzip_is_complete(dd):
-                shutil.rmtree(backup, ignore_errors=True)
-                die(f"{dd.name} is corrupt or truncated — rejoin the robot's AP and re-run.")
-            dd.chmod(0o600)
-            ctx.console.info(f"  {part}.dd.gz — raw partition")
-        else:
-            dd.unlink(missing_ok=True)
-            ctx.console.warn(f"  raw {part} partition not captured — files.tar.gz still has the "
-                             "mounted data.")
-
-    _backup_dedicated_key(ctx, key, backup)
-    manifest.write(
-        backup,
-        {
-            "created": ts,
-            "model": ctx.profile.model,
-            "model_key": ctx.profile.key,
-            "model_code": ctx.profile.model_code,
-            "config": cfg,
-            "robot": ctx.need_robot().display_name(),
-            "valetudo_version": ctx.valetudo_version,
-        },
-    )
+    if not cfg:
+        die("No recorded config identity for the selected robot — re-run recon before push.")
+    backup = _capture_factory_backup(ctx, key, cfg, live_identity)
 
     ctx.console.say("Copying the Valetudo binary onto the robot...")
     with ctx.console.progress("Copying valetudo (~37 MB over the robot's Wi-Fi)"):

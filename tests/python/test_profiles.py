@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dreame_valetudo import profiles as P
 
 GOLDEN = Path(__file__).parent / "golden"
@@ -76,3 +78,22 @@ def test_model_key_for_dir_prefers_saved_marker(tmp_path: Path) -> None:
     (d / "state").mkdir(parents=True)
     (d / "state" / "model_key").write_text("d10s-plus\n")
     assert P.model_key_for_dir(d) == "d10s-plus"
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("dreame.vacuum.r2416", "x40-ultra"),
+        ("dreame.vacuum.r2449", "x40-ultra"),
+        ("dreame.vacuum.r2338", "l10s-pro-ultra-heat"),
+        ("dreame.vacuum.r2338h", "l10s-pro-ultra-heat-h"),
+        ("dreame.vacuum.r2338ha", "l10s-pro-ultra-heat-h"),
+        ("dreame.vacuum.r2338a", "l10s-pro-ultra-heat"),
+        ("dreame.vacuum.r2338haz", None),
+        ("foo.r2416", None),
+        ("dreame.vacuum.r2416x", None),
+        ("r2416", None),
+    ],
+)
+def test_known_model_key_for_code_is_exact(reported: str, expected: str | None) -> None:
+    assert P.known_model_key_for_code(reported) == expected

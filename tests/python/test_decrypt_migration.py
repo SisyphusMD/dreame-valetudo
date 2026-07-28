@@ -112,6 +112,76 @@ def test_decrypt_gaps_only_and_never_clobbers(tmp_path: Path) -> None:
     assert (recon / "dustx100.dd.gz").read_bytes() == b"SENTINEL"  # not re-created, not clobbered
 
 
+def test_decrypt_refresh_atomically_replaces_a_stale_restorable_image(tmp_path: Path) -> None:
+    recon = tmp_path / "recon"
+    old_plain = _seed_sealed(recon, "dustx100")
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 1
+    out = recon / "dustx100.dd.gz"
+    assert gzip.decompress(out.read_bytes()) == old_plain
+
+    new_plain = bytearray(old_plain)
+    new_plain[4096:4104] = b"REFRESH!"
+    (recon / "dustx100.bin").write_bytes(xor_stream(bytes(new_plain), _keystream()))
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole(), refresh=True) == 1
+    assert gzip.decompress(out.read_bytes()) == bytes(new_plain)
+
+
+def test_failed_decrypt_refresh_preserves_the_prior_restorable_image(tmp_path: Path) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100")
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 1
+    out = recon / "dustx100.dd.gz"
+    before = out.read_bytes()
+    (recon / "dustx100.bin").write_bytes(random.Random(9).randbytes(PERIOD * 16))
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole(), refresh=True) == 0
+    assert out.read_bytes() == before
+    assert (recon / ".decrypt-refresh").is_file()
+
+    new_plain = _fake_flash()
+    new_plain = new_plain[:4096] + b"RETRY-OK" + new_plain[4104:]
+    (recon / "dustx100.bin").write_bytes(xor_stream(new_plain, _keystream()))
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 1
+    assert gzip.decompress(out.read_bytes()) == new_plain
+    assert not (recon / ".decrypt-refresh").exists()
+
+
+def test_interrupted_refresh_publication_retries_the_whole_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    old_plains = _seed_mixed(recon)
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 3
+    new_plains: dict[str, bytes] = {}
+    for index, (name, plain) in enumerate(old_plains.items(), 1):
+        refreshed = bytearray(plain)
+        refreshed[4096:4104] = f"NEW-{index:04d}".encode()
+        new_plains[name] = bytes(refreshed)
+        (recon / f"{name}.bin").write_bytes(xor_stream(bytes(refreshed), _keystream()))
+
+    original_replace = Path.replace
+
+    def interrupt_second_publish(source: Path, target: Path) -> Path:
+        if source.name == "dustx101.dd.gz.refresh.tmp":
+            raise KeyboardInterrupt
+        return original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "replace", interrupt_second_publish)
+        with pytest.raises(KeyboardInterrupt):
+            M.decrypt_recovery_backup(recon, {}, ScriptedConsole(), refresh=True)
+
+    assert (recon / ".decrypt-refresh").is_file()
+    assert gzip.decompress((recon / "dustx100.dd.gz").read_bytes()) == new_plains["dustx100"]
+    assert gzip.decompress((recon / "dustx101.dd.gz").read_bytes()) == old_plains["dustx101"]
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 3
+    assert not (recon / ".decrypt-refresh").exists()
+    for name, plain in new_plains.items():
+        assert gzip.decompress((recon / f"{name}.dd.gz").read_bytes()) == plain
+
+
 def test_decrypt_is_idempotent(tmp_path: Path) -> None:
     recon = tmp_path / "recon"
     _seed_sealed(recon, "dustx100")
