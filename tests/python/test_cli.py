@@ -212,7 +212,8 @@ def test_deliberate_stop_is_successful_and_does_not_invite_an_issue_report(
     monkeypatch.setattr(
         cli, "_dispatch", lambda *_args: (_ for _ in ()).throw(UserAbort("Stopped safely."))
     )
-    env = {"HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_DECRYPT": "1"}
+    env = {"HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_DECRYPT": "1",
+           "DREAME_NO_UDEV_CHECK": "1"}
     assert main(["status"], env=env, console=ScriptedConsole(), runner=SubprocessRunner()) == 0
     terminal = capsys.readouterr().out
     assert "Stopped safely." in terminal
