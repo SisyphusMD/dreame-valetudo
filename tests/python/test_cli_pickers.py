@@ -142,6 +142,24 @@ def test_model_command_refuses_after_rooting(make_ctx: CtxFactory) -> None:
         _dispatch("model", [], ctx)
 
 
+@pytest.mark.parametrize("marker", (
+    "restored-stock", "flash-attempt", "restore-attempt",
+))
+def test_model_command_remains_locked_after_any_firmware_write_history(
+    make_ctx: CtxFactory,
+    marker: str,
+) -> None:
+    ctx = make_ctx(env={"DREAME_ROBOT": "bench"})
+    robot = Robot(ctx.ws.robots_dir / "bench")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set(marker, "historical write")
+
+    with pytest.raises(Die, match="firmware-write history"):
+        _dispatch("model", [], ctx)
+
+    assert robot.state_get("model_key") == "x40-ultra"
+
+
 def test_model_command_disarms_firmware_staged_for_the_previous_model(
     make_ctx: CtxFactory,
 ) -> None:
@@ -149,6 +167,7 @@ def test_model_command_disarms_firmware_staged_for_the_previous_model(
     robot = Robot(ctx.ws.robots_dir / "bench")
     robot.state_set("model_key", "d10s-pro")
     robot.state_set("image", "model=d10s-pro from old.zip sha256=old")
+    robot.state_set("image-history", "model=d10s-pro from old.zip sha256=old")
     robot.fw_dir.mkdir(parents=True)
     (robot.fw_dir / "rootfs.img").write_bytes(b"old d10s firmware")
 

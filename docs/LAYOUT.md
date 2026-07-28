@@ -36,17 +36,29 @@ disk is refused rather than reverse-migrated.
 │   ├── logs/                       scrubbed run logs
 │   └── robots/<robot>/
 │       ├── state/                  model, display name, and completed-phase markers
-│       ├── recon/                  recorded identity and pre-root recovery captures
+│       ├── recon/                  identity, recovery captures, and source-hash provenance
 │       └── fw/                     staged DustBuilder image for this robot
 └── backups/
-    └── dreame-<model>-<config>-<timestamp>/
+    ├── dreame-<model>-<config>-<timestamp>/
+    │   ├── manifest.json           provenance, robot identity, creation time, and contents
+    │   └── files.tar.gz            irreplaceable post-root factory/identity backup
+    └── dreame-<model>-<config>-stock-recovery/
         ├── manifest.json           provenance, robot identity, creation time, and contents
-        └── files.tar.gz            irreplaceable post-root factory/identity backup
+        ├── toc1.img                captured stock chain head
+        ├── boot.img, rootfs.img    stock A/B pair (stored once after equality proof)
+        └── private.img, misc.img   captured factory partitions
 ```
 
 `DREAME_WORK` and `DREAME_BACKUPS` can relocate those two directories. The umbrella-level markers
 remain under `~/dreame-valetudo/`. Recon keeps both the sealed `dustx10{0,1,2}.bin` slices and their
-locally restorable `.dd.gz` forms; `dreame_recovery_backup.zip` is the portable pre-root copy. A
+locally usable `.dd.gz` forms; `dreame_recovery_backup.zip` is the portable pre-root copy, and
+`recovery-provenance.json` binds the exact source hashes to the model and robot identity captured in
+that recon session, plus the user's answer about whether the robot was still on untouched factory
+firmware. Unknown-history captures are preserved but cannot be promoted to stock. Older captures
+require both a one-time typed origin attestation and the same stock-history attestation, retaining
+that honest distinction in the record. The three 399 MiB slices are a contiguous boot-critical
+prefix, not a full image of the roughly 3.9 GB eMMC. The first `restore` run derives the smaller
+durable stock-recovery kit under `backups/` before asking for permission to touch hardware. A
 backup manifest is deliberately self-describing so a copied backup can be identified years later
 without the original workspace.
 

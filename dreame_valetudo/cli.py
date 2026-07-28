@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .console import Console, Die, UserAbort, idle_timeout
+from .console import Console, Die, UserAbort, die, idle_timeout
 from .constants import ROBOT_AP_IP
 from .context import Context
 from .dustbuilder import verify_all_forms, verify_form
@@ -31,6 +31,7 @@ from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import push
 from .phases.recon import recon
+from .phases.restore import restore
 from .phases.root import root
 from .platform_env import apply_library_path
 from .profiles import (
@@ -70,7 +71,9 @@ from .whatsnew import show_whats_new
 from .workspace import Robot, Workspace, slugify
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
-_FASTBOOT_ONLY = frozenset({"doctor", "fetch", "recon", "image", "root", "push", "verify-form"})
+_FASTBOOT_ONLY = frozenset(
+    {"doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
+)
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
 # install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
@@ -80,7 +83,7 @@ _NO_WORKSPACE = PURE_COMMANDS
 
 _ROBOT_COMMANDS = frozenset({
     "auto", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
-    "model", "push", "recon", "root", "sshkey", "valetudo", "verify-form",
+    "model", "push", "recon", "restore", "root", "sshkey", "valetudo", "verify-form",
 })
 
 
@@ -356,10 +359,21 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         _auto_intro(ctx)
     robot = ctx.robot
     force = "--force" in rest
-    if robot is not None and robot.state_has("flash-attempt") and not force:
+    if robot is not None and robot.state_has("flash-attempt"):
         # Do not let an older rooted marker hide a newer uncertain reflash. root() reports the
-        # recovery stop before provisioning, recon, network work, or another device command.
+        # recovery stop before provisioning, recon, network work, or another device command. A
+        # generic auto --force is not the explicit root --force decision that stop requires.
         root(ctx)
+    if robot is not None and robot.state_has("restored-stock"):
+        ctx.console.say(f"{ctx.profile.model} — robot '{robot.display_name()}' is restored to "
+                        "stock. No rooting step will run automatically.")
+        ctx.console.info("To root it again intentionally, run: dreame-valetudo root --force")
+        return
+    if robot is not None and robot.state_has("restore-attempt"):
+        die("SAFETY STOP: a prior stock-restore attempt did not record completion. Do not let "
+            "automatic rooting or installation continue from an uncertain firmware state. "
+            "Inspect the robot, then run 'dreame-valetudo restore --force' only after deliberately "
+            "deciding to repeat the complete stock restore.")
     if robot is None or not robot.state_has("rooted") or force:
         doctor(ctx)
         fetch(ctx)
@@ -407,6 +421,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo recon      Phase 1 NON-DESTRUCTIVE — validate USB + record config\n"
         "  dreame-valetudo image      open the dustbuilder, auto-unpack the built zip\n"
         "  dreame-valetudo root       Phase 2 DESTRUCTIVE — flash the rooted image (OKAY-checked)\n"
+        "  dreame-valetudo restore    DESTRUCTIVE — return this robot to captured stock firmware\n"
         "  dreame-valetudo valetudo   Phase 3 — how to push the Valetudo binary onto the robot\n"
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
@@ -489,9 +504,13 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0 if fix_key(ctx) else 1
     if cmd == "model":
         robot = ctx.need_robot()
-        if robot.state_has("rooted"):
-            raise Die("The model cannot be changed after rooting — the flashed image was built "
-                      "for the saved model.")
+        destructive_history = any(robot.state_has(name) for name in (
+            "rooted", "restored-stock", "flash-attempt", "restore-attempt",
+        ))
+        if destructive_history:
+            raise Die("The model cannot be changed after rooting or any firmware-write history — "
+                      "the physical robot model is immutable and every image/restore record is "
+                      "bound to the saved model.")
         # The command exists specifically to replace a saved choice, so it must not silently load it.
         prior_model = ctx.profile.key
         select_model(ctx, use_env=False)
@@ -514,6 +533,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         image(ctx, force="--force" in rest)
     elif cmd == "root":
         root(ctx, force="--force" in rest)
+    elif cmd == "restore":
+        restore(ctx, force="--force" in rest)
     elif cmd == "valetudo":
         valetudo(ctx)
     elif cmd == "push":

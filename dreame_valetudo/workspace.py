@@ -109,7 +109,7 @@ def protect_state_artifacts(state_dir: Path) -> None:
             marker.chmod(0o600)
 
 
-def _write_private_text(path: Path, value: str) -> None:
+def write_private_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o700)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -130,6 +130,19 @@ def _write_private_text(path: Path, value: str) -> None:
             os.close(directory_fd)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def remove_private_file(path: Path) -> None:
+    """Durably remove a safety marker before its caller proceeds."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def slugify(name: str) -> str:
@@ -192,7 +205,7 @@ class Robot:
         return self.work / "fw"
 
     def state_set(self, name: str, value: str = "done") -> None:
-        _write_private_text(self.state_dir / name, value + "\n")
+        write_private_text(self.state_dir / name, value + "\n")
 
     def state_has(self, name: str) -> bool:
         return (self.state_dir / name).is_file()
@@ -200,7 +213,9 @@ class Robot:
     def state_clear(self, name: str) -> None:
         """Drop a marker so the phase re-runs. Used before a destructive re-stage, so a failure
         part-way through can never leave a later phase believing the old marker still holds."""
-        (self.state_dir / name).unlink(missing_ok=True)
+        # A durable attempt marker is not enough if the superseded completion can reappear after a
+        # host power loss. Persist the directory deletion before any destructive phase continues.
+        remove_private_file(self.state_dir / name)
 
     def remember_image(self) -> None:
         """Retain consumed-build provenance independently of the staged-files marker.

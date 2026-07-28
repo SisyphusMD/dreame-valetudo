@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import zipfile
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from dreame_valetudo.phases.recon import (
     recon,
 )
 from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, Robot
@@ -541,7 +543,11 @@ def _sampling_responder(*, blob: bytes) -> Callable[[tuple[str, ...]], Result]:
 
 
 def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[True],
+    )
     _dist_ready(ctx)
     recon(ctx, recovery_backup=True)
     robot = ctx.robot
@@ -559,6 +565,32 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert robot.state_get("recon") == "backup=obtained"
+    provenance = json.loads((robot.recon_dir / PROVENANCE_FILE).read_text())
+    assert provenance["binding"] == "captured-same-session"
+    assert provenance["firmware_state"] == "stock-user-attested"
+    assert provenance["config"] == _CFG
+    assert provenance["model_key"] == "x40-ultra"
+    assert set(provenance["sources"]["sealed"]) == {
+        "dustx100.bin", "dustx101.bin", "dustx102.bin",
+    }
+    assert not (robot.recon_dir / RECOVERY_REFRESH_FILE).exists()
+
+
+def test_recon_preserves_but_does_not_bless_a_capture_with_unknown_history(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[False],
+    )
+    _dist_ready(ctx)
+
+    recon(ctx, recovery_backup=True)
+
+    provenance = json.loads((ctx.need_robot().recon_dir / PROVENANCE_FILE).read_text())
+    assert provenance["firmware_state"] == "unverified"
+    assert "NOT authorized as a stock restore source" in ctx.console.text()
 
 
 def test_recon_refreshes_decrypted_images_after_a_fresh_recovery_pull(
@@ -577,6 +609,100 @@ def test_recon_refreshes_decrypted_images_after_a_fresh_recovery_pull(
     recon(ctx, recovery_backup=True)
 
     assert refreshes == [True]
+
+
+def test_failed_decrypt_refresh_binds_only_the_new_sealed_generation(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        robot_name="kitchen",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        env={"DREAME_NO_DECRYPT": "1"},
+    )
+    _dist_ready(ctx)
+    recon_dir = ctx.need_robot().recon_dir
+    recon_dir.mkdir(parents=True)
+    for name in ("dustx100.dd.gz", "dustx101.dd.gz", "dustx102.dd.gz"):
+        (recon_dir / name).write_bytes(b"stale prior decrypted generation")
+
+    recon(ctx, recovery_backup=True)
+
+    provenance = json.loads((recon_dir / PROVENANCE_FILE).read_text())
+    assert set(provenance["sources"]) == {"sealed"}
+    assert (recon_dir / ".decrypt-refresh").is_file()
+
+
+@pytest.mark.parametrize("marker", (
+    "rooted", "restored-stock", "flash-attempt", "restore-attempt",
+))
+def test_recon_never_replaces_recovery_evidence_after_firmware_write_history(
+    make_ctx: CtxFactory,
+    marker: str,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        robot_name="kitchen",
+        responder=_sampling_responder(blob=b"new capture"),
+    )
+    _dist_ready(ctx)
+    robot = ctx.need_robot()
+    robot.state_set(marker)
+    robot.recon_dir.mkdir(parents=True)
+    original = robot.recon_dir / "dustx100.bin"
+    original.write_bytes(b"original pre-root capture")
+
+    recon(ctx, force=True, recovery_backup=True)
+
+    assert original.read_bytes() == b"original pre-root capture"
+    fastboot_calls = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
+                      if call[:len(FB)] == FB]
+    assert not any(call and call[0] == "get_staged" for call in fastboot_calls)
+    assert "firmware-write history" in ctx.console.text()
+
+
+def test_recon_rejects_failed_config_reply_even_when_error_contains_hex_identity(
+    make_ctx: CtxFactory,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "getvar config" in " ".join(argv):
+            return Result(argv, 1, f"FAIL {_CFG}\n", "")
+        return Result(argv, 0, "OKAY\n", "")
+
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    _dist_ready(ctx)
+
+    with pytest.raises(Die, match="Could not read the config"):
+        recon(ctx, recovery_backup=False)
+
+    assert ctx.robot is None
+
+
+def test_failed_provenance_publication_keeps_refresh_generation_untrusted(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        robot_name="kitchen",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        env={"DREAME_NO_DECRYPT": "1"},
+    )
+    _dist_ready(ctx)
+    recon_dir = ctx.need_robot().recon_dir
+    recon_dir.mkdir(parents=True)
+    (recon_dir / PROVENANCE_FILE).write_text('{"old": "provenance"}\n')
+
+    def fail_provenance(*_args: object, **_kwargs: object) -> object:
+        raise OSError("simulated metadata failure")
+
+    monkeypatch.setattr(recon_module, "write_recovery_provenance", fail_provenance)
+    recon(ctx, recovery_backup=True)
+
+    assert (recon_dir / RECOVERY_REFRESH_FILE).is_file()
+    assert json.loads((recon_dir / PROVENANCE_FILE).read_text()) == {"old": "provenance"}
+    assert ctx.need_robot().state_get("recon") == "backup=missing"
+    assert "incomplete-generation marker" in ctx.console.text()
 
 
 def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> None:

@@ -115,6 +115,35 @@ def test_fb_sequence_stops_at_first_non_okay() -> None:
     assert calls == ["t", "prep", "toc1.img"]
 
 
+def test_getvar_accepts_the_system_clients_rc0_finished_shape() -> None:
+    fastboot = Fastboot(
+        RecordingRunner(), _quiet(), Transport("system", ("/usr/bin/fastboot",)),
+    )
+    result = Result(
+        ("/usr/bin/fastboot", "getvar", "config"),
+        0,
+        "",
+        "config: abcdef0123456789abcdef0123456789\nFinished. Total time: 0.001s\n",
+    )
+
+    assert fastboot.getvar_succeeded(result)
+    assert not fastboot.returned_okay(result)  # writes retain the stricter protocol gate
+
+
+def test_getvar_never_accepts_a_failed_system_reply_containing_an_identity() -> None:
+    fastboot = Fastboot(
+        RecordingRunner(), _quiet(), Transport("system", ("/usr/bin/fastboot",)),
+    )
+    result = Result(
+        ("/usr/bin/fastboot", "getvar", "config"),
+        1,
+        "",
+        "FAILED abcdef0123456789abcdef0123456789\n",
+    )
+
+    assert not fastboot.getvar_succeeded(result)
+
+
 # --- transport resolution --------------------------------------------------------------------
 def test_transport_system_requires_fastboot_on_path() -> None:
     t = resolve_transport({"DREAME_FASTBOOT": "system"}, Path("/x"), which=lambda c: "/usr/bin/fb")

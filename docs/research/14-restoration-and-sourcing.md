@@ -53,6 +53,26 @@ model-specific. The real recovery paths, in order:
 2. **Rebuild on the dustbuilder** for your exact model code and reflash.
 3. **Extract from another unit of the identical model code** over FEL ([04](04-boot0-write-and-verify.md)).
 
+## Capture broadly, restore narrowly
+
+There are two different backup contracts:
+
+1. The supported DustBuilder rollback stores the boot-critical stock data that the normal rooting
+   flow can change. Its restore writer deliberately touches only those validated regions and leaves
+   toc0 alone because normal rooting never rewrites toc0.
+2. A physical research reference robot needs the fullest readable baseline before any experiment
+   that might expand the write set. Preserve the complete `/dev/mmcblk0` user area, both
+   `/dev/mmcblk0boot0` and `/dev/mmcblk0boot1`, the reserved head, every named partition, GPT and
+   boot metadata, readable eFuse observations, exact byte counts, and SHA-256 hashes. Keep at least
+   two off-host copies.
+
+The second contract does not imply a "write everything back" recovery command. eFuses are one-time
+hardware state, RPMB may be authenticated or unreadable, and some controller state may not be
+exposed. Every future experiment must declare the exact regions it can change, require verified
+pre-change images for those regions before it starts, and add the smallest evidence-backed restore
+sequence that reverses those writes. A newly discovered region should enlarge the capture contract
+before the first experiment that writes it, not after a robot needs recovery.
+
 ## Open question worth testing (hypothesis, not a fact)
 
 A genuine toc0 is signed with the fleet-wide key and validated against the fleet-wide eFuse ROTPK, so
@@ -68,4 +88,4 @@ is flagged as a candidate experiment. Note the ceiling even if it holds: it woul
 Do not vendor any firmware into this repository. The universal bootstrap blobs are already public and
 pinned; the model-specific blobs cannot be made universal and belong in each owner's factory backup.
 The durable value here is the **RE knowledge and the universal constants** (captured as text) plus
-this sourcing map — which is exactly what a future worker could not regenerate on their own.
+this sourcing map, which is exactly what a future worker could not regenerate on their own.

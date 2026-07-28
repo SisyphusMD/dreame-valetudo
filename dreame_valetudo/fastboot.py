@@ -156,6 +156,17 @@ class Fastboot:
         for line in (result.stdout + result.stderr).splitlines():
             self.console.err(f"fastboot: {line}")
 
+    @staticmethod
+    def returned_okay(result: Result) -> bool:
+        """A command succeeded at both the process and fastboot-protocol layers."""
+        return result.returncode == 0 and "OKAY" in result.stdout + result.stderr
+
+    def getvar_succeeded(self, result: Result) -> bool:
+        """Accept each supported client's native successful getvar response shape."""
+        if result.returncode != 0:
+            return False
+        return self.transport.mode == "system" or "OKAY" in result.stdout + result.stderr
+
     def fb(self, *args: object) -> None:
         """Run a fastboot command and HARD-STOP unless it succeeds with OKAY.
 
@@ -171,7 +182,7 @@ class Fastboot:
         self.console.info(f"fastboot {argstr}")
         for line in combined.splitlines():
             self.console.info(f"  {line}")
-        if res.returncode != 0 or "OKAY" not in combined:
+        if not self.returned_okay(res):
             die(
                 f"fastboot {argstr} did NOT return OKAY (rc={res.returncode}). STOP — do not run "
                 "further flash steps. The robot is only partway flashed and won't boot yet — that's "
