@@ -374,6 +374,7 @@ def test_hardware_fingerprint_ignores_cwd_files_named_like_literal_arguments(
     make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
+    monkeypatch.setattr(B.shutil, "which", lambda _command: None)
     client = tmp_path / "libexec" / "fastboot-libusb.py"
     client.parent.mkdir(exist_ok=True)
     client.write_bytes(b"client")

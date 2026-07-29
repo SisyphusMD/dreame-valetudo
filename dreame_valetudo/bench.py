@@ -544,8 +544,11 @@ def _hardware_fingerprint(ctx: Context) -> str:
     for label, value, file_identity in identities:
         candidate: Path | None = None
         if file_identity:
-            found = shutil.which(value) if "/" not in value else None
-            candidate = Path(found or value)
+            if "/" not in value:
+                found = shutil.which(value)
+                candidate = Path(found) if found is not None else None
+            else:
+                candidate = Path(value)
         try:
             if candidate is not None and candidate.is_file():
                 encoded = f"{label}\0file".encode()
