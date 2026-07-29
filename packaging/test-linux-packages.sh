@@ -149,9 +149,13 @@ for package in "$old_deb" "$new_deb" "$old_rpm" "$new_rpm"; do
 done
 
 containers=()
+images=()
 cleanup() {
   if ((${#containers[@]})); then
     docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
+  fi
+  if ((${#images[@]})); then
+    docker image rm "${images[@]}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -165,11 +169,13 @@ run_case() {
     /bin/bash /tmp/test-linux-packages.sh --inside "$manager" \
     "/tmp/old-package.$extension" "/tmp/new-package.$extension")
   containers+=("$cid")
+  images+=("$image")
   docker cp "$0" "$cid":/tmp/test-linux-packages.sh
   docker cp "$old_package" "$cid":"/tmp/old-package.$extension"
   docker cp "$new_package" "$cid":"/tmp/new-package.$extension"
   docker start -a "$cid"
   docker rm "$cid" >/dev/null
+  docker image rm "$image" >/dev/null 2>&1 || true
 }
 
 run_case "Debian 12" "$DEBIAN_IMAGE" apt "$old_deb" "$new_deb"

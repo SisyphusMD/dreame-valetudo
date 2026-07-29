@@ -119,6 +119,7 @@ jobs:
           docker cp "$CID":/w/ci-old.rpm ./ci-old.rpm
           docker cp "$CID":/w/ci.rpm ./ci.rpm
           docker rm "$CID" >/dev/null
+          docker image rm "$NFPM" >/dev/null 2>&1 || true
           deb_contents="$(dpkg-deb -c ci.deb)"
           for required in \
             ./usr/bin/dreame-valetudo \
@@ -136,6 +137,9 @@ jobs:
             echo "fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out"
             exit 1
           fi
+          # Keep the self-hosted runner below its storage ceiling before pulling four distro images.
+          # The exported binaries are already outside BuildKit, so its compile cache is disposable.
+          docker buildx prune --all --force
           # renovate: datasource=docker depName=debian
           DEBIAN_IMAGE="debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
           # renovate: datasource=docker depName=ubuntu
