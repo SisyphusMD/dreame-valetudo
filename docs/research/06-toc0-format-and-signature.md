@@ -53,7 +53,8 @@ pow(sig, 0x10001, N_genuine)  ->  …6855c94f…   ✓
 Re-signing therefore means: swap in the new modulus, then
 `sig = pow(int(sha256(0xc84..tbs+declared)), d, n)`. Tool:
 [`tools/resign_toc0.py`](tools/resign_toc0.py) (the raw-RSA item0 path);
-[`tools/build_selfsigned_toc0_correct.py`](tools/build_selfsigned_toc0_correct.py) drives it.
+[`tools/build_selfsigned_toc0_correct.py`](tools/build_selfsigned_toc0_correct.py) reproduces the
+exact hardware-tested artifact with the archived development key.
 
 This scheme was independently re-verified against the **authoritative, non-local** encoder/verifier:
 U-Boot mainline `tools/sunxi_toc0.c` + `include/sunxi_image.h` (Samuel Holland / smaeul),

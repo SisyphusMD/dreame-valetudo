@@ -321,8 +321,8 @@ def uart(ctx: Context) -> None:
     c.phase(f"{p.model} — UART serial-shell method (this model does NOT use fastboot)")
     c.info("More hands-on than fastboot. Beyond the Dreame Breakout PCB you also need:")
     c.info("  • a 3.3V USB-to-TTL serial adapter (CP2102 / PL2303 / FT232) + a few dupont wires")
-    c.info("  • a FAT32 USB stick, ideally one with an activity LED (it blinks when the robot "
-           "reads it)")
+    c.info("  • a USB stick flashed with the known-good FAT32 + MBR root image, ideally with an "
+           "activity LED")
     c.warn("The debug-connector orientation VARIES per model — use the photos, don't guess the "
            "pinout:", lead=True)
     c.detail("dontvacuum UART guide (pinout + wiring, pictures): "
@@ -333,16 +333,23 @@ def uart(ctx: Context) -> None:
     c.say("The procedure (guided serial automation is the next feature; for now, the steps):")
     bnote = "  (if you see only garbage, try 500000)" if p.key in ("xiaomi-1c", "f9") else ""
     c.steps([
+        ("If this stock robot has ever used a vendor app, perform a full factory reset first. Do "
+         "not use factory reset as stock recovery for an already-rooted robot."),
+        ("Download https://valetudo.cloud/pages/installation/res/dreame_uart_root_img.zip, "
+         "unzip it, and flash the contained .img to the whole USB stick. A hand-made FAT32 "
+         "partition can spawn no shell or multiple shells; use the known-good image."),
         "Open the robot, plug in the Breakout PCB, wire GND/RX/TX to the 3.3V adapter (NOT 5V).",
         (f"Open a serial console at {p.baud} 8N1, XON/XOFF (ixoff):{bnote}\n"
          f"screen /dev/tty.usbserial-XXXX {p.baud},ixoff   (macOS)  |  "
          f"screen /dev/ttyUSB0 {p.baud},ixoff   (Linux)"),
-        ("Prepare the root USB stick, set the OTG-ID jumper, insert it, power on (hold POWER "
-         "~3s)."),
+        ("Power on by holding POWER for at least 3s. If there are no logs, swap RX/TX; if the "
+         "output is garbage, check the wiring and baud. Then set the OTG-ID jumper and insert "
+         "the prepared USB stick."),
         ("At the '<model>_release login:' prompt, log in as root. Password:\n"
          'echo -n "$SERIAL" | md5sum | base64\n'
          '(md5sum\'s ASCII-hex output, INCLUDING its trailing "  -", is what gets '
-         "base64-encoded.)\n"
+         "base64-encoded. Use the full uppercase serial, including a Xiaomi prefix such as "
+         "41717/.)\n"
          "SERIAL = the sticker UNDER THE DUSTBIN (not the base of the robot, not the box)."),
     ])
     c.warn("If that sticker is damaged or unreadable, do NOT substitute a serial from the "
@@ -350,16 +357,37 @@ def uart(ctx: Context) -> None:
            "service has a serial that no longer matches its silicon, and a look-alike serial has "
            "permanently bricked units (secure-boot signature rejection). Stop and ask in the "
            "dontvacuum / Valetudo community first.", lead=True)
-    _pause(ctx)
-    c.steps(start=5, items=[
-        ("Back up /mnt/private + /mnt/misc BEFORE any change, then build a 'manual installation' "
-         f"image on the dustbuilder ({ctx.dustbuilder_page}) and run its ./install.sh."),
-        f"Install Valetudo (this model uses the valetudo-{p.arch} binary) and reboot.",
-    ])
     if p.secure_boot == "yes":
-        c.warn(f"{p.model} has SECURE BOOT: do NOT modify the filesystem until install.sh runs — "
-               "doing so can BRICK it. The dustbuilder image's install.sh defeats secure boot "
-               "for you; let it run first.", lead=True)
+        c.warn(f"{p.model} has SECURE BOOT: make no filesystem changes beyond the /tmp staging "
+               "commands below until install.sh runs — other changes can BRICK it. The "
+               "DustBuilder install.sh defeats secure boot for you; let it run first.", lead=True)
+    _pause(ctx)
+    c.steps(start=7, items=[
+        ("Build a manual-installation package on the DustBuilder page below. Select BOTH "
+         "'Prepackage Valetudo' and 'Patch DNS' before Create Job:\n"
+         f"{ctx.dustbuilder_page}"),
+        ("On the laptop, run valetudo-helper-httpbridge, connect to the robot's 192.168.5.x "
+         "Wi-Fi AP, and put the emailed .tar.gz in its www folder. Record its byte size and "
+         "SHA-256 first:\n"
+         "https://github.com/Hypfer/valetudo-helper-httpbridge/releases"),
+        ("Before changing the robot, create the complete recovery archive from the UART shell:\n"
+         "tar cvf /tmp/backup.tar /mnt/private/ /mnt/misc/ "
+         "/etc/OTA_Key_pub.pem /etc/publickey.pem && tar tf /tmp/backup.tar && "
+         "sha256sum /tmp/backup.tar\n"
+         "Do not continue unless tar exits successfully and its listing contains all four paths. "
+         "Then use the bridge's curl upload command with file=@/tmp/backup.tar. Confirm the "
+         "laptop copy has the same byte size and SHA-256, then store it safely."),
+        ("Use the bridge's wget command to download the firmware .tar.gz into /tmp on the robot, "
+         "then verify and extract it into a new, empty directory:\n"
+         "cd /tmp && sha256sum dreame.vacuum.pxxxx_fw.tar.gz\n"
+         "mkdir dustbuilder-install && tar -xvzf dreame.vacuum.pxxxx_fw.tar.gz "
+         "-C dustbuilder-install && cd dustbuilder-install\n"
+         "Replace pxxxx with the downloaded package's actual model name. The robot hash must "
+         "match the one recorded on the laptop, and every command must succeed. Put the robot "
+         "on its dock before continuing."),
+        (f"Run ./install.sh and wait for the automatic reboot. This package contains the "
+         f"valetudo-{p.arch} binary. A new 'built with dustbuilder' UART MOTD confirms success."),
+    ])
     if p.key == "xiaomi-1c":
         c.warn("Only the 'mc1808' hardware revision of the 1C is rootable; ma1808/mb1808 are "
                "not.", lead=True)
@@ -370,9 +398,9 @@ def uart(ctx: Context) -> None:
     if p.key == "p2148":
         c.info("P2148 has no reset button — hold the two buttons together: <1s = spawn the "
                "UART shell, >3s = Wi-Fi reset, >5s = full factory reset.", lead=True)
-    c.detail("Auto-login + backup + install over serial — and 'prep-stick' to flash the USB "
-             "image safely — are being built next (they need on-hardware validation). For now, "
-             "follow the steps above.", lead=True)
+    c.detail("The 0.4 plan for safe serial automation, USB-stick preparation, adoption, and bench "
+             "qualification is at https://github.com/SisyphusMD/dreame-valetudo/blob/main/docs/"
+             "UART-0.4.md. Until that is hardware-validated, follow the steps above.", lead=True)
 
 
 def auto(ctx: Context, rest: Sequence[str]) -> None:

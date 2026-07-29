@@ -2,13 +2,15 @@
 
 *Take your Dreame robot vacuum off the cloud, right from your Mac.*
 
-**Root supported Dreame robot vacuums and install [Valetudo](https://valetudo.cloud), the local,
-cloud-free robot firmware, with one guided command.** The Valetudo docs assume a Debian box; this runs
-the whole flow on **macOS** (Apple Silicon or Intel), working around the USB quirks that stop Google's
-`fastboot` from even seeing the robot on Apple Silicon. It runs on **Linux** (amd64/arm64) too. One
-command takes you from a stock robot to a Valetudo web UI over a USB cable, pausing only for the few
-steps a tool physically can't do: the FEL button sequence, the web image build, and the go/no-go
-before flashing.
+This tool walks you through rooting a supported Dreame vacuum and installing
+[Valetudo](https://valetudo.cloud), so the robot works locally without the vendor cloud. Start it
+with one command and follow along. It handles the checks, downloads, backups, and device commands,
+then pauses when it needs you to press buttons, build the firmware in a browser, or approve the
+actual flash.
+
+The official Valetudo instructions are written around Debian. This project brings the same process
+to **macOS** (Apple Silicon or Intel), including a workaround for the USB problem that keeps Google's
+`fastboot` from seeing these robots on Apple Silicon. It also runs on **Linux** (amd64 or arm64).
 
 ![dreame-valetudo running in Terminal on macOS: Phase 2 flashes the rooted image (OKAY-checked, with the flash-authorization token redacted in the shareable log), then Phase 3 installs Valetudo over the robot's own Wi-Fi AP, pausing at a highlighted ACTION banner for the one hands-on step.](docs/terminal-demo.svg)
 
@@ -17,19 +19,19 @@ before flashing.
 > procedure and adds guardrails, but you run it at your own risk. Read
 > [valetudo.cloud](https://valetudo.cloud/pages/installation/dreame/#fastboot) first.
 
-It is built to fail safe: Phase 1 (recon) only reads, so the whole USB path is validated at zero brick
-risk before Phase 2 writes anything. Recon captures the stock boot-critical flash prefix before the
-firmware changes; Phase 3 separately captures the robot's private/misc identity before changing its
-configuration.
+The first phase only reads from the robot. It checks the USB connection and model before anything is
+allowed to write, and it saves the stock boot data needed by `restore`. Later, before the robot's
+configuration changes, the tool also saves its unique identity data.
 
 > [!IMPORTANT]
-> **Keep both backups off this machine.** The private/misc backup is the robot's identity and cannot
-> be regenerated. The recon capture is what `restore` uses to reconstruct its original stock
-> firmware. They solve different recovery problems.
+> **Copy both backups somewhere else.** One contains the robot's identity and cannot be recreated.
+> The other is what `restore` uses to rebuild its stock firmware. You need both because they protect
+> against different failures.
 
 ## The guided flow
 
-Run `dreame-valetudo` and follow the prompts. Re-run the same command at any time to resume.
+Run `dreame-valetudo` and follow the prompts. If you stop, run the same command again and it will pick
+up where you left off.
 
 | Stage | Connection | What happens |
 |---|---|---|
@@ -38,33 +40,33 @@ Run `dreame-valetudo` and follow the prompts. Re-run the same command at any tim
 | 3. Root | USB through the Breakout PCB | The one destructive step; verifies identity and every flash response |
 | 4. Install | The robot's own Wi-Fi AP | Saves the factory identity, installs Valetudo, and opens its local web UI |
 
-The terminal can close during a run. The work continues in a private tmux session, and running
-`dreame-valetudo` again offers to rejoin it.
+You can even close the terminal during a run. The work stays alive in a private tmux session, and the
+next `dreame-valetudo` run will offer to rejoin it.
 
 ## Supported computers
 
-Release packages are qualified on the oldest maintained host we support and the current release.
-Older systems may work, but are not claimed until they are in this matrix.
+We test release packages on every minimum version below, plus the newer releases listed beside it.
+Older systems might work, but we do not promise that until they are part of this test matrix.
 
-| Platform | Supported floor | Current qualification |
+| Operating system | Minimum supported version | Also tested on |
 |---|---|---|
 | macOS, Apple Silicon or Intel | macOS 15 | macOS 26 |
 | Debian / Raspberry Pi OS | Debian 12 / Raspberry Pi OS Bookworm | Debian 13 |
 | Ubuntu | Ubuntu 22.04 LTS | Ubuntu 26.04 LTS |
 | Fedora | Oldest maintained Fedora (currently 43) | Fedora 44 |
-| RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 8, 9, and 10 |
-| openSUSE Leap | Leap 16.0 | Leap 16.0 |
+| RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 9 and 10 |
+| openSUSE Leap | Leap 16.0 | — |
 
-The `.deb` and `.rpm` require glibc 2.28 or newer. Source installs additionally require Python 3.11
-or newer. CI installs, upgrades, exercises, and removes the actual packages on every Linux row.
-Native macOS CI runs the full suite on both architectures and supported OS versions; release builds
-also install, exercise, and remove the exact signed package on each one.
+The `.deb` and `.rpm` need glibc 2.28 or newer. Installing from source also needs Python 3.11 or
+newer. These are not just build targets: CI installs, upgrades, runs, and removes the real packages
+on every Linux row. It does the same with the signed macOS package on both Apple Silicon and Intel.
 
 ## Install
 
-**Homebrew** is the simplest route on macOS or Linux. Prefer not to touch a terminal? Use the signed
-macOS `.pkg` (double-click, nothing else needed). Then just run `dreame-valetudo`, no arguments, and
-the tool guides the rest. Download links list **forgejo (primary)**, then the **GitHub mirror**.
+**Homebrew** is the easiest option on macOS or Linux. On a Mac, you can also use the signed `.pkg` if
+you would rather download and double-click an installer. Once it is installed, run
+`dreame-valetudo` with no arguments. The download links below list **Forgejo (primary)** first and
+the **GitHub mirror** second.
 
 ### Homebrew (macOS and Linux, recommended)
 
@@ -74,23 +76,21 @@ brew trust sisyphusmd/tap    # one-time; Homebrew 6+ won't load a third-party ta
 brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
-One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi-fel` (the small C
-helper that drives the robot's FEL mode) once.
+The same command works on any supported Mac or Linux architecture. On its first run, Homebrew builds
+`sunxi-fel`, the small helper used to talk to the robot in FEL mode.
 
 > [!NOTE]
-> **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev`; it asks for
-> your password. macOS needs nothing. Until the rule is installed, every command except help,
-> version, and the installer itself stops with this reminder; set `DREAME_NO_UDEV_CHECK=1` for
-> Wi-Fi-only work. The `.deb` and `.rpm` install it automatically, so this is only for the
-> Homebrew/source route.
+> **Linux, one time:** run `dreame-valetudo install-udev` so the tool can use USB without sudo. It
+> will ask for your password. The `.deb` and `.rpm` do this automatically, and macOS does not need
+> it. For Wi-Fi-only work, you can bypass the reminder with `DREAME_NO_UDEV_CHECK=1`.
 
 ---
 
 ### Signed macOS installer (`.pkg`, double-click)
 
-Bundles everything (no Homebrew, no build); best for a non-technical person. Not sure which chip?
-Apple menu → About This Mac ("Apple M…" is Apple Silicon, "Intel" is Intel). Open it, then run
-`dreame-valetudo`.
+This bundles everything, so there is no Homebrew setup or local build. If you are not sure which Mac
+you have, open Apple menu → About This Mac. "Apple M…" means Apple Silicon; otherwise it will say
+Intel. Open the matching installer, then run `dreame-valetudo`.
 - **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-arm64.pkg)
 - **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-x86_64.pkg)
 
@@ -98,8 +98,8 @@ Apple menu → About This Mac ("Apple M…" is Apple Silicon, "Intel" is Intel).
 
 ### Debian / Ubuntu / Raspberry Pi OS (`.deb`)
 
-Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch
-(`dpkg --print-architecture`):
+The package includes `sunxi-fel` and sets up USB access for you. Check your architecture with
+`dpkg --print-architecture`, then download the matching file:
 - **arm64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo_arm64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo_arm64.deb)
 - **amd64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo_amd64.deb) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo_amd64.deb)
 ```bash
@@ -111,7 +111,8 @@ dreame-valetudo
 
 ### Fedora / RHEL / openSUSE (`.rpm`)
 
-Self-contained (bundles `sunxi-fel`, installs the USB udev rule). Pick your arch (`uname -m`):
+The package includes `sunxi-fel` and sets up USB access for you. Check your architecture with
+`uname -m`, then download the matching file:
 - **x86_64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo.x86_64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo.x86_64.rpm)
 - **aarch64**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo.aarch64.rpm) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo.aarch64.rpm)
 ```bash
@@ -127,30 +128,31 @@ dreame-valetudo
 git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo    # or the github.com mirror
 cd dreame-valetudo && uv run dreame-valetudo
 ```
-[`uv`](https://docs.astral.sh/uv/) handles the interpreter and the on-demand `pyusb`. Or install it as
-a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl**, **tmux**,
-**OpenSSH**, **tar**, **zip**, and **unzip** at runtime. macOS already includes everything except
-libusb and tmux (`brew install libusb tmux`). On Debian/Ubuntu, install
-`libusb-1.0-0 curl tmux openssh-client tar zip unzip`. The `.deb` and `.rpm` declare these for you;
-Homebrew and source installs use the host copies and the tool names anything missing. Without tmux,
-a run ends when its terminal closes instead of surviving to be rejoined. Building `sunxi-fel` on
-the first run also needs either a system `sunxi-tools` or, on Debian/Ubuntu,
-`sudo apt install git make pkg-config libusb-1.0-0-dev libfdt-dev`. On Linux, install the udev rule
-from `packaging/udev/`.
+[`uv`](https://docs.astral.sh/uv/) supplies Python and loads `pyusb` when it is needed. To install the
+project as a command instead, use `uv tool install .` or `pipx install .`.
+
+A source install also uses **libusb**, **curl**, **tmux**, **OpenSSH**, **tar**, **zip**, and
+**unzip** from your computer. macOS already has all but libusb and tmux; install those with
+`brew install libusb tmux`. On Debian or Ubuntu, install
+`libusb-1.0-0 curl tmux openssh-client tar zip unzip`. The tool will tell you if anything is missing.
+Without tmux it still works, but closing the terminal also ends the run.
+
+The first build of `sunxi-fel` needs either a system `sunxi-tools` or, on Debian/Ubuntu,
+`sudo apt install git make pkg-config libusb-1.0-0-dev libfdt-dev`. Linux source installs also need
+the udev rule from `packaging/udev/`. The `.deb` and `.rpm` take care of all of this for you.
 
 ## What you need
 
-The tool automates everything else, and prints this checklist on a fresh run:
+Before you start, gather these things. The tool prints the same checklist on a fresh run.
 
-- **A Dreame Breakout PCB** — the one piece of hardware. It is an open-hardware board (Hypfer's
-  [`valetudo-dreameadapter`](https://github.com/Hypfer/valetudo-dreameadapter)) that puts the robot
-  into FEL/fastboot mode. **No soldering to the robot; warranty seals stay intact:** you pop the top
-  cover and plug the board onto the debug header. Fabricate it (gerbers in the
-  [releases](https://github.com/Hypfer/valetudo-dreameadapter/releases), ordered **at 1.2 mm
-  thickness** or the robot-facing connector won't fit), or get a community board/kit via the
-  dontvacuum [Telegram group](https://t.me/+vuPbtb23w0g0NGIy) (assembled boards also turn up on hobby
-  shops like Tindie, ~$20; those are unofficial). Assembly, connection, and the FEL-button sequence,
-  with photos: [dreame_gen3.pdf](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf) and the
+- **A Dreame Breakout PCB.** This open-hardware board plugs into the robot's debug connector and puts
+  it into FEL/fastboot mode. You do not solder to the robot or break its warranty seals. If you order
+  the board yourself, use the gerbers from the
+  [valetudo-dreameadapter releases](https://github.com/Hypfer/valetudo-dreameadapter/releases) and
+  specify **1.2 mm thickness**; a thicker board will not fit the connector. Community boards are
+  sometimes available through the dontvacuum [Telegram group](https://t.me/+vuPbtb23w0g0NGIy) or
+  hobby shops such as Tindie. For assembly, connection, and the button sequence, see the illustrated
+  [dreame_gen3.pdf](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf) and the
   [Valetudo Dreame install page](https://valetudo.cloud/pages/installation/dreame/).
 - **A USB cable** from the board (micro-USB) to your computer.
 - **A computer**: a Mac or Linux box. Apple Silicon is the hardware-bench reference; native CI
@@ -160,15 +162,13 @@ The tool automates everything else, and prints this checklist on a fresh run:
 
 ## Supported models
 
-Every model below is the **same Allwinner MR813 "gen3" silicon**, rooted the same way (**USB FEL →
-fastboot** via the Breakout PCB; no soldering, warranty seals intact). A model is just a profile with
-its DustBuilder page, Valetudo class, and hardware loader details. Pick one interactively, or with
-`DREAME_MODEL=<key>`; the loader is chosen automatically.
+The fastboot models below use the same Allwinner MR813 "gen3" platform and the same USB FEL →
+fastboot process. The model choice tells the tool which loader, DustBuilder page, and Valetudo build
+to use. You can pick from the menu or set `DREAME_MODEL=<key>`; the rest is automatic.
 
-**Status** reflects what has been verified on real hardware, not whether it can work: **✅ Verified**
-is rooted end-to-end on real hardware; **🧪 Untested** is the same flow with model data taken verbatim
-from Valetudo's source and the dustbuilder, but not yet run on that exact model. Recon is
-non-destructive, so an Untested model still validates the whole USB path before anything is flashed.
+**✅ Verified** means we have completed the entire process on that model. **🧪 Untested** means its
+profile comes from Valetudo and DustBuilder, but nobody has yet completed this tool's flow on that
+exact hardware. The read-only recon phase still checks the actual robot before any flash is allowed.
 
 | Key | Model | Code | Status |
 |---|---|---|---|
@@ -197,16 +197,16 @@ non-destructive, so an Untested model still validates the whole USB path before 
 > **R2253** unit is **not supported** and can brick. The tool confirms before proceeding, and recon
 > reads the real model code non-destructively.
 
-**UART-method models (guided manual, not yet automated).** Older/smaller Dreames root over a UART
-serial shell, not fastboot: e.g. 1C, 1T, D9 / D9 Pro, F9, L10 Pro, **Z10 Pro**, W10 (non-Pro), X10+,
-and the Mova Z500. The tool knows these models but doesn't automate them yet: pick one in the picker
-and it prints a fully guided manual walkthrough with each step and the right references.
+**UART models are guided, but not automated yet.** Older and smaller models such as the 1C, 1T,
+D9 / D9 Pro, F9, L10 Pro, **Z10 Pro**, W10 (non-Pro), X10+, and Mova Z500 use a serial shell instead
+of fastboot. Pick one in the menu and the tool will print the correct step-by-step procedure and
+links. The plan for safe automation and Z10 Pro hardware testing is in
+[`docs/UART-0.4.md`](docs/UART-0.4.md).
 
-**Not supported.** Two robots *named* like supported ones are actually an Allwinner MR133 (armv7) and
-out of scope: the **DreameBot L10 Ultra** (`r2257`) and **L10s Pro** (`r2216`). Also avoid the
-look-alikes: the **L20 Ultra R2253**, robots sold as "**L40**" that are rebadged L10s Pro Gen3 / "L40
-Ultra AE" / "L40s Pro Ultra", and the "**P10 Ultra**" (distinct from the supported P10 Pro Ultra).
-Adding a new fastboot Dreame is a profile edit; model codes and classes come verbatim from
+**Some similar names hide different hardware.** The **DreameBot L10 Ultra** (`r2257`) and
+**L10s Pro** (`r2216`) use an unsupported MR133 platform. The **L20 Ultra R2253**, rebadged models
+sold as "**L40**", "L40 Ultra AE", or "L40s Pro Ultra", and the **P10 Ultra** are also not the
+supported robots with similar names. Model codes and classes in this project come from
 [Valetudo's source](https://github.com/Hypfer/Valetudo/tree/master/backend/lib/robots/dreame).
 
 ## Upgrading
@@ -220,36 +220,32 @@ sudo apt update && sudo apt upgrade dreame-valetudo  # Debian/Ubuntu (.deb)
 git pull                                             # from source
 ```
 
-The **first time you run the tool** after upgrading, it migrates the workspace to any new on-disk
-layout automatically with atomic, never-clobber moves. The legacy path is removed after a successful
-move, not left as a compatibility symlink, and a build that sees a newer layout refuses to alter it.
-There is nothing extra to do. To run it deliberately when you have upgraded but have no rooting
-task yet, run `dreame-valetudo migrate`. Your factory backups are preserved;
-[`docs/LAYOUT.md`](docs/LAYOUT.md) documents every layout version.
+The first run after an upgrade moves older workspace layouts forward automatically without
+overwriting anything. You normally do not need to think about it. If you want to migrate before
+working on a robot, run `dreame-valetudo migrate`. Factory backups are preserved, and
+[`docs/LAYOUT.md`](docs/LAYOUT.md) records the layout details.
 
-The tool also maintains Valetudo itself on any adopted rooted robot. A normal
-`dreame-valetudo` run offers a newer verified pinned release when the saved version proves an
-upgrade is available. Run `dreame-valetudo update-valetudo` at any time to check the version
-reported by the live robot and update directly, without stepping through intermediate WebUI
-releases. The replacement is staged and SHA-256 checked on the robot before an atomic rename, so a
-dropped transfer leaves the working executable in place.
+The tool can also update Valetudo on a robot that is already rooted, including one rooted by an
+older method. A normal run offers the update when it can prove a newer verified version is
+available. You can check directly with `dreame-valetudo update-valetudo`. The new binary is verified
+on the robot before it replaces the old one, so an interrupted transfer leaves the working copy in
+place.
 
 ## Release candidates (and switching back to stable)
 
-Before a stable version is cut, the same real artifacts (Homebrew formula, `.pkg`, `.deb`, `.rpm`,
-tarball) are published as a **release candidate** for hardware testing. Candidates are tagged `-rc.N` and
-listed on the Releases pages
+Before a stable release, we publish the real Homebrew formula, `.pkg`, `.deb`, `.rpm`, and tarball as
+a **release candidate** for hardware testing. RCs use a `-rc.N` tag and appear on the Releases pages
 ([forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases),
-[github](https://github.com/SisyphusMD/dreame-valetudo/releases)) as **Pre-release**, never marked
-"latest", so every normal install path above stays on the stable version unless you opt in.
-Maintainers qualify an RC with the built-in `dreame-valetudo bench` campaign runner; the complete
-physical, interruption, restore, and package matrix is in
-[`docs/HARDWARE-TESTING.md`](docs/HARDWARE-TESTING.md). `dreame-valetudo bench plan` reads the
-selected robot's current saved state and shows exactly which scenarios can run next.
+[github](https://github.com/SisyphusMD/dreame-valetudo/releases)) as **Pre-release**. They are never
+marked "latest", so normal installs stay on stable unless you choose an RC.
 
-Switching is safe in either direction: all channels share one `~/dreame-valetudo/` workspace and
-switching never touches it (factory backups survive, and the first run after a switch migrates the
-on-disk layout if needed). By install method:
+The built-in `dreame-valetudo bench` command guides maintainers through the hardware campaign. The
+physical, interruption, restore, and package scenarios are documented in
+[`docs/HARDWARE-TESTING.md`](docs/HARDWARE-TESTING.md). `dreame-valetudo bench plan` reads the
+selected robot and shows which scenarios it can safely run next.
+
+You can switch between stable and an RC without moving or deleting the `~/dreame-valetudo/`
+workspace. Your robot state and backups stay put. Here is how to switch for each install method.
 
 **Homebrew.** The candidate is a separate formula, `dreame-valetudo-rc`, that installs the same
 `dreame-valetudo` command as the stable formula, so only one can be installed at a time. Switch by
@@ -314,22 +310,20 @@ On Linux, a Homebrew or source install also leaves the udev rule you added by ha
 
 ## Everyday use
 
-The tool is **idempotent**: every phase records a marker under
-`~/dreame-valetudo/work/robots/<robot>/state/` and skips itself when already complete (override with
-`--force`). Re-run any command safely; it resumes where it left off.
+You do not have to finish everything in one sitting. Each phase records what it completed, so
+running the command again resumes instead of repeating finished work. `--force` is available when
+you deliberately need to repeat a phase.
 
-An older or manually rooted robot can enter the same guided command. After read-only recon preserves
-its current recovery evidence, identify it as already rooted and choose either to adopt that root
-unchanged or continue into a deliberate current re-root. Adoption writes only host-side state; it
-does not flash the robot. The next run remembers that choice, and `update-valetudo` can then verify
-the live robot and maintain Valetudo independently.
+Already rooted? Use the same command. The tool first gathers what it safely can without flashing,
+then lets you keep the existing root or deliberately root it again with the current method. Keeping
+the existing root changes only the files on your computer. After that, `update-valetudo` can maintain
+Valetudo normally.
 
-For the post-flash steps (`push`, `ui`, the `fix-*` helpers) your computer must be joined to the
-**robot's own Wi-Fi AP** (hold the two OUTER buttons until it starts), **not** your home network: on a
-normal LAN, `192.168.5.1` is your router, so the tool refuses to proceed unless a real Dreame answers
-at that address. **This part needs Wi-Fi** — on an Ethernet-only machine (say a headless Linux box), a
-cheap USB Wi-Fi dongle lets it join the robot's AP; once you point the robot at your home Wi-Fi from
-Valetudo, everything after runs over your LAN.
+For `push`, `ui`, and the `fix-*` helpers, join the computer to the **robot's own Wi-Fi network** by
+holding the two outer buttons until it speaks. Do not stay on your home network. The tool checks that
+a real Dreame, rather than your router, answers at `192.168.5.1`. An Ethernet-only computer will need
+a USB Wi-Fi adapter for this part. Once Valetudo joins the robot to your home Wi-Fi, normal access is
+over your LAN.
 
 ```bash
 dreame-valetudo            # NO ARGS: the one command you need. It asks which MODEL you
@@ -363,26 +357,26 @@ dreame-valetudo help                # full help
 
 ### Returning a fastboot robot to stock
 
-The robot's physical factory reset does **not** restore stock firmware. On rooted firmware it clears
-the writable `/data` area, including Wi-Fi, maps, settings, and `/data/valetudo`, so Valetudo must be
-installed again afterward. Returning to stock is two separate operations: restore the firmware with
-this tool, then use the physical factory reset to clear the prior rooted installation's data.
+The robot's factory-reset button does **not** put the stock firmware back. On a rooted robot it clears
+Wi-Fi, maps, settings, and Valetudo's files, leaving you with rooted firmware that needs Valetudo
+installed again. To return fully to stock, first restore the firmware with this tool, then use the
+physical factory reset to clear the old user data.
 
-`dreame-valetudo restore` first derives a durable stock-recovery kit from that robot's pre-root recon
-capture. Before writing, it validates the captured partitions and signed boot chain, then binds the
-kit to the saved model, recorded identity, and robot currently attached. It restores private/misc,
-both stock boot/rootfs slots, and toc1, stopping on the first response that is not `OKAY`.
+`dreame-valetudo restore` builds a stock-recovery kit from the data saved during recon. Before it
+writes, it checks the captured partitions and boot chain, then makes sure the kit, saved robot, and
+connected hardware all match. It restores the identity data, both stock boot/rootfs slots, and toc1,
+and stops immediately if the robot does not answer `OKAY`.
 
-After reboot, the tool watches for an automatic return to FEL and asks you to confirm that stock
-actually booted. A closed terminal or unanswered confirmation resumes without flashing a second
-time. A capture whose stock history is unknown stays useful recovery evidence but is never silently
-promoted into restorable stock; older captures require an explicit one-time origin and stock-history
-attestation.
+After reboot, the tool watches for an automatic return to FEL, which would mean stock did not start,
+and asks you to confirm a successful boot. If the terminal closes while it waits, the next run
+resumes the check without flashing again. Older captures whose history cannot be proven remain useful
+recovery evidence, but the tool will ask you to confirm where they came from before treating them as
+stock.
 
-Restore deliberately leaves toc0 and `/data` alone because normal DustBuilder rooting does not
-change toc0 and recon does not copy the robot's entire user-data partition. Once stock boots, use the
-physical factory reset to clear Valetudo, Wi-Fi, maps, and settings. The exact validation and A/B
-selection rules are documented in [How it works](docs/DESIGN.md#factory-backups-and-stock-restore).
+Restore intentionally leaves toc0 and `/data` alone. Normal DustBuilder rooting does not change
+toc0, and recon does not copy the robot's entire user-data partition. Once stock boots, use the
+physical factory reset to clear Valetudo, Wi-Fi, maps, and settings. The detailed validation and A/B
+selection rules are in [How it works](docs/DESIGN.md#factory-backups-and-stock-restore).
 
 There is no config or secrets file; every knob is an optional environment variable:
 

@@ -17,7 +17,8 @@ byte-for-byte, so they are not redistributed here; regenerate them from a genuin
 
 | name | sha256 | size | regenerate |
 |---|---|---|---|
-| `selfsigned_toc0_correct.img` | `962ac4f39062a8b82c9a0c4383ad43a1e9deb4c73821ef66e544a3baca18a895` | 98304 | `tools/build_selfsigned_toc0_correct.py` → `tools/resign_toc0.py --in <genuine toc0> --out … --root-key-in root_dev_key.pem` |
+| `selfsigned_toc0_correct.img` | `962ac4f39062a8b82c9a0c4383ad43a1e9deb4c73821ef66e544a3baca18a895` | 98304 | `tools/build_selfsigned_toc0_correct.py` with the archived dev key; `resign_toc0.py` builds an equivalent fresh image but refreshes hygiene fields, so it is not byte-identical |
+| `toc0_debug.img` | `1a7c1c82fd9caf2e9ceff221e923112e3f71b62c67983fa9f3585d5a2cf0ad30` | 98304 | `tools/enable_toc0_debug.py --in <genuine toc0> --out …`; offline-built, not yet hardware-run |
 | `chain_toc1.img` | `d27e5aff66283e4970b6f1dae4e95b3235bbbd0e333ec7632fd937e865473cfc` | 1245184 | `tools/resign_toc1_generic.py --in <genuine recovery_toc1> --out … --root-key-in root_dev_key.pem` |
 | `chain_toc1_ubootpatched.img` | `5ad806ec1b14f00ade08cef4550b80853eaf52dca55f3e74fd5d64a4e32e6ffa` | 1245184 | as `chain_toc1.img`, plus the 2-byte u-boot patch + content-hash re-pin at `0x4d60d` (see chapter 09) |
 

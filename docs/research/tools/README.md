@@ -27,11 +27,13 @@ They depend on **sister tooling already in this repository**:
 | `read_efuse.sh`, `sid_read.sh` | 05 | non-destructive eFuse ROTPK read over FEL |
 | `make_boot0_writer.py` | 04 | build the 36-byte boot0-write stub |
 | `resign_toc0.py` | 06 | re-sign TOC0/item0 (raw-RSA scheme) with an owner key |
+| `toc0.py` | 06, 07 | standard-library TOC0 parser and internal-signature checks shared by the tools |
+| `enable_toc0_debug.py` | 07, 12 | offline-only debug-config builder for the direct-read experiment |
 | `resign_toc1_generic.py` | 08 | re-sign all seven TOC1 certs (PKCS#1 v1.5) with a shared root key |
-| `build_selfsigned_toc0_correct.py` | 06 | drive `resign_toc0.py` to build the byte-perfect self-signed toc0 |
-| `verify_toc0_generic.py`, `verify_toc1_generic.py` | 08, 13 | offline structure checks — **known to false-pass; hardware is ground truth** |
+| `build_selfsigned_toc0_correct.py` | 06 | reproduce the exact hardware-tested self-signed TOC0 with the archived dev key |
+| `verify_toc0_generic.py`, `verify_toc1_generic.py` | 08, 13 | internal structure/crypto checks; they do not model the hardware trust anchor |
 | `disasm_verify.py` | 07 | capstone byte-check of the SPL eFuse anchor + the debug-gate |
 | `pull_robot.sh` | — | full-eMMC mirror over SSH (needs a root shell; used to build the offline substrate) |
 
-> The offline verifiers (`verify_toc0/1_generic.py`, and a Unicorn emulation) each passed a
-> hardware-rejected file. Never treat an offline "verified" as acceptance — see chapter 13.
+> An offline “verified” result means internally consistent, not trusted by the robot's eFuse root.
+> Never treat it as hardware acceptance — see chapter 13.

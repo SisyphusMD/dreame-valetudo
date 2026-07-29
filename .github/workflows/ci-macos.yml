@@ -43,6 +43,9 @@ jobs:
           python-version: "3.14.6"
       - name: Install native test dependencies
         run: |
+          # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
+          # call; only homebrew-core formulae are installed, so drop the stray tap instead.
+          brew untap aws/tap 2>/dev/null || true
           brew install bash shellcheck tmux
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Lint, typecheck, and run Python tests
