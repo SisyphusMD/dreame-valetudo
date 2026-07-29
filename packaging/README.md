@@ -22,6 +22,11 @@ are produced in two places (`.deb`/tarball on Forgejo, `.pkg` on GitHub), so the
 without making one registry authoritative. `brew install sisyphusmd/tap/dreame-valetudo-rc`
 installs the newest candidate for hardware testing without touching the stable formula.
 
+Pre-merge CI installs the Linux packages across four distro families and installs the source
+tarball into an isolated environment. Tag builds additionally execute both `.deb` architectures,
+and each native macOS leg installs, tests, and removes the exact Homebrew formula and signed `.pkg`
+before those release assets are published.
+
 ## How a release flows
 
 1. **Cut it on Forgejo**: run the **Release** workflow (`.forgejo/workflows/release.yml`) from
@@ -97,7 +102,9 @@ Forgejo/NAS releases still complete.
 - **The `.pkg` native-library bundling is the only piece not dry-runnable off-CI.**
   `release-macos.yml` rewrites `sunxi-fel`'s libusb reference to its co-located `@loader_path`
   dylib. PyInstaller's pyusb hook separately embeds libusb inside the frozen `dreame-fastboot`
-  onefile, so hardened-runtime removal of `DYLD_*` variables does not affect that client.
+  onefile, so hardened-runtime removal of `DYLD_*` variables does not affect that client. Each
+  native macOS leg now installs its signed and notarized package, runs the built-in host smoke and
+  helper checks, then uninstalls it and proves the test backup survived before uploading the asset.
 - **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`).** amd64 builds natively on
   the runner; arm64 emulates inside BuildKit's builder (the `docker-container` driver carries QEMU),
   because the Talos runner node has no usable host binfmt for a plain `docker run --platform arm64`
@@ -116,7 +123,6 @@ Forgejo/NAS releases still complete.
 - **The `.rpm` shares the `.deb`'s bundle + udev postinstall**, built from the same buildx binaries
   with a second `nfpm -p rpm` (config in `packaging/nfpm.yaml`; `overrides.rpm.depends`). Its runtime
   deps are SONAME/file requires (`libusb-1.0.so.0()(64bit)`, `/usr/bin/ssh`, …) rather than distro
-  package names, so they should resolve on Fedora/RHEL/openSUSE alike — but this hasn't been installed
-  on a real RPM distro yet. On the first `.rpm` release, validate `sudo dnf install ./dreame-valetudo.*.rpm`
-  pulls its deps and runs, and that the udev postinstall fired. For a prerelease `-rc.N` tag, nfpm maps
-  the `-` into the rpm version/release, so eyeball the rc `.rpm`'s version string too.
+  package names. CI installs ordered RC builds in Fedora and openSUSE, exercises the frozen entry
+  point and helpers, upgrades, removes, and proves backups survive; Debian 12 and Ubuntu 22.04 run
+  the equivalent `.deb` test. Physical USB access and the udev rule still require a real host.

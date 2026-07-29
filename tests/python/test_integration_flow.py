@@ -49,9 +49,9 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
             return Result(argv, 0, "", "")
         return Result(argv, 0, "OKAY", "")  # sunxi-fel, fastboot client, ssh-keygen, zip, ...
 
-    # confirms: [open dustbuilder?] [config accepted?] [flash now?];
+    # confirms: [already rooted? no] [open dustbuilder?] [config accepted?] [flash now?];
     # asks: [FEL readiness (Enter)] [SSH key choice (1 = dedicated)]
-    ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[True, True, True],
+    ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[False, True, True, True],
                    asks=["", "1"], env={"HOME": str(home)})
     # stage1 present so recon proceeds
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)

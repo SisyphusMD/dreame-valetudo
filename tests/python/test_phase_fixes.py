@@ -25,6 +25,9 @@ from dreame_valetudo.phases.fixes import (
     fix_wifi,
 )
 from dreame_valetudo.run import Result
+from dreame_valetudo.workspace import Robot
+
+_CONFIG = "a" * 32
 
 
 def _remote(call: tuple[str, ...]) -> str:
@@ -38,6 +41,13 @@ def _reachable_dreame(argv: tuple[str, ...]) -> Result | None:
     if cmd == "true" or cmd == "test -d /mnt/private/ULI/factory":
         return Result(argv, 0, "", "")
     return None
+
+
+def _bind_impl_robot(ctx: Context) -> None:
+    ctx.robot = Robot(ctx.ws.robots_dir / "bench")
+    ctx.robot.state_set("model_key", ctx.profile.key)
+    ctx.robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    (ctx.robot.recon_dir / "config.txt").write_text(f"config: {_CONFIG}\n")
 
 
 def test_fix_wifi_preserves_the_official_reset_command(make_ctx: CtxFactory) -> None:
@@ -122,6 +132,10 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         if pre is not None:
             return pre
         cmd = _remote(argv)
+        if "factory_config=" in cmd:
+            return Result(
+                argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={_CONFIG}\n", "",
+            )
         if "device.conf" in cmd:
             return Result(argv, 0, "model=dreame.vacuum.r2416\n", "")
         if cmd == "cat /data/valetudo_config.json":
@@ -131,6 +145,7 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(model="x40-ultra", responder=responder)
+    _bind_impl_robot(ctx)
     streamed_modes: list[int] = []
 
     def redirect(
@@ -144,7 +159,7 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
     fix_impl(ctx)
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("cat > /data/valetudo_config.json" in r for r in remotes)
-    assert not any("printf" in r for r in remotes)  # no JSON on any command line
+    assert not any('{"robot"' in r for r in remotes)  # no JSON on any command line
     assert streamed_modes == [0o600]
     assert not (ctx.ws.base / "valetudo_config.json.patched").exists()
 
@@ -371,7 +386,13 @@ def test_fix_did_dies_on_out_of_range_did(make_ctx: CtxFactory) -> None:
 
 
 # --- fix_impl: model resolution, idempotency, and the null-did hint ---------------------------
-def _impl_responder(model_line: str, config_json: str, ui_up: bool, log_report: str = "") -> object:
+def _impl_responder(
+    model_line: str,
+    config_json: str,
+    ui_up: bool,
+    log_report: str = "",
+    factory_config: str = _CONFIG,
+) -> object:
     def responder(argv: tuple[str, ...]) -> Result:
         pre = _reachable_dreame(argv)
         if pre is not None:
@@ -381,6 +402,8 @@ def _impl_responder(model_line: str, config_json: str, ui_up: bool, log_report: 
         # be caught by the device.conf branch below.
         if "tail -n 40 /tmp/valetudo.log" in cmd:
             return Result(argv, 0, log_report, "")
+        if "factory_config=" in cmd:
+            return Result(argv, 0, f"{model_line}factory_config={factory_config}\n", "")
         if "device.conf" in cmd:
             return Result(argv, 0, model_line, "")
         if cmd == "cat /data/valetudo_config.json":
@@ -391,6 +414,69 @@ def _impl_responder(model_line: str, config_json: str, ui_up: bool, log_report: 
     return responder
 
 
+def test_fix_impl_rejects_another_selected_robot_before_any_write(
+    make_ctx: CtxFactory,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        if "factory_config=" in _remote(argv):
+            return Result(
+                argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={'b' * 32}\n", "",
+            )
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    _bind_impl_robot(ctx)
+    redirects: list[tuple[str, ...]] = []
+    ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
+        lambda argv, _stdout, _stdin: redirects.append(argv) or Result(argv, 0, "", "")
+    )
+
+    with pytest.raises(Die, match="factory config does not match"):
+        fix_impl(ctx)
+    assert redirects == []
+
+
+def test_fix_impl_accepts_same_robot_with_changed_session_config_suffix(
+    make_ctx: CtxFactory,
+) -> None:
+    responder = _impl_responder(
+        "model=dreame.vacuum.r2416\n",
+        '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}',
+        ui_up=True,
+        factory_config=f"{'a' * 8}{'b' * 24}",
+    )
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    _bind_impl_robot(ctx)
+
+    fix_impl(ctx)
+
+    assert any("factory_config=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_fix_impl_preserves_uart_workspace_without_recon_config(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="z10-pro",
+        responder=_impl_responder(
+            "model=dreame.vacuum.p2028\n",
+            '{"robot":{"implementation":"DreameZ10ProValetudoRobot"}}',
+            ui_up=True,
+            factory_config="",
+        ),
+    )
+    ctx.robot = Robot(ctx.ws.robots_dir / "uart-robot")
+    ctx.robot.state_set("model_key", "z10-pro")
+
+    fix_impl(ctx)
+
+    assert ctx.robot_config() is None
+    assert any("factory_config=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
 def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
     make_ctx: CtxFactory,
 ) -> None:
@@ -398,6 +484,7 @@ def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
         "model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}', ui_up=True,
     )
     ctx = make_ctx(model="x40-ultra", responder=r)
+    _bind_impl_robot(ctx)
     ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
         lambda argv, _stdout, _stdin: Result(argv, 1, "", "connection lost")
     )
@@ -411,14 +498,16 @@ def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
 def test_fix_impl_dies_on_unknown_model(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.zz9999\n", "", ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r)
-    with pytest.raises(Die, match="isn't one this tool knows"):
+    _bind_impl_robot(ctx)
+    with pytest.raises(Die, match="connected robot reports"):
         fix_impl(ctx)
 
 
 def test_fix_impl_falls_back_to_profile_class_without_model_line(make_ctx: CtxFactory) -> None:
     # device.conf has no model= -> pin the SELECTED model's class and warn about it.
     r = _impl_responder("did=1\nkey=abc\n", '{"robot":{"implementation":"auto"}}', ui_up=True)
-    ctx = make_ctx(model="x40-ultra", responder=r)
+    ctx = make_ctx(model="x40-ultra", responder=r, confirms=[True])
+    _bind_impl_robot(ctx)
     fix_impl(ctx)
     assert any(k == "warn" and "No readable model=" in m
                for k, m in ctx.console.lines)  # type: ignore[attr-defined]
@@ -430,6 +519,7 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r)
+    _bind_impl_robot(ctx)
     fix_impl(ctx)
     assert any("already pins" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("cat > /data/valetudo_config.json" in _remote(c)
@@ -443,6 +533,7 @@ def test_fix_impl_does_not_claim_a_browser_opened_when_no_launcher_exists(
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r, system="Linux")
+    _bind_impl_robot(ctx)
 
     fix_impl(ctx)
 
@@ -456,6 +547,7 @@ def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFa
     r = _impl_responder("model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}',
                         ui_up=False, log_report="Cannot read properties of null (reading 'did')")
     ctx = make_ctx(model="x40-ultra", responder=r)
+    _bind_impl_robot(ctx)
     fix_impl(ctx)
     assert any("fix-did" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
@@ -470,6 +562,7 @@ def test_fix_impl_scrubs_the_shareable_failure_report(make_ctx: CtxFactory) -> N
         log_report=f"startup failed key={mikey} did={did}\n",
     )
     ctx = make_ctx(model="x40-ultra", responder=r)
+    _bind_impl_robot(ctx)
     fix_impl(ctx)
 
     written = (ctx.ws.base / "fix-impl.log").read_text()

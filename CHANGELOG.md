@@ -2,176 +2,56 @@
 
 ## [Unreleased]
 
-- **feat**: `restore` now reconstructs and manifests an identity-bound stock recovery kit from the
-  pre-root flash capture, validates GPT/gzip/redundant firmware evidence, and restores private/misc,
-  both boot/rootfs slots, and toc1 through the same live-config and `OKAY` flash gates. It leaves
-  untouched toc0 and uncaptured UDISK alone, never silently roots a stock-restored robot again,
-  cryptographically binds new captures to their recon session, records an explicit untouched-stock
-  attestation, and refuses unknown-history captures instead of silently labeling them stock.
-- **fix**: a rejected or interrupted recon can no longer leave enough trusted identity behind to
-  authorize a later flash. Destructive runs also refuse ambiguous multi-device USB setups, journal
-  every flash attempt before the first write, and stop instead of automatically reflashing when
-  host state could not record a completed hardware run.
-- **fix**: the libusb transport now uses the hardware-proven 64 KiB transfer size, streams recovery
-  captures and memory-maps flash images instead of holding partition-sized copies in RAM, publishes
-  uploads atomically, and accepts recovery slices only at the pinned payload's exact size.
-- **fix**: interrupted deviceId/key repairs and migration collisions now resume without stranding
-  stale robot configuration or the prior workspace. State markers are crash-safe, and temporary
-  miio keys are private from creation and cannot follow a pre-existing symlink.
-- **fix**: Linux now opens browser steps with `xdg-open` and all platforms report truthfully when a
-  page could not be opened. Tmux preserves every documented build override, and mistyped commands
-  fail before asking for or creating a robot.
-- **fix**: release replacement failures restore the previous registry asset, release cuts are
-  serialized without allowing one tag to displace another tag's publication, release gates must
-  exercise real tmux, and the release-time lockfile tool is Renovate-pinned and forbidden from
-  changing anything beyond the project version.
-- **fix**: the upstream monitor now distinguishes R2338 exactly from incompatible R2338H. Research
-  flashers stop on every failed FEL transfer, stock recovery requires the manifest-pinned genuine
-  images, and the experimental `oem prep` prohibition is explicitly scoped away from the required
-  production DustBuilder sequence.
-- **fix**: live robot identity checks now recognize Valetudo's current regional L20/L40 model
-  suffixes, while unknown suffixes still stop before the factory backup or installation begins.
-- **fix**: the destructive flash now requires an exactly formed image identity token, a staged
-  model matching the selected robot, unchanged SHA-256-verified image members, and a complete
-  aligned three-part recovery capture before treating the backup as usable.
-- **fix**: Phase 3 now proves that the Wi-Fi robot is the same physical unit recon inspected, not
-  merely the same model, and publishes a factory backup only when both factory trees and every raw
-  partition transfer validate.
-- **fix**: the shipped Valetudo binaries and bundled tmux source now have release-specific pinned
-  SHA-256 digests. An explicitly selected unpinned Valetudo version remains usable only after a
-  clear interactive warning and confirmation.
-- **fix**: robot identity, state, pending prompts, session captures, and historical backups are now
-  private to the current user; existing workspaces repair older permissions and remove duplicated
-  config secrets from state markers. Log scrubbing also covers all-letter and all-digit miio keys.
-- **fix**: research flash/recovery tools now require the expected physical robot identity, never
-  fall back to a universal authorization token, stop on incomplete eMMC pulls, and report an
-  all-zero or malformed eFuse read as inconclusive rather than safe.
-- **fix**: release creation recovers when another publisher wins the create race, stable branch and
-  tag publication is atomic, and reconciliation accepts only the exact artifact matrix backed by
-  matching SHA-256 content on two registries. A same-size corrupted or unexpected asset is never
-  propagated.
-- **fix**: installed RPM builds now give native update and uninstall commands for zypper, dnf, yum,
-  or rpm instead of Debian-only advice.
-- **test**: weekly CI now compares all 13 fastboot models, implementation identities, binary
-  architectures, DDR choices, Secure Boot methods, look-alike warnings, model-specific recovery
-  notes, and the ordered rooting procedure against the latest official Valetudo source. Recon and
-  flash transcripts are exercised independently for every fastboot profile. This monitor never
-  runs in or blocks the local rooting flow.
-- **fix**: a changed stage1 archive pin now invalidates and atomically replaces the unpacked FEL
-  payload, so a successfully verified new download can never be paired with stale boot files.
-- **fix**: legacy recovery-image decryption now streams and memory-maps the multi-gigabyte inputs
-  instead of holding them and thousands of ciphers in RAM, reserves space for every pending output,
-  and leaves launch usable if the host still cannot allocate enough memory.
-- **fix**: declining a safety prompt is now a normal successful cancellation without an issue-report
-  invitation; informational commands, update checks, udev setup, and post-root diagnosis now report
-  their real state without stale-version, router, second-Valetudo, or headless-access false positives.
-- **fix**: a Valetudo binary that was previously verified remains verifiably usable while connected
-  to the offline robot AP, with a digest sidecar binding the cached claim to those exact bytes.
-- **fix**: workspace paths now come from one policy, newer-layout recovery points at a separate
-  home directory that actually works, and the layout, migration, recovery, release-channel, and
-  macOS library documentation now match the shipped behavior.
-- **ux**: the DustBuilder walkthrough now prints the exact current firmware choice and only the
-  options present for each model. Config-rejection recovery now mirrors the support upload form,
-  its privacy warning, processing window, and follow-up email. Rooting uses a static
-  last-known-good guide, while separate CI checks every live fastboot-model form, support form,
-  and linked-guide destinations against committed goldens and advances the displayed verification
-  date only after all sources still match.
-- **fix**: factory backups are now published only after their contents and manifest are complete,
-  cross-checked against the connected robot's live model, and preserve corrupt prior manifests for
-  inspection; refreshed recon captures also atomically refresh their decrypted restore images.
-- **fix**: renaming a legacy robot now preserves the model encoded in its old folder name, and
-  capitalization-only renames work correctly on case-insensitive filesystems.
-- **fix**: FEL permission failures now keep polling instead of being mistaken for a connected
-  robot, and a robot saved by a newer release no longer breaks status, robot selection, or
-  management for every other robot in the workspace.
-- **fix**: installing Valetudo on an already-rooted robot now fetches only the Valetudo binary,
-  without compiling or downloading the unused FEL toolchain, and gives explicit network-switching
-  recovery steps when that binary is not cached.
-- **fix**: robot SSH can no longer open its own password prompt, explicit missing key paths now stop
-  before connecting, and authentication or host-key negotiation failures name the offered key and
-  real SSH error instead of incorrectly blaming the robot's Wi-Fi AP.
-- **fix**: each robot now remembers the SSH key embedded in its own dustbuilder image, so preparing
-  another robot cannot make a later push offer the wrong key; explicit keys no longer expose every
-  unrelated agent identity to the robot AP.
-- **fix**: the dustbuilder walkthrough now names the unselected key-upload radio and keeps
-  prepackaged Valetudo off, discloses the sensitive contents of recovery-image uploads, repairs a
-  stale staged-image marker automatically, and no longer points at an AP dropped by the reboot.
-- **fix**: release reconciliation now repairs missing and inconsistent historical assets across
-  Forgejo, NAS, and GitHub while refusing to choose one registry's bytes without corroboration.
-- **fix**: release and prerelease gates now use the same pinned test tools and complete shell-script
-  coverage as CI, every package declares the libc required by its bundled binaries, and the macOS
-  build reads the sunxi-tools revision from the package's single source of truth.
-- **fix**: release publication now attempts every registry even when one is unavailable, always
-  runs the tap and self-healing reconcile jobs, waits for an exact GitHub tag, verifies every
-  packaged binary, and gives Homebrew a stable release asset with a GitHub fallback.
-- **fix**: source-built `sunxi-fel` now fetches and verifies the exact pinned sunxi-tools commit,
-  rebuilds when that pin changes, and stops instead of compiling a stale checkout; Renovate updates
-  to the boot-ROM transport require human review.
-- **fix**: release workflows now default their repository tokens to read-only, and Apple signing
-  and notarization secrets are exposed only to their consuming steps and removed immediately after
-  use.
-- **fix**: recon recovery images and identity metadata are restricted to the current user, existing
-  workspaces self-heal older permissions, and `fix-impl` removes its private local config copy after
-  streaming it to the robot.
-- **fix**: shareable logs now scrub every supported SSH public-key shape and device-echoed flash
-  token, including `fix-impl` failure reports, while preserving implementation classes, FEL
-  addresses, and download-limit evidence needed to diagnose hardware runs.
-- **fix**: workspace migration no longer marks legacy data complete when an environment override
-  made it skip that data, safely relocates an existing work-directory symlink, and verifies every
-  copied file before removing a cross-volume source. Unwritable, unrelated, or symlinked backup
-  folders no longer abort every command or receive manifests outside the workspace.
-- **fix**: SSH-key setup now refuses incomplete key pairs instead of invoking `ssh-keygen` over an
-  existing private key, reuses an unrecorded dedicated key, and disconnects key generation from
-  hidden input so an overwrite prompt can never hang the run or destroy the only robot credential.
-- **fix**: recovery-backup decryption now verifies the recovered transport keystream against its
-  known digest, preventing a constant-XOR-offset key from passing the sparse-fill check and turning
-  every restored slice into plausible garbage.
-- **fix**: the libusb fastboot client now reports missing backends without a traceback, `doctor`
-  exercises it before any robot work, and failed waits/identity reads show the host error instead
-  of blaming the FEL button sequence. The uv fallback no longer inspects or mutates the launcher's
-  current Python project.
-- **fix**: re-running recon after rooting can no longer overwrite the pre-root recovery capture.
-  Phase 3 now verifies every factory-backup gzip and its tar structure before writing a manifest,
-  and discards partial backups after an SSH connection failure.
-- **fix**: `clean --all` now removes only re-obtainable cache and staged firmware. It keeps each
-  robot's recovery capture, identity and phase state, SSH keys, and logs. An empty `forget` name can
-  no longer resolve to the entire robots directory.
-- **fix**: the macOS `.pkg`'s `sunxi-fel` was missing a library on a Mac without Homebrew, so
-  FEL never worked there — and the tool reported "FEL up" anyway instead of saying so.
+### Added
 
-- **new**: `dreame-valetudo uninstall` removes the tool whichever way it was installed, and warns
-  when more than one install is present (Homebrew and the `.pkg` both provide the command, and
-  which one runs comes down to your PATH). Your backups are never touched.
-- **new**: the macOS `.pkg` now ships an uninstaller (`sudo /usr/local/libexec/dreame-valetudo/uninstall.sh`)
-  — macOS has no way to uninstall a `.pkg`, so removal was a hand-typed `rm -rf`. Your backups are
-  untouched.
-- **new**: a single dim line at the bottom of the terminal names the robot and notes that closing
-  the window is safe.
-- **new**: dreame-valetudo now runs inside a tmux session by default, so a closed terminal or a
-  dropped SSH session doesn't end the run — re-running the same command rejoins it instead of
-  starting a second one — including when you are already working in your own tmux. Set
-  `DREAME_NO_TMUX=1` to opt out.
-- **fix**: downloads and robot SSH can no longer hang indefinitely — a stalled transfer is given
-  up on, and ssh never falls back to its own password prompt.
-- **new**: a question left unanswered with the window closed now gives up after an hour instead of
-  waiting forever, freeing the workspace for the next run. It never times out while you are looking
-  at it. Set `DREAME_IDLE_TIMEOUT` (seconds, 0 to disable) to change it.
-- **new**: a run interrupted while waiting on an answer now records the question, and the robot
-  list shows it — so coming back days later tells you what you were being asked, not just which
-  phases finished.
-- **new**: starting dreame-valetudo while a run is already in progress now offers to go back to it
-  or close it and start something else, naming the robot involved, instead of silently joining.
-- **new**: a second run against the same workspace is refused instead of racing the first — the
-  session wrapper can't cover a user already inside their own tmux, so a lock does.
-- **fix**: closing the terminal, dropping an SSH session or pressing Ctrl+Z during the flash no
-  longer kills or freezes it mid-write.
-- **fix**: re-staging a build is now all-or-nothing. `image --force` extracted over the existing
-  files, so a short or failed unzip left a mixture of two builds that the next flash accepted.
-- **fix**: `image` no longer silently stages another robot's build — a zip that predates the build
-  order or is already staged elsewhere must be confirmed, and browser-renamed `... (1).zip`
-  downloads are now found instead of skipped.
-- **fix**: the flash now refuses an image built for a different robot, and reports a missing recon
-  record before the FEL button sequence instead of after it.
+- `dreame-valetudo restore` can reconstruct an identity-bound stock recovery kit from the
+  pre-root capture and return a fastboot robot to stock. It leaves toc0 and user data alone, watches
+  for an automatic FEL fallback, and will resume boot confirmation without flashing twice.
+- `dreame-valetudo bench` records safety-tiered physical qualification campaigns against the real
+  production phases, including interruption, wrong-device, restore, and package-install scenarios.
+- Adopted rooted robots can check and atomically update their installed Valetudo directly; normal
+  runs offer a newer verified version without requiring intermediate WebUI upgrades.
+- Read-only recon can adopt a robot rooted by an older or manual flow without reflashing it, while
+  still offering a deliberate current-method re-root when that is what the operator wants.
+- Runs now survive closed terminals and dropped SSH connections in a private tmux session. Re-running
+  the command can rejoin the run, pending questions are remembered, and concurrent runs cannot race
+  one another.
+- Fedora, RHEL, and openSUSE now have self-contained RPM packages. A new `uninstall` command finds
+  Homebrew, package, source-tool, and macOS installer copies without touching robot backups.
+- DustBuilder guidance is now specific to each model and stamped with its last verified date. The
+  tool also guides unrecognized-config uploads with the current privacy and follow-up warnings.
+
+### Changed
+
+- All persistent files now live under `~/dreame-valetudo/`, with disposable work separated from
+  irreplaceable backups. Existing layouts migrate automatically with never-clobber behavior.
+- Recon records provenance for the complete three-slice recovery capture, produces the portable
+  `dreame_recovery_backup.zip`, and preserves any trusted pre-root generation on later rooted runs.
+- The README now marks the X40 Ultra, X30 Ultra, and L10s Pro Ultra Heat as hardware verified.
+- Status and other informational commands finish without an unrelated continuation prompt, while
+  their output remains visible after a tmux session closes.
+
+### Fixed
+
+- Destructive work now binds the selected model, staged image, saved config, live robot, and backup
+  together before writing. R2338/R2338H and L20 hardware look-alikes are matched exactly, ambiguous
+  USB setups stop, and every flash response must be `OKAY`.
+- Interrupted or rejected recon, root, restore, migration, image staging, and factory-backup work no
+  longer leaves partial state that can authorize a later write or overwrite a known-good generation.
+- Closing a terminal or pressing Ctrl+Z during a flash no longer interrupts the write; uncertain
+  attempts stop safely instead of silently repeating, and completed stock flashes resume only their
+  physical boot check.
+- Robot SSH no longer falls back to password or unrelated agent keys. Factory backups are validated
+  before publication, and key, device-ID, Wi-Fi, and implementation repairs verify the connected
+  robot before changing it.
+- Downloads and SSH transfers have timeouts, verified cached Valetudo remains usable on the offline
+  robot AP, and the libusb transport handles large recovery and flash files without loading them
+  wholly into memory.
+- Robot identities, keys, recovery data, state, and bench records are kept private; shareable logs
+  redact robot names, credentials, public keys, flash tokens, and other identifying values.
+- macOS packages now include all FEL runtime libraries, Linux browser steps use `xdg-open`, package
+  updates and removals give native commands, and release publication repairs missing or inconsistent
+  assets across the project mirrors.
 
 ## [0.2.1] - 2026-07-24
 

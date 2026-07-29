@@ -14,6 +14,8 @@ from conftest import FB, CtxFactory
 from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import (
+    ADOPTED_ROOT,
+    CURRENT_ROOT,
     FEL_IMAGE_FILES,
     RECOVERY_DUMP_BYTES,
     STAGED_IMAGE_MANIFEST,
@@ -112,6 +114,7 @@ def test_each_fastboot_model_follows_the_official_root_contract(
     _write_recon(ctx)
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
+    assert ctx.need_robot().state_get("root-origin") == CURRENT_ROOT
     assert _flash_ops(ctx) == [
         ("oem", "dust", "626153c7"), ("oem", "prep"),
         ("flash", "toc1", "toc1.img"),
@@ -126,6 +129,18 @@ def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> 
     root(ctx)
     assert "already rooted" in ctx.console.text()
     assert ctx.runner.calls == []  # no doctor, dustbuilder image flow, FEL, or fastboot command
+
+
+def test_root_treats_an_incomplete_existing_root_adoption_as_a_safety_stop(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx.need_robot().state_set("root-origin", ADOPTED_ROOT)
+
+    root(ctx)
+
+    assert "deliberately adopted without reflashing" in ctx.console.text()
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
 
 
 def test_root_does_not_reverse_a_completed_stock_restore_without_force(
@@ -149,6 +164,19 @@ def test_root_refuses_an_uncertain_stock_restore_even_when_forced(
     ctx.need_robot().state_set("restore-attempt", "uncertain stock restore")
 
     with pytest.raises(Die, match="prior stock-restore attempt"):
+        root(ctx, force=force)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_root_directs_completed_restore_to_observation_only_resume(
+    make_ctx: CtxFactory, force: bool,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx.need_robot().state_set("restore-attempt", "flashed-awaiting-stock-boot model=x40-ultra")
+
+    with pytest.raises(Die, match="without --force"):
         root(ctx, force=force)
 
     assert ctx.runner.calls == []  # type: ignore[attr-defined]

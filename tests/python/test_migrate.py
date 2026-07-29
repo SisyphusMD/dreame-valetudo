@@ -53,6 +53,21 @@ def test_current_workspace_self_heals_private_state_and_backup_modes(tmp_path: P
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in backup.iterdir())
 
 
+def test_migration_records_unknown_origin_for_a_legacy_root_marker(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    base = tmp_path / "dreame-valetudo"
+    robot = Robot(base / "work" / "robots" / "kitchen")
+    robot.state_set("rooted", "done by an older release")
+    (base / ".layout").write_text(
+        json.dumps({"layout_version": M.LAYOUT_VERSION, "min_tool_version": "0.2.0"})
+    )
+
+    M.migrate(env, ScriptedConsole())
+
+    assert robot.state_get("root-origin") == "legacy-unknown"
+    assert robot.state_get("rooted") == "done by an older release"
+
+
 def _cross_device_then_publish(src: Path, dst: Path) -> None:
     staged = src.name.startswith(f".{dst.name}.migration-") and src.name.endswith(".payload")
     if not staged:

@@ -1,7 +1,9 @@
-# Runtime / device-specific artifacts. The default work dir (~/dreame-valetudo-work) is
-# already outside the repo; this is belt-and-suspenders in case DREAME_WORK is ever pointed
-# here. These match at any depth, so per-robot subdirs are covered too.
+# Runtime / device-specific artifacts. The default ~/dreame-valetudo/{work,backups} layout is
+# outside the repo; these also protect an accidental DREAME_WORK/DREAME_BACKUPS override here.
 dreame-valetudo-work/
+work/
+backups/
+bench/
 cache/
 dist/
 state/
@@ -20,7 +22,11 @@ check.txt
 *.bin
 *.tar
 *.tar.gz
+*.dd.gz
 dreame_samples.zip
+dreame_recovery_backup.zip
+recovery-provenance.json
+.recovery-capture-refresh
 
 # Python bytecode from the helpers.
 __pycache__/
@@ -31,10 +37,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Packaging build outputs (PyInstaller, pkgbuild, deb).
+# Packaging build outputs (PyInstaller, pkgbuild, deb, rpm).
 build/
 *.pkg
 *.deb
+*.rpm
 root/
 notary.p8
 *.p12

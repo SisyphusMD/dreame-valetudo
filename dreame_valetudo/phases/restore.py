@@ -5,7 +5,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import mmap
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -18,7 +20,7 @@ from typing import BinaryIO
 
 from .. import manifest
 from ..console import abort, die, warn_if_low_disk
-from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES
+from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
@@ -40,13 +42,44 @@ _SECTOR_BYTES = 512
 _TOC0_BYTES = 0x18000
 _TOC0_MAIN = 0x2000
 _TOC0_BACKUP = 0x20000
+_TOC0_HEAD_MAGIC = 0x89119800
+_TOC0_SPL_OFFSET = 0x0F80
+_TOC0_SPL_BYTES = 0x17000
+_TOC0_SPL_DESCRIPTOR = 0x4C
 _TOC1_BYTES = 0x130000
 _TOC1_MAGIC = b"sunxi-secure"
 _TOC1_HEAD_MAGIC = 0x89119800
+_TOC1_EXECUTABLES = (
+    (0x2800, 0xF30C),
+    (0x12000, 0x3B338),
+    (0x4D800, 0xB0000),
+    (0xFDC00, 0x14008),
+)
+_TOC1_CERTS = {
+    "rootkey": 0x1400,
+    "monitor": 0x2400,
+    "optee": 0x11C00,
+    "u-boot": 0x4D400,
+    "scp": 0xFD800,
+    "boot": 0x112000,
+    "rootfs": 0x112400,
+}
+_TOC1_ITEMS = {
+    "monitor": (0x2800, 0xF30C),
+    "optee": (0x12000, 0x3B338),
+    "u-boot": (0x4D800, 0xB0000),
+    "scp": (0xFDC00, 0x14008),
+}
+_TOC1_CERT_BYTES = 0x400
+_FLEET_ROOT_MODULUS_SHA256 = (
+    "acc0b27801b19f9426ef659219a7a93f252da3143152269adf32c7cd8a128a55"
+)
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 _TOC_ADD_SUM_STAMP = 0x5F0A6C39
 _HEAD_LIMIT = 64 * (1 << 20)
 _DUST_XOR = 0xC9ACBCC6
 _KIT_FILES = ("toc1.img", "boot.img", "rootfs.img", "private.img", "misc.img")
+_RESTORE_FEL_WATCH_SECONDS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +87,12 @@ class _Partition:
     name: str
     start: int
     size: int
+
+
+@dataclass(frozen=True, slots=True)
+class _StockHeaders:
+    toc0: tuple[bytes, bytes]
+    toc1: tuple[bytes, bytes]
 
 
 def _source_digest(path: Path, expected_bytes: int, *, prefix_bytes: int = 0) -> tuple[str, bytes]:
@@ -142,11 +181,35 @@ def _required_partitions(partitions: dict[str, _Partition], captured_bytes: int)
     return selected
 
 
-def _stock_toc_images(head: bytes, first_partition: int) -> tuple[bytes, bytes, str]:
+def _add_sum_valid(image: bytes, offset: int) -> bool:
+    stored = int(struct.unpack_from("<I", image, offset)[0])
+    stamped = bytearray(image)
+    struct.pack_into("<I", stamped, offset, _TOC_ADD_SUM_STAMP)
+    calculated = int(sum(
+        struct.unpack_from("<I", stamped, word)[0]
+        for word in range(0, len(stamped), 4)
+    )) & 0xFFFFFFFF
+    return calculated == stored
+
+
+def _stock_toc_images(head: bytes, first_partition: int) -> _StockHeaders:
     main = head[_TOC0_MAIN:_TOC0_MAIN + _TOC0_BYTES]
     backup = head[_TOC0_BACKUP:_TOC0_BACKUP + _TOC0_BYTES]
-    if len(main) != _TOC0_BYTES or main[:8] != b"TOC0.GLH" or main != backup:
-        die("The recovery capture does not contain matching genuine toc0 main/backup copies.")
+    for label, image in (("main", main), ("backup", backup)):
+        if (
+            len(image) != _TOC0_BYTES
+            or image[:8] != b"TOC0.GLH"
+            or struct.unpack_from("<I", image, 8)[0] != _TOC0_HEAD_MAGIC
+            or struct.unpack_from("<I", image, 24)[0] != 2
+            or struct.unpack_from("<I", image, 28)[0] != _TOC0_BYTES
+            or struct.unpack_from("<II", image, _TOC0_SPL_DESCRIPTOR + 8)
+            != (_TOC0_SPL_OFFSET, _TOC0_SPL_BYTES)
+            or not _add_sum_valid(image, 12)
+        ):
+            die(f"The stock toc0 {label} copy has an invalid container or checksum.")
+    spl_end = _TOC0_SPL_OFFSET + _TOC0_SPL_BYTES
+    if main[_TOC0_SPL_OFFSET:spl_end] != backup[_TOC0_SPL_OFFSET:spl_end]:
+        die("The stock toc0 copies contain different SPL firmware; refusing to choose a boot0.")
     positions: list[int] = []
     cursor = 0
     while True:
@@ -162,21 +225,309 @@ def _stock_toc_images(head: bytes, first_partition: int) -> tuple[bytes, bytes, 
         cursor = found + 1
     if len(positions) != 2:
         die(f"Expected two stock toc1 copies before the first partition; found {len(positions)}.")
-    toc1 = head[positions[0]:positions[0] + _TOC1_BYTES]
-    toc1_backup = head[positions[1]:positions[1] + _TOC1_BYTES]
-    if toc1 != toc1_backup:
-        die("The stock toc1 main/backup copies differ; refusing to choose one.")
-    stored_sum = struct.unpack_from("<I", toc1, 20)[0]
-    stamped = bytearray(toc1)
-    struct.pack_into("<I", stamped, 20, _TOC_ADD_SUM_STAMP)
-    calculated_sum = sum(
-        struct.unpack_from("<I", stamped, offset)[0]
-        for offset in range(0, len(stamped), 4)
-    ) & 0xFFFFFFFF
-    if calculated_sum != stored_sum:
-        die("The stock toc1 add_sum checksum does not match; refusing a chain head that boot0 "
-            "would reject.")
-    return main, toc1, hashlib.sha256(main).hexdigest()
+    # Allwinner's own eMMC writer calls 0x8020 the main u-boot location and 0x6000 the backup.
+    # They appear in the capture in the opposite order, so position order is backup then main.
+    toc1_backup = head[positions[0]:positions[0] + _TOC1_BYTES]
+    toc1_main = head[positions[1]:positions[1] + _TOC1_BYTES]
+    for label, image in (("main", toc1_main), ("backup", toc1_backup)):
+        if (
+            image[:12] != _TOC1_MAGIC
+            or struct.unpack_from("<I", image, 16)[0] != _TOC1_HEAD_MAGIC
+            or struct.unpack_from("<I", image, 32)[0] != 13
+            or struct.unpack_from("<I", image, 36)[0] != _TOC1_BYTES
+            or not _add_sum_valid(image, 20)
+        ):
+            die(f"The stock toc1 {label} copy has an invalid container or add_sum checksum.")
+    if any(
+        toc1_main[offset:offset + length] != toc1_backup[offset:offset + length]
+        for offset, length in _TOC1_EXECUTABLES
+    ):
+        die("The stock toc1 copies contain different bootloader firmware; refusing to choose a "
+            "chain head.")
+    return _StockHeaders(toc0=(main, backup), toc1=(toc1_main, toc1_backup))
+
+
+def _der_length(data: bytes | mmap.mmap, offset: int, limit: int) -> tuple[int, int]:
+    if offset >= limit:
+        raise ValueError("truncated DER length")
+    length = data[offset]
+    offset += 1
+    if length < 0x80:
+        return length, offset
+    count = length & 0x7F
+    if count == 0 or count > 4 or offset + count > limit:
+        raise ValueError("invalid DER length")
+    value = int.from_bytes(data[offset:offset + count], "big")
+    if value < 0x80:
+        raise ValueError("non-minimal DER length")
+    return value, offset + count
+
+
+def _der_children(
+    data: bytes | mmap.mmap, start: int, end: int,
+) -> list[tuple[int, int, int, int]]:
+    children = []
+    cursor = start
+    while cursor < end:
+        tag_offset = cursor
+        tag = data[cursor]
+        length, contents = _der_length(data, cursor + 1, end)
+        child_end = contents + length
+        if child_end > end:
+            raise ValueError("DER child exceeds its parent")
+        children.append((tag, tag_offset, contents, child_end))
+        cursor = child_end
+    if cursor != end:
+        raise ValueError("DER children do not close at their parent")
+    return children
+
+
+def _certificate_parts(
+    data: bytes | mmap.mmap, offset: int, limit: int, label: str,
+) -> tuple[bytes, bytes, int, bytes, bytes]:
+    if offset >= limit or data[offset] != 0x30:
+        raise ValueError(f"{label} certificate is not a DER sequence")
+    length, contents = _der_length(data, offset + 1, limit)
+    cert_end = contents + length
+    if cert_end > limit:
+        raise ValueError(f"{label} certificate exceeds its container")
+    outer = _der_children(data, contents, cert_end)
+    if len(outer) != 3 or outer[0][0] != 0x30 or outer[2][0] != 0x03:
+        raise ValueError(f"{label} certificate has an unexpected outer shape")
+    tbs = bytes(data[outer[0][1]:outer[0][3]])
+    tbs_children = _der_children(data, outer[0][2], outer[0][3])
+    if len(tbs_children) < 7 or tbs_children[6][0] != 0x30:
+        raise ValueError(f"{label} certificate has no public key")
+    spki = _der_children(data, tbs_children[6][2], tbs_children[6][3])
+    bits = next((child for child in spki if child[0] == 0x03), None)
+    if bits is None or bits[2] >= bits[3] or data[bits[2]] != 0:
+        raise ValueError(f"{label} certificate has an invalid public-key bit string")
+    key_offset = bits[2] + 1
+    if data[key_offset] != 0x30:
+        raise ValueError(f"{label} certificate has an invalid RSA public key")
+    key_length, key_contents = _der_length(data, key_offset + 1, bits[3])
+    key_parts = _der_children(data, key_contents, key_contents + key_length)
+    if len(key_parts) != 2 or any(part[0] != 0x02 for part in key_parts):
+        raise ValueError(f"{label} certificate has an invalid RSA public key")
+    modulus = bytes(data[key_parts[0][2]:key_parts[0][3]]).lstrip(b"\0")
+    exponent_bytes = bytes(data[key_parts[1][2]:key_parts[1][3]])
+    if len(modulus) != 256 or not exponent_bytes:
+        raise ValueError(f"{label} certificate does not use the expected RSA-2048 key")
+    signature_contents = bytes(data[outer[2][2]:outer[2][3]])
+    if len(signature_contents) != 257 or signature_contents[0] != 0:
+        raise ValueError(f"{label} certificate has an invalid RSA signature field")
+    return (
+        tbs,
+        modulus,
+        int.from_bytes(exponent_bytes, "big"),
+        signature_contents[1:],
+        bytes(data[offset:cert_end]),
+    )
+
+
+def _toc1_certificate_parts(
+    image: bytes, name: str,
+) -> tuple[bytes, bytes, int, bytes, bytes]:
+    return _certificate_parts(image, _TOC1_CERTS[name], len(image), name)
+
+
+def _rsa_pkcs1_sha256_valid(tbs: bytes, modulus: bytes, exponent: int, signature: bytes) -> bool:
+    if exponent != 65537 or len(signature) != len(modulus):
+        return False
+    encoded = pow(
+        int.from_bytes(signature, "big"), exponent, int.from_bytes(modulus, "big"),
+    ).to_bytes(len(modulus), "big")
+    digest_info = _SHA256_DIGEST_INFO + hashlib.sha256(tbs).digest()
+    padding_bytes = len(encoded) - len(digest_info) - 3
+    return (
+        padding_bytes >= 8
+        and encoded == b"\0\1" + b"\xff" * padding_bytes + b"\0" + digest_info
+    )
+
+
+def _toc1_chain_error(image: bytes) -> str | None:
+    try:
+        root_tbs, root_modulus, root_exponent, root_signature, root_cert = (
+            _toc1_certificate_parts(image, "rootkey")
+        )
+        if hashlib.sha256(root_modulus).hexdigest() != _FLEET_ROOT_MODULUS_SHA256:
+            return "root key does not match the Dreame hardware trust anchor"
+        if not _rsa_pkcs1_sha256_valid(
+            root_tbs, root_modulus, root_exponent, root_signature,
+        ):
+            return "root-key certificate signature is invalid"
+        pinned = []
+        for match in re.finditer(rb"\x08\x82\x02\x07", root_cert):
+            value = root_cert[match.end():match.end() + 519]
+            if (len(value) == 519 and value[:2] == b"00" and value[-5:] == b"10001"
+                    and re.fullmatch(rb"[0-9A-Fa-f]{519}", value)):
+                pinned.append(bytes.fromhex(value[2:514].decode("ascii")))
+        if len(pinned) != 6:
+            return "root-key certificate does not pin six content keys"
+        for name in _TOC1_CERTS:
+            if name == "rootkey":
+                continue
+            tbs, modulus, exponent, signature, _cert = _toc1_certificate_parts(image, name)
+            if modulus not in pinned:
+                return f"{name} certificate key is not pinned by the root certificate"
+            if not _rsa_pkcs1_sha256_valid(tbs, modulus, exponent, signature):
+                return f"{name} certificate signature is invalid"
+            if name in _TOC1_ITEMS:
+                offset, length = _TOC1_ITEMS[name]
+                expected = hashlib.sha256(image[offset:offset + length]).hexdigest()
+                if _toc1_partition_pin(image, name, name) != expected:
+                    return f"{name} certificate does not authenticate its embedded executable"
+            else:
+                _toc1_partition_pin(image, name, name)
+    except (IndexError, UnicodeDecodeError, ValueError):
+        return "certificate structure is invalid"
+    return None
+
+
+def _toc1_partition_pin(image: bytes, partition: str, copy: str) -> str:
+    cert_offset = _TOC1_CERTS[partition]
+    cert = image[cert_offset:cert_offset + _TOC1_CERT_BYTES]
+    pins = re.findall(rb"\x08\x40([0-9A-F]{64})", cert)
+    if len(pins) != 1:
+        raise ValueError(
+            f"The stock toc1 {copy} {partition} certificate does not contain one valid SHA-256 "
+            "partition pin."
+        )
+    pin: bytes = pins[0]
+    return pin.decode("ascii").lower()
+
+
+def _certificate_partition_pin(cert: bytes, partition: str) -> str:
+    name = partition.encode("ascii")
+    marker = bytes((0x06, len(name))) + name + b"\x04\x42\x08\x40"
+    positions = [match.start() for match in re.finditer(re.escape(marker), cert)]
+    if len(positions) != 1:
+        raise ValueError(f"{partition} footer does not contain one content pin")
+    start = positions[0] + len(marker)
+    value = cert[start:start + 64]
+    if not re.fullmatch(rb"[0-9A-F]{64}", value):
+        raise ValueError(f"{partition} footer content pin is malformed")
+    return value.decode("ascii").lower()
+
+
+def _android_boot_logical_bytes(data: mmap.mmap) -> int:
+    if len(data) < 0x800 or data[:8] != b"ANDROID!":
+        raise ValueError("boot partition has no Android header")
+    page = int(struct.unpack_from("<I", data, 0x24)[0])
+    header_version = int(struct.unpack_from("<I", data, 0x28)[0])
+    if page < 0x800 or page > 0x10000 or page & (page - 1) or header_version > 2:
+        raise ValueError("boot partition uses an unsupported Android header")
+    sizes = (
+        int(struct.unpack_from("<I", data, offset)[0])
+        for offset in (0x08, 0x10, 0x18, 0x660, 0x670)
+    )
+    logical = page + sum((size + page - 1) & -page for size in sizes)
+    if logical > len(data):
+        raise ValueError("Android boot image exceeds its partition")
+    return logical
+
+
+def _partition_verified_pins(path: Path, partition: str) -> set[str]:
+    try:
+        with path.open("rb") as source, mmap.mmap(
+            source.fileno(), 0, access=mmap.ACCESS_READ,
+        ) as data:
+            digest = hashlib.sha256()
+            if partition == "boot":
+                logical = _android_boot_logical_bytes(data)
+                if data[0x7C0:0x7C8] != b"AW_CERT!":
+                    raise ValueError("boot partition has no certificate descriptor")
+                cert_bytes = struct.unpack_from("<I", data, 0x7C8)[0]
+                cert_start = logical
+                # u-boot clears this descriptor before hashing the logical Android image.
+                digest.update(data[:0x7C0])
+                digest.update(bytes(12))
+                digest.update(data[0x7CC:logical])
+            elif partition == "rootfs":
+                if len(data) < 0x60 or data[:4] != b"hsqs":
+                    raise ValueError("rootfs partition has no SquashFS header")
+                used = struct.unpack_from("<Q", data, 0x28)[0]
+                logical = (used + 0xFFF) & ~0xFFF
+                if used < 0x60 or logical + 4 > len(data):
+                    raise ValueError("SquashFS image exceeds its partition")
+                cert_bytes = struct.unpack_from("<I", data, logical)[0]
+                cert_start = logical + 4
+                samples = logical // 0x100000
+                if samples == 0:
+                    raise ValueError("SquashFS image is too small for its verification pattern")
+                # The stock environment verifies 4 KiB from each complete 1 MiB interval.
+                for index in range(samples):
+                    start = index * 0x100000
+                    digest.update(data[start:start + 0x1000])
+            else:
+                raise ValueError(f"unsupported partition footer: {partition}")
+            if cert_bytes <= 0 or cert_bytes > 0x1000 or cert_start + cert_bytes > len(data):
+                raise ValueError(f"{partition} footer certificate exceeds its partition")
+            tbs, modulus, exponent, signature, cert = _certificate_parts(
+                data, cert_start, cert_start + cert_bytes, f"{partition} footer",
+            )
+            if len(cert) != cert_bytes or not _rsa_pkcs1_sha256_valid(
+                tbs, modulus, exponent, signature,
+            ):
+                raise ValueError(f"{partition} footer signature is invalid")
+            pin = _certificate_partition_pin(cert, partition)
+            if digest.hexdigest() != pin:
+                raise ValueError(f"{partition} payload does not match its signed content pin")
+            return {pin}
+    except (IndexError, OSError, ValueError):
+        return set()
+
+
+def _select_stock_generation(
+    headers: _StockHeaders,
+    extracted: dict[str, tuple[Path, str]],
+) -> tuple[bytes, int, bool]:
+    # The certificate pin names Allwinner's format-specific content digest, not sha256(the padded
+    # GPT partition). Reproduce u-boot's boot/rootfs digest rules and require a valid signed footer
+    # before binding either payload to the hardware-root-authenticated toc1 declaration.
+    partition_pins = {
+        name: _partition_verified_pins(
+            extracted[name][0], "boot" if name.startswith("boot") else "rootfs",
+        )
+        for name in ("boot1", "rootfs1", "boot2", "rootfs2")
+    }
+    chain_errors = {
+        copy: _toc1_chain_error(toc1)
+        for copy, toc1 in zip(("main", "backup"), headers.toc1, strict=True)
+    }
+    for copy, toc1 in zip(("main", "backup"), headers.toc1, strict=True):
+        if chain_errors[copy] is not None:
+            continue
+        boot_pin = _toc1_partition_pin(toc1, "boot", copy)
+        rootfs_pin = _toc1_partition_pin(toc1, "rootfs", copy)
+        matching_slots = [
+            slot for slot in (1, 2)
+            if boot_pin in partition_pins[f"boot{slot}"]
+            and rootfs_pin in partition_pins[f"rootfs{slot}"]
+        ]
+        if matching_slots:
+            matching_pairs = {
+                (extracted[f"boot{slot}"][1], extracted[f"rootfs{slot}"][1])
+                for slot in matching_slots
+            }
+            # Dreame authenticates only the logical boot image and sparse rootfs samples. If two
+            # unequal GPT payloads satisfy one signed pin, the capture cannot prove which complete
+            # partition is sound; duplicating either one would destroy the independent copy.
+            if len(matching_pairs) != 1:
+                die("Two different captured boot/rootfs pairs satisfy the same authenticated "
+                    "stock toc1 pins. Refusing to choose one arbitrarily for both A/B slots.")
+            preferred = 1 if copy == "main" else 2
+            selected_slot = preferred if preferred in matching_slots else matching_slots[0]
+            primary = (extracted["boot1"][1], extracted["rootfs1"][1])
+            fallback = (extracted["boot2"][1], extracted["rootfs2"][1])
+            return toc1, selected_slot, primary == fallback
+    details = "; ".join(
+        f"{copy}: {error or 'no captured boot/rootfs pair carries both signed content pins'}"
+        for copy, error in chain_errors.items()
+    )
+    die("Neither captured stock toc1 chain is both hardware-root authenticated and bound to a "
+        f"captured boot/rootfs pair ({details}). Refusing to publish an unbootable restore kit.")
+    raise AssertionError("unreachable")
 
 
 def _extract_partitions(
@@ -232,7 +583,7 @@ def _extract_partitions(
             output.close()
 
 
-def _kit_manifest_valid(path: Path, config: str, model_key: str) -> bool:
+def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
     if path.is_symlink() or not path.is_dir():
         return False
     target = path / "manifest.json"
@@ -244,8 +595,12 @@ def _kit_manifest_valid(path: Path, config: str, model_key: str) -> bool:
     except (OSError, ValueError, KeyError, TypeError):
         return False
     stored_config = data.get("config")
+    version = data.get("restore_kit_version")
+    selected_slot = data.get("selected_stock_slot")
     if (data.get("backup_type") != "stock-restore-kit"
-            or data.get("restore_kit_version") != 2
+            or not isinstance(version, int)
+            or isinstance(version, bool)
+            or version not in {2, 3}
             or not isinstance(stored_config, str)
             or parse_config(stored_config) != stored_config
             or stored_config[:8].lower() != config[:8].lower()
@@ -254,9 +609,25 @@ def _kit_manifest_valid(path: Path, config: str, model_key: str) -> bool:
                 "captured-same-session", "legacy-user-confirmed",
             }
             or data.get("firmware_state") != "stock-user-attested"
-            or data.get("ab_pairs_verified_equal") is not True
             or data.get("toc0_action") != "verified-only-not-written"
             or not isinstance(artifacts, dict)):
+        return False
+    if version == 2:
+        if data.get("ab_pairs_verified_equal") is not True:
+            return False
+    elif (
+        data.get("toc0_copies_structurally_valid") is not True
+        or data.get("toc0_spl_copies_equal") is not True
+        or data.get("toc1_copies_structurally_valid") is not True
+        or data.get("toc1_executable_copies_equal") is not True
+        or data.get("toc1_hardware_chain_verified") is not True
+            or data.get("toc1_partition_payload_binding_verified") is not True
+        or data.get("stock_generation_binding") != "verified-toc1-with-matching-boot-rootfs"
+        or not isinstance(selected_slot, int)
+        or isinstance(selected_slot, bool)
+        or selected_slot not in {1, 2}
+        or not isinstance(data.get("source_ab_pairs_equal"), bool)
+    ):
         return False
     for name in _KIT_FILES:
         record = artifacts.get(name)
@@ -429,8 +800,66 @@ def _verified_recovery_provenance(
 def _reconcile_restored_state(robot: Robot) -> None:
     """Finish the non-destructive host-state cleanup after stock completion is durable."""
     robot.remember_image()
-    for state in ("rooted", "valetudo", "image", "flash-attempt", "restore-attempt"):
+    for state in (
+        "rooted", "root-origin", "valetudo", "image", "flash-attempt", "restore-attempt",
+    ):
         robot.state_clear(state)
+
+
+def _watch_for_automatic_fel(ctx: Context) -> bool:
+    if not _sunxi_ready(ctx):
+        ctx.console.warn("The pinned FEL helper is unavailable, so automatic USB fallback cannot "
+                         "be checked on this host. Physical boot confirmation is still required.")
+        return False
+    ctx.console.say("Watching briefly for the boot ROM to fall back into FEL...")
+    with ctx.console.progress("Checking for automatic FEL fallback"):
+        for _ in range(_RESTORE_FEL_WATCH_SECONDS):
+            result = ctx.runner.run([str(ctx.sunxi_fel), "ver"], check=False)
+            if result.ok:
+                return True
+            ctx.sleep(1)
+    return False
+
+
+def _finish_restore_boot_check(ctx: Context, robot: Robot, config: str) -> None:
+    if _watch_for_automatic_fel(ctx):
+        robot.state_set(
+            "restore-attempt",
+            f"{RESTORE_BOOT_PENDING} returned-to-fel model={ctx.profile.key} config={config}",
+        )
+        die("SAFETY STOP: the robot returned to FEL after every stock flash reported OKAY. Stock "
+            "boot is not recorded complete. The restore kit deliberately uses one authenticated "
+            "generation in both A/B slots; another captured generation is not flashed unless it "
+            "has an independently complete matching trust chain. Preserve the workspace and "
+            "inspect this robot before any forced retry.")
+    if not ctx.interactive:
+        die("Every stock flash completed, but normal stock boot still needs physical confirmation. "
+            "Re-run 'dreame-valetudo restore' interactively; it will resume this check without "
+            "writing firmware again.")
+    ctx.console.action("Check the robot itself: wait for its normal stock startup indication. Do "
+                       "not count a pulsing FEL light or a silent boot loop as success.")
+    if not ctx.console.confirm("Did the robot boot normally into its stock firmware?"):
+        die("Stock boot was not confirmed. No additional firmware was written, and the durable "
+            "restore-attempt marker remains. Re-run 'dreame-valetudo restore' to check again; use "
+            "--force only after deliberately deciding to repeat the whole flash.")
+    try:
+        robot.state_set(
+            "restored-stock",
+            f"model={ctx.profile.key} config={config} boot=operator-confirmed",
+        )
+    except OSError as exc:
+        die("Stock boot was confirmed, but completion could not be recorded. The restore-attempt "
+            "marker remains, so the tool will not repeat the write automatically. Preserve the "
+            f"workspace and fix its storage ({exc}).")
+    try:
+        _reconcile_restored_state(robot)
+    except OSError as exc:
+        die("Stock boot was confirmed, but superseded rooted-state cleanup failed. The "
+            "restored-stock marker is durable, so re-run restore without --force after fixing "
+            f"the workspace storage; hardware will not be written ({exc}).")
+    ctx.console.say("Stock firmware boot confirmed.")
+    ctx.console.action("Perform the robot's normal full factory reset before setting it up as a "
+                       "stock robot.")
 
 
 def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_BYTES) -> Path:
@@ -448,7 +877,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
     if final.is_symlink():
         die(f"Refusing symlinked stock restore destination: {final}")
     if final.exists():
-        if _kit_manifest_valid(final, config, ctx.profile.key):
+        if stock_restore_kit_valid(final, config, ctx.profile.key):
             return final
         die(f"The existing stock restore kit is incomplete or changed: {final}. Preserve it for "
             "inspection, move it aside, then re-run to rebuild from the recon capture.")
@@ -510,7 +939,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
     first_partition = min(part.start for part in partitions.values())
     if first_partition > len(head):
         die("The reserved stock-firmware region is larger than the supported 64 MiB safety bound.")
-    _toc0, toc1, toc0_sha256 = _stock_toc_images(head, first_partition)
+    headers = _stock_toc_images(head, first_partition)
 
     if source_binding is None:
         if not ctx.interactive:
@@ -568,26 +997,23 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 chunk_bytes=chunk_bytes,
                 source_digests=source_digests,
             )
-        boot1, boot1_sha = extracted["boot1"]
-        boot2, boot2_sha = extracted["boot2"]
-        rootfs1, rootfs1_sha = extracted["rootfs1"]
-        rootfs2, rootfs2_sha = extracted["rootfs2"]
-        if boot1_sha != boot2_sha:
-            die("The stock boot A/B partitions differ; refusing to publish an ambiguous kit.")
-        if rootfs1_sha != rootfs2_sha:
-            die("The stock rootfs A/B partitions differ; refusing to publish an ambiguous kit.")
-        with boot1.open("rb") as image:
+        toc1, selected_slot, ab_pairs_equal = _select_stock_generation(headers, extracted)
+        selected_boot = extracted[f"boot{selected_slot}"][0]
+        selected_rootfs = extracted[f"rootfs{selected_slot}"][0]
+        with selected_boot.open("rb") as image:
             boot_magic = image.read(8)
         if boot_magic != b"ANDROID!":
             die("The extracted stock boot image has no Android boot header.")
-        with rootfs1.open("rb") as image:
+        with selected_rootfs.open("rb") as image:
             rootfs_magic = image.read(4)
         if rootfs_magic != b"hsqs":
             die("The extracted stock rootfs image has no SquashFS header.")
-        boot2.unlink()
-        rootfs2.unlink()
-        boot1.rename(staging / "boot.img")
-        rootfs1.rename(staging / "rootfs.img")
+        for slot in (1, 2):
+            if slot != selected_slot:
+                extracted[f"boot{slot}"][0].unlink()
+                extracted[f"rootfs{slot}"][0].unlink()
+        selected_boot.rename(staging / "boot.img")
+        selected_rootfs.rename(staging / "rootfs.img")
         extracted["private"][0].rename(staging / "private.img")
         extracted["misc"][0].rename(staging / "misc.img")
         toc1_path = staging / "toc1.img"
@@ -601,7 +1027,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             staging,
             {
                 "backup_type": "stock-restore-kit",
-                "restore_kit_version": 2,
+                "restore_kit_version": 3,
                 "model": ctx.profile.model,
                 "model_key": ctx.profile.key,
                 "model_code": ctx.profile.model_code,
@@ -612,11 +1038,20 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 "disk_bytes": disk_bytes,
                 "captured_prefix_bytes": len(decrypted) * chunk_bytes,
                 "full_disk_image": False,
-                "toc0_sha256": toc0_sha256,
+                "toc0_sha256": hashlib.sha256(headers.toc0[0]).hexdigest(),
+                "toc0_backup_sha256": hashlib.sha256(headers.toc0[1]).hexdigest(),
                 "toc0_action": "verified-only-not-written",
                 "sources": source_records,
                 "artifacts": artifacts,
-                "ab_pairs_verified_equal": True,
+                "toc0_copies_structurally_valid": True,
+                "toc0_spl_copies_equal": True,
+                "toc1_copies_structurally_valid": True,
+                "toc1_executable_copies_equal": True,
+                "toc1_hardware_chain_verified": True,
+                "toc1_partition_payload_binding_verified": True,
+                "stock_generation_binding": "verified-toc1-with-matching-boot-rootfs",
+                "selected_stock_slot": selected_slot,
+                "source_ab_pairs_equal": ab_pairs_equal,
             },
         )
         if final.exists():
@@ -647,7 +1082,18 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         ctx.console.warn("Marker says this robot is already restored to stock. Re-run with "
                          "'--force' only if another full stock restore is intentional.")
         return
-    if robot.state_has("restore-attempt") and not force:
+    restore_attempt = robot.state_get("restore-attempt")
+    if (restore_attempt is not None and restore_attempt.startswith(RESTORE_BOOT_PENDING)
+            and not force):
+        ctx.console.warn("Every stock partition was flashed previously, but normal stock boot was "
+                         "not yet confirmed. Resuming that observation without writing hardware.")
+        config = ctx.robot_config()
+        if config is None:
+            die("The pending restore has no recorded robot identity. Preserve the workspace and "
+                "inspect it before any forced retry.")
+        _finish_restore_boot_check(ctx, robot, config)
+        return
+    if restore_attempt is not None and not force:
         die("SAFETY STOP: a prior stock-restore attempt did not record completion. The robot may "
             "be partly restored, so this tool will not write again automatically. Inspect the "
             "robot and run 'restore --force' only after deliberately deciding to repeat it.")
@@ -655,7 +1101,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die(f"{ctx.profile.model} uses UART; this restore path is only for MR813 fastboot models.")
     kit = prepare_stock_restore_kit(ctx)
     config = ctx.robot_config()
-    if config is None or not _kit_manifest_valid(kit, config, ctx.profile.key):
+    if config is None or not stock_restore_kit_valid(kit, config, ctx.profile.key):
         die("The stock restore kit failed its final identity/integrity check.")
 
     ctx.console.phase("Restore the captured stock firmware — DESTRUCTIVE")
@@ -697,13 +1143,12 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
             "— refusing to restore.")
     ctx.console.info("Robot and restore-kit identity confirmed.")
-    if not _kit_manifest_valid(kit, config, ctx.profile.key):
+    if not stock_restore_kit_valid(kit, config, ctx.profile.key):
         die("The stock restore kit changed while hardware was being prepared. Refusing every write; "
             "preserve the kit for inspection and start again with verified artifacts.")
 
     token = f"{int(config[:8], 16) ^ _DUST_XOR:08x}"
     marker_error: OSError | None = None
-    cleanup_error: OSError | None = None
     ctx.console.say(">>> POWER-CYCLE CLOCK LIVE — restoring stock now <<<")
     ctx.console.warn("Do NOT press Ctrl+C or unplug USB until every flash reports OKAY. Interrupt "
                      "signals are ignored during the write sequence.")
@@ -727,24 +1172,17 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         # least-surprising chain head if the fixed power window expires between writes.
         fb("flash", "toc1", str(kit / "toc1.img"))
         try:
-            robot.state_set("restored-stock", f"model={ctx.profile.key} config={live_config}")
+            robot.state_set(
+                "restore-attempt",
+                f"{RESTORE_BOOT_PENDING} model={ctx.profile.key} config={live_config}",
+            )
         except OSError as exc:
             marker_error = exc
         ctx.fastboot.fbt("reboot", check=False)
-        if marker_error is None:
-            try:
-                _reconcile_restored_state(robot)
-            except OSError as exc:
-                cleanup_error = exc
 
     if marker_error is not None:
         die("Every stock partition flash returned OKAY and reboot was sent, but completion could "
             "not be recorded. The restore-attempt marker remains, so the tool will not repeat the "
             f"write automatically. Preserve the workspace and inspect its storage ({marker_error}).")
-    if cleanup_error is not None:
-        die("Stock firmware was restored and rebooted, but superseded rooted-state cleanup failed. "
-            "The restored-stock marker is durable, so re-run restore without --force after fixing "
-            f"the workspace storage; hardware will not be written ({cleanup_error}).")
-    ctx.console.say("Stock firmware restored and reboot sent.")
-    ctx.console.action("After it boots, perform the robot's normal full factory reset before "
-                       "setting it up as a stock robot.")
+    ctx.console.say("Every stock flash returned OKAY and reboot was sent.")
+    _finish_restore_boot_check(ctx, robot, live_config)

@@ -39,15 +39,23 @@ layout.
 
 The pre-root recon capture consists of three contiguous 399 MiB slices from the beginning of the
 eMMC. That covers every boot-critical partition but not all of the roughly 3.9 GB disk. `restore`
-validates the gzip streams, GPT header and entry-table CRCs, redundant toc0/toc1 copies, and equal
-A/B boot/rootfs partitions before publishing a smaller durable kit. Recon records same-session
+validates the gzip streams, GPT header and entry-table CRCs, both toc0/toc1 containers, and the
+toc1 RSA certificate chains before publishing a smaller durable kit. Differing toc0 metadata is
+safe to preserve because normal restore never writes toc0. For differing toc1 containers, the
+hardware-root fingerprint and all seven signed certificates must verify, and the selected chain's
+boot/rootfs content pins must match one captured slot pair after reproducing u-boot's format-specific
+payload hashes and verifying the self-signed format footers. Recon
+records same-session
 source hashes tied to the saved model and `config`. Because compressed firmware cannot prove that a
 different tool never modified the robot before capture, the user must also attest that it was still
 on untouched factory firmware. Unknown-history captures remain useful evidence but are not stock
 restore sources. A legacy capture additionally requires a one-time typed origin attestation and is
 labeled as such instead of being silently treated as proven. On hardware restore verifies the live
 `config`, leaves toc0 untouched, restores private/misc and both stock A/B pairs, then writes stock
-toc1 last. UDISK is intentionally not replayed; a normal factory reset clears it after stock boots.
+toc1 last. It records an intermediate post-flash state, watches for an automatic FEL fallback, and
+requires physical stock-boot confirmation before replacing that state with `restored-stock`; an
+interrupted observation resumes without another flash. UDISK is intentionally not replayed; a
+normal factory reset clears it after stock boots.
 
 ## The run log
 

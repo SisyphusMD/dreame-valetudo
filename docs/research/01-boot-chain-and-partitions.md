@@ -27,14 +27,22 @@ as **MR813**. `androidboot.hardware=sun50iw10p1`, `androidboot.secure_os_exist=1
 | **toc0** (boot0/SPL) | `98304` B (`0x18000`) | raw, **before** the GPT: MAIN at byte `0x2000` (sector `0x10`) **and** BACKUP at byte `0x20000` (sector `0x100`) |
 | **toc1** (u-boot package) | `1245184` B (`0x130000`) | its own region in the head of the eMMC (see the partition note) |
 
-The two toc0 copies are the SoC's **redundancy mirror**, not a user revert slot: the BROM validates
-MAIN and falls back to BACKUP only if MAIN fails its checks. They are meant to be identical; writing
-only one creates a split-brain (see [04](04-boot0-write-and-verify.md)).
+The two toc0 copies are the SoC's **redundancy path**, not a user revert slot: the BROM validates
+MAIN and falls back to BACKUP only if MAIN fails its checks. The X40 reference capture had identical
+containers, but factory captures from R2338 and X30 have independently valid containers with the
+same SPL and different header/certificate metadata. Preserve both exact originals. A deliberate
+experiment still writes and verifies both locations so it cannot leave one test image and one stale
+factory image behind (see [04](04-boot0-write-and-verify.md)).
 
 ## Partition map (GPT)
 
-From the running unit (`/proc` + the kernel `partitions=` cmdline). A/B redundancy: `rootfs1 ==
-rootfs2` and `boot1 == boot2` byte-for-byte.
+From the running unit (`/proc` + the kernel `partitions=` cmdline). The X40 sample's redundancy
+copies were byte-identical; pre-root R2338 and X30 captures show that valid factory fallback copies
+can instead contain a different stock generation. The stock kernel command line names rootfs1 as
+the primary generation. Preserve both exact generations. Automatic stock restore verifies each
+toc1 certificate chain against the fleet hardware-root public-key fingerprint and selects only a
+chain whose signed boot/rootfs content pins match one captured generation after reproducing the
+format-specific payload digests and verifying its self-signed format footers.
 
 ```
 mmcblk0p1   boot-resource
@@ -42,8 +50,8 @@ mmcblk0p2   env
 mmcblk0p3   env-redund
 mmcblk0p4   boot1          Android boot image (kernel + ramdisk)
 mmcblk0p5   rootfs1        SquashFS (root=/dev/mmcblk0p5)
-mmcblk0p6   boot2          == boot1
-mmcblk0p7   rootfs2        == rootfs1
+mmcblk0p6   boot2          fallback Android boot image
+mmcblk0p7   rootfs2        fallback SquashFS
 mmcblk0p8   private        dm-crypt (factory calibration only — see chapter 11)
 mmcblk0p9   misc
 mmcblk0p10  pstore

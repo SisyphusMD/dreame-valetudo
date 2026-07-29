@@ -14,7 +14,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 
 from ..console import abort, die
-from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
+from ..constants import (
+    ADOPTED_ROOT,
+    CURRENT_ROOT,
+    FEL_IMAGE_FILES,
+    RESTORE_BOOT_PENDING,
+    STAGED_IMAGE_MANIFEST,
+)
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import model_hazard_check
@@ -150,9 +156,20 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if robot.state_has("restored-stock") and not force:
         die("This robot is recorded as restored to stock. Refusing to root it again automatically; "
             "use 'root --force' only when starting a new, intentional rooting run.")
-    if robot.state_has("restore-attempt") and not robot.state_has("restored-stock"):
+    restore_attempt = robot.state_get("restore-attempt")
+    if (restore_attempt is not None and restore_attempt.startswith(RESTORE_BOOT_PENDING)
+            and not robot.state_has("restored-stock")):
+        die("Stock firmware was flashed and only its boot confirmation remains. Run "
+            "'dreame-valetudo restore' without --force; it will resume observation without "
+            "writing firmware again.")
+    if restore_attempt is not None and not robot.state_has("restored-stock"):
         die("SAFETY STOP: a prior stock-restore attempt did not record completion. Complete the "
             "stock recovery with 'dreame-valetudo restore --force' before starting another root.")
+    if robot.state_get("root-origin") == ADOPTED_ROOT and not force:
+        ctx.console.warn("This robot's existing root was deliberately adopted without reflashing. "
+                         "Stage a current image and use 'root --force' only if you now intend to "
+                         "replace it.")
+        return
     if robot.state_has("rooted") and not force:
         ctx.console.warn("Marker says this robot is already rooted. Re-run with '--force' to "
                          "flash again.")
@@ -284,6 +301,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
         ctx.console.say("All flashes OKAY. Rebooting...")
         try:
             robot.state_set("rooted")
+            robot.state_set("root-origin", CURRENT_ROOT)
             robot.state_clear("restored-stock")
         except OSError as exc:
             marker_error = exc

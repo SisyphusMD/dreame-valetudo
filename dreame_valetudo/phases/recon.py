@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from ..console import Die, die, warn_if_low_disk
-from ..constants import RECOVERY_DUMP_NAMES
+from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry
 from ..hazards import requires_positive_model_verification
@@ -180,6 +180,21 @@ def _saved_backup_state(robot: Robot) -> str:
     return "not-requested"
 
 
+def _offer_existing_root_adoption(ctx: Context) -> bool:
+    if not ctx.console.confirm(
+        "Before today's recon, was this robot already rooted and running Valetudo?"
+    ):
+        return False
+    ctx.console.info(
+        "You can preserve that existing root or deliberately replace it with the current rooting "
+        "method. Neither choice changes any recovery evidence already saved."
+    )
+    return ctx.console.confirm(
+        "Leave its existing rooted firmware untouched and adopt it as-is? Answer No to continue "
+        "with a current re-root."
+    )
+
+
 @records_step("reconnaissance")
 def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
@@ -267,6 +282,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     robot.state_set("model_key", ctx.profile.key)
 
     backup_state = _saved_backup_state(robot)
+    adopt_existing_root = False
+    existing_root_answered = False
+    stock_was_attested = False
     if recovery_backup:
         write_history = [
             state for state in (
@@ -316,6 +334,11 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                         "The recovery capture was preserved, but it is NOT authorized as a stock "
                         "restore source. Rooting can continue; 'restore' will refuse this capture."
                     )
+                    if ctx.interactive:
+                        adopt_existing_root = _offer_existing_root_adoption(ctx)
+                        existing_root_answered = True
+                else:
+                    stock_was_attested = True
                 try:
                     captured_bytes = (robot.recon_dir / f"{RECOVERY_DUMP_NAMES[0]}.bin").stat().st_size
                     write_recovery_provenance(
@@ -345,7 +368,25 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                                  "recovery backup was saved. Re-run recon before "
                                  "attempting stock restore.")
 
+    # A failed/skipped recovery pull cannot be allowed to silently turn an older rooted robot into
+    # a reflash. The answer can only suppress writes: claiming an unrooted robot is rooted makes the
+    # tool do less, and later AP maintenance still requires exact live identity.
+    if ctx.interactive and not stock_was_attested and not existing_root_answered:
+        adopt_existing_root = _offer_existing_root_adoption(ctx)
+
+    if adopt_existing_root:
+        # This marker must precede even recon completion. If storage fails on any later marker,
+        # auto/root still recognize the accepted adoption and cannot fall into a flash.
+        robot.state_set("root-origin", ADOPTED_ROOT)
     robot.state_set("recon", f"backup={backup_state}")
+    if adopt_existing_root:
+        robot.state_set("rooted", ADOPTED_ROOT)
+        robot.state_set("valetudo", ADOPTED_ROOT)
+        ctx.console.say("Existing rooted firmware adopted without changing the robot.")
+        ctx.console.info("Its live Valetudo version has not been checked yet. When the robot is "
+                         "running, use: dreame-valetudo update-valetudo")
+        ctx.console.info("To replace the boot firmware later, stage a current image and run "
+                         "'dreame-valetudo root --force' deliberately.")
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")

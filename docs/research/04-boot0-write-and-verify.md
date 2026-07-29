@@ -33,12 +33,13 @@ Stub builder: [`tools/make_boot0_writer.py`](tools/make_boot0_writer.py). Full c
   used.
 - A "low LBA via low_WRITE" variant adds a `+0xa000` offset and therefore misses boot0 entirely.
 
-### Both copies, always
+### Both locations, always
 
-toc0 is written to **both** the MAIN and BACKUP slots so they stay identical. The BROM validates
-MAIN and silently falls back to BACKUP on failure; leaving a stale old boot0 in BACKUP creates a
-split-brain that surfaces unpredictably later. The real revert set is the host-side backup from
-recon, which writing both on-device slots does not touch.
+The experiment writes its one toc0 image to **both** MAIN and BACKUP and verifies both, so the BROM
+cannot later fall back from the test image to a stale factory image. This does not imply that every
+factory ships byte-identical containers: R2338 and X30 captures have valid metadata differences
+while preserving the same SPL. Preserve both exact originals before research. The real revert set
+is the host-side backup from recon, which writing both on-device locations does not touch.
 
 ## The read-back verify oracle
 

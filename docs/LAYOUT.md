@@ -45,7 +45,7 @@ disk is refused rather than reverse-migrated.
     └── dreame-<model>-<config>-stock-recovery/
         ├── manifest.json           provenance, robot identity, creation time, and contents
         ├── toc1.img                captured stock chain head
-        ├── boot.img, rootfs.img    stock A/B pair (stored once after equality proof)
+        ├── boot.img, rootfs.img    captured primary stock boot1/rootfs1 generation
         └── private.img, misc.img   captured factory partitions
 ```
 

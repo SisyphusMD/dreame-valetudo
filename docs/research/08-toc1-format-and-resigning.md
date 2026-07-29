@@ -37,6 +37,13 @@ The u-boot binary lives at toc1 file `0x4d800`, length `0xb0000` (720 KB).
   corresponding cert (nor sha1/sha512/md5). The cert pins the hash over a specific range/format, so
   modifying any embedded binary requires reversing that pinning scheme before re-pinning and
   re-signing that item's cert. The u-boot patch re-pins at `0x4d60d`.
+- For the external `boot` and `rootfs` partitions, the same content pin is declared inside the
+  partition's self-signed X.509 format footer. It is not the SHA-256 of the entire zero-padded GPT
+  partition. The boot pin hashes the Android image's logical length after clearing its 12-byte
+  `AW_CERT!` descriptor. The stock `rootfs_per_MB` policy hashes 4 KiB at every complete 1 MiB
+  interval through the rounded SquashFS length. Stock-generation selection reproduces both digest
+  rules, verifies the footer's self-signature, and then binds that result to the authenticated toc1
+  declaration before any restore kit is published.
 - Header `add_sum` uses the same stamp-and-sum algorithm as toc0 (stamp `0x5f0a6c39`).
 
 Re-sign tool: [`tools/resign_toc1_generic.py`](tools/resign_toc1_generic.py) (`--root-key-in` to

@@ -57,9 +57,11 @@ def recovery_zip_valid(path: Path) -> bool:
 
 
 def recovery_backup_valid(recon_dir: Path) -> bool:
-    return recovery_zip_valid(recon_dir / RECOVERY_BACKUP_ZIP) or all(
+    # Recon keeps the raw slices beside the portable zip. Prefer their fixed-size checks so normal
+    # resume/safety gates do not CRC-read the multi-gigabyte archive on every invocation.
+    return all(
         recovery_dump_valid(recon_dir / f"{name}.bin") for name in RECOVERY_DUMP_NAMES
-    )
+    ) or recovery_zip_valid(recon_dir / RECOVERY_BACKUP_ZIP)
 
 
 def home_dir(env: Mapping[str, str]) -> Path:
