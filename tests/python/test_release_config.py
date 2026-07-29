@@ -123,7 +123,6 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
     floor_job = _job(_CI.read_text(), "python-floor")
 
     assert 'requires-python = ">=3.11"' in project
-    assert 'depName=python-3.11-floor packageName=python/cpython' in floor_job
     assert 'python-version: "3.11.0"' in floor_job
     assert 'pip install "pytest==$PYTEST" -e .' in floor_job
     assert "pytest -q tests/python" in floor_job
@@ -132,9 +131,12 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
     floor_rules = [
         rule
         for rule in config["packageRules"]
-        if "python-3.11-floor" in rule.get("matchDepNames", [])
+        if rule.get("matchManagers") == ["github-actions"]
+        and rule.get("matchDepNames") == ["python"]
+        and rule.get("matchFileNames") == [".forgejo/workflows/ci.yml"]
     ]
     assert len(floor_rules) == 1
+    assert floor_rules[0]["matchCurrentValue"] == r"/^3\.11\.0$/"
     assert floor_rules[0]["allowedVersions"] == r"/^3\.11\.0$/"
 
 
@@ -303,26 +305,38 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
         assert label in smoke
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    floors = {
+    fixed_hosts = {
         name: rule["allowedVersions"]
         for rule in config["packageRules"]
         for name in rule.get("matchDepNames", [])
         if name
         in {
             "debian-12-compat",
+            "debian-13-current",
             "ubuntu-22.04-compat",
+            "ubuntu-26.04-current",
             "fedora-43-compat",
+            "fedora-44-current",
             "rocky-8-compat",
             "rocky-9-compat",
+            "rocky-10-current",
+            "opensuse-leap-16-current",
         }
     }
-    assert floors == {
+    assert fixed_hosts == {
         "debian-12-compat": "/^12-slim$/",
+        "debian-13-current": "/^13-slim$/",
         "ubuntu-22.04-compat": r"/^22\.04$/",
+        "ubuntu-26.04-current": r"/^26\.04$/",
         "fedora-43-compat": "/^43$/",
+        "fedora-44-current": "/^44$/",
         "rocky-8-compat": "/^8$/",
         "rocky-9-compat": "/^9$/",
+        "rocky-10-current": "/^10$/",
+        "opensuse-leap-16-current": r"/^16\.0$/",
     }
+    for dependency in fixed_hosts:
+        assert f"depName={dependency} packageName=" in workflow
 
 
 def test_readme_source_install_names_every_host_runtime_dependency() -> None:

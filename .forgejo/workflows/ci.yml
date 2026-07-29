@@ -74,8 +74,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          # renovate: datasource=github-tags depName=python-3.11-floor packageName=python/cpython versioning=pep440
-          python-version: "3.11.15"
+          # This is the literal language floor, not a current-3.11 pin. Renovate's built-in
+          # github-actions manager sees it as dependency `python`; .renovaterc.json freezes this
+          # one occurrence while the separate current-runtime pins continue to advance.
+          python-version: "3.11.0"
       - name: install and test the claimed source floor
         run: |
           # renovate: datasource=pypi depName=pytest
@@ -177,23 +179,23 @@ jobs:
           docker buildx prune --all --force
           # renovate: datasource=docker depName=debian-12-compat packageName=debian
           DEBIAN_FLOOR_IMAGE="debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
-          # renovate: datasource=docker depName=debian
+          # renovate: datasource=docker depName=debian-13-current packageName=debian
           DEBIAN_CURRENT_IMAGE="debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
           # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
           UBUNTU_FLOOR_IMAGE="ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982"
-          # renovate: datasource=docker depName=ubuntu
+          # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
           UBUNTU_CURRENT_IMAGE="ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb"
           # renovate: datasource=docker depName=fedora-43-compat packageName=fedora
           FEDORA_FLOOR_IMAGE="fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222"
-          # renovate: datasource=docker depName=fedora
+          # renovate: datasource=docker depName=fedora-44-current packageName=fedora
           FEDORA_CURRENT_IMAGE="fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898"
           # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
           RHEL_FLOOR_IMAGE="rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6"
           # renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
           RHEL_MIDDLE_IMAGE="rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f"
-          # renovate: datasource=docker depName=rockylinux/rockylinux
+          # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
           RHEL_CURRENT_IMAGE="rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834"
-          # renovate: datasource=docker depName=opensuse/leap
+          # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
           OPENSUSE_IMAGE="opensuse/leap:16.0@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6"
           export DEBIAN_FLOOR_IMAGE DEBIAN_CURRENT_IMAGE
           export UBUNTU_FLOOR_IMAGE UBUNTU_CURRENT_IMAGE
