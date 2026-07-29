@@ -93,6 +93,7 @@ print_fel_entry(con)
         assert "The one piece of hardware you must have" in output
         assert "Reconnaissance — reads only" in output
         assert "factory-reset it first" in output
+        assert "already rooted, NEVER factory-reset it" in output
         assert "Connect the USB cable" in output
     assert "Redo the PCB button sequence" not in first + second
 

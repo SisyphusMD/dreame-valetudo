@@ -13,7 +13,7 @@ from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..workspace import Robot
 
-_PHASES = ("recon", "image", "rooted", "valetudo", "restored-stock")
+_PHASES = ("recon", "image", "rooted", "factory-backup", "valetudo", "restored-stock")
 
 
 @records_step("installing Valetudo")

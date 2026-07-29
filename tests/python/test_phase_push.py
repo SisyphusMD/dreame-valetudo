@@ -16,12 +16,14 @@ import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo.console import Die, UserAbort
+from dreame_valetudo.constants import ADOPTED_ROOT
 from dreame_valetudo.context import Context
 from dreame_valetudo.log import scrub
 from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.push import (
     _device_conf_value,
     _live_robot_identity,
+    backup,
     push,
     update_valetudo,
     valetudo_update_available,
@@ -203,6 +205,75 @@ def test_update_valetudo_noops_when_live_robot_already_has_target(make_ctx: CtxF
 
     assert "already installed; nothing changed" in ctx.console.text()  # type: ignore[attr-defined]
     assert not any("cat > /data/.valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("live", "confirms", "recorded", "transferred"),
+    [
+        ("2026.06.0", [True, True], "2026.07.0", True),
+        ("2026.07.0", [True], "2026.07.0", False),
+        ("2026.08.0", [True], "2026.08.0", False),
+    ],
+)
+def test_update_valetudo_resolves_an_adopted_marker_from_the_live_version(
+    make_ctx: CtxFactory,
+    live: str,
+    confirms: list[bool],
+    recorded: str,
+    transferred: bool,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed=live, confirms=confirms)
+    ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
+
+    assert update_valetudo(ctx) is True
+
+    assert ctx.need_robot().state_get("valetudo") == recorded
+    assert any(
+        call[-1] == "cat > /data/.valetudo.update" for call in ctx.runner.calls  # type: ignore[attr-defined]
+    ) is transferred
+
+
+def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_is_declined(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, False])
+    ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
+    base = ctx.runner._responder  # type: ignore[attr-defined]
+
+    def unreadable(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\n", "")
+        assert base is not None
+        return base(argv)
+
+    ctx.runner._responder = unreadable  # type: ignore[attr-defined]
+
+    with pytest.raises(UserAbort, match="left unchanged"):
+        update_valetudo(ctx)
+
+    assert ctx.need_robot().state_get("valetudo") == ADOPTED_ROOT
+    assert not any(
+        call[-1] == "cat > /data/.valetudo.update" for call in ctx.runner.calls  # type: ignore[attr-defined]
+    )
+
+
+def test_update_valetudo_can_replace_an_unreadable_adopted_installation_deliberately(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, True])
+    ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
+    base = ctx.runner._responder  # type: ignore[attr-defined]
+
+    def unreadable(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\n", "")
+        assert base is not None
+        return base(argv)
+
+    ctx.runner._responder = unreadable  # type: ignore[attr-defined]
+
+    assert update_valetudo(ctx) is True
+    assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
 
 
 def test_update_valetudo_verifies_then_atomically_replaces_the_live_binary(
@@ -724,6 +795,7 @@ def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory)
     assert push(ctx) is True
     assert ctx.backups_dir.stat().st_mode & 0o777 == 0o700
     assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
+    assert ctx.need_robot().state_get("factory-backup")
     # the negative did was repaired to its uint32 value
     assert any("4177362863" in msg for _, msg in ctx.console.lines)  # type: ignore[attr-defined]
     # Transfer lands beside the live executable; the verified final rename is atomic.
@@ -736,6 +808,91 @@ def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory)
     assert not any(c[-1] == "cat > /data/valetudo" for c in ctx.runner.calls)  # type: ignore[attr-defined]
     # a normal unit already has its key -> secure storage is never probed
     assert not any("dreame_release.na -c 7" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    robot = ctx.need_robot()
+    robot.state_set("rooted", "adopted-existing")
+    robot.state_set("valetudo", "adopted-existing")
+    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+
+    assert backup(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    saved = json.loads((published / "manifest.json").read_text())
+    assert saved["config"] == _CFG
+    assert saved["model_key"] == ctx.profile.key
+    assert saved["valetudo_version"] is None
+    assert robot.state_get("factory-backup") == published.name
+    assert robot.state_get("valetudo") == "adopted-existing"
+    commands = [call[-1] for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    assert not any("/data/.valetudo.update" in command for command in commands)
+    assert not any("did_orig.txt" in command for command in commands)
+    assert not any("dreame_release.na" in command for command in commands)
+    assert "reboot" not in commands
+
+
+def test_standalone_backup_and_push_have_the_same_capture_transcript(
+    make_ctx: CtxFactory,
+) -> None:
+    def capture_calls(ctx: Context) -> list[tuple[str, ...]]:
+        calls = ctx.runner.calls  # type: ignore[attr-defined]
+        start = next(i for i, call in enumerate(calls) if call[-1] == "true")
+        end = next(
+            i for i, call in enumerate(calls[start:], start)
+            if "gzip -1c /dev/by-name/misc" in call[-1]
+        )
+        return calls[start:end + 1]
+
+    standalone = _ctx(make_ctx)
+    standalone.need_robot().state_set("rooted", "adopted-existing")
+    standalone.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    standalone.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    assert backup(standalone)
+    standalone_calls = capture_calls(standalone)
+
+    shutil.rmtree(standalone.backups_dir)
+    standalone.runner.calls.clear()  # type: ignore[attr-defined]
+    standalone.console._confirms.append(True)  # type: ignore[attr-defined]
+    _valetudo_bin(standalone)
+    assert push(standalone)
+
+    assert standalone_calls == capture_calls(standalone)
+
+
+def test_standalone_backup_preserves_a_prior_generation_when_refresh_is_interrupted(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    robot = ctx.need_robot()
+    robot.state_set("rooted", "adopted-existing")
+    robot.state_set("factory-backup", "prior-good")
+    prior = ctx.backups_dir / "prior-good"
+    prior.mkdir(parents=True)
+    (prior / "sentinel").write_text("preserve")
+    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    normal = _redirect()
+
+    def interrupt(
+        argv: tuple[str, ...], stdout_path: str | None, stdin_path: str | None,
+    ) -> Result:
+        if stdout_path and "by-name/private" in argv[-1]:
+            Path(stdout_path).write_bytes(b"partial")
+            raise KeyboardInterrupt
+        return normal(argv, stdout_path, stdin_path)
+
+    ctx.runner._redirect_responder = interrupt  # type: ignore[attr-defined]
+
+    with pytest.raises(KeyboardInterrupt):
+        backup(ctx)
+
+    assert (prior / "sentinel").read_text() == "preserve"
+    assert robot.state_get("factory-backup") == "prior-good"
+    assert [path.name for path in ctx.backups_dir.iterdir()] == ["prior-good"]
 
 
 def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> None:

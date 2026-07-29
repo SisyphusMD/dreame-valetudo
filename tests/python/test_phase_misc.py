@@ -125,9 +125,11 @@ def test_status_lists_prior_robots_with_furthest_phase(make_ctx: CtxFactory) -> 
     (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
     robot.state_set("recon", "done")
     robot.state_set("rooted", "done")
+    robot.state_set("factory-backup", "dreame-r2416-current")
     status(ctx)
     assert _said(ctx, f"r2416-{_CFG[:12]}")
     assert any("[x] rooted" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
+    assert any("[x] factory-backup" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("[ ] valetudo" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
 

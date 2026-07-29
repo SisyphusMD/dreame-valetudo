@@ -280,6 +280,8 @@ def _capture_factory_backup(
     key: str | Path | None,
     cfg: str,
     live_identity: dict[str, str],
+    *,
+    valetudo_version: str | None,
 ) -> Path:
     """Capture, validate, and manifest a backup before atomically publishing its directory."""
     robot = ctx.need_robot()
@@ -354,7 +356,7 @@ def _capture_factory_backup(
                 "live_model": live_identity.get("model"),
                 "live_did": live_identity.get("did"),
                 "model_verification": live_identity["model_verification"],
-                "valetudo_version": ctx.valetudo_version,
+                "valetudo_version": valetudo_version,
             },
         )
         if final.exists():
@@ -464,15 +466,20 @@ def _replace_valetudo_atomically(
     robot_ssh(ctx.runner, _TARGET, "reboot", key=key, check=False)
 
 
-@records_step("installing Valetudo")
-def push(ctx: Context, key: str | Path | None = None) -> bool:
-    """Returns True once Valetudo is installed; False if the robot isn't reachable on its AP
-    (so the caller can print Phase-3 guidance instead of aborting the whole run)."""
-    robot = ctx.need_robot()
-    key = _resolve_robot_key(ctx, key)
-    _prepare_valetudo_binary(ctx, retry_command="dreame-valetudo push")
-
-    ctx.console.phase("Install Valetudo over the robot's own Wi-Fi AP", index=3, total=3)
+def _capture_live_factory_backup(
+    ctx: Context,
+    key: str | Path | None,
+    *,
+    phase_title: str,
+    phase_index: int | None = None,
+    valetudo_version: str | None,
+) -> Path | None:
+    """Verify the selected live robot and publish one complete factory-backup generation."""
+    ctx.console.phase(
+        phase_title,
+        index=phase_index,
+        total=3 if phase_index is not None else None,
+    )
     ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
                      f"{ROBOT_AP_IP}), NOT your home network — where {ROBOT_AP_IP} is usually "
                      "your ROUTER. So:")
@@ -494,7 +501,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
             die(guidance)
         ctx.console.warn(f"Can't reach {_TARGET}. Join the ROBOT's own Wi-Fi AP (hold the two "
                          "OUTER buttons), then re-run.")
-        return False
+        return None
 
     # CRITICAL: on a home LAN, ROBOT_AP_IP reached via the router is the ROUTER, not the robot.
     # Only proceed once a real Dreame answers (this also waits out the post-reboot /mnt mount).
@@ -515,9 +522,65 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
 
     cfg = ctx.robot_config()
     if not cfg:
-        die("No recorded config identity for the selected robot — re-run recon before push.")
+        die("No recorded config identity for the selected robot — re-run recon before backup.")
     live_identity = _live_robot_identity(ctx, key, cfg)
-    backup = _capture_factory_backup(ctx, key, cfg, live_identity)
+    return _capture_factory_backup(
+        ctx,
+        key,
+        cfg,
+        live_identity,
+        valetudo_version=valetudo_version,
+    )
+
+
+@records_step("backing up factory identity")
+def backup(ctx: Context, key: str | Path | None = None) -> bool:
+    """Capture factory identity from an already-rooted robot without changing or rebooting it."""
+    robot = ctx.need_robot()
+    if not robot.state_has("rooted"):
+        die("The standalone backup command requires an already-rooted, adopted robot. Complete "
+            "recon and rooting first.")
+    key = _resolve_robot_key(ctx, key)
+    check_external_tools(ctx, ("ssh",), required=True)
+    saved_valetudo = robot.state_get("valetudo")
+    captured = _capture_live_factory_backup(
+        ctx,
+        key,
+        phase_title="Back up factory identity from the rooted robot",
+        valetudo_version=(
+            saved_valetudo
+            if saved_valetudo is not None and _VALETUDO_VERSION_RE.fullmatch(saved_valetudo)
+            else None
+        ),
+    )
+    if captured is None:
+        return False
+    robot.state_set("factory-backup", captured.name)
+    ctx.console.say("Factory backup captured without changing Valetudo, firmware, identity, or "
+                    "robot settings.")
+    ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {captured} — factory identity/keys, NOT "
+                     "in git, CANNOT be regenerated if lost.", lead=True)
+    return True
+
+
+@records_step("installing Valetudo")
+def push(ctx: Context, key: str | Path | None = None) -> bool:
+    """Returns True once Valetudo is installed; False if the robot isn't reachable on its AP
+    (so the caller can print Phase-3 guidance instead of aborting the whole run)."""
+    robot = ctx.need_robot()
+    key = _resolve_robot_key(ctx, key)
+    _prepare_valetudo_binary(ctx, retry_command="dreame-valetudo push")
+
+    captured = _capture_live_factory_backup(
+        ctx,
+        key,
+        phase_title="Install Valetudo over the robot's own Wi-Fi AP",
+        phase_index=3,
+        valetudo_version=ctx.valetudo_version,
+    )
+    if captured is None:
+        return False
+    robot.state_set("factory-backup", captured.name)
 
     _repair_did_if_needed(ctx, key)
     _populate_key_if_needed(ctx, key)
@@ -547,7 +610,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
                          "'manual installation' image on the dustbuilder and install it over SSH "
                          "to resync the MCU.")
     ctx.console.detail("Getting started: https://valetudo.cloud/pages/general/getting-started/")
-    ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {backup} — factory identity/keys, NOT in "
+    ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {captured} — factory identity/keys, NOT in "
                      "git, CANNOT be regenerated if lost.", lead=True)
     ctx.console.detail(f"(The recovery-backup zip from recon, "
                        f"{robot.recon_dir / RECOVERY_BACKUP_ZIP}, is your pre-root un-brick copy "

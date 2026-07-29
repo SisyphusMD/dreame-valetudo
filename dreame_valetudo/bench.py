@@ -36,6 +36,7 @@ from .phases.fetch import fetch, fetch_stage1, stage1_ready
 from .phases.fixes import diagnose, fix_impl
 from .phases.image import image
 from .phases.push import (
+    backup,
     factory_backup_archive_valid,
     push,
     update_valetudo,
@@ -88,6 +89,10 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "legacy-root-adoption", "H1", "preserve and adopt an existing Valetudo root", True,
     ),
+    Scenario(
+        "adopted-root-backup", "H2",
+        "identity-bound factory backup without reinstalling Valetudo", True,
+    ),
     Scenario("recon-repeat", "H1", "idempotent repeat recon without a duplicate robot", True),
     Scenario(
         "first-root", "H3", "identity-gated first rooted-firmware flash", True,
@@ -108,7 +113,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("diagnose", "H2", "healthy rooted-robot diagnosis", True),
     Scenario(
         "valetudo-update", "H2", "identity-gated atomic Valetudo update", True,
-        "After the reboot, does the web UI report the expected new Valetudo version?",
+        "After the check or reboot, does the web UI report the version recorded by the tool?",
     ),
     Scenario(
         "stock-restore", "H3", "identity-bound return to captured stock firmware", True,
@@ -178,9 +183,9 @@ SCENARIOS: tuple[Scenario, ...] = (
         required=False,
     ),
     Scenario(
-        "wifi-wrong-network", "H2", "reject the home router as not-Dreame", True,
-        "Were you intentionally connected to the home network when the reachable non-Dreame host "
-        "was rejected?",
+        "wifi-wrong-network", "H2", "reject the home network as not-the-robot", True,
+        "Were you intentionally connected to the home network when the robot AP address was "
+        "rejected?",
     ),
     Scenario(
         "wifi-drop-backup", "H2", "discard an interrupted factory backup generation", True,
@@ -235,7 +240,7 @@ _RECOVERY_IMMUTABILITY = frozenset({
     "fel-not-entered", "wrong-model-recon", "already-rooted-recon",
 })
 _FACTORY_BACKUP_EVIDENCE = frozenset({
-    "post-root-install", "offline-cached-binary", "wifi-drop-backup",
+    "adopted-root-backup", "post-root-install", "offline-cached-binary", "wifi-drop-backup",
 })
 _RESTORE_KIT_EVIDENCE = frozenset({"stock-restore", "terminal-loss-restore"})
 _USB_STACK_SCENARIOS = frozenset({
@@ -262,6 +267,7 @@ class Snapshot:
     backup_artifacts: Mapping[str, str]
     partial_backups: int
     valetudo_version: str | None
+    root_origin: str | None
 
 
 def _now() -> str:
@@ -1093,6 +1099,7 @@ def _snapshot_digest(snapshot: Snapshot) -> str:
         "bound_factory_backups": sorted(snapshot.bound_factory_backups),
         "backup_artifacts": dict(snapshot.backup_artifacts),
         "partial_backups": snapshot.partial_backups,
+        "root_origin": snapshot.root_origin,
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -1302,6 +1309,7 @@ def _snapshot_for_robot(
         backup_artifacts=backup_artifacts,
         partial_backups=partial,
         valetudo_version=robot.state_get("valetudo") if robot is not None else None,
+        root_origin=robot.state_get("root-origin") if robot is not None else None,
     )
 
 
@@ -1383,6 +1391,13 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
             failures.append("the existing rooted installation was not adopted")
         if "flash-attempt" in markers or "restore-attempt" in markers:
             failures.append("adoption created a firmware-write attempt")
+    if scenario.key == "adopted-root-backup":
+        if not after.bound_factory_backups - before.bound_factory_backups:
+            failures.append("no new identity-bound manifested factory backup was published")
+        if before.markers.get("valetudo") != after.markers.get("valetudo"):
+            failures.append("the backup changed Valetudo completion state")
+        if after.partial_backups:
+            failures.append("an incomplete backup directory remains")
     if scenario.key == "recon-repeat" and before.robot_count != after.robot_count:
         failures.append("repeat recon changed the number of robot workspaces")
     if scenario.key in {
@@ -1475,6 +1490,7 @@ def _starting_failures(
         "recon-repeat": frozenset({"recon"}),
         "first-root": frozenset({"recon", "image"}),
         "post-root-install": frozenset({"rooted"}),
+        "adopted-root-backup": frozenset({"rooted", "valetudo", "root-origin"}),
         "implementation-fix": frozenset({"rooted", "valetudo"}),
         "rooted-resume": frozenset({"rooted", "valetudo"}),
         "diagnose": frozenset({"rooted", "valetudo"}),
@@ -1541,10 +1557,17 @@ def _starting_failures(
                             "scenario")
         if before.recovery_refresh_pending:
             failures.append("an incomplete recovery refresh must be resolved before this scenario")
-    if scenario.key == "valetudo-update" and not valetudo_update_available(
-        before.valetudo_version, target_valetudo,
+    if (
+        scenario.key == "valetudo-update"
+        and before.valetudo_version != ADOPTED_ROOT
+        and not valetudo_update_available(before.valetudo_version, target_valetudo)
     ):
         failures.append("the saved Valetudo version must be older than this build's verified target")
+    if (
+        scenario.key == "adopted-root-backup"
+        and before.root_origin != ADOPTED_ROOT
+    ):
+        failures.append("the robot must carry the accepted existing-root adoption marker")
     return failures
 
 
@@ -1651,6 +1674,10 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         ):
             raise Die("Bench check failed: recon did not adopt the existing rooted installation.")
         return {"existing_root_adopted_without_flash": True}
+    elif scenario.key == "adopted-root-backup":
+        if not backup(ctx):
+            raise Die("Factory backup did not complete.")
+        return {"adopted_robot_backed_up_without_reinstall": True}
     elif scenario.key in {"fel-not-entered", "wrong-model-recon"}:
         recon(ctx, force=False, recovery_backup=True, offer_update=True)
     elif scenario.key in {"recon-repeat", "already-rooted-recon"}:
@@ -1673,9 +1700,13 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
             report = (ctx.ws.base / "diagnose.log").read_text()
         except OSError:
             report = ""
-        if "NOT a Dreame robot" not in report:
-            raise Die("Bench check failed: diagnose did not identify the home router as non-Dreame.")
-        return {"home_router_rejected": True}
+        if "NOT a Dreame robot" in report:
+            rejection = "reachable-non-dreame"
+        elif ">>> UNREACHABLE" in report:
+            rejection = "unreachable"
+        else:
+            raise Die("Bench check failed: diagnose did not reject the home network safely.")
+        return {"home_network_rejected": True, "rejection_kind": rejection}
     elif scenario.key == "diagnose":
         diagnose(ctx)
         try:
@@ -1696,15 +1727,21 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
             raise Die("Bench check failed: diagnose did not report a healthy running Valetudo.")
         return {"healthy_diagnosis": True}
     elif scenario.key == "valetudo-update":
-        if not valetudo_update_available(
-            ctx.need_robot().state_get("valetudo"), ctx.valetudo_version,
-        ):
+        saved = ctx.need_robot().state_get("valetudo")
+        if saved != ADOPTED_ROOT and not valetudo_update_available(saved, ctx.valetudo_version):
             raise Die("Bench check failed: no newer verified Valetudo target is available.")
         if not update_valetudo(ctx):
             raise Die("Valetudo update did not complete.")
-        if ctx.need_robot().state_get("valetudo") != ctx.valetudo_version:
-            raise Die("Bench check failed: the update did not record the expected Valetudo version.")
-        return {"expected_version_recorded": True}
+        recorded = ctx.need_robot().state_get("valetudo")
+        target_recorded = recorded == ctx.valetudo_version
+        newer_preserved = valetudo_update_available(ctx.valetudo_version, recorded or "")
+        if not target_recorded and not newer_preserved:
+            raise Die("Bench check failed: the update did not record the expected Valetudo version "
+                      "or a newer live version preserved without downgrade.")
+        return {
+            "expected_version_recorded": target_recorded,
+            "newer_live_version_preserved": newer_preserved,
+        }
     elif scenario.key in {
         "stock-restore", "wrong-robot-restore", "decline-restore", "terminal-loss-restore",
     }:
