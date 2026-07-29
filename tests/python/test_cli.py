@@ -76,6 +76,8 @@ def test_bench_list_does_not_select_or_create_a_robot(tmp_path: Path) -> None:
         ["bench", "list"], env={"DREAME_WORK": str(tmp_path)},
         console=con, runner=RecordingRunner(),
     ) == 0
+    assert _has(con, "Hardware qualification scenarios")
+    assert _has(con, "H3 destructive flash")
     assert _has(con, "stock-restore")
     assert _has(con, "H2  record terminal-loss-after-restore-reboot")
     assert _has(con, "resume stock-boot confirmation without another flash")

@@ -15,6 +15,7 @@ _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 _MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
 _MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
 _LINUX_PACKAGES = _ROOT / "packaging" / "test-linux-packages.sh"
+_README = _ROOT / "README.md"
 
 
 def _job(text: str, name: str) -> str:
@@ -241,7 +242,9 @@ def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:
     floor = (_ROOT / "packaging" / "glibc-floor.txt").read_text().strip()
     assert floor == "2.28"
     assert "libc6 (>= ${GLIBC_FLOOR})" in deb
+    assert "  - tar" in deb
     assert "glibc >= ${GLIBC_FLOOR}" in rpm
+    assert "- /usr/bin/tar" in rpm
 
     dockerfile = (_ROOT / "packaging" / "deb.Dockerfile").read_text()
     assert "packaging/check-glibc-floor.py" in dockerfile
@@ -320,3 +323,33 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
         "rocky-8-compat": "/^8$/",
         "rocky-9-compat": "/^9$/",
     }
+
+
+def test_readme_source_install_names_every_host_runtime_dependency() -> None:
+    source = _README.read_text().split("### From source", 1)[1].split("## What you need", 1)[0]
+    for dependency in ("libusb", "curl", "tmux", "OpenSSH", "tar", "zip", "unzip"):
+        assert dependency in source
+
+
+def test_readme_covers_rpm_candidate_switching_and_manual_removal() -> None:
+    readme = _README.read_text()
+    assert "sudo dnf install ./dreame-valetudo.<arch>.rpm" in readme
+    assert "sudo dnf downgrade ./dreame-valetudo.<arch>.rpm" in readme
+    assert "sudo zypper install --oldpackage ./dreame-valetudo.<arch>.rpm" in readme
+    assert "sudo dnf remove dreame-valetudo" in readme
+
+
+def test_gitignore_covers_release_and_device_artifacts_created_in_the_repo() -> None:
+    patterns = set((_ROOT / ".gitignore").read_text().splitlines())
+    assert {
+        "*_fel_ng*.zip",
+        ".dreame-valetudo-image.json",
+        ".private.json",
+        "dreame-*-stock-recovery/",
+        "/out/",
+        "/out-*/",
+        "/homebrew-smoke-result/",
+        "/package-smoke-*/",
+        "/sunxi-fel",
+        "/notes.md",
+    } <= patterns

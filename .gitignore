@@ -43,9 +43,15 @@ __pycache__/
 
 # Packaging build outputs (PyInstaller, pkgbuild, deb, rpm).
 build/
+/out/
+/out-*/
+/homebrew-smoke-result/
+/package-smoke-*/
 *.pkg
 *.deb
 *.rpm
 root/
+/sunxi-fel
+/notes.md
 notary.p8
 *.p12

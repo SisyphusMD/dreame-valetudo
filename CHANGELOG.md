@@ -28,6 +28,8 @@
   irreplaceable backups. Existing layouts migrate automatically with never-clobber behavior.
 - Recon records provenance for the complete three-slice recovery capture, produces the portable
   `dreame_recovery_backup.zip`, and preserves any trusted pre-root generation on later rooted runs.
+- Release packages now enforce a glibc 2.28 floor and are qualified on deliberate oldest/current
+  Linux and macOS hosts, including both processor architectures.
 - The README now marks the X40 Ultra, X30 Ultra, L20 Ultra, and L10s Pro Ultra Heat as hardware
   verified.
 - Status and other informational commands finish without an unrelated continuation prompt, while

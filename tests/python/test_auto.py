@@ -47,6 +47,8 @@ def test_auto_intro_prints_only_once_per_process(
     cli.auto(ctx, [])
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert text.count("The road ahead") == 1
+    assert text.count("Build (browser)") == 1
+    assert text.count("Root (the one destructive step)") == 1
     assert text.count("The one piece of hardware you must have") == 1
     assert text.count("flashing always carries some risk") == 1
 

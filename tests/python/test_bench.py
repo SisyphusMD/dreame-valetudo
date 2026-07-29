@@ -174,6 +174,9 @@ def test_list_needs_no_campaign_or_robot(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     assert B.bench(ctx, ["list"], auto_fn=_noop_auto) == 0
     text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "Hardware qualification scenarios" in text
+    assert "H0 host-only" in text
+    assert "'run' is conducted by the tool" in text
     assert "host-smoke" in text
     assert "stock-restore" in text
     assert "record" in text
