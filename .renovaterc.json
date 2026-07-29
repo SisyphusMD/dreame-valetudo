@@ -67,7 +67,10 @@
     },
     {
       "description": "Python 3.11.0 is the literal source floor; Renovate must not move even its patch version and turn this into a current-3.11 test.",
-      "matchDepNames": ["python-3.11-floor"],
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "matchFileNames": [".forgejo/workflows/ci.yml"],
+      "matchCurrentValue": "/^3\\.11\\.0$/",
       "allowedVersions": "/^3\\.11\\.0$/"
     },
     {

@@ -123,7 +123,6 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
     floor_job = _job(_CI.read_text(), "python-floor")
 
     assert 'requires-python = ">=3.11"' in project
-    assert 'depName=python-3.11-floor packageName=python/cpython' in floor_job
     assert 'python-version: "3.11.0"' in floor_job
     assert 'pip install "pytest==$PYTEST" -e .' in floor_job
     assert "pytest -q tests/python" in floor_job
@@ -132,9 +131,12 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
     floor_rules = [
         rule
         for rule in config["packageRules"]
-        if "python-3.11-floor" in rule.get("matchDepNames", [])
+        if rule.get("matchManagers") == ["github-actions"]
+        and rule.get("matchDepNames") == ["python"]
+        and rule.get("matchFileNames") == [".forgejo/workflows/ci.yml"]
     ]
     assert len(floor_rules) == 1
+    assert floor_rules[0]["matchCurrentValue"] == r"/^3\.11\.0$/"
     assert floor_rules[0]["allowedVersions"] == r"/^3\.11\.0$/"
 
 
