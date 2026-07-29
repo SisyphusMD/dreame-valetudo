@@ -59,6 +59,7 @@ def test_main_help() -> None:
     con = ScriptedConsole()
     assert main(["help"], env={}, console=con, runner=RecordingRunner()) == 0
     assert _has(con, "Phase 2 DESTRUCTIVE")
+    assert _has(con, "backup [key]")
     assert _has(con, "hardware qualification campaign")
 
 
@@ -351,7 +352,7 @@ def test_ui_runs_without_selecting_or_creating_a_robot(
 
 
 @pytest.mark.parametrize(
-    "command", ("diagnose", "fix-impl", "fix-did", "fix-key", "update-valetudo"),
+    "command", ("backup", "diagnose", "fix-impl", "fix-did", "fix-key", "update-valetudo"),
 )
 def test_post_root_ssh_commands_select_the_robot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
@@ -381,7 +382,8 @@ def test_main_invalid_model_is_clean_error_not_traceback(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
-    "command", ("doctor", "fetch", "recon", "image", "root", "push", "verify-form")
+    "command",
+    ("backup", "doctor", "fetch", "recon", "image", "restore", "root", "push", "verify-form"),
 )
 def test_main_refuses_every_fastboot_phase_on_uart_model(
     tmp_path: Path, command: str,
@@ -605,8 +607,35 @@ def test_auto_repairs_an_interrupted_existing_root_adoption_without_hardware(
     assert robot.state_get("rooted") == ADOPTED_ROOT
     assert robot.state_get("valetudo") == ADOPTED_ROOT
     assert _has(ctx.console, "no firmware reflash")  # type: ignore[arg-type]
+    assert _has(ctx.console, "dreame-valetudo backup")  # type: ignore[arg-type]
     assert _has(ctx.console, "update-valetudo")  # type: ignore[arg-type]
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_offers_the_non_mutating_backup_after_existing_root_adoption(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("root-origin", ADOPTED_ROOT)
+    called: list[bool] = []
+
+    def capture(inner: object) -> bool:
+        called.append(True)
+        inner.need_robot().state_set("factory-backup", "current")  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(cli, "backup", capture)
+
+    cli.auto(ctx, [])
+
+    assert called == [True]
+    assert robot.state_get("rooted") == ADOPTED_ROOT
+    assert robot.state_get("valetudo") == ADOPTED_ROOT
+    assert robot.state_get("factory-backup") == "current"
+    assert _has(ctx.console, "Nothing on the robot will be changed")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("args", [[], ["--force"]])

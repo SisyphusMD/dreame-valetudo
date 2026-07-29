@@ -30,7 +30,7 @@ from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image
 from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
-from .phases.push import push, update_valetudo, valetudo_update_available
+from .phases.push import backup, push, update_valetudo, valetudo_update_available
 from .phases.recon import recon
 from .phases.restore import restore
 from .phases.root import root
@@ -73,7 +73,7 @@ from .workspace import Robot, Workspace, slugify
 
 # The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
 _FASTBOOT_ONLY = frozenset(
-    {"doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
+    {"backup", "doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
 )
 
 # Pure commands that never touch the workspace — skip the first-run layout migration for them.
@@ -83,7 +83,7 @@ _FASTBOOT_ONLY = frozenset(
 _NO_WORKSPACE = PURE_COMMANDS
 
 _ROBOT_COMMANDS = frozenset({
-    "auto", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
+    "auto", "backup", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
     "model", "push", "recon", "restore", "root", "sshkey", "update-valetudo", "valetudo",
     "verify-form",
 })
@@ -460,6 +460,17 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         if not push(ctx):
             valetudo(ctx)
         return
+    if (
+        robot.state_get("root-origin") == ADOPTED_ROOT
+        and not robot.state_has("factory-backup")
+    ):
+        ctx.console.say("This adopted robot still needs a current, identity-bound factory backup. "
+                        "Nothing on the robot will be changed.")
+        if ctx.interactive and ctx.console.confirm("Capture that factory backup now?"):
+            if not backup(ctx):
+                return
+        else:
+            ctx.console.info("Capture it later with: dreame-valetudo backup")
     if robot.state_has("valetudo"):
         installed = robot.state_get("valetudo")
         if (
@@ -517,6 +528,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo restore    DESTRUCTIVE — return this robot to captured stock firmware\n"
         "  dreame-valetudo valetudo   Phase 3 — how to push the Valetudo binary onto the robot\n"
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
+        "  dreame-valetudo backup [key]  capture/refresh factory data without changing the robot\n"
         "  dreame-valetudo update-valetudo [key]  verify + atomically update an adopted robot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
@@ -657,6 +669,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         valetudo(ctx)
     elif cmd == "push":
         return 0 if push(ctx, rest[0] if rest else None) else 1
+    elif cmd == "backup":
+        return 0 if backup(ctx, rest[0] if rest else None) else 1
     elif cmd == "update-valetudo":
         return 0 if update_valetudo(ctx, rest[0] if rest else None) else 1
     elif cmd == "sshkey":

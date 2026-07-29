@@ -590,6 +590,54 @@ def test_valetudo_update_scenario_rejects_success_without_the_expected_version_m
     assert _report(ctx)["results"][0]["result"] == "failed"  # type: ignore[index]
 
 
+@pytest.mark.parametrize(
+    ("recorded", "target_recorded", "newer_preserved"),
+    [
+        ("2026.07.0", True, False),
+        ("2026.08.0", False, True),
+    ],
+)
+def test_valetudo_update_scenario_uses_live_truth_for_an_adopted_marker(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: str,
+    target_recorded: bool,
+    newer_preserved: bool,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    _prepare_valetudo_state(ctx)
+    ctx.need_robot().state_set("valetudo", B.ADOPTED_ROOT)
+
+    def complete(inner: object) -> bool:
+        inner.need_robot().state_set("valetudo", recorded)  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(B, "update_valetudo", complete)
+
+    assert B.bench(
+        ctx, ["run", "valetudo-update", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+
+    evidence = _report(ctx)["results"][-1]["evidence"]  # type: ignore[index]
+    assert evidence["expected_version_recorded"] is target_recorded
+    assert evidence["newer_live_version_preserved"] is newer_preserved
+
+
+def test_valetudo_update_scenario_rejects_an_adopted_marker_left_unresolved(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+    ctx.need_robot().state_set("valetudo", B.ADOPTED_ROOT)
+    monkeypatch.setattr(B, "update_valetudo", lambda _ctx: True)
+
+    with pytest.raises(Die, match="expected Valetudo version or a newer live version"):
+        B.bench(
+            ctx, ["run", "valetudo-update", "--campaign", "rc"], auto_fn=_noop_auto,
+        )
+
+
 def test_legacy_root_adoption_scenario_requires_the_durable_no_flash_state(
     make_ctx: CtxFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -635,6 +683,48 @@ def test_legacy_root_adoption_scenario_rejects_a_plain_recon(
     with pytest.raises(Die, match="did not adopt the existing rooted installation"):
         B.bench(
             ctx, ["run", "legacy-root-adoption", "--campaign", "rc"], auto_fn=_noop_auto,
+        )
+
+
+def test_adopted_root_backup_uses_the_non_installing_production_path(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("root-origin", B.ADOPTED_ROOT)
+    robot.state_set("rooted", B.ADOPTED_ROOT)
+    robot.state_set("valetudo", B.ADOPTED_ROOT)
+
+    def capture(inner: object) -> bool:
+        _publish_factory_backup(inner, "adopted-current")
+        inner.need_robot().state_set("factory-backup", "adopted-current")  # type: ignore[attr-defined]
+        return True
+
+    monkeypatch.setattr(B, "backup", capture)
+
+    assert B.bench(
+        ctx, ["run", "adopted-root-backup", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["result"] == "passed"
+    assert result["evidence"]["adopted_robot_backed_up_without_reinstall"] is True
+    assert robot.state_get("valetudo") == B.ADOPTED_ROOT
+    assert result["evidence"]["identity_bound_factory_backup_count"] == 1
+
+
+def test_adopted_root_backup_rejects_a_non_adopted_robot(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _prepare_valetudo_state(ctx)
+
+    with pytest.raises(Die, match="accepted existing-root adoption marker"):
+        B.bench(
+            ctx, ["run", "adopted-root-backup", "--campaign", "rc"], auto_fn=_noop_auto,
         )
 
 
@@ -2239,7 +2329,7 @@ def test_wifi_drop_scenario_fails_when_the_retry_does_not_complete(
     assert _report(ctx)["results"][-1]["result"] == "failed"  # type: ignore[index]
 
 
-def test_wrong_network_requires_a_reachable_non_dreame_host_and_operator_observation(
+def test_wrong_network_accepts_a_reachable_non_dreame_host_and_operator_observation(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx(robot_name="bench", confirms=[True])
@@ -2256,13 +2346,14 @@ def test_wrong_network_requires_a_reachable_non_dreame_host_and_operator_observa
         ctx, ["run", "wifi-wrong-network", "--campaign", "rc"], auto_fn=_noop_auto,
     ) == 0
     evidence = _report(ctx)["results"][0]["evidence"]  # type: ignore[index]
-    assert evidence["home_router_rejected"] is True
+    assert evidence["home_network_rejected"] is True
+    assert evidence["rejection_kind"] == "reachable-non-dreame"
 
 
-def test_wrong_network_does_not_treat_an_unreachable_host_as_router_classification(
+def test_wrong_network_accepts_an_unreachable_robot_ap_address(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name="bench")
+    ctx = make_ctx(robot_name="bench", confirms=[True])
     _prepare_valetudo_state(ctx)
 
     def unreachable(inner: object) -> None:
@@ -2272,10 +2363,12 @@ def test_wrong_network_does_not_treat_an_unreachable_host_as_router_classificati
         )
 
     monkeypatch.setattr(B, "diagnose", unreachable)
-    with pytest.raises(Die, match="did not identify the home router"):
-        B.bench(
-            ctx, ["run", "wifi-wrong-network", "--campaign", "rc"], auto_fn=_noop_auto,
-        )
+    assert B.bench(
+        ctx, ["run", "wifi-wrong-network", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    evidence = _report(ctx)["results"][0]["evidence"]  # type: ignore[index]
+    assert evidence["home_network_rejected"] is True
+    assert evidence["rejection_kind"] == "unreachable"
 
 
 def test_diagnose_scenario_requires_a_healthy_valetudo_report(

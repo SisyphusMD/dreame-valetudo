@@ -316,8 +316,9 @@ you deliberately need to repeat a phase.
 
 Already rooted? Use the same command. The tool first gathers what it safely can without flashing,
 then lets you keep the existing root or deliberately root it again with the current method. Keeping
-the existing root changes only the files on your computer. After that, `update-valetudo` can maintain
-Valetudo normally.
+the existing root changes only the files on your computer. It then offers to capture the same current,
+identity-bound factory backup a fresh installation would receive, without reinstalling or rebooting
+anything. After that, `update-valetudo` can maintain Valetudo normally.
 
 For `push`, `ui`, and the `fix-*` helpers, join the computer to the **robot's own Wi-Fi network** by
 holding the two outer buttons until it speaks. Do not stay on your home network. The tool checks that
@@ -343,6 +344,7 @@ dreame-valetudo recon      # Phase 1 NON-DESTRUCTIVE: validate USB + record `con
 dreame-valetudo image      # opens the model's dustbuilder page, auto-unpacks the built zip
 dreame-valetudo root       # Phase 2 DESTRUCTIVE: flash the rooted image (guided, OKAY-checked)
 dreame-valetudo push [key] # Phase 3: SSH-pipe backup + binary + reboot onto the rooted robot
+dreame-valetudo backup [key] # capture/refresh factory data without changing or rebooting the robot
 dreame-valetudo update-valetudo [key] # verify the live robot and atomically update Valetudo
 dreame-valetudo restore    # DESTRUCTIVE: restore this robot's captured stock firmware
 dreame-valetudo ui         # on the robot's AP: wait for Valetudo, open http://192.168.5.1

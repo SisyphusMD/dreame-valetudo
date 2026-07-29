@@ -174,13 +174,14 @@ the boot-critical stock set from recon rather than claiming to replay the entire
 | `research-baseline` | H1/H2 | stock reference robot | Full readable user area, both hardware boot areas, named partitions, metadata, and hashes are preserved before boot-chain research | manifest verifies; two off-host copies |
 | `stock-recon` | H1 | stock | Real FEL discovery, correct DDR loader, fastboot enumeration, model/config read, and three-part recovery capture | recon marker plus valid recovery evidence |
 | `legacy-root-adoption` | H1 | rooted by an older/manual flow, not yet in this workspace | Capture the current recovery evidence, explicitly identify its prior-root history, and choose leave-as-is | adopted rooted/Valetudo state; no flash attempt or firmware write |
+| `adopted-root-backup` | H2 | `legacy-root-adoption` passed; robot booted and its AP is available | Verify the live robot identity and capture the current manifest-backed factory generation | new complete backup; Valetudo, firmware, identity, settings, and boot state unchanged |
 | `recon-repeat` | H1 | stock, recon complete | A repeat adopts the same robot and refreshes identity without creating a duplicate | one robot, same identity |
 | `first-root` | H3 | stock, image staged | Image/model/config/recovery gates and the exact timed flash sequence | rooted marker; robot reboots |
 | `post-root-install` | H2 | rooted, no Valetudo | Robot-AP identity check, complete factory backup, binary install, key/DID repair, and reboot | Valetudo marker plus a new valid manifest |
 | `implementation-fix` | H2 | rooted, Valetudo binary installed | Run `fix-impl` on the X40 (and on any other model whose autodetect fails); the live factory config must match the selected workspace before the implementation is written | identity gate and helper succeed; Valetudo UI starts |
 | `rooted-resume` | H2 | Valetudo running | A normal rerun skips FEL and flashing and returns to the UI path | no USB request or flash |
 | `diagnose` | H2 | Valetudo running | SSH/HTTP diagnosis recognizes a healthy rooted robot | clean diagnosis |
-| `valetudo-update` | H2 | older Valetudo running | Live model/config and HTTP version checks, robot-side SHA-256, atomic executable replacement, and reboot | expected version in the UI; prior binary survives any pre-rename transfer failure |
+| `valetudo-update` | H2 | older Valetudo running, or an adopted robot whose live version has not been recorded yet | Live model/config and HTTP version checks, downgrade refusal, robot-side SHA-256, atomic executable replacement, and reboot | target version in the UI, or a newer live version preserved; prior binary survives any pre-rename transfer failure |
 | `stock-restore` | H3 | Valetudo running, off-host backups confirmed | Restore-kit derivation, A/B evidence checks, exact live identity, stock flash order, automatic-FEL watch, and resumable physical boot confirmation | stock boot; factory reset; restored-stock marker only after boot confirmation |
 | `reroot-after-restore` | H3 | stock-restored | Bare auto refuses; explicit root `--force` performs a new deliberate rooting cycle | no automatic write; forced cycle succeeds |
 
@@ -209,7 +210,7 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 | `terminal-loss-restore` | H3 | Close only the terminal client after the restore sequence has visibly begun | tmux and signal masking carry the restore to completion; rejoin shows outcome |
 | `terminal-loss-after-restore-reboot` | H2 | Close the terminal after reboot is sent but before answering the stock-boot question | the pending observation resumes without another `oem dust` or flash |
 | `restore-returns-to-fel` | H2 | Observe a post-restore automatic FEL fallback | no completion marker and no speculative alternate-generation flash; the durable attempt remains for inspection |
-| `wifi-wrong-network` | H2 | Stay on the home LAN where `192.168.5.1` is the router | router is rejected as not-Dreame; no SSH write |
+| `wifi-wrong-network` | H2 | Stay on the home LAN instead of joining the robot AP | the AP address is unreachable or rejected as not-Dreame; no SSH write |
 | `wifi-drop-backup` | H2 | Leave the robot AP during the factory-backup transfer | no published manifest/partial generation; retry succeeds |
 | `ctrl-c-push` | H2 | Interrupt during a pre-install backup transfer | incomplete backup is removed; Valetudo marker is absent |
 | `ssh-wrong-key` | H2 | Select an unrelated explicit key | error names authentication/key problem without password fallback |

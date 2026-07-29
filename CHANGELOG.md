@@ -9,8 +9,8 @@
   for an automatic FEL fallback, and will resume boot confirmation without flashing twice.
 - `dreame-valetudo bench` records safety-tiered physical qualification campaigns against the real
   production phases, including interruption, wrong-device, restore, and package-install scenarios.
-- Adopted rooted robots can check and atomically update their installed Valetudo directly; normal
-  runs offer a newer verified version without requiring intermediate WebUI upgrades.
+- Adopted rooted robots can capture a current factory backup without reinstalling anything, then
+  check and atomically update Valetudo without stepping through intermediate WebUI releases.
 - Read-only recon can adopt a robot rooted by an older or manual flow without reflashing it, while
   still offering a deliberate current-method re-root when that is what the operator wants.
 - Runs now survive closed terminals and dropped SSH connections in a private tmux session. Re-running

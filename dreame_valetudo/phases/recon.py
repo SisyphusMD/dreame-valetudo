@@ -56,8 +56,12 @@ def _print_intro(ctx: Context) -> None:
                           index=1, total=3)
         ctx.console.info("Validates the whole USB path with zero brick risk and records the "
                          "'config' value that identifies the robot + drives the dustbuilder.")
-        ctx.console.action("BEFORE you start: if this robot was EVER set up in the Mi Home / "
-                           "Dreame Home app, factory-reset it first (Settings -> Reset).")
+        ctx.console.action("BEFORE you start: if this is a STOCK robot that was ever set up in "
+                           "the Mi Home / Dreame Home app, factory-reset it first "
+                           "(Settings -> Reset).")
+        ctx.console.warn("If the robot is already rooted, NEVER factory-reset it for adoption or "
+                         "stock recovery. That erases Valetudo's data but does not restore stock "
+                         "firmware.")
         ctx.console.info("The rooting guides assume a factory-new robot never connected to the "
                          "vendor cloud.")
 

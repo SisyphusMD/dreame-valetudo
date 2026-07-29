@@ -337,6 +337,7 @@ def test_recon_intro_prints_only_once_per_process(make_ctx: CtxFactory) -> None:
     assert text.count("Reconnaissance — reads only") == 1
     assert text.count("Validates the whole USB path") == 1
     assert text.count("factory-reset it first") == 1
+    assert text.count("already rooted, NEVER factory-reset it") == 1
 
 
 def test_fel_readiness_prompt_is_not_asked_twice(make_ctx: CtxFactory) -> None:
