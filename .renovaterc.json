@@ -50,14 +50,29 @@
       "allowedVersions": "/^12-slim$/"
     },
     {
+      "description": "Debian 13 is the deliberately selected current qualification host; Renovate refreshes its digest but a new Debian release is reviewed before replacing it.",
+      "matchDepNames": ["debian-13-current"],
+      "allowedVersions": "/^13-slim$/"
+    },
+    {
       "description": "The Debian 12 and Ubuntu 22.04 legs are compatibility floors, not current-release aliases; Renovate still refreshes their immutable digests.",
       "matchDepNames": ["ubuntu-22.04-compat"],
       "allowedVersions": "/^22\\.04$/"
     },
     {
+      "description": "Ubuntu 26.04 is the deliberately selected current qualification host; Renovate refreshes its digest but a new LTS is reviewed before replacing it.",
+      "matchDepNames": ["ubuntu-26.04-current"],
+      "allowedVersions": "/^26\\.04$/"
+    },
+    {
       "description": "Fedora 43 remains the oldest supported Fedora until 45 reaches GA; Renovate still refreshes its immutable digest.",
       "matchDepNames": ["fedora-43-compat"],
       "allowedVersions": "/^43$/"
+    },
+    {
+      "description": "Fedora 44 is the deliberately selected current qualification host; Renovate refreshes its digest but a future Fedora is reviewed after GA before replacing it.",
+      "matchDepNames": ["fedora-44-current"],
+      "allowedVersions": "/^44$/"
     },
     {
       "description": "macOS 15 is the cross-architecture support floor; runner-image updates may refresh current hosts but must not silently drop the floor.",
@@ -82,6 +97,16 @@
       "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
       "matchDepNames": ["rocky-9-compat"],
       "allowedVersions": "/^9$/"
+    },
+    {
+      "description": "Rocky Linux 10 is the deliberately selected current RHEL-compatible host; Renovate refreshes its digest but a new major is reviewed before replacing it.",
+      "matchDepNames": ["rocky-10-current"],
+      "allowedVersions": "/^10$/"
+    },
+    {
+      "description": "openSUSE Leap 16.0 is the deliberately selected qualification host; the registry's legacy 42.x tags must not be mistaken for newer releases.",
+      "matchDepNames": ["opensuse-leap-16-current"],
+      "allowedVersions": "/^16\\.0$/"
     },
     {
       "description": "Major Updates",
