@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..constants import ROBOT_AP_IP
+from ..constants import RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from ..context import Context
 from ..platform_env import open_url
 from ..profiles import known_model_key_for_dir, load_profile
@@ -82,11 +82,21 @@ def _summary(robot: Robot) -> str:
             model = f"unknown model '{key}' — upgrade dreame-valetudo"
     else:
         model = "model not chosen yet"
-    last = "none"
-    for s in reversed(_PHASES):
-        if robot.state_has(s):
-            last = s
-            break
+    restore_attempt = robot.state_get("restore-attempt")
+    if restore_attempt is not None:
+        last = (
+            "stock-flashed-awaiting-boot"
+            if restore_attempt.startswith(RESTORE_BOOT_PENDING)
+            else "restore-attempt-uncertain"
+        )
+    elif robot.state_has("flash-attempt"):
+        last = "root-attempt-uncertain"
+    else:
+        last = "none"
+        for s in reversed(_PHASES):
+            if robot.state_has(s):
+                last = s
+                break
     summary = f"{model}  config={cfg}  furthest={last}"
     # Only ever present when a run was interrupted while waiting on an answer — "furthest" says
     # what finished, which is not the same as what it was in the middle of asking. Kept on one

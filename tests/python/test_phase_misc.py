@@ -144,6 +144,51 @@ def test_status_identifies_a_robot_returned_to_stock(make_ctx: CtxFactory) -> No
     assert any("[x] restored-stock" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_status_prioritizes_a_stock_flash_awaiting_boot_confirmation(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx()
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("rooted")
+    robot.state_set("valetudo")
+    robot.state_set(
+        "restore-attempt",
+        "flashed-awaiting-stock-boot model=x40-ultra config=abc",
+    )
+
+    status(ctx)
+
+    assert _said(ctx, "furthest=stock-flashed-awaiting-boot")
+    assert not _said(ctx, "furthest=valetudo")
+
+
+@pytest.mark.parametrize(
+    ("marker", "value", "summary"),
+    [
+        ("restore-attempt", "model=x40-ultra config=abc", "restore-attempt-uncertain"),
+        ("flash-attempt", "model=x40-ultra config=abc", "root-attempt-uncertain"),
+    ],
+)
+def test_status_prioritizes_uncertain_write_attempts(
+    make_ctx: CtxFactory,
+    marker: str,
+    value: str,
+    summary: str,
+) -> None:
+    ctx = make_ctx()
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("rooted")
+    robot.state_set("valetudo")
+    robot.state_set(marker, value)
+
+    status(ctx)
+
+    assert _said(ctx, f"furthest={summary}")
+    assert not _said(ctx, "furthest=valetudo")
+
+
 def test_status_hides_dot_directories(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,8 @@
   and the on-disk backup format.
 - **[UPSTREAM-VALETUDO.md](UPSTREAM-VALETUDO.md)** — the per-model contract with the official
   Valetudo guide, plus every intentional difference in the automated flow.
+- **[HARDWARE-TESTING.md](HARDWARE-TESTING.md)** — the release-candidate bench matrix and built-in
+  campaign runner for physical, interruption, restore, and package qualification.
 - **[research/](research/)** — the low-level research compendium: reverse-engineering of the gen3
   (Allwinner A133 / MR813) secure-boot chain, a documented attempt to root with owner-generated keys
   (and exactly where it is blocked), the reproduction tooling, and an artifact-sourcing manifest.

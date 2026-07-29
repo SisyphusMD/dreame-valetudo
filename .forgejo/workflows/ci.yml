@@ -77,6 +77,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: reclaim disposable runner storage
+        run: |
+          # The self-hosted DinD daemon persists between capacity-one runner assignments. Remove
+          # only stopped containers and unused images before setup pulls or creates anything large;
+          # running jobs and their images cannot be selected by either prune.
+          docker container prune --force
+          docker image prune --all --force
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           # The action's own default is tonistiigi/binfmt:latest — the one moving tag left in
@@ -102,12 +109,24 @@ jobs:
           rm -rf dist && mkdir dist
           cp out/dreame-valetudo out/dreame-fastboot dist/
           cp out/sunxi-fel ./sunxi-fel
-          # nfpm packages via docker create+cp: the DinD daemon can't bind-mount the job workspace.
-          CID=$(docker create -e DEB_ARCH=amd64 -e VERSION=0.0.0-ci -w /w "$NFPM" package -p deb -f packaging/nfpm.yaml -t /w/ci.deb)
+          # Build two ordered RC package revisions so the distro smoke tests exercise an actual
+          # package-manager upgrade, not merely a reinstall. docker create+cp is required because
+          # the DinD daemon cannot bind-mount the job workspace.
+          CID=$(docker create -e DEB_ARCH=amd64 -w /w --entrypoint /bin/sh "$NFPM" -c '
+            set -e
+            VERSION=0.0.0-rc.1 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci-old.deb
+            VERSION=0.0.0-rc.2 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci.deb
+            VERSION=0.0.0-rc.1 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci-old.rpm
+            VERSION=0.0.0-rc.2 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm
+          ')
           docker cp . "$CID":/w
           docker start -a "$CID"
+          docker cp "$CID":/w/ci-old.deb ./ci-old.deb
           docker cp "$CID":/w/ci.deb ./ci.deb
+          docker cp "$CID":/w/ci-old.rpm ./ci-old.rpm
+          docker cp "$CID":/w/ci.rpm ./ci.rpm
           docker rm "$CID" >/dev/null
+          docker image rm "$NFPM" >/dev/null 2>&1 || true
           deb_contents="$(dpkg-deb -c ci.deb)"
           for required in \
             ./usr/bin/dreame-valetudo \
@@ -125,15 +144,26 @@ jobs:
             echo "fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out"
             exit 1
           fi
-          # Also build the .rpm from the same binaries: validates the rpm overrides/config (it ships in
-          # publish.yml). rpm tooling isn't on the runner to inspect, so just confirm it's non-empty.
-          CIDR=$(docker create -e DEB_ARCH=amd64 -e VERSION=0.0.0 -w /w "$NFPM" package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm)
-          docker cp . "$CIDR":/w
-          docker start -a "$CIDR"
-          docker cp "$CIDR":/w/ci.rpm ./ci.rpm
-          docker rm "$CIDR" >/dev/null
-          test -s ci.rpm
-          echo "build OK: bundle (buildx) + sunxi-fel + .deb + .rpm all built from the pinned deps"
+          # Keep the self-hosted runner below its storage ceiling before pulling four distro images.
+          # The exported binaries are already outside BuildKit, so its compile cache is disposable.
+          docker buildx prune --all --force
+          # renovate: datasource=docker depName=debian
+          DEBIAN_IMAGE="debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
+          # renovate: datasource=docker depName=ubuntu
+          UBUNTU_IMAGE="ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982"
+          # renovate: datasource=docker depName=fedora
+          FEDORA_IMAGE="fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222"
+          # renovate: datasource=docker depName=opensuse/leap
+          OPENSUSE_IMAGE="opensuse/leap:16.0@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6"
+          export DEBIAN_IMAGE UBUNTU_IMAGE FEDORA_IMAGE OPENSUSE_IMAGE
+          bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm
+          VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
+          rm -rf homebrew-smoke-result
+          docker buildx build --platform linux/amd64 --build-arg TEST_TAG="v$VERSION" \
+            -f packaging/homebrew-smoke.Dockerfile --target result \
+            --output type=local,dest=homebrew-smoke-result .
+          test -f homebrew-smoke-result/homebrew-smoke-passed
+          echo "build OK: bundles + package matrix + Linuxbrew formula install/test/uninstall"
 
   integration:
     needs: [shellcheck]

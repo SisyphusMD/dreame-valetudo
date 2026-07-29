@@ -59,6 +59,9 @@ _PUBLIC_TOKENS = frozenset({
     *(load_profile(key).payload_addr for key in SUPPORTED_MODELS),
     *KNOWN_IMPL_CLASSES,
 })
+_PRIVATE_BENCH_OPTIONS = frozenset({
+    "--note", "--reason", "--risk", "--accepted-by", "--actual-robot", "--robot",
+})
 
 
 def _mask_mikey(match: re.Match[str]) -> str:
@@ -89,6 +92,21 @@ def scrub(text: str, home: Path | None = None) -> str:
     for marker, key_type in protected_types:
         text = text.replace(marker, key_type)
     return text
+
+
+def redact_run_argv(argv: Sequence[str]) -> list[str]:
+    out = list(argv)
+    if not out or out[0] != "bench":
+        return out
+    for index, value in enumerate(argv):
+        if value in _PRIVATE_BENCH_OPTIONS and index + 1 < len(out):
+            out[index + 1] = "<private-bench-text>"
+        else:
+            for option in _PRIVATE_BENCH_OPTIONS:
+                if value.startswith(option + "="):
+                    out[index] = option + "=<private-bench-text>"
+                    break
+    return out
 
 
 def redact_dust_token(args: Sequence[object]) -> list[str]:
@@ -181,6 +199,7 @@ class RunLog:
         self._home = home
         self._clock = clock
         self._t0 = clock()
+        self._protected: set[str] = set()
 
     @classmethod
     def open(cls, base: Path, home: Path, argv: Sequence[str], version: str, *,
@@ -191,7 +210,7 @@ class RunLog:
         fh = (logs / f"run-{stamp}.log").open("w", encoding="utf-8")
         log = cls(logs / f"run-{stamp}.log", fh, home, clock)
         log._raw(f"# dreame-valetudo {version}   {when}")
-        log._raw("# command: " + scrub(" ".join(argv), home))
+        log._raw("# command: " + scrub(" ".join(redact_run_argv(argv)), home))
         log._raw(f"# platform: {platform.platform()}   python {sys.version.split()[0]}")
         log._raw("# personal + identifying values are redacted below; safe to share")
         log._raw("# each line is stamped [+seconds] elapsed since start; commands show their duration")
@@ -210,24 +229,66 @@ class RunLog:
             self._fh.write(line + "\n")
             self._fh.flush()
 
+    def protect(self, *values: str | None) -> None:
+        """Keep exact operator-chosen labels out of subsequent shareable log lines."""
+        self._protected.update(value for value in values if value)
+
+    def _scrub(self, text: str) -> str:
+        cleaned = scrub(text, self._home)
+        for value in sorted(self._protected, key=len, reverse=True):
+            replacement = "<private-robot-name>"
+            if cleaned == value:
+                cleaned = replacement
+                continue
+            escaped = re.escape(value)
+            cleaned = re.sub(rf"(?<=/){escaped}(?=/|$)", replacement, cleaned)
+            cleaned = cleaned.replace(f"'{value}'", f"'{replacement}'")
+            cleaned = cleaned.replace(f'"{value}"', f'"{replacement}"')
+            cleaned = cleaned.replace(
+                f"{value}'s recovery backup",
+                f"{replacement}'s recovery backup",
+            )
+            cleaned = re.sub(
+                rf"(^\s*[0-9]+\)\s+){escaped}(?=\s{{2,}})",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\b(?:Robot|Resuming|folder):?\s+){escaped}(?=\s|$|\))",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\bselected robot name exactly \(){escaped}(?=\))",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\bRobot\s+(?:'[^']*'|\"[^\"]*\")\s+\(){escaped}"
+                rf"(?=\)\s+uses unknown saved model)",
+                rf"\1{replacement}",
+                cleaned,
+            )
+        return cleaned
+
     def line(self, prefix: str, text: str) -> None:
-        self._raw(f"{self._stamp()} {prefix} {scrub(text, self._home)}")
+        self._raw(f"{self._stamp()} {prefix} {self._scrub(text)}")
 
     def note(self, text: str) -> None:
         """A raw, unstamped ``#`` annotation line — for framing content that predates the timeline
         (e.g. migration output replayed in after it ran before the log opened)."""
-        self._raw("# " + scrub(text, self._home))
+        self._raw("# " + self._scrub(text))
 
     def command(self, result: Result, duration: float | None = None) -> None:
         tool = result.argv[0].rsplit("/", 1)[-1] if result.argv else ""
         parts = redact_dust_token((tool, *result.argv[1:]))
-        line = scrub("$ " + " ".join(parts).rstrip(), self._home)
+        line = self._scrub("$ " + " ".join(parts).rstrip())
         if len(line) > 400:
             line = line[:400] + " …(truncated)"
         meta = f"rc={result.returncode}" + (f", {duration:.2f}s" if duration is not None else "")
         self._raw(f"{self._stamp()} {line}   ({meta})")
         if not result.ok and result.stderr.strip():
-            err = scrub(result.stderr.strip(), self._home)
+            err = self._scrub(result.stderr.strip())
             self._raw("    ! " + (err[:400] + " …" if len(err) > 400 else err))
 
     def finish(self, rc: int) -> None:
@@ -249,9 +310,11 @@ class LoggingConsole(Console):
         "prompt": "??", "answer": "->",
     }
 
-    def __init__(self, log: RunLog, *, color: bool | None = None) -> None:
+    def __init__(self, log: RunLog, *, color: bool | None = None,
+                 protect_robot_names: bool = False) -> None:
         super().__init__(color=color)
         self._log = log
+        self._protect_robot_names = protect_robot_names
 
     def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
               lead: bool = False, trail: bool = False) -> None:
@@ -267,6 +330,10 @@ class LoggingConsole(Console):
     def ask(self, prompt: str) -> str:
         self._log.line(self._PREFIX["prompt"], prompt)
         answer = super().ask(prompt)
+        if self._protect_robot_names and prompt.startswith("Name for this robot "):
+            private_name = answer.strip()
+            private_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", private_name).strip("-.")
+            self._log.protect(private_name, private_slug)
         self._log.line(self._PREFIX["answer"], answer)
         return answer
 

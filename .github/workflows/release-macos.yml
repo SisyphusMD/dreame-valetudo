@@ -41,6 +41,9 @@ jobs:
           # renovate: datasource=github-tags depName=python/cpython versioning=pep440
           python-version: "3.14.6"   # exact interpreter frozen into the bundle
 
+      - name: Install, test, and uninstall the Homebrew release formula
+        run: bash packaging/test-homebrew-formula.sh "$GITHUB_REF_NAME"
+
       - name: Build sunxi-fel + the PyInstaller fastboot client
         run: |
           set -euo pipefail
@@ -158,6 +161,61 @@ jobs:
           xcrun notarytool submit "$PKG" \
             --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
           xcrun stapler staple "$PKG"
+
+      - name: Install, exercise, and uninstall the signed package
+        run: |
+          set -euo pipefail
+          PKG="dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          LX=/usr/local/libexec/dreame-valetudo
+          TEST_HOME=$(mktemp -d)
+          cleanup() {
+            if [ -x "$LX/uninstall.sh" ]; then sudo "$LX/uninstall.sh" >/dev/null; fi
+            rm -rf "$TEST_HOME"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$TEST_HOME/dreame-valetudo/backups"
+          printf 'keep\n' > "$TEST_HOME/dreame-valetudo/backups/uninstall-must-preserve"
+          pkgutil --check-signature "$PKG"
+          xcrun stapler validate "$PKG"
+          sudo installer -pkg "$PKG" -target /
+
+          pkgutil --pkg-info com.sisyphusmd.dreame-valetudo \
+            | grep -Fx "version: ${GITHUB_REF_NAME#v}"
+          test -x /usr/local/bin/dreame-valetudo
+          for helper in dreame-valetudo dreame-fastboot sunxi-fel tmux uninstall.sh; do
+            test -x "$LX/$helper"
+          done
+          for binary in dreame-valetudo dreame-fastboot sunxi-fel tmux; do
+            codesign --verify --deep --strict "$LX/$binary"
+          done
+          if otool -L "$LX/sunxi-fel" "$LX/tmux" \
+              | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
+            echo "installed helper still references a Homebrew-only library" >&2
+            exit 1
+          fi
+
+          runtime=$(/usr/local/bin/dreame-valetudo version | awk '{print $NF}')
+          HOME="$TEST_HOME" DREAME_NO_TMUX=1 DREAME_NO_UPDATE_CHECK=1 \
+            DREAME_BENCH_BUILD="$runtime" DREAME_BENCH_CHANNEL="pkg-${{ matrix.arch }}" \
+            /usr/local/bin/dreame-valetudo bench run host-smoke --campaign package-ci
+          set +e
+          fastboot_out=$("$LX/dreame-fastboot" devices 2>&1)
+          fastboot_rc=$?
+          set -e
+          if (( fastboot_rc > 1 )) \
+              || { (( fastboot_rc == 1 )) && [[ -n "$fastboot_out" ]]; } \
+              || grep -Eqi 'Traceback|NoBackendError|no libusb backend|library not loaded' \
+                   <<<"$fastboot_out"; then
+            echo "installed fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out" >&2
+            exit 1
+          fi
+
+          sudo "$LX/uninstall.sh"
+          test ! -e /usr/local/bin/dreame-valetudo
+          test ! -e "$LX"
+          ! pkgutil --pkgs | grep -qx com.sisyphusmd.dreame-valetudo
+          test -f "$TEST_HOME/dreame-valetudo/backups/uninstall-must-preserve"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

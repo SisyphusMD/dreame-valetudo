@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import hashlib
 import os
 import re
 import shutil
@@ -35,6 +36,30 @@ _KEY_TXT = "/mnt/private/ULI/factory/key.txt"
 # The miio device key is 16+ alphanumerics; restricting to [A-Za-z0-9] also makes it safe to
 # interpolate into the remote printf/sed of _apply_key_fix (no shell/sed metacharacters).
 _MIKEY_RE = re.compile(r"[A-Za-z0-9]{8,64}")
+_VALETUDO_VERSION_RE = re.compile(r"[0-9]{4}\.[0-9]{2}\.[0-9]+(?:-[A-Za-z0-9.-]+)?")
+
+
+def _version_order(
+    version: str,
+) -> tuple[tuple[int, ...], int, tuple[tuple[int, int, str], ...]] | None:
+    if not _VALETUDO_VERSION_RE.fullmatch(version):
+        return None
+    core_text, separator, suffix = version.partition("-")
+    prerelease = tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part.lower())
+        for part in re.split(r"[.-]", suffix)
+        if part
+    )
+    return tuple(int(part) for part in core_text.split(".")), 0 if separator else 1, prerelease
+
+
+def valetudo_update_available(installed: str | None, target: str) -> bool:
+    """Whether two concrete Valetudo releases prove that the configured target is newer."""
+    if installed is None:
+        return False
+    current_order = _version_order(installed)
+    target_order = _version_order(target)
+    return current_order is not None and target_order is not None and target_order > current_order
 
 
 def _gzip_is_complete(path: Path) -> bool:
@@ -73,6 +98,16 @@ def _tar_has_factory_data(path: Path) -> bool:
     return any(name.startswith("mnt/private/") for name in files) and any(
         name.startswith("mnt/misc/") for name in files
     )
+
+
+def factory_backup_archive_valid(path: Path) -> bool:
+    """Whether a published factory archive still satisfies the pre-install backup gate."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size <= 1000:
+            return False
+    except OSError:
+        return False
+    return _tar_gz_is_complete(path) and _tar_has_factory_data(path)
 
 
 def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
@@ -183,7 +218,7 @@ def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) ->
 
 
 def _live_robot_identity(
-    ctx: Context, key: str | Path | None, expected_config: str,
+    ctx: Context, key: str | Path | None, expected_config: str | None,
 ) -> dict[str, str]:
     """Read only the non-secret identity fields needed to bind a backup to the selected profile."""
     result = robot_ssh(
@@ -202,10 +237,14 @@ def _live_robot_identity(
         if separator and field in {"model", "did", "factory_config"} and value.strip():
             identity[field] = value.strip()
     live_config = parse_config(identity.get("factory_config", ""))
-    if live_config is None:
+    if expected_config is not None and live_config is None:
         die("Could not read this robot's factory config identity — no backup or install was "
             "attempted.")
-    if live_config.lower() != expected_config.lower():
+    if (
+        expected_config is not None
+        and live_config is not None
+        and live_config[:8].lower() != expected_config[:8].lower()
+    ):
         die("SAFETY STOP: the connected robot's factory config does not match the selected "
             "robot. Join the selected robot's Wi-Fi AP and re-run; no backup or install was "
             "attempted.")
@@ -329,10 +368,7 @@ def _capture_factory_backup(
     return final
 
 
-@records_step("installing Valetudo")
-def push(ctx: Context, key: str | Path | None = None) -> bool:
-    """Returns True once Valetudo is installed; False if the robot isn't reachable on its AP
-    (so the caller can print Phase-3 guidance instead of aborting the whole run)."""
+def _resolve_robot_key(ctx: Context, key: str | Path | None) -> str | Path | None:
     robot = ctx.need_robot()
     if key is None:
         resolved = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, robot)
@@ -341,23 +377,100 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
         key = resolved if Path(resolved).is_file() else None
         if key:
             ctx.console.info(f"SSH key: {key}")
-    else:
-        if not Path(key).is_file():
-            die(f"SSH key not found: {key} (from the command line).")
-        ctx.console.info(f"SSH key: {key}")
+        return key
+    if not Path(key).is_file():
+        die(f"SSH key not found: {key} (from the command line).")
+    ctx.console.info(f"SSH key: {key}")
+    return key
 
+
+def _prepare_valetudo_binary(ctx: Context, *, retry_command: str) -> None:
     binary_missing = not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0
     check_external_tools(ctx, ("ssh",), required=True)
     check_external_tools(ctx, ("curl",), required=binary_missing)
     try:
-        # Re-check a cached binary too: a moving `latest` release keeps the same filename, so only
-        # the published digest reveals that the cached bytes are now stale.
+        # A moving `latest` release retains its filename, so even cached bytes need their current
+        # published digest checked before they can replace the robot's executable.
         fetch_valetudo(ctx)
     except Die as exc:
-        die(f"{exc}\nRejoin your normal Wi-Fi and run 'dreame-valetudo push' again. It will "
-            "download only Valetudo, then prompt you to join the robot's Wi-Fi AP.")
+        die(f"{exc}\nRejoin your normal Wi-Fi and run '{retry_command}' again. It will download "
+            "only Valetudo, then prompt you to join the robot's Wi-Fi AP.")
     if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
         die("Valetudo binary missing — run 'fetch'.")
+
+
+def _installed_valetudo_version(ctx: Context) -> str | None:
+    response = ctx.runner.run(
+        ["curl", "-sS", "-m", "3", "-D", "-", "-o", "/dev/null", f"http://{ROBOT_AP_IP}"],
+        check=False,
+    )
+    match = re.search(
+        r"(?im)^x-valetudo-version\s*:\s*([^\s]+)",
+        response.stdout + response.stderr,
+    )
+    if match is None:
+        return None
+    version = match.group(1).strip()
+    return version if _VALETUDO_VERSION_RE.fullmatch(version) else None
+
+
+def _replace_valetudo_atomically(
+    ctx: Context,
+    key: str | Path | None,
+    *,
+    install_postboot: bool,
+) -> None:
+    staging = "/data/.valetudo.update"
+    with ctx.valetudo_bin.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    cleanup = f"rm -f {staging}"
+    if not robot_ssh(ctx.runner, _TARGET, cleanup, key=key, check=False).ok:
+        die("Could not prepare a private staging path on the robot; the installed Valetudo was "
+            "left untouched.")
+    with ctx.console.progress("Copying the verified Valetudo binary"):
+        copied = ctx.runner.run_redirect(
+            [*ssh_base(_TARGET, key), f"cat > {staging}"],
+            stdin_path=str(ctx.valetudo_bin),
+            check=False,
+        ).ok
+    if not copied:
+        robot_ssh(ctx.runner, _TARGET, cleanup, key=key, check=False)
+        die("The Valetudo transfer failed. The installed binary was left untouched; rejoin the "
+            "robot AP and retry.")
+    # The old executable remains in place through transfer and digest verification. The final
+    # same-filesystem rename is atomic, so a dropped connection cannot leave a truncated live file.
+    postboot = (
+        "cp /misc/_root_postboot.sh.tpl /data/_root_postboot.sh.update\n"
+        "chmod +x /data/_root_postboot.sh.update\n"
+        "mv -f /data/_root_postboot.sh.update /data/_root_postboot.sh\n"
+        if install_postboot else ""
+    )
+    install = (
+        "set -e\n"
+        f"[ \"$(sha256sum {staging} | awk '{{print $1}}')\" = '{digest}' ]\n"
+        f"chmod +x {staging}\n"
+        f"{postboot}"
+        f"mv -f {staging} /data/valetudo\n"
+        "sync"
+    )
+    result = robot_ssh(ctx.runner, _TARGET, install, key=key, check=False)
+    if not result.ok:
+        robot_ssh(ctx.runner, _TARGET, cleanup, key=key, check=False)
+        die("The staged Valetudo binary did not pass the robot-side digest/install check. The "
+            "prior executable remains usable unless the final atomic rename had already completed; "
+            "inspect the robot before retrying.")
+    # Installation success is known before reboot can tear down SSH. The reboot command's transport
+    # status is inherently ambiguous because a successful reboot closes the connection itself.
+    robot_ssh(ctx.runner, _TARGET, "reboot", key=key, check=False)
+
+
+@records_step("installing Valetudo")
+def push(ctx: Context, key: str | Path | None = None) -> bool:
+    """Returns True once Valetudo is installed; False if the robot isn't reachable on its AP
+    (so the caller can print Phase-3 guidance instead of aborting the whole run)."""
+    robot = ctx.need_robot()
+    key = _resolve_robot_key(ctx, key)
+    _prepare_valetudo_binary(ctx, retry_command="dreame-valetudo push")
 
     ctx.console.phase("Install Valetudo over the robot's own Wi-Fi AP", index=3, total=3)
     ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
@@ -406,29 +519,11 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     live_identity = _live_robot_identity(ctx, key, cfg)
     backup = _capture_factory_backup(ctx, key, cfg, live_identity)
 
-    ctx.console.say("Copying the Valetudo binary onto the robot...")
-    with ctx.console.progress("Copying valetudo (~37 MB over the robot's Wi-Fi)"):
-        copied = ctx.runner.run_redirect(
-            [*ssh_base(_TARGET, key), "cat > /data/valetudo"],
-            stdin_path=str(ctx.valetudo_bin),
-            check=False,
-        ).ok
-    if not copied:
-        die("copy failed")
-
     _repair_did_if_needed(ctx, key)
     _populate_key_if_needed(ctx, key)
 
-    ctx.console.say("Installing postboot hook + rebooting...")
-    if not robot_ssh(
-        ctx.runner,
-        _TARGET,
-        "chmod +x /data/valetudo && cp /misc/_root_postboot.sh.tpl /data/_root_postboot.sh && "
-        "chmod +x /data/_root_postboot.sh && sync && reboot",
-        key=key,
-        check=False,
-    ).ok:
-        die("install failed")
+    ctx.console.say("Installing the verified binary and postboot hook, then rebooting...")
+    _replace_valetudo_atomically(ctx, key, install_postboot=True)
 
     robot.state_set("valetudo", ctx.valetudo_version)
     ctx.console.say(f"Rooted and Valetudo {ctx.valetudo_version} installed! The robot is rebooting "
@@ -457,6 +552,72 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     ctx.console.detail(f"(The recovery-backup zip from recon, "
                        f"{robot.recon_dir / RECOVERY_BACKUP_ZIP}, is your pre-root un-brick copy "
                        "— keep it too.)")
+    return True
+
+
+@records_step("updating Valetudo")
+def update_valetudo(ctx: Context, key: str | Path | None = None) -> bool:
+    """Verify the selected live robot, then atomically replace only its Valetudo executable."""
+    robot = ctx.need_robot()
+    if not robot.state_has("rooted") or not robot.state_has("valetudo"):
+        die("Valetudo update requires an already-rooted, adopted robot. Finish the normal guided "
+            "installation first.")
+    key = _resolve_robot_key(ctx, key)
+    _prepare_valetudo_binary(ctx, retry_command="dreame-valetudo update-valetudo")
+    check_external_tools(ctx, ("curl",), required=True)
+
+    ctx.console.say(f"Update Valetudo on {ctx.profile.model}")
+    ctx.console.info("The verified binary is ready. The remaining work uses the robot's own "
+                     f"Wi-Fi AP at {ROBOT_AP_IP}.")
+    ctx.console.action("Hold the two OUTER buttons until the robot starts its Wi-Fi AP, then join "
+                       "that network from this computer.")
+    if not ctx.console.confirm("Are you connected to the selected robot's Wi-Fi AP now?"):
+        abort("No problem — join the robot AP, then re-run 'dreame-valetudo update-valetudo'.")
+
+    probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)
+    if not probe.ok:
+        guidance = ssh_failure_guidance(probe, key, ctx.home)
+        if guidance is not None:
+            die(guidance)
+        ctx.console.warn(f"Can't reach {_TARGET}. Join the selected robot's AP and re-run.")
+        return False
+    if not is_dreame_ap(ctx.runner, _TARGET, key):
+        die(f"The host at {_TARGET} is not a Dreame robot. On a home network it is usually your "
+            "router; no update was attempted.")
+    cfg = ctx.robot_config()
+    if not cfg:
+        die("No recorded config identity for the selected robot — run recon before updating.")
+    _live_robot_identity(ctx, key, cfg)
+
+    installed = _installed_valetudo_version(ctx)
+    target = ctx.valetudo_version
+    installed_order = _version_order(installed) if installed is not None else None
+    target_order = _version_order(target)
+    if installed == target:
+        robot.state_set("valetudo", target)
+        ctx.console.say(f"Valetudo {target} is already installed; nothing changed.")
+        return True
+    if installed_order is not None and target_order is not None and installed_order > target_order:
+        assert installed is not None
+        robot.state_set("valetudo", installed)
+        ctx.console.warn(f"The robot reports Valetudo {installed}, newer than this tool's verified "
+                         f"target {target}. Refusing to downgrade it.")
+        return True
+    if installed is None:
+        ctx.console.warn("The robot did not report a readable X-Valetudo-Version header. Its "
+                         "identity is verified, but the installed version cannot be compared.")
+        question = f"Replace its Valetudo executable with verified version {target}?"
+    else:
+        ctx.console.say(f"Valetudo update available: {installed} -> {target}")
+        question = f"Install Valetudo {target} and reboot the robot?"
+    if not ctx.console.confirm(question):
+        abort("Valetudo was left unchanged.")
+
+    _replace_valetudo_atomically(ctx, key, install_postboot=False)
+    robot.state_set("valetudo", target)
+    ctx.console.say(f"Valetudo {target} installed atomically. The robot is rebooting now.")
+    ctx.console.info("Wait about two minutes, start the robot AP again, then run "
+                     "'dreame-valetudo ui' to verify it.")
     return True
 
 

@@ -197,6 +197,70 @@ def test_run_log_writes_a_shareable_file(tmp_path: Path) -> None:
     assert "# exit 1" in text
 
 
+def test_run_log_redacts_free_form_private_bench_options(tmp_path: Path) -> None:
+    private_values = [
+        "Kitchen robot unavailable", "Cody has not tested its cable", "Cody Bryant",
+    ]
+    log = RunLog.open(
+        tmp_path,
+        tmp_path / "home",
+        [
+            "bench", "waive", "usb-drop-recon", "--reason", private_values[0],
+            "--risk", private_values[1], "--accepted-by", private_values[2],
+            "--actual-robot", "Kitchen",
+        ],
+        "0.1.0",
+        stamp="20260717-120000",
+        when="Thu Jul 17 12:00:00 2026",
+        clock=_FakeClock(),
+    )
+    log.close()
+    text = log.path.read_text()
+    assert all(value not in text for value in private_values)
+    assert "Kitchen" not in text
+    assert text.count("<private-bench-text>") == 4
+
+
+def test_run_log_redacts_later_private_values_after_a_missing_value(tmp_path: Path) -> None:
+    log = RunLog.open(
+        tmp_path,
+        tmp_path / "home",
+        ["bench", "waive", "usb-drop-recon", "--reason", "--risk", "sensitive prose"],
+        "0.1.0",
+        stamp="20260717-120000",
+        when="Thu Jul 17 12:00:00 2026",
+        clock=_FakeClock(),
+    )
+    log.close()
+    text = log.path.read_text()
+    assert "sensitive prose" not in text
+    assert text.count("<private-bench-text>") == 2
+
+
+def test_run_log_redacts_equals_form_private_bench_options_including_the_last_arg(
+    tmp_path: Path,
+) -> None:
+    log = RunLog.open(
+        tmp_path,
+        tmp_path / "home",
+        [
+            "bench", "waive", "usb-drop-recon",
+            "--reason=Kitchen robot unavailable",
+            "--accepted-by=Cody Bryant",
+        ],
+        "0.1.0",
+        stamp="20260717-120000",
+        when="Thu Jul 17 12:00:00 2026",
+        clock=_FakeClock(),
+    )
+    log.close()
+    text = log.path.read_text()
+    assert "Kitchen" not in text
+    assert "Cody" not in text
+    assert "--reason=<private-bench-text>" in text
+    assert "--accepted-by=<private-bench-text>" in text
+
+
 def test_run_log_stamps_elapsed_time_and_command_duration(tmp_path: Path) -> None:
     # A hardware run must be self-documenting: the flash sequence's margin against the robot's
     # The power MCU's fixed rail-cycle clock has to be readable straight off the log, not inferred.
@@ -274,6 +338,89 @@ def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:
     assert "/Users/bob" not in text
     assert "abcdef012345" not in text
     assert "!! backup at ~/r2416-<redacted-id>-backup" in text
+
+
+def test_bench_logging_console_keeps_existing_and_new_robot_names_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.protect("Kitchen", "kitchen-workspace")
+    con = LoggingConsole(log, protect_robot_names=True)
+    con.info("   1) Kitchen   rooted")
+    con.info("Robot: kitchen-workspace (from DREAME_ROBOT)")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "Sacrificial D10S Plus")
+
+    assert con.ask("Name for this robot [blank = auto-name by device ID]:") == (
+        "Sacrificial D10S Plus"
+    )
+    con.info("New robot: 'Sacrificial D10S Plus' (folder Sacrificial-D10S-Plus)")
+    log.close()
+
+    text = log.path.read_text()
+    for private in (
+        "Kitchen", "kitchen-workspace", "Sacrificial D10S Plus", "Sacrificial-D10S-Plus",
+    ):
+        assert private not in text
+    assert text.count("<private-robot-name>") >= 3
+
+
+def test_robot_name_redaction_does_not_corrupt_unrelated_bench_evidence(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.protect("a", "root", "bench")
+    log.line(">>", "Hardware bench: first-root; flash rootfs1 from the bench runner")
+    log.line("  ", "   1) root   rooted")
+    log.line("  ", "Resuming: a")
+    log.command(Result(("cp", "/work/robots/bench/state/rooted", "/tmp/rootfs1"), 0, "", ""))
+    log.close()
+
+    text = log.path.read_text()
+    assert "Hardware bench: first-root; flash rootfs1 from the bench runner" in text
+    assert "1) <private-robot-name>   rooted" in text
+    assert "Resuming: <private-robot-name>" in text
+    assert "/robots/<private-robot-name>/state/rooted" in text
+
+
+def test_bench_log_redacts_robot_name_from_legacy_restore_attestation(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.protect("Sacrificial D10S Plus")
+    log.line(
+        "??",
+        "Type the selected robot name exactly (Sacrificial D10S Plus) to attest these are its "
+        "original pre-root recon files: ",
+    )
+    log.close()
+
+    text = log.path.read_text()
+    assert "Sacrificial D10S Plus" not in text
+    assert "selected robot name exactly (<private-robot-name>)" in text
+
+
+def test_bench_log_redacts_parenthesized_workspace_from_unknown_model_error(
+    tmp_path: Path,
+) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.protect("Kitchen", "kitchen-workspace")
+    log.line(
+        "!!",
+        "Robot 'Kitchen' (kitchen-workspace) uses unknown saved model 'future-model'.",
+    )
+    log.close()
+
+    text = log.path.read_text()
+    assert "Kitchen" not in text
+    assert "kitchen-workspace" not in text
+    assert "Robot '<private-robot-name>' (<private-robot-name>)" in text
+
+
+def test_bench_log_redacts_possessive_robot_name_from_buffered_migration(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.protect("Kitchen")
+    log.note("Decrypting Kitchen's recovery backup for local restore (one-time)...")
+    log.close()
+
+    text = log.path.read_text()
+    assert "Kitchen" not in text
+    assert "Decrypting <private-robot-name>'s recovery backup" in text
 
 
 # --- BufferingConsole: capture pre-log output, replay it once the log opens --------------------

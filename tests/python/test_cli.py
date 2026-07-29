@@ -10,13 +10,29 @@ from conftest import CtxFactory, ScriptedConsole
 from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
 from dreame_valetudo.console import Die, UserAbort
-from dreame_valetudo.constants import SUNXI_TOOLS_REF
+from dreame_valetudo.constants import ADOPTED_ROOT, SUNXI_TOOLS_REF
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
 
 
 def _has(console: ScriptedConsole, needle: str) -> bool:
     return any(needle in msg for _, msg in console.lines)
+
+
+def _host_smoke_result(argv: tuple[str, ...]) -> Result:
+    if argv[-1:] == ("version",):
+        return Result(argv, 0, f"dreame-valetudo {__version__}\n", "")
+    if argv[-1:] == ("help",):
+        return Result(argv, 0, "Supported models\n", "")
+    return Result(argv, 0, "", "")
+
+
+def _manual_robot(root: Path, name: str, model: str, config: str = "a" * 32) -> Robot:
+    robot = Robot(root / "robots" / name)
+    robot.state_set("model_key", model)
+    robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {config}\n")
+    return robot
 
 
 def test_main_version() -> None:
@@ -42,6 +58,234 @@ def test_main_help() -> None:
     con = ScriptedConsole()
     assert main(["help"], env={}, console=con, runner=RecordingRunner()) == 0
     assert _has(con, "Phase 2 DESTRUCTIVE")
+    assert _has(con, "hardware qualification campaign")
+
+
+def test_help_model_rows_keep_fields_separated_for_long_names() -> None:
+    rows = [line for line in cli._model_lines().splitlines() if line.startswith("    ")]
+
+    assert rows
+    assert all("  (" in row for row in rows)
+    assert any("L10s Pro Ultra Heat (R2338H hardware revision)  (r2338h" in row for row in rows)
+
+
+def test_bench_list_does_not_select_or_create_a_robot(tmp_path: Path) -> None:
+    con = ScriptedConsole()
+    assert main(
+        ["bench", "list"], env={"DREAME_WORK": str(tmp_path)},
+        console=con, runner=RecordingRunner(),
+    ) == 0
+    assert _has(con, "stock-restore")
+    assert _has(con, "H2  record terminal-loss-after-restore-reboot")
+    assert _has(con, "resume stock-boot confirmation without another flash")
+    assert not _has(con, "Which Dreame robot")
+    assert not (tmp_path / "robots").exists()
+
+
+def test_bench_host_smoke_does_not_select_a_robot(tmp_path: Path) -> None:
+    con = ScriptedConsole()
+    assert main(
+        ["bench", "run", "host-smoke", "--campaign", "rc"],
+        env={"DREAME_WORK": str(tmp_path)}, console=con,
+        runner=RecordingRunner(_host_smoke_result),
+    ) == 0
+    assert _has(con, "Bench scenario passed")
+    assert not _has(con, "Which Dreame robot")
+
+
+def test_bench_hardware_run_selects_the_named_robot_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: list[str] = []
+
+    def capture(ctx: object, _rest: object, *, auto_fn: object) -> int:
+        del auto_fn
+        selected.append(ctx.robot.work.name)  # type: ignore[attr-defined]
+        return 0
+
+    monkeypatch.setattr(cli, "bench", capture)
+    assert main(
+        ["bench", "run", "stock-recon", "--campaign", "rc"],
+        env={
+            "DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "hardware-1",
+            "DREAME_MODEL": "x40-ultra",
+        },
+        console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == 0
+    assert selected == ["hardware-1"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["bench", "run", "stock-recon"],
+        ["bench", "run", "stock-recon", "--campaign", "rc", "--unknown"],
+        ["bench", "run", "rename-resume", "--campaign", "rc"],
+    ],
+)
+def test_invalid_bench_command_is_rejected_before_robot_selection(
+    tmp_path: Path, args: list[str],
+) -> None:
+    con = ScriptedConsole()
+    env = {
+        "DREAME_WORK": str(tmp_path),
+        "DREAME_ROBOT": "must-not-exist",
+        "DREAME_MODEL": "x40-ultra",
+    }
+
+    assert main(args, env=env, console=con, runner=RecordingRunner()) == 1
+    assert not (tmp_path / "robots").exists()
+
+
+def test_uart_bench_run_is_rejected_before_robot_selection(tmp_path: Path) -> None:
+    con = ScriptedConsole()
+    assert main(
+        ["bench", "run", "stock-recon", "--campaign", "rc"],
+        env={
+            "DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "must-not-exist",
+            "DREAME_MODEL": "z10-pro",
+        },
+        console=con, runner=RecordingRunner(),
+    ) == 1
+    assert _has(con, "fastboot models only")
+    assert not (tmp_path / "robots").exists()
+
+
+def test_campaign_model_conflict_is_rejected_before_robot_selection(tmp_path: Path) -> None:
+    base_env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "x40-ultra"}
+    _manual_robot(tmp_path, "x40", "x40-ultra")
+    assert main(
+        [
+            "bench", "record", "upgrade-resume", "pass", "--campaign", "rc",
+            "--model", "x40-ultra", "--robot", "x40",
+        ],
+        env=base_env, console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == 0
+
+    con = ScriptedConsole()
+    assert main(
+        ["bench", "run", "stock-recon", "--campaign", "rc"],
+        env={
+            **base_env, "DREAME_ROBOT": "must-not-exist", "DREAME_MODEL": "x30-ultra",
+        },
+        console=con, runner=RecordingRunner(),
+    ) == 1
+    assert _has(con, "campaign is bound to model x40-ultra")
+    assert not (tmp_path / "robots" / "must-not-exist").exists()
+
+
+def test_saved_robot_model_is_loaded_before_campaign_binding_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = tmp_path / "robots" / "saved-x30"
+    (robot / "state").mkdir(parents=True)
+    (robot / "state" / "model_key").write_text("x30-ultra\n")
+    (robot / "recon").mkdir()
+    (robot / "recon" / "config.txt").write_text(f"config: {'a' * 32}\n")
+    assert main(
+        [
+            "bench", "record", "upgrade-resume", "pass", "--campaign", "rc",
+            "--model", "x30-ultra", "--robot", "saved-x30",
+        ],
+        env={"DREAME_WORK": str(tmp_path)}, console=ScriptedConsole(),
+        runner=RecordingRunner(),
+    ) == 0
+    selected: list[str] = []
+    monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
+    monkeypatch.setattr(
+        cli, "bench",
+        lambda ctx, _rest, *, auto_fn: selected.append(ctx.profile.key) or 0,
+    )
+
+    assert main(
+        ["bench", "run", "stock-recon", "--campaign", "rc"],
+        env={"DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "saved-x30"},
+        console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == 0
+    assert selected == ["x30-ultra"]
+
+
+def test_post_selection_campaign_conflict_removes_only_the_fresh_robot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign_ctx = make_ctx()
+    _manual_robot(campaign_ctx.ws.base, "x40", "x40-ultra")
+    assert cli.bench(
+        campaign_ctx,
+        [
+            "record", "upgrade-resume", "pass", "--campaign", "rc",
+            "--model", "x40-ultra", "--robot", "x40",
+        ],
+        auto_fn=lambda _ctx, _args: None,
+    ) == 0
+    ctx = make_ctx(asks=["2", "fresh-x30", "3"])
+    monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
+
+    with pytest.raises(Die, match="campaign is bound to model x40-ultra"):
+        cli._dispatch("bench", ["run", "stock-recon", "--campaign", "rc"], ctx)
+
+    assert (ctx.ws.robots_dir / "x40").is_dir()
+    assert not (ctx.ws.robots_dir / "fresh-x30").exists()
+
+
+def test_wrong_model_probe_removes_its_disposable_workspace_after_adoption(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        model="x30-ultra",
+        env={"DREAME_MODEL": "x30-ultra", "DREAME_ROBOT": "disposable"},
+    )
+    actual = _manual_robot(ctx.ws.base, "actual-x40", "x40-ultra")
+    assert cli.bench(
+        ctx,
+        [
+            "record", "upgrade-resume", "pass", "--campaign", "rc",
+            "--model", "x40-ultra", "--robot", "actual-x40",
+        ],
+        auto_fn=lambda _ctx, _args: None,
+    ) == 0
+    monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
+
+    def adopt_then_stop(inner: object, **_kwargs: object) -> None:
+        inner.robot = actual  # type: ignore[attr-defined]
+        raise Die("SAFETY STOP: chosen model differs; bootloader reports X40 Ultra")
+
+    monkeypatch.setattr("dreame_valetudo.bench.recon", adopt_then_stop)
+    assert cli._dispatch(
+        "bench",
+        [
+            "run", "wrong-model-recon", "--campaign", "rc",
+            "--actual-robot", "actual-x40",
+        ],
+        ctx,
+    ) == 0
+    assert not (ctx.ws.robots_dir / "disposable").exists()
+    assert actual.work.is_dir()
+
+
+@pytest.mark.parametrize("link_state", [False, True])
+def test_disposable_robot_cleanup_never_follows_symlinks(
+    make_ctx: CtxFactory, tmp_path: Path, link_state: bool,
+) -> None:
+    ctx = make_ctx()
+    outside = tmp_path / "outside"
+    external_state = outside / "state"
+    external_state.mkdir(parents=True)
+    (external_state / "name").write_text("keep-name")
+    (external_state / "model_key").write_text("keep-model")
+    disposable = ctx.ws.robots_dir / "disposable"
+    disposable.parent.mkdir(parents=True, exist_ok=True)
+    if link_state:
+        disposable.mkdir()
+        (disposable / "state").symlink_to(external_state, target_is_directory=True)
+    else:
+        disposable.symlink_to(outside, target_is_directory=True)
+    ctx.robot = Robot(disposable)
+
+    cli._discard_uncommitted_bench_robot(ctx, disposable)
+
+    assert (external_state / "name").read_text() == "keep-name"
+    assert (external_state / "model_key").read_text() == "keep-model"
 
 
 def test_main_status_empty(tmp_path: Path) -> None:
@@ -102,7 +346,9 @@ def test_ui_runs_without_selecting_or_creating_a_robot(
     assert not (tmp_path / "robots").exists()
 
 
-@pytest.mark.parametrize("command", ("diagnose", "fix-impl", "fix-did", "fix-key"))
+@pytest.mark.parametrize(
+    "command", ("diagnose", "fix-impl", "fix-did", "fix-key", "update-valetudo"),
+)
 def test_post_root_ssh_commands_select_the_robot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
 ) -> None:
@@ -110,7 +356,7 @@ def test_post_root_ssh_commands_select_the_robot(
     robot.state_set("model_key", "x30-ultra")
     selected: list[str] = []
 
-    def capture(ctx: object) -> bool:
+    def capture(ctx: object, *_args: object) -> bool:
         selected.append(ctx.robot.work.name)  # type: ignore[attr-defined]
         return True
 
@@ -206,6 +452,25 @@ def test_auto_cannot_continue_from_an_uncertain_restore(
 
 
 @pytest.mark.parametrize("args", [[], ["--force"]])
+def test_auto_resumes_only_the_boot_check_after_a_completed_stock_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, args: list[str],
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo")
+    robot.state_set("restore-attempt", "flashed-awaiting-stock-boot model=x40-ultra")
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "restore", lambda _ctx: called.append(True))
+
+    cli.auto(ctx, args)
+
+    assert called == [True]
+    assert _has(ctx.console, "without writing firmware again")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("args", [[], ["--force"]])
 def test_auto_never_re_roots_a_stock_restored_robot(
     make_ctx: CtxFactory,
     args: list[str],
@@ -230,6 +495,69 @@ def test_auto_treats_completion_as_authoritative_over_stale_restore_attempt(
     cli.auto(ctx, [])
 
     assert _has(ctx.console, "No rooting step will run automatically")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_offers_a_newer_verified_valetudo_for_an_adopted_robot(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo", "2026.06.0")
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "update_valetudo", lambda _ctx: called.append(True) or True)
+
+    cli.auto(ctx, [])
+
+    assert called == [True]
+    assert _has(ctx.console, "2026.06.0 -> 2026.07.0")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_can_leave_an_available_valetudo_update_for_later(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[False])
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo", "2026.06.0")
+
+    cli.auto(ctx, [])
+
+    assert _has(ctx.console, "update-valetudo")  # type: ignore[arg-type]
+    assert _has(ctx.console, "All phases complete")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_does_not_offer_an_unproven_or_non_newer_valetudo_target(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo", "2026.07.0")
+
+    cli.auto(ctx, [])
+
+    assert not _has(ctx.console, "Update Valetudo now")  # type: ignore[arg-type]
+    assert _has(ctx.console, "All phases complete")  # type: ignore[arg-type]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_auto_repairs_an_interrupted_existing_root_adoption_without_hardware(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("root-origin", ADOPTED_ROOT)
+
+    cli.auto(ctx, [])
+
+    assert robot.state_get("rooted") == ADOPTED_ROOT
+    assert robot.state_get("valetudo") == ADOPTED_ROOT
+    assert _has(ctx.console, "no firmware reflash")  # type: ignore[arg-type]
+    assert _has(ctx.console, "update-valetudo")  # type: ignore[arg-type]
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
 
 
@@ -390,3 +718,46 @@ def test_main_blocks_a_workspace_command_when_udev_is_missing(
     assert rc == 1
     assert _has(con, "USB access isn't set up")
     assert _has(con, "install-udev")
+
+
+def test_host_only_bench_actions_do_not_require_linux_usb_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    checked: list[str] = []
+    monkeypatch.setattr(
+        cli, "guard_blocks", lambda _system, cmd, _env: checked.append(cmd) or False,
+    )
+    env = {
+        "HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1",
+    }
+
+    assert main(
+        ["bench", "list"], env=env, console=ScriptedConsole(), runner=SubprocessRunner(),
+    ) == 0
+    assert checked == ["help"]
+
+
+def test_hardware_bench_run_retains_the_linux_usb_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: None)
+    monkeypatch.setattr(cli, "bench", lambda *_args, **_kwargs: 0)
+    checked: list[str] = []
+    monkeypatch.setattr(
+        cli, "guard_blocks", lambda _system, cmd, _env: checked.append(cmd) or False,
+    )
+    env = {
+        "HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1",
+    }
+
+    assert main(
+        ["bench", "run", "stock-recon", "--campaign", "rc"], env=env,
+        console=ScriptedConsole(), runner=SubprocessRunner(),
+    ) == 0
+    assert checked == ["bench"]

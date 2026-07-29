@@ -24,7 +24,13 @@ from ..ssh import (
     ssh_failure_guidance,
 )
 from ..util import parse_mikey, repair_did
-from .push import _MIKEY_RE, _apply_did_fix, _apply_key_fix, _device_conf_value
+from .push import (
+    _MIKEY_RE,
+    _apply_did_fix,
+    _apply_key_fix,
+    _device_conf_value,
+    _live_robot_identity,
+)
 
 _TARGET = f"root@{ROBOT_AP_IP}"
 _DEVICE_CONF = "/data/config/miio/device.conf"
@@ -174,6 +180,14 @@ def fix_impl(ctx: Context) -> None:
     key = _key(ctx)
     ctx.console.say("Fix: pin Valetudo's robot implementation")
     _require_robot_ap(ctx, key)
+
+    expected_config = ctx.robot_config()
+    if expected_config is None and ctx.profile.method == "fastboot":
+        die("No recorded config identity for the selected robot; re-run recon before fix-impl.")
+    # This writes persistent robot state. A Dreame AP response is not enough because another owned
+    # robot can use the same address. Fastboot workspaces bind by config + model; UART's guided
+    # install never captures config, so its strongest available automatic binding is live model.
+    _live_robot_identity(ctx, key, expected_config)
 
     conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
     model = ""

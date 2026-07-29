@@ -79,6 +79,20 @@ jobs:
           }
           build_pkgs linux/amd64 amd64 x86_64
           build_pkgs linux/arm64 arm64 aarch64
+          # Install and execute the exact release packages on BOTH Linux architectures before any
+          # asset is published. BuildKit carries QEMU for arm64; a plain docker run on this runner
+          # cannot. The richer four-distro upgrade matrix runs pre-merge in ci.yml on amd64.
+          smoke_pkg() { # smoke_pkg <docker-platform> <deb>
+            local plat="$1" package="$2" result="package-smoke-${plat##*/}"
+            cp "$package" package-smoke.deb
+            rm -rf "$result"
+            docker buildx build --platform "$plat" \
+              -f packaging/package-smoke.Dockerfile --target result \
+              --output "type=local,dest=$result" .
+            test -f "$result/package-smoke-passed"
+          }
+          smoke_pkg linux/amd64 dreame-valetudo_amd64.deb
+          smoke_pkg linux/arm64 dreame-valetudo_arm64.deb
           # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
           bash packaging/build-tarball.sh
           ls -l ./*.deb ./*.rpm ./*.tar.gz

@@ -23,6 +23,13 @@ DUST_KEYSTREAM_SHA256 = "f4aba17061faca41e1425624b7ba120b1b3856f9bbc0e3eb09aa36d
 
 # Consecutive eMMC slices pulled by recon and decrypted together with their shared keystream.
 RECOVERY_DUMP_NAMES = ("dustx100", "dustx101", "dustx102")
+
+# A completed stock flash awaiting only physical boot confirmation. Every command entry path must
+# distinguish this from an interrupted write so it never recommends an unnecessary forced reflash.
+RESTORE_BOOT_PENDING = "flashed-awaiting-stock-boot"
+ADOPTED_ROOT = "adopted-existing"
+CURRENT_ROOT = "current-fastboot"
+LEGACY_ROOT = "legacy-unknown"
 # The pinned stage-one payload returns exactly 0x18f00000 bytes for each `get_staged` slice. Merely
 # accepting a large aligned file is insufficient: system fastboot can leave an aligned partial file
 # when USB fails, and three such leftovers must never masquerade as an un-brick backup.

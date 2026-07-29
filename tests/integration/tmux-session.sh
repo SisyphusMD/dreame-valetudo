@@ -283,6 +283,16 @@ output_reached_terminal "$RUNDIR/hold.out" "No robots yet" ||
   fail "the restored terminal did not contain the finished run's output"
 pass "a run that chose no robot closes without a question, output intact"
 
+# --- 3b. a long bench table is replayed in full after its session closes --------------------
+drive bench_list 120 "DREAME_WORK=$RUNDIR/work-bench-list" -- "${TOOL[@]}" bench list
+[ "$(rc_of bench_list)" = "0" ] || fail "bench list exited $(rc_of bench_list)"
+wait_sessions 0 || fail "the bench-list session outlived the completed command"
+output_reached_terminal "$RUNDIR/bench_list.out" "host-smoke" ||
+  fail "the restored terminal lost the first bench scenario"
+output_reached_terminal "$RUNDIR/bench_list.out" "downgrade-readonly" ||
+  fail "the restored terminal lost the last bench scenario"
+pass "a completed bench table is replayed in full without a continuation prompt"
+
 # --- 4. the exit status is the RUN's, not the tmux client's ---------------------------------
 drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" status
 [ "$(rc_of fail1)" = "1" ] || fail "a failing wrapped run reported $(rc_of fail1), not the run's 1"

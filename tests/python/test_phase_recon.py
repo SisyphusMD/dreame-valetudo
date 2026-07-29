@@ -14,7 +14,7 @@ from conftest import FB, CtxFactory
 from dreame_valetudo import console
 from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
-from dreame_valetudo.constants import STAGE1_SHA256
+from dreame_valetudo.constants import ADOPTED_ROOT, STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
@@ -591,6 +591,71 @@ def test_recon_preserves_but_does_not_bless_a_capture_with_unknown_history(
     provenance = json.loads((ctx.need_robot().recon_dir / PROVENANCE_FILE).read_text())
     assert provenance["firmware_state"] == "unverified"
     assert "NOT authorized as a stock restore source" in ctx.console.text()
+
+
+def test_recon_can_adopt_a_previously_rooted_robot_without_flashing(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[False, True, True],
+    )
+    _dist_ready(ctx)
+
+    recon(ctx, recovery_backup=True)
+
+    robot = ctx.need_robot()
+    assert robot.state_get("root-origin") == ADOPTED_ROOT
+    assert robot.state_get("rooted") == ADOPTED_ROOT
+    assert robot.state_get("valetudo") == ADOPTED_ROOT
+    assert "without changing the robot" in ctx.console.text()
+    assert not any(" flash " in f" {' '.join(call)} " for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_adoption_marker_failure_cannot_publish_completed_recon(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[False, True, True],
+    )
+    _dist_ready(ctx)
+    original = Robot.state_set
+
+    def fail_adoption(target: Robot, name: str, value: str = "done") -> None:
+        if name == "root-origin":
+            raise OSError("workspace became read-only")
+        original(target, name, value)
+
+    monkeypatch.setattr(Robot, "state_set", fail_adoption)
+    with pytest.raises(OSError, match="read-only"):
+        recon(ctx, recovery_backup=True)
+
+    robot = ctx.need_robot()
+    assert not robot.state_has("recon")
+    assert not robot.state_has("rooted")
+    assert not robot.state_has("valetudo")
+
+
+def test_recon_can_choose_a_current_reroot_after_recognizing_prior_root(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[False, True, False],
+    )
+    _dist_ready(ctx)
+
+    recon(ctx, recovery_backup=True)
+
+    robot = ctx.need_robot()
+    assert robot.state_has("recon")
+    assert robot.state_get("root-origin") is None
+    assert not robot.state_has("rooted")
+    assert not robot.state_has("valetudo")
 
 
 def test_recon_refreshes_decrypted_images_after_a_fresh_recovery_pull(

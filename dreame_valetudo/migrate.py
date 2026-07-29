@@ -41,7 +41,7 @@ from pathlib import Path
 
 from . import __version__, dust_decrypt, manifest
 from .console import Console, die
-from .constants import RECOVERY_DUMP_NAMES
+from .constants import LEGACY_ROOT, RECOVERY_DUMP_NAMES
 from .workspace import (
     RECOVERY_BACKUP_ZIP,
     Robot,
@@ -554,17 +554,20 @@ def _backfill_names(env: Mapping[str, str]) -> None:
 
 
 def _heal_robot_state_privacy(env: Mapping[str, str]) -> None:
-    """Restrict old markers and remove the config copy that early recon markers duplicated."""
+    """Restrict old markers and fill safe provenance gaps ignored by older releases."""
     for d in robot_dirs(env):
         robot = Robot(d)
         protect_state_artifacts(robot.state_dir)
         marker = robot.state_get("recon")
-        if marker is None:
-            continue
-        fields = [field for field in marker.split() if not field.startswith("config=")]
-        cleaned = " ".join(fields) or "done"
-        if cleaned != marker:
-            robot.state_set("recon", cleaned)
+        if marker is not None:
+            fields = [field for field in marker.split() if not field.startswith("config=")]
+            cleaned = " ".join(fields) or "done"
+            if cleaned != marker:
+                robot.state_set("recon", cleaned)
+        if robot.state_has("rooted") and not robot.state_has("root-origin"):
+            # Older versions prove that this workspace completed a root but not which historical
+            # procedure produced it. Preserve that uncertainty instead of relabeling it current.
+            robot.state_set("root-origin", LEGACY_ROOT)
 
 
 def _sync_backup_robot_names(env: Mapping[str, str], console: Console) -> None:

@@ -14,8 +14,9 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
+from .bench import bench, bench_drives_hardware, bench_needs_robot, validate_bench_args
 from .console import Console, Die, UserAbort, die, idle_timeout
-from .constants import ROBOT_AP_IP
+from .constants import ADOPTED_ROOT, RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from .context import Context
 from .dustbuilder import verify_all_forms, verify_form
 from .fastboot import resolve_libexec
@@ -29,7 +30,7 @@ from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
 from .phases.image import image
 from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
-from .phases.push import push
+from .phases.push import push, update_valetudo, valetudo_update_available
 from .phases.recon import recon
 from .phases.restore import restore
 from .phases.root import root
@@ -83,7 +84,8 @@ _NO_WORKSPACE = PURE_COMMANDS
 
 _ROBOT_COMMANDS = frozenset({
     "auto", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
-    "model", "push", "recon", "restore", "root", "sshkey", "valetudo", "verify-form",
+    "model", "push", "recon", "restore", "root", "sshkey", "update-valetudo", "valetudo",
+    "verify-form",
 })
 
 
@@ -200,6 +202,33 @@ def _discard_uncommitted_robot(ctx: Context, created: Path | None) -> None:
     state.rmdir()
     created.rmdir()
     ctx.robot = None
+    ctx.pending_name = None
+
+
+def _discard_uncommitted_bench_robot(ctx: Context, created: Path | None) -> None:
+    if created is None:
+        return
+    state = created / "state"
+    if (
+        created.is_symlink()
+        or not created.is_dir()
+        or set(created.iterdir()) != {state}
+        or state.is_symlink()
+        or not state.is_dir()
+    ):
+        return
+    markers = set(state.iterdir())
+    if not markers or any(
+        marker.name not in {"name", "model_key"} or not marker.is_file()
+        for marker in markers
+    ):
+        return
+    for marker in markers:
+        marker.unlink()
+    state.rmdir()
+    created.rmdir()
+    if ctx.robot is not None and ctx.robot.work == created:
+        ctx.robot = None
     ctx.pending_name = None
 
 
@@ -369,11 +398,27 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
                         "stock. No rooting step will run automatically.")
         ctx.console.info("To root it again intentionally, run: dreame-valetudo root --force")
         return
-    if robot is not None and robot.state_has("restore-attempt"):
+    restore_attempt = robot.state_get("restore-attempt") if robot is not None else None
+    if restore_attempt is not None and restore_attempt.startswith(RESTORE_BOOT_PENDING):
+        ctx.console.say("Stock firmware was flashed previously; resuming its boot confirmation "
+                        "without writing firmware again.")
+        restore(ctx)
+        return
+    if restore_attempt is not None:
         die("SAFETY STOP: a prior stock-restore attempt did not record completion. Do not let "
             "automatic rooting or installation continue from an uncertain firmware state. "
             "Inspect the robot, then run 'dreame-valetudo restore --force' only after deliberately "
             "deciding to repeat the complete stock restore.")
+    if robot is not None and robot.state_get("root-origin") == ADOPTED_ROOT:
+        try:
+            if not robot.state_has("rooted"):
+                robot.state_set("rooted", ADOPTED_ROOT)
+            if not robot.state_has("valetudo"):
+                robot.state_set("valetudo", ADOPTED_ROOT)
+        except OSError as exc:
+            die("This robot's accepted existing-root adoption could not be restored in the "
+                f"workspace ({exc}). No firmware was written; fix storage and re-run.")
+        ctx.console.info("Using the previously adopted root; no firmware reflash is planned.")
     if robot is None or not robot.state_has("rooted") or force:
         doctor(ctx)
         fetch(ctx)
@@ -387,18 +432,39 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
             valetudo(ctx)
         return
     if robot.state_has("valetudo"):
+        installed = robot.state_get("valetudo")
+        if (
+            ctx.interactive
+            and valetudo_update_available(installed, ctx.valetudo_version)
+        ):
+            ctx.console.say(f"A newer verified Valetudo is available: {installed} -> "
+                            f"{ctx.valetudo_version}.")
+            if ctx.console.confirm("Update Valetudo now?"):
+                update_valetudo(ctx)
+                return
+            ctx.console.info("Left it unchanged. Update later with: "
+                             "dreame-valetudo update-valetudo")
+        if robot.state_get("root-origin") == ADOPTED_ROOT and not re.fullmatch(
+            r"[0-9]{4}\.[0-9]{2}\.[0-9]+(?:-[A-Za-z0-9.-]+)?",
+            robot.state_get("valetudo") or "",
+        ):
+            ctx.console.info("This adopted robot's live Valetudo version has not been checked. "
+                             "Check or update it with: dreame-valetudo update-valetudo")
         ctx.console.say(f"All phases complete — open http://{ROBOT_AP_IP}")
 
 
 def _model_lines() -> str:
     """The Supported-models roster, generated from the profiles table so it can never drift."""
     fastboot, uart_models = [], []
+    key_width = max(len(key) for key in SUPPORTED_MODELS)
     for key in SUPPORTED_MODELS:
         p = load_profile(key)
         if p.method == "uart":
-            uart_models.append(f"    {key:<22}{p.model:<30}({p.dust_code})")
+            uart_models.append(f"    {key:<{key_width}}  {p.model}  ({p.dust_code})")
         else:
-            fastboot.append(f"    {key:<22}{p.model:<30}({p.dust_code}, {p.dram})")
+            fastboot.append(
+                f"    {key:<{key_width}}  {p.model}  ({p.dust_code}, {p.dram})"
+            )
     lines = [
         "  Supported models (picked interactively, or via DREAME_MODEL=<key>). Same MR813 gen3",
         "  fastboot flow; ddr3/ddr4 handled automatically:",
@@ -424,6 +490,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo restore    DESTRUCTIVE — return this robot to captured stock firmware\n"
         "  dreame-valetudo valetudo   Phase 3 — how to push the Valetudo binary onto the robot\n"
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
+        "  dreame-valetudo update-valetudo [key]  verify + atomically update an adopted robot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
         "  dreame-valetudo model      correct the saved model before the robot is rooted\n"
@@ -439,6 +506,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo sshkey     show/generate the SSH public key for the dustbuilder\n"
         "  dreame-valetudo verify-form  check this model's live DustBuilder form against its golden\n"
         "  dreame-valetudo verify-forms check every fastboot model's live form (CI/maintenance)\n"
+        "  dreame-valetudo bench ...    run and record a hardware qualification campaign\n"
         "  dreame-valetudo install-udev  Linux only, one-time, needs sudo: grant sudo-less USB access\n"
         "  dreame-valetudo version    print the version\n"
         "  dreame-valetudo help       this help\n\n"
@@ -483,6 +551,29 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0
     if cmd == "ui":
         return 0 if ui(ctx) else 1
+    if cmd == "bench":
+        created: Path | None = None
+        if bench_needs_robot(ctx, rest):
+            existing = {
+                path for path in ctx.ws.robots_dir.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            } if ctx.ws.robots_dir.is_dir() else set()
+            select_robot(ctx)
+            created = (
+                ctx.robot.work
+                if ctx.robot is not None and ctx.robot.work not in existing
+                else None
+            )
+            try:
+                validate_bench_args(ctx, rest)
+            except (Die, ValueError, OSError):
+                _discard_uncommitted_bench_robot(ctx, created)
+                raise
+        try:
+            return bench(ctx, rest, auto_fn=auto)
+        finally:
+            if len(rest) >= 2 and rest[0] == "run" and rest[1] == "wrong-model-recon":
+                _discard_uncommitted_bench_robot(ctx, created)
 
     # Reject typos before selecting or naming a robot. Selection is persistent: on a first run it
     # can create state/name, so letting an unknown command reach it leaves an orphan robot behind.
@@ -539,6 +630,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         valetudo(ctx)
     elif cmd == "push":
         return 0 if push(ctx, rest[0] if rest else None) else 1
+    elif cmd == "update-valetudo":
+        return 0 if update_valetudo(ctx, rest[0] if rest else None) else 1
     elif cmd == "sshkey":
         sshkey(ctx)
     elif cmd == "verify-form":
@@ -819,7 +912,8 @@ def main(
         base = Workspace.from_env(resolved).base
         result_base = _outcome_workspace(resolved, base)
         record_outcome(result_base, rc, log_path)
-        if cmd_of(list(sys.argv[1:] if argv is None else argv)) not in PURE_COMMANDS:
+        command = cmd_of(list(sys.argv[1:] if argv is None else argv))
+        if command not in PURE_COMMANDS:
             # The attachment rule belongs to every normal Console prompt: watching clears its
             # deadline, detaching starts it, and an unknown state never expires. Release first so
             # a finished run kept on screen never prevents another invocation from taking over.
@@ -841,7 +935,7 @@ def main(
             # about a robot that does not exist.
             engaged = isinstance(robot_label, str) and bool(robot_label)
             again = False
-            if engaged and not user_aborted and sys.stdout.isatty():
+            if command != "bench" and engaged and not user_aborted and sys.stdout.isatty():
                 with contextlib.suppress(Die):
                     if rc == 0:
                         question = "Set up another robot?"
@@ -951,13 +1045,29 @@ def _run(
                             when=now.astimezone().strftime("%a %b %d %H:%M:%S %Z %Y"),
                         )
                     if log is not None:
+                        if cmd == "bench":
+                            log.protect(resolved_env.get("DREAME_ROBOT"))
+                            if ws.robots_dir.is_dir():
+                                for robot_dir in ws.robots_dir.iterdir():
+                                    if robot_dir.is_symlink() or not robot_dir.is_dir():
+                                        continue
+                                    log.protect(robot_dir.name)
+                                    name = robot_dir / "state" / "name"
+                                    with contextlib.suppress(OSError):
+                                        if name.is_file() and not name.is_symlink():
+                                            log.protect(name.read_text().strip())
                         migration_console.flush_into(log)
-                        con, run = LoggingConsole(log), LoggingRunner(run, log)
+                        con, run = LoggingConsole(
+                            log, protect_robot_names=cmd == "bench",
+                        ), LoggingRunner(run, log)
 
         # Expected input, command, and filesystem failures must surface as clean errors, so context
         # construction and dispatch both stay inside this handler.
         profile = load_profile(resolved_env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY)
         ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
+
+        if cmd == "bench":
+            validate_bench_args(ctx, args[1:])
 
         if production and cmd not in _NO_WORKSPACE:
             show_whats_new(resolved_env, con)
@@ -965,7 +1075,10 @@ def _run(
         # On Linux the USB device is gated behind a udev rule; fail fast with the fix rather than a
         # cryptic permission error at FEL time. No-op on macOS (user-space libusb), and self-exempt
         # for the pure commands.
-        if production and guard_blocks(ctx.system, cmd, resolved_env):
+        guard_cmd = cmd
+        if cmd == "bench" and not bench_drives_hardware(args[1:]):
+            guard_cmd = "help"  # list/report/record are host-only; a hardware run stays gated
+        if production and guard_blocks(ctx.system, guard_cmd, resolved_env):
             con.err("USB access isn't set up on this Linux machine yet, so rooting can't reach "
                     "the robot.")
             con.info("Grant it once (not needed on macOS):  sudo dreame-valetudo install-udev")

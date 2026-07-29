@@ -27,6 +27,20 @@ configuration.
 > be regenerated. The recon capture is what `restore` uses to reconstruct its original stock
 > firmware. They solve different recovery problems.
 
+## The guided flow
+
+Run `dreame-valetudo` and follow the prompts. Re-run the same command at any time to resume.
+
+| Stage | Connection | What happens |
+|---|---|---|
+| 1. Recon | USB through the Breakout PCB | Read-only hardware and model checks; saves the pre-root recovery capture |
+| 2. Build | Browser on your normal network | Guides the exact DustBuilder form and stages the returned firmware zip |
+| 3. Root | USB through the Breakout PCB | The one destructive step; verifies identity and every flash response |
+| 4. Install | The robot's own Wi-Fi AP | Saves the factory identity, installs Valetudo, and opens its local web UI |
+
+The terminal can close during a run. The work continues in a private tmux session, and running
+`dreame-valetudo` again offers to rejoin it.
+
 ## Install
 
 **Homebrew** is the simplest route on macOS or Linux. Prefer not to touch a terminal? Use the signed
@@ -190,6 +204,13 @@ There is nothing extra to do; to
 run it deliberately (you upgraded but have no rooting task yet), run `dreame-valetudo migrate`. Your
 factory backups are preserved; [`docs/LAYOUT.md`](docs/LAYOUT.md) documents every layout version.
 
+The tool also maintains Valetudo itself on any adopted rooted robot. A normal
+`dreame-valetudo` run offers a newer verified pinned release when the saved version proves an
+upgrade is available. Run `dreame-valetudo update-valetudo` at any time to check the version
+reported by the live robot and update directly, without stepping through intermediate WebUI
+releases. The replacement is staged and SHA-256 checked on the robot before an atomic rename, so a
+dropped transfer leaves the working executable in place.
+
 ## Release candidates (and switching back to stable)
 
 Before a stable version is cut, the same real artifacts (Homebrew formula, `.pkg`, `.deb`, tarball)
@@ -198,6 +219,10 @@ listed on the Releases pages
 ([forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases),
 [github](https://github.com/SisyphusMD/dreame-valetudo/releases)) as **Pre-release**, never marked
 "latest", so every normal install path above stays on the stable version unless you opt in.
+Maintainers qualify an RC with the built-in `dreame-valetudo bench` campaign runner; the complete
+physical, interruption, restore, and package matrix is in
+[`docs/HARDWARE-TESTING.md`](docs/HARDWARE-TESTING.md). `dreame-valetudo bench plan` reads the
+selected robot's current saved state and shows exactly which scenarios can run next.
 
 Switching is safe in either direction: all channels share one `~/dreame-valetudo/` workspace and
 switching never touches it (factory backups survive, and the first run after a switch migrates the
@@ -261,6 +286,12 @@ The tool is **idempotent**: every phase records a marker under
 `~/dreame-valetudo/work/robots/<robot>/state/` and skips itself when already complete (override with
 `--force`). Re-run any command safely; it resumes where it left off.
 
+An older or manually rooted robot can enter the same guided command. After read-only recon preserves
+its current recovery evidence, identify it as already rooted and choose either to adopt that root
+unchanged or continue into a deliberate current re-root. Adoption writes only host-side state; it
+does not flash the robot. The next run remembers that choice, and `update-valetudo` can then verify
+the live robot and maintain Valetudo independently.
+
 For the post-flash steps (`push`, `ui`, the `fix-*` helpers) your computer must be joined to the
 **robot's own Wi-Fi AP** (hold the two OUTER buttons until it starts), **not** your home network: on a
 normal LAN, `192.168.5.1` is your router, so the tool refuses to proceed unless a real Dreame answers
@@ -286,6 +317,7 @@ dreame-valetudo recon      # Phase 1 NON-DESTRUCTIVE: validate USB + record `con
 dreame-valetudo image      # opens the model's dustbuilder page, auto-unpacks the built zip
 dreame-valetudo root       # Phase 2 DESTRUCTIVE: flash the rooted image (guided, OKAY-checked)
 dreame-valetudo push [key] # Phase 3: SSH-pipe backup + binary + reboot onto the rooted robot
+dreame-valetudo update-valetudo [key] # verify the live robot and atomically update Valetudo
 dreame-valetudo restore    # DESTRUCTIVE: restore this robot's captured stock firmware
 dreame-valetudo ui         # on the robot's AP: wait for Valetudo, open http://192.168.5.1
 dreame-valetudo status     # what's done / what's left, for every robot
@@ -305,15 +337,21 @@ installed again afterward. Returning to stock is two separate operations: restor
 this tool, then use the physical factory reset to clear the prior rooted installation's data.
 
 `dreame-valetudo restore` reconstructs a durable stock-restore kit from the pre-root recon capture,
-validates its gzip streams and GPT checksums, proves the stock A/B boot and rootfs copies match, and
-binds the captured source hashes, saved model, recorded identity, and connected robot together.
+validates its gzip streams and GPT checksums, verifies both stock boot-container certificate chains
+against Dreame's hardware-root public key, and binds the captured source hashes, saved model,
+recorded identity, and connected robot together. If redundant signed containers differ, it selects
+only a hardware-authenticated chain whose signed boot/rootfs content pins match independently
+recomputed payload digests and valid self-signed format footers.
 Firmware contents alone cannot prove that some other tool never rooted the robot before the
 capture, so recon also asks whether it was still on untouched factory firmware and records the
 answer. An unknown-history capture is preserved as disaster-recovery evidence but cannot be used by
 `restore`. An older capture requires both a one-time typed confirmation of which robot it came from
 and the same explicit stock-history attestation; the tool never silently labels files as stock.
 Restore then writes private/misc, both boot/rootfs slots, and the original toc1, stopping on the
-first command that does not return `OKAY`.
+first command that does not return `OKAY`. After reboot it watches for an automatic return to FEL,
+then requires physical confirmation that stock booted normally before recording the restore as
+complete. If the terminal closes or boot cannot be confirmed, the next `restore` resumes that
+observation without flashing again.
 
 It deliberately does not rewrite toc0 because the normal DustBuilder rooting flow never changes it.
 It also does not replay all of UDISK (`/data`): the recon capture contains the complete
