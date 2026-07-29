@@ -26,8 +26,8 @@ description: |
   cloud-free robot firmware. Self-contained: no python3 or pyusb needed on the target.
 
 depends:
-  # Highest versioned symbol in the pinned Python image's bundled runtime, on both architectures.
-  - libc6 (>= 2.35)
+  # check-glibc-floor.py proves no ELF embedded in the frozen release artifacts exceeds this floor.
+  - libc6 (>= ${GLIBC_FLOOR})
   - libusb-1.0-0         # the bundled fastboot client + sunxi-fel load libusb at runtime
   - libfdt1              # sunxi-fel also links libfdt at runtime
   - curl                 # downloads (stage1 pkg + Valetudo binary) still shell out to curl
@@ -63,7 +63,7 @@ scripts:
 overrides:
   rpm:
     depends:
-      - glibc >= 2.35
+      - glibc >= ${GLIBC_FLOOR}
       - "libusb-1.0.so.0()(64bit)"
       - "libfdt.so.1()(64bit)"
       - /usr/bin/curl

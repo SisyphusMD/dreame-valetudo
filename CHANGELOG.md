@@ -16,8 +16,9 @@
 - Runs now survive closed terminals and dropped SSH connections in a private tmux session. Re-running
   the command can rejoin the run, pending questions are remembered, and concurrent runs cannot race
   one another.
-- Fedora, RHEL, and openSUSE now have self-contained RPM packages. A new `uninstall` command finds
-  Homebrew, package, source-tool, and macOS installer copies without touching robot backups.
+- Fedora, RHEL 8 through 10, and openSUSE now have self-contained RPM packages. A new `uninstall`
+  command finds Homebrew, package, source-tool, and macOS installer copies without touching robot
+  backups.
 - DustBuilder guidance is now specific to each model and stamped with its last verified date. The
   tool also guides unrecognized-config uploads with the current privacy and follow-up warnings.
 
@@ -27,7 +28,8 @@
   irreplaceable backups. Existing layouts migrate automatically with never-clobber behavior.
 - Recon records provenance for the complete three-slice recovery capture, produces the portable
   `dreame_recovery_backup.zip`, and preserves any trusted pre-root generation on later rooted runs.
-- The README now marks the X40 Ultra, X30 Ultra, and L10s Pro Ultra Heat as hardware verified.
+- The README now marks the X40 Ultra, X30 Ultra, L20 Ultra, and L10s Pro Ultra Heat as hardware
+  verified.
 - Status and other informational commands finish without an unrelated continuation prompt, while
   their output remains visible after a tmux session closes.
 

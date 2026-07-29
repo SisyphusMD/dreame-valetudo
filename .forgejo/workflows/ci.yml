@@ -1,7 +1,7 @@
 name: CI
 
 # Lint + tests on every PR and push to main: pinned shellcheck +
-# a Python lint/typecheck/test job + a build job + integration scripts, with integration gated
+# Python floor/current jobs + a build job + integration scripts, with integration gated
 # behind lint. Make this a required check on main so releases (cut from main by release.yml) only
 # ever ship a green tree.
 #
@@ -65,6 +65,27 @@ jobs:
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
+  python-floor:
+    # The package metadata promises source compatibility with Python 3.11. Running only the frozen
+    # release interpreter would let a newer stdlib API silently raise that floor.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # renovate: datasource=github-tags depName=python-3.11-floor packageName=python/cpython versioning=pep440
+          python-version: "3.11.0"
+      - name: install and test the claimed source floor
+        run: |
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.1.1"
+          python -m pip install --upgrade pip
+          pip install "pytest==$PYTEST" -e .
+          python -m compileall -q dreame_valetudo libexec docs/research/tools
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+
   build:
     # Compile-check the release-time build path on every push, so Renovate can automerge dep bumps
     # safely: a break here fails the PR before it can merge. Exercises the SAME buildx + deb.Dockerfile
@@ -97,9 +118,18 @@ jobs:
           echo "using sunxi $SREF, pyusb $PYUSB"
           # renovate: datasource=pypi depName=pyinstaller
           PYINSTALLER="6.21.0"
+          PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
+          PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
+          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
+          PYTHON_BUILD_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:latest@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8"
+          export GLIBC_FLOOR
+          GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
           # renovate: datasource=docker depName=goreleaser/nfpm
           NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
           docker buildx build --platform linux/amd64 \
+            --build-arg PYTHON_BUILD_IMAGE="$PYTHON_BUILD_IMAGE" \
+            --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
+            --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
             --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
             -f packaging/deb.Dockerfile --target export --output type=local,dest=out .
           chmod +x out/dreame-valetudo out/dreame-fastboot out/sunxi-fel
@@ -110,7 +140,7 @@ jobs:
           # Build two ordered RC package revisions so the distro smoke tests exercise an actual
           # package-manager upgrade, not merely a reinstall. docker create+cp is required because
           # the DinD daemon cannot bind-mount the job workspace.
-          CID=$(docker create -e DEB_ARCH=amd64 -w /w --entrypoint /bin/sh "$NFPM" -c '
+          CID=$(docker create -e DEB_ARCH=amd64 -e GLIBC_FLOOR -w /w --entrypoint /bin/sh "$NFPM" -c '
             set -e
             VERSION=0.0.0-rc.1 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci-old.deb
             VERSION=0.0.0-rc.2 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci.deb
@@ -142,18 +172,33 @@ jobs:
             echo "fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out"
             exit 1
           fi
-          # Keep the self-hosted runner below its storage ceiling before pulling four distro images.
+          # Keep the self-hosted runner below its storage ceiling before pulling the distro matrix.
           # The exported binaries are already outside BuildKit, so its compile cache is disposable.
           docker buildx prune --all --force
+          # renovate: datasource=docker depName=debian-12-compat packageName=debian
+          DEBIAN_FLOOR_IMAGE="debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
           # renovate: datasource=docker depName=debian
-          DEBIAN_IMAGE="debian:12-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
+          DEBIAN_CURRENT_IMAGE="debian:13-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
+          # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
+          UBUNTU_FLOOR_IMAGE="ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982"
           # renovate: datasource=docker depName=ubuntu
-          UBUNTU_IMAGE="ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982"
+          UBUNTU_CURRENT_IMAGE="ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb"
+          # renovate: datasource=docker depName=fedora-43-compat packageName=fedora
+          FEDORA_FLOOR_IMAGE="fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222"
           # renovate: datasource=docker depName=fedora
-          FEDORA_IMAGE="fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222"
+          FEDORA_CURRENT_IMAGE="fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898"
+          # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
+          RHEL_FLOOR_IMAGE="rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6"
+          # renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
+          RHEL_MIDDLE_IMAGE="rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f"
+          # renovate: datasource=docker depName=rockylinux/rockylinux
+          RHEL_CURRENT_IMAGE="rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834"
           # renovate: datasource=docker depName=opensuse/leap
           OPENSUSE_IMAGE="opensuse/leap:16.0@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6"
-          export DEBIAN_IMAGE UBUNTU_IMAGE FEDORA_IMAGE OPENSUSE_IMAGE
+          export DEBIAN_FLOOR_IMAGE DEBIAN_CURRENT_IMAGE
+          export UBUNTU_FLOOR_IMAGE UBUNTU_CURRENT_IMAGE
+          export FEDORA_FLOOR_IMAGE FEDORA_CURRENT_IMAGE
+          export RHEL_FLOOR_IMAGE RHEL_MIDDLE_IMAGE RHEL_CURRENT_IMAGE OPENSUSE_IMAGE
           bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm
           VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
           rm -rf homebrew-smoke-result
@@ -190,7 +235,7 @@ jobs:
   macos:
     # By the time the Linux suites finish, the mirrored macOS workflow normally has too. This keeps
     # the shared public GitHub API budget and the self-hosted runner slot out of a needless poll.
-    needs: [shellcheck, python, build, integration]
+    needs: [shellcheck, python, python-floor, build, integration]
     # GitHub's mirror runs the same commit on native arm64 and Intel hosts. Waiting by exact head
     # SHA prevents a newer green branch run from qualifying an older pull request revision.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

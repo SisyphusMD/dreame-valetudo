@@ -462,12 +462,10 @@ def _model_lines() -> str:
         if p.method == "uart":
             uart_models.append(f"    {key:<{key_width}}  {p.model}  ({p.dust_code})")
         else:
-            fastboot.append(
-                f"    {key:<{key_width}}  {p.model}  ({p.dust_code}, {p.dram})"
-            )
+            fastboot.append(f"    {key:<{key_width}}  {p.model}  ({p.dust_code})")
     lines = [
         "  Supported models (picked interactively, or via DREAME_MODEL=<key>). Same MR813 gen3",
-        "  fastboot flow; ddr3/ddr4 handled automatically:",
+        "  fastboot flow; hardware-specific loader details are handled automatically:",
         *fastboot,
         "",
         "  Also selectable via the older UART serial-shell method (guided manual, not yet automated):",

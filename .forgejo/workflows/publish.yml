@@ -49,8 +49,16 @@ jobs:
           read_pin() { python3 -c "import re,sys; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           export VERSION="${GITHUB_REF_NAME#v}"
+          export GLIBC_FLOOR
+          GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
           # renovate: datasource=pypi depName=pyinstaller
           PYINSTALLER="6.21.0"
+          PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
+          PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
+          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
+          MANYLINUX_AMD64="quay.io/pypa/manylinux_2_28_x86_64:latest@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8"
+          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_aarch64
+          MANYLINUX_ARM64="quay.io/pypa/manylinux_2_28_aarch64:latest@sha256:e7035406e58d96b7407246af1f6514a3cbd753a0025b42b9adfbeadd3b29ba80"
           # nfpm packages the .debs. Pinned image; its digest IS the integrity check (Renovate-kept).
           # renovate: datasource=docker depName=goreleaser/nfpm
           NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
@@ -61,19 +69,22 @@ jobs:
           # create+cp, since the DinD daemon can't bind-mount the job workspace.
           nfpm_pkg() { # nfpm_pkg <deb|rpm> <nfpm-arch amd64|arm64> <output-filename>
             local fmt="$1" narch="$2" name="$3" cid
-            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
+            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -e GLIBC_FLOOR -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
             docker cp . "$cid":/w
             docker start -a "$cid"
             docker cp "$cid":"/w/$name" .
             docker rm "$cid" >/dev/null
           }
-          build_pkgs() { # build_pkgs <docker-platform> <deb-arch amd64|arm64> <rpm-arch x86_64|aarch64>
-            local plat="$1" arch="$2" rpmarch="$3"
+          build_pkgs() { # build_pkgs <docker-platform> <deb-arch> <rpm-arch> <builder-image>
+            local plat="$1" arch="$2" rpmarch="$3" builder="$4"
             # buildx builds the per-arch bundle (main tool + fastboot client + sunxi-fel) and exports
-            # just those native binaries. The base image is pinned in deb.Dockerfile; the sunxi/pyusb/
-            # pyinstaller pins ride in as build-args. The arm64 leg emulates inside the builder.
+            # just those native binaries. The per-arch builder and source/tool pins ride in as
+            # build args. The arm64 leg emulates inside the builder.
             rm -rf "out-$arch"
             docker buildx build --platform "$plat" \
+              --build-arg PYTHON_BUILD_IMAGE="$builder" \
+              --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
+              --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
               --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
               -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
             rm -rf dist && mkdir dist
@@ -82,11 +93,11 @@ jobs:
             nfpm_pkg deb "$arch" "dreame-valetudo_$arch.deb"
             nfpm_pkg rpm "$arch" "dreame-valetudo.$rpmarch.rpm"
           }
-          build_pkgs linux/amd64 amd64 x86_64
-          build_pkgs linux/arm64 arm64 aarch64
+          build_pkgs linux/amd64 amd64 x86_64 "$MANYLINUX_AMD64"
+          build_pkgs linux/arm64 arm64 aarch64 "$MANYLINUX_ARM64"
           # Install and execute the exact release packages on BOTH Linux architectures before any
           # asset is published. BuildKit carries QEMU for arm64; a plain docker run on this runner
-          # cannot. The richer four-distro upgrade matrix runs pre-merge in ci.yml on amd64.
+          # cannot. The full distro upgrade matrix runs pre-merge in ci.yml on amd64.
           smoke_pkg() { # smoke_pkg <docker-platform> <deb>
             local plat="$1" package="$2" result="package-smoke-${plat##*/}"
             cp "$package" package-smoke.deb

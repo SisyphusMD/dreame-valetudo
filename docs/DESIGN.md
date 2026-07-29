@@ -37,6 +37,8 @@ the work dir, never inside it, so clearing work can never lose one. **Back them 
 the robot's identity cannot be regenerated.** See [LAYOUT.md](LAYOUT.md) for the full workspace
 layout.
 
+## Factory backups and stock restore
+
 The pre-root recon capture consists of three contiguous 399 MiB slices from the beginning of the
 eMMC. That covers every boot-critical partition but not all of the roughly 3.9 GB disk. `restore`
 validates the gzip streams, GPT header and entry-table CRCs, both toc0/toc1 containers, and the

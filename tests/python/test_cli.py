@@ -67,6 +67,7 @@ def test_help_model_rows_keep_fields_separated_for_long_names() -> None:
     assert rows
     assert all("  (" in row for row in rows)
     assert any("L10s Pro Ultra Heat (R2338H hardware revision)  (r2338h" in row for row in rows)
+    assert all("ddr" not in row for row in rows)
 
 
 def test_bench_list_does_not_select_or_create_a_robot(tmp_path: Path) -> None:

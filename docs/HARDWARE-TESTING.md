@@ -10,6 +10,11 @@ their interactive prompts, records non-secret evidence, and checks the resulting
 transitions still require an operator: software cannot press the PCB button, move a cable, join the
 robot AP, or confirm that the robot actually booted or docked.
 
+Host qualification is separate and automatic. Linux package CI covers Debian 12/13, Ubuntu
+22.04/26.04, Fedora 43/44, RHEL-compatible Rocky Linux 8/9/10, and openSUSE Leap 16. The
+native macOS matrix covers macOS 15 and 26 on both Apple Silicon and Intel. The bench campaign then
+proves the USB and robot behavior that those host-only jobs cannot reach.
+
 ## Running a campaign
 
 Use a separate campaign for each exact executable, install channel, and physical robot. A campaign
@@ -230,14 +235,13 @@ DREAME_ROBOT=wrong-model-probe DREAME_MODEL=x30-ultra \
 Hardware behavior and packaging behavior are separate dimensions. Do not reflash the robot merely
 to test another installer. Once the robot is rooted, use H0/H2 scenarios for package coverage.
 
-CI installs, upgrades, exercises, and removes the amd64 `.deb` and `.rpm` in Debian 12, Ubuntu
-22.04, Fedora 43, and openSUSE Leap 16.0 containers. It also builds the production Homebrew formula
-from the exact source tarball and installs, tests, and removes it in Linuxbrew. Those checks prove
-dependency resolution, package ownership, the installed entry point and helpers, and backup
-preservation. The source tarball is separately inspected for its exact payload, installed into an
-isolated Python environment, exercised, and uninstalled on every CI run. Tag builds execute the
-exact `.deb` on both amd64 and arm64, while each native macOS release leg installs and removes both
-the Homebrew formula and its signed `.pkg`.
+CI installs, upgrades, exercises, and removes the amd64 `.deb` and `.rpm` across the Linux matrix
+above. It also builds the production Homebrew formula from the exact source tarball and installs,
+tests, and removes it in Linuxbrew. Those checks prove dependency resolution, package ownership,
+the installed entry point and helpers, and backup preservation. The source tarball is separately
+inspected for its exact payload, installed into an isolated Python environment, exercised, and
+uninstalled on every CI run. Tag builds execute the exact `.deb` on both amd64 and arm64, while each
+native macOS release leg installs and removes both the Homebrew formula and its signed `.pkg`.
 
 Pre-merge containers cannot prove host USB permissions, a physical udev event, or communication
 with a robot. The table below keeps those as explicit RC evidence instead of treating package smoke

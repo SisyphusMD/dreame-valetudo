@@ -6,16 +6,30 @@
 # buildx sidesteps it. nfpm packages the exported binaries into the .deb OUTSIDE this build (nfpm
 # is arch-independent and stays on its pinned-image path).
 #
-# The base image is the same interpreter the bundle freezes; Renovate's dockerfile manager tracks
-# this digest, and the shared docker `python` packageRule holds its minor/major bumps for review
-# (in lockstep with the setup-python + publish.yml `python` pins).
-FROM python:3.14.6-bookworm@sha256:5dcba30b5f8fbd97e2f35dd1b140b3c94db70bd01b39ed88365732f8db8f68b5 AS build
+ARG PYTHON_BUILD_IMAGE=scratch
+FROM ${PYTHON_BUILD_IMAGE} AS build
 ARG SREF
 ARG PYUSB
 ARG PYINSTALLER
-RUN apt-get update -qq \
- && apt-get install -y -qq git make gcc pkg-config libusb-1.0-0-dev libfdt-dev zlib1g-dev
-RUN pip install --quiet --root-user-action=ignore "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
+ARG PYTHON_VERSION
+ARG PYTHON_SHA256
+ENV PATH="/opt/dreame-python/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/dreame-python/lib" \
+    PIP_ROOT_USER_ACTION=ignore
+RUN dnf install -y -q git make pkgconf-pkg-config libusbx-devel libfdt-devel zlib-devel \
+      openssl-devel bzip2-devel libffi-devel xz-devel sqlite-devel readline-devel ncurses-devel \
+ && dnf clean all
+RUN curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+      -o /tmp/python.tar.xz \
+ && printf '%s  %s\n' "$PYTHON_SHA256" /tmp/python.tar.xz | sha256sum -c - \
+ && tar -xJf /tmp/python.tar.xz -C /tmp \
+ && cd "/tmp/Python-${PYTHON_VERSION}" \
+ && ./configure --prefix=/opt/dreame-python --enable-shared --with-ensurepip=install \
+ && make -j4 \
+ && make install \
+ && test "$(/opt/dreame-python/bin/python3 -c 'import platform; print(platform.python_version())')" \
+      = "$PYTHON_VERSION"
+RUN python3 -m pip install --quiet "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
 # sunxi-fel: cloned + built before the repo COPY so it caches independently of source edits.
 # Pre-generate version.h so make skips its own version.h target (it has no prerequisites, so an
 # existing file counts as up to date). This is required because that target runs `./autoversion.sh`, which
@@ -34,7 +48,9 @@ COPY . /w
 # whether the smoke must become native-only.
 RUN bash packaging/build-bundle.sh /w/dist \
  && bash packaging/build-fastboot-client.sh /w/dist \
- && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel
+ && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel \
+ && python3 packaging/check-glibc-floor.py "$(cat packaging/glibc-floor.txt)" \
+      /w/dist/dreame-valetudo /w/dist/dreame-fastboot /w/dist/sunxi-fel
 
 # Export stage: BuildKit writes just these three native binaries to the --output dir (client-side
 # stream, so it isn't subject to the DinD workspace-visibility problem either).

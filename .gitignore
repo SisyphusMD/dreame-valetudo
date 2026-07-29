@@ -25,8 +25,12 @@ check.txt
 *.dd.gz
 dreame_samples.zip
 dreame_recovery_backup.zip
+*_fel_ng*.zip
 recovery-provenance.json
 .recovery-capture-refresh
+.dreame-valetudo-image.json
+.private.json
+dreame-*-stock-recovery/
 
 # Python bytecode from the helpers.
 __pycache__/
