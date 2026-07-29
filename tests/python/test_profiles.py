@@ -14,6 +14,7 @@ import pytest
 from dreame_valetudo import profiles as P
 
 GOLDEN = Path(__file__).parent / "golden"
+README = Path(__file__).parents[2] / "README.md"
 
 
 def _rows(name: str) -> list[list[str]]:
@@ -43,6 +44,15 @@ def test_profile_fields_match_golden() -> None:
         assert p.dustbuilder_page == rec["DUSTBUILDER_PAGE"], rec["key"]
     # Neither the picker, the backing table, nor the golden may carry an unrepresented model.
     assert seen == set(P.SUPPORTED_MODELS) == set(P._PROFILES)
+
+
+def test_readme_hardware_verified_models_are_deliberate() -> None:
+    verified = {
+        line.split("|")[1].strip().strip("`")
+        for line in README.read_text().splitlines()
+        if line.rstrip().endswith("| ✅ Verified |")
+    }
+    assert verified == {"x40-ultra", "x30-ultra", "l10s-pro-ultra-heat"}
 
 
 def test_load_profile_rejects_unknown_key() -> None:
