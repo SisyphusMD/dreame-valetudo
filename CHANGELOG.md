@@ -34,6 +34,8 @@
   verified.
 - Status and other informational commands finish without an unrelated continuation prompt, while
   their output remains visible after a tmux session closes.
+- The UART walkthrough now includes the known-good USB image, complete identity backup, exact
+  DustBuilder options, verified transfer, docking, and post-install success checks.
 
 ### Fixed
 

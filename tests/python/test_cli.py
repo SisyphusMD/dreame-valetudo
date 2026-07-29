@@ -11,6 +11,7 @@ from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import ADOPTED_ROOT, SUNXI_TOOLS_REF
+from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
 
@@ -421,6 +422,50 @@ def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:
     assert main(["auto"], env=env2, console=con2, runner=RecordingRunner()) == 0
     assert _has(con2, "no reset button")
     assert not _has(con2, "dock tip")
+
+
+@pytest.mark.parametrize(
+    ("model", "secure_boot"),
+    [
+        (profile.key, profile.secure_boot == "yes")
+        for profile in (load_profile(key) for key in SUPPORTED_MODELS)
+        if profile.method == "uart"
+    ],
+)
+def test_uart_walkthrough_pins_the_complete_upstream_contract(
+    tmp_path: Path, model: str, secure_boot: bool,
+) -> None:
+    con = ScriptedConsole()
+    env = {
+        "DREAME_WORK": str(tmp_path / model),
+        "DREAME_MODEL": model,
+        "DREAME_ROBOT": "bench",
+    }
+    assert main(["auto"], env=env, console=con, runner=RecordingRunner()) == 0
+    text = "\n".join(message for _kind, message in con.lines)
+
+    for required in (
+        "perform a full factory reset first",
+        "dreame_uart_root_img.zip",
+        "known-good image",
+        "3.3V adapter (NOT 5V)",
+        "swap RX/TX",
+        "including a Xiaomi prefix",
+        "Prepackage Valetudo",
+        "Patch DNS",
+        "valetudo-helper-httpbridge/releases",
+        "/mnt/private/ /mnt/misc/ /etc/OTA_Key_pub.pem /etc/publickey.pem",
+        "tar tf /tmp/backup.tar",
+        "tar exits successfully",
+        "same byte size and SHA-256",
+        "sha256sum dreame.vacuum.pxxxx_fw.tar.gz",
+        "mkdir dustbuilder-install",
+        "every command must succeed",
+        "robot on its dock",
+        "built with dustbuilder",
+    ):
+        assert required in text
+    assert ("has SECURE BOOT" in text) is secure_boot
 
 
 def test_auto_cannot_hide_an_uncertain_reflash_behind_an_old_rooted_marker(
