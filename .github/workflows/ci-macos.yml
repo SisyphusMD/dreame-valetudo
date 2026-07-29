@@ -1,0 +1,62 @@
+name: CI (macOS)
+
+# Forgejo remains the primary CI authority. This workflow supplies the two native macOS legs that
+# its Linux-only runners cannot execute; the Forgejo workflow waits for this exact mirrored SHA.
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.arch }})
+    # Forgejo also reads .github/workflows but has no macOS runner.
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            arch: arm64
+          - os: macos-26-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # renovate: datasource=github-tags depName=python/cpython versioning=pep440
+          python-version: "3.14.6"
+      - name: Install native test dependencies
+        run: |
+          brew install bash shellcheck tmux
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+      - name: Lint, typecheck, and run Python tests
+        run: |
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.16.0"
+          # renovate: datasource=pypi depName=mypy
+          MYPY="2.3.0"
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.1.1"
+          python -m pip install --upgrade pip
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
+          ruff check dreame_valetudo libexec tests/python
+          mypy
+          python -m compileall -q docs/research/tools
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+      - name: Check shell scripts
+        run: shellcheck --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh
+      - name: Run integration scripts with native tmux
+        run: |
+          for t in tests/integration/*.sh; do
+            echo "== $t =="
+            bash "$t"
+          done

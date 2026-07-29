@@ -77,13 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: reclaim disposable runner storage
-        run: |
-          # The self-hosted DinD daemon persists between capacity-one runner assignments. Remove
-          # only stopped containers and unused images before setup pulls or creates anything large;
-          # running jobs and their images cannot be selected by either prune.
-          docker container prune --force
-          docker image prune --all --force
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           # The action's own default is tonistiigi/binfmt:latest — the one moving tag left in
@@ -91,6 +84,11 @@ jobs:
           # renovate: datasource=docker depName=tonistiigi/binfmt
           image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["dockerhub-mirror.nas.bryantserver.com"]
       - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
         run: |
           set -euo pipefail
@@ -188,3 +186,25 @@ jobs:
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
           for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done
+
+  macos:
+    # By the time the Linux suites finish, the mirrored macOS workflow normally has too. This keeps
+    # the shared public GitHub API budget and the self-hosted runner slot out of a needless poll.
+    needs: [shellcheck, python, build, integration]
+    # GitHub's mirror runs the same commit on native arm64 and Intel hosts. Waiting by exact head
+    # SHA prevents a newer green branch run from qualifying an older pull request revision.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the mirrored commit
+        id: mirrored
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            sha=$(python3 -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["head"]["sha"])')
+          else
+            sha="$GITHUB_SHA"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Require native macOS CI for this exact commit
+        run: bash packaging/wait-github-macos-ci.sh "${{ steps.mirrored.outputs.sha }}"

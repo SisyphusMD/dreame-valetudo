@@ -46,13 +46,22 @@ before those release assets are published.
 4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg`s on the public
    Forgejo release, then walks **every** tag, hashes each recognized copy, and repairs a missing or
    dissenting registry only when the other two have identical content. Without a two-registry
-   quorum it warns and changes nothing.
+   quorum it warns and changes nothing. The current tag does not pass publishing qualification
+   unless both native GitHub macOS jobs have installed and exercised their signed package and
+   published the resulting `.pkg`; historical repair still runs before that missing-artifact failure
+   is reported.
 
 The release helpers are idempotent (create-or-reuse + replace assets), so the forges can write the
 same release in any order, and the reconcile job can safely re-run them. Every release and its assets
 are kept indefinitely on all three registries — nothing is pruned, including superseded prereleases
 (reconcile deliberately walks *every* tag). If disk ever forces GC, teach `reconcile` a keep-set
 first, or a pruned rc would just be resurrected on the next run.
+
+Before merge, GitHub's native arm64 and Intel runners execute the Python, Ruff, mypy, ShellCheck,
+research self-test, and integration suites for every mirrored branch commit. Forgejo's `macos` job
+polls that public workflow by the exact commit SHA, so its required checks remain the single merge
+gate without granting pull-request code a cross-forge write token. Package installation and signing
+remain separate tag-time qualification because they require a release artifact and signing secrets.
 
 ## Dev / prerelease builds
 
@@ -88,8 +97,8 @@ normal way; no dev branch is required (though you can dispatch from one).
    `MACOS_CERT_PASSWORD`, `MACOS_APP_IDENTITY`, `MACOS_INSTALLER_IDENTITY`, `MACOS_NOTARY_KEY_P8`,
    `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`. (`GITHUB_TOKEN` is automatic.)
 
-If the macOS secrets are missing, only the macOS job fails; the tap, `.deb`, tarball, and the
-Forgejo/NAS releases still complete.
+If the macOS secrets are missing, the Linux assets and tap still publish, but the overall publish
+workflow fails its qualification gate until both signed `.pkg`s are present.
 
 ## Caveats to validate on the first release
 

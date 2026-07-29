@@ -12,6 +12,8 @@ _CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
 _RELEASE = _ROOT / ".forgejo" / "workflows" / "release.yml"
 _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
+_MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
+_MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
 
 
 def _job(text: str, name: str) -> str:
@@ -37,6 +39,20 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
         assert "\n    if: ${{ always() }}\n" in _job(text, name)
 
 
+def test_reconcile_requires_both_github_qualified_macos_packages() -> None:
+    reconcile = _job(_PUBLISH.read_text(), "reconcile")
+
+    assert "fail=0" in reconcile
+    assert 'index("dreame-valetudo-macos-arm64.pkg")' in reconcile
+    assert 'index("dreame-valetudo-macos-x86_64.pkg")' in reconcile
+    assert 'endswith(".pkg")' not in reconcile
+    assert "current tag's two GitHub-qualified .pkgs were not published" in reconcile
+    assert "fail=1" in reconcile
+    assert "bash packaging/reconcile-releases.sh || fail=1" in reconcile
+    assert 'exit "$fail"' in reconcile
+    assert "::warning::current tag's .pkgs" not in reconcile
+
+
 def test_ci_checks_each_required_deb_binary_independently() -> None:
     text = _CI.read_text()
     for path in (
@@ -47,6 +63,57 @@ def test_ci_checks_each_required_deb_binary_independently() -> None:
         assert path in text
     assert "for required in" in text
     assert 'grep -Fq "$required"' in text
+
+
+def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:
+    mirror = 'mirrors = ["dockerhub-mirror.nas.bryantserver.com"]'
+    for workflow in (_CI, _PUBLISH):
+        text = workflow.read_text()
+        assert "buildkitd-config-inline: |" in text
+        assert mirror in text
+
+    # Shared runner garbage collection owns residue from interrupted jobs. A repository job may
+    # remove artifacts it created, but must not evict unrelated repositories' tagged image cache.
+    assert "docker image prune --all" not in _CI.read_text()
+
+
+def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() -> None:
+    forgejo = _job(_CI.read_text(), "macos")
+    macos = _MACOS_CI.read_text()
+
+    assert "needs: [shellcheck, python, build, integration]" in forgejo
+    assert "packaging/wait-github-macos-ci.sh" in forgejo
+    assert 'github.event.pull_request.head.repo.full_name == github.repository' in forgejo
+    assert 'os.environ["GITHUB_EVENT_PATH"]' in forgejo
+    assert '["pull_request"]["head"]["sha"]' in forgejo
+    assert "secrets." not in forgejo
+    assert "macos-26\n" in macos
+    assert "macos-26-intel" in macos
+    assert "ruff check dreame_valetudo libexec tests/python" in macos
+    assert "mypy" in macos
+    assert "pytest -q tests/python" in macos
+    assert "tests/integration/*.sh" in macos
+    assert "permissions:" not in macos
+    assert "persist-credentials: false" in macos
+
+
+def test_native_macos_ci_uses_the_pinned_linux_test_toolchain() -> None:
+    linux = _CI.read_text()
+    macos = _MACOS_CI.read_text()
+    for name in ("RUFF", "MYPY", "PYTEST"):
+        pin = re.search(rf'{name}="([^"]+)"', linux)
+        assert pin is not None
+        assert f'{name}="{pin.group(1)}"' in macos
+
+
+def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
+    bridge = _MACOS_WAIT.read_text()
+
+    assert 'DREAME_GITHUB_CI_ATTEMPTS:-12' in bridge
+    assert 'DREAME_GITHUB_CI_DELAY:-300' in bridge
+    assert 'DREAME_GITHUB_CI_INITIAL_DELAY:-180' in bridge
+    assert '.split("@", 1)[0] == workflow' in bridge
+    assert 'r.get("conclusion") == "success"' in bridge
 
 
 def test_homebrew_templates_use_the_replicated_release_tarball() -> None:

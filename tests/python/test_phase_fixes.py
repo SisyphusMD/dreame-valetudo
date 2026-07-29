@@ -16,6 +16,7 @@ from conftest import CtxFactory
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
+from dreame_valetudo.log import scrub
 from dreame_valetudo.phases.fixes import (
     _DIAGNOSE_REMOTE,
     diagnose,
@@ -80,7 +81,7 @@ def test_fix_reports_auth_failure_with_the_offered_key(
     )
     with pytest.raises(Die, match="SSH authentication failed") as exc:
         fix_did(ctx)
-    assert str(key) in str(exc.value)
+    assert scrub(str(key), ctx.home) in str(exc.value)
     assert "usually your router" in str(exc.value)
     assert "If already on the robot AP" in str(exc.value)
 

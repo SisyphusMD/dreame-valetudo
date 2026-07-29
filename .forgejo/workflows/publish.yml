@@ -36,6 +36,11 @@ jobs:
           # renovate: datasource=docker depName=tonistiigi/binfmt
           image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["dockerhub-mirror.nas.bryantserver.com"]
 
       - name: Build the .debs + .rpms (buildx) + the tarball
         run: |
@@ -153,7 +158,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # all tags needed for the reconcile loop
-      - name: Wait for the current release's GitHub-built .pkgs, then reconcile every tag
+      - name: Require the current release's GitHub-built .pkgs, then reconcile every tag
         env:
           CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
           NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
@@ -161,16 +166,24 @@ jobs:
         run: |
           set -uo pipefail
           API=https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo
-          # The signed .pkgs build on GitHub (slow) and land on the public Forgejo release minutes
-          # later. Wait so the current tag's .pkgs are in the union before the fan-out; a timeout just
-          # defers them to the next release's reconcile.
-          n=0
+          # Both native GitHub build legs install and exercise their signed package before the
+          # publish job can place it here. Their presence is therefore the cross-forge qualification
+          # gate, not merely an asset-availability convenience.
+          fail=0
+          qualified=false
           for _ in $(seq 1 180); do
-            n=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" \
-                | jq -r '[.assets[]?.name | select(endswith(".pkg"))] | length' 2>/dev/null || echo 0)
-            [ "${n:-0}" -ge 2 ] && break
+            qualified=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" | jq -r '
+              [.assets[]?.name] as $names |
+              ($names | index("dreame-valetudo-macos-arm64.pkg") != null) and
+              ($names | index("dreame-valetudo-macos-x86_64.pkg") != null)
+            ' 2>/dev/null || echo false)
+            [ "$qualified" = true ] && break
             sleep 10
           done
-          [ "${n:-0}" -ge 2 ] || echo "::warning::current tag's .pkgs not present after 30m; reconcile fans out what exists and heals the rest next release"
+          [ "$qualified" = true ] || {
+            echo "::error::current tag's two GitHub-qualified .pkgs were not published within 30m"
+            fail=1
+          }
           chmod +x packaging/reconcile-releases.sh packaging/forgejo-release.sh packaging/github-release.sh
-          bash packaging/reconcile-releases.sh
+          bash packaging/reconcile-releases.sh || fail=1
+          exit "$fail"
