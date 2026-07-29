@@ -18,6 +18,14 @@ REPO="SisyphusMD/dreame-valetudo"
 CLUSTER_HOST="forgejo.bryantserver.com"
 NAS_HOST="forgejo.nas.bryantserver.com"
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 remote_assets() {
   curl -sSL -H "Authorization: $2" "$1/tags/$3" 2>/dev/null \
     | jq -r '.assets[]? | [(.name // ""), (.browser_download_url // "")] | join("|")' \
@@ -114,7 +122,7 @@ for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
         rm -f "$path"
         continue
       fi
-      digest="$(sha256sum "$path" | awk '{print $1}')"
+      digest="$(sha256_file "$path")"
       counts["$digest"]=$(( ${counts[$digest]-0} + 1 ))
       source["$digest"]="$path"
       case "$registry" in
