@@ -56,8 +56,9 @@ Older systems may work, but are not claimed until they are in this matrix.
 | openSUSE Leap | Leap 16.0 | Leap 16.0 |
 
 The `.deb` and `.rpm` require glibc 2.28 or newer. Source installs additionally require Python 3.11
-or newer. CI installs, upgrades, exercises, and removes the actual packages on every Linux row; on
-macOS it does the same on native arm64 and Intel runners at both ends of the supported range.
+or newer. CI installs, upgrades, exercises, and removes the actual packages on every Linux row.
+Native macOS CI runs the full suite on both architectures and supported OS versions; release builds
+also install, exercise, and remove the exact signed package on each one.
 
 ## Install
 
@@ -77,10 +78,11 @@ One `brew install` works on any Mac or Linux arch. The first run compiles `sunxi
 helper that drives the robot's FEL mode) once.
 
 > [!NOTE]
-> **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev` (it asks for your password) (macOS
-> needs nothing). Until it is installed, every command except help, version, and the installer
-> itself stops with this reminder; set `DREAME_NO_UDEV_CHECK=1` for Wi-Fi-only work. The `.deb` and
-> `.rpm` do it automatically at install, so this is only for the Homebrew/source route.
+> **Linux, one-time:** grant sudo-less USB access with `dreame-valetudo install-udev`; it asks for
+> your password. macOS needs nothing. Until the rule is installed, every command except help,
+> version, and the installer itself stops with this reminder; set `DREAME_NO_UDEV_CHECK=1` for
+> Wi-Fi-only work. The `.deb` and `.rpm` install it automatically, so this is only for the
+> Homebrew/source route.
 
 ---
 
@@ -126,11 +128,13 @@ git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo    # or th
 cd dreame-valetudo && uv run dreame-valetudo
 ```
 [`uv`](https://docs.astral.sh/uv/) handles the interpreter and the on-demand `pyusb`. Or install it as
-a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl**, and **tmux** at
-runtime (macOS: `brew install libusb tmux`; Linux: `sudo apt install libusb-1.0-0 curl tmux`). Every
-packaged install pulls tmux in for you; a source checkout cannot, and without it a run ends when its
-terminal closes instead of surviving to be rejoined. Building `sunxi-fel` on the first run also
-needs either a system `sunxi-tools` or, on Debian/Ubuntu,
+a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl**, **tmux**,
+**OpenSSH**, **tar**, **zip**, and **unzip** at runtime. macOS already includes everything except
+libusb and tmux (`brew install libusb tmux`). On Debian/Ubuntu, install
+`libusb-1.0-0 curl tmux openssh-client tar zip unzip`. The `.deb` and `.rpm` declare these for you;
+Homebrew and source installs use the host copies and the tool names anything missing. Without tmux,
+a run ends when its terminal closes instead of surviving to be rejoined. Building `sunxi-fel` on
+the first run also needs either a system `sunxi-tools` or, on Debian/Ubuntu,
 `sudo apt install git make pkg-config libusb-1.0-0-dev libfdt-dev`. On Linux, install the udev rule
 from `packaging/udev/`.
 
@@ -219,9 +223,9 @@ git pull                                             # from source
 The **first time you run the tool** after upgrading, it migrates the workspace to any new on-disk
 layout automatically with atomic, never-clobber moves. The legacy path is removed after a successful
 move, not left as a compatibility symlink, and a build that sees a newer layout refuses to alter it.
-There is nothing extra to do; to
-run it deliberately (you upgraded but have no rooting task yet), run `dreame-valetudo migrate`. Your
-factory backups are preserved; [`docs/LAYOUT.md`](docs/LAYOUT.md) documents every layout version.
+There is nothing extra to do. To run it deliberately when you have upgraded but have no rooting
+task yet, run `dreame-valetudo migrate`. Your factory backups are preserved;
+[`docs/LAYOUT.md`](docs/LAYOUT.md) documents every layout version.
 
 The tool also maintains Valetudo itself on any adopted rooted robot. A normal
 `dreame-valetudo` run offers a newer verified pinned release when the saved version proves an
@@ -232,8 +236,8 @@ dropped transfer leaves the working executable in place.
 
 ## Release candidates (and switching back to stable)
 
-Before a stable version is cut, the same real artifacts (Homebrew formula, `.pkg`, `.deb`, tarball)
-are published as a **release candidate** for hardware testing. Candidates are tagged `-rc.N` and
+Before a stable version is cut, the same real artifacts (Homebrew formula, `.pkg`, `.deb`, `.rpm`,
+tarball) are published as a **release candidate** for hardware testing. Candidates are tagged `-rc.N` and
 listed on the Releases pages
 ([forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases),
 [github](https://github.com/SisyphusMD/dreame-valetudo/releases)) as **Pre-release**, never marked
@@ -269,6 +273,14 @@ file holds, either direction):
 sudo dpkg -i ./dreame-valetudo_<arch>.deb
 ```
 
+**Fedora / RHEL / openSUSE `.rpm`.** Install the candidate with your package manager. Returning to a
+lower stable build is an explicit downgrade:
+```bash
+sudo dnf install ./dreame-valetudo.<arch>.rpm
+sudo dnf downgrade ./dreame-valetudo.<arch>.rpm       # Fedora/RHEL: return to stable
+sudo zypper install --oldpackage ./dreame-valetudo.<arch>.rpm  # openSUSE: return to stable
+```
+
 **From source.** Check out the candidate's tag instead of the default branch:
 ```bash
 git fetch --tags
@@ -292,6 +304,7 @@ the command), says what will be removed, and asks before doing anything. Or remo
 ```bash
 brew uninstall dreame-valetudo                       # Homebrew (or dreame-valetudo-rc)
 sudo apt remove dreame-valetudo                      # Debian/Ubuntu (.deb), incl. its udev rule
+sudo dnf remove dreame-valetudo                      # Fedora/RHEL (.rpm); use zypper rm on openSUSE
 sudo /usr/local/libexec/dreame-valetudo/uninstall.sh  # macOS .pkg (removes its files + receipt)
 uv tool uninstall dreame-valetudo                    # from source (uv tool); or `pipx uninstall`, or rm the clone
 ```

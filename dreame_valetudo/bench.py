@@ -2351,6 +2351,11 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
     if action == "list":
         if len(args) != 1:
             raise Die("Usage: dreame-valetudo bench list")
+        ctx.console.say("Hardware qualification scenarios")
+        ctx.console.info("H0 host-only · H1 read-only robot · H2 rooted maintenance · "
+                         "H3 destructive flash")
+        ctx.console.detail("'run' is conducted by the tool; 'record' requires a documented "
+                           "manual observation.")
         for item in SCENARIOS:
             mode = "run" if item.automated else "record"
             ctx.console.info(f"{item.safety}  {mode:<6} {item.key}")

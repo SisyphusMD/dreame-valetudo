@@ -31,6 +31,7 @@ depends:
   - libusb-1.0-0         # the bundled fastboot client + sunxi-fel load libusb at runtime
   - libfdt1              # sunxi-fel also links libfdt at runtime
   - curl                 # downloads (stage1 pkg + Valetudo binary) still shell out to curl
+  - tar                  # fetch extracts the verified stage1 archive
   - unzip                # the image phase unpacks the dustbuilder FEL zip
   - zip                  # recon archives the pre-root recovery backup (recon.py's `zip -q -j`)
   - openssh-client       # phase 3 push + the fix-*/diagnose helpers run ssh
@@ -67,6 +68,7 @@ overrides:
       - "libusb-1.0.so.0()(64bit)"
       - "libfdt.so.1()(64bit)"
       - /usr/bin/curl
+      - /usr/bin/tar
       - /usr/bin/unzip
       - /usr/bin/zip
       - /usr/bin/ssh

@@ -292,11 +292,12 @@ def _pcb_help(ctx: Context) -> None:
 def _auto_intro(ctx: Context) -> None:
     def full() -> None:
         named = f" '{ctx.robot_label()}'" if ctx.robot is not None else ""
-        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every phase is "
+        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every stage is "
                         "guided and resumable):")
         ctx.console.steps([
             "Recon (read-only): validate the USB path and record the robot's identity.",
-            "Root (the one destructive step): flash the image the dustbuilder builds for it.",
+            "Build (browser): follow the exact DustBuilder form and download its image.",
+            "Root (the one destructive step): verify and flash that image.",
             "Install: push Valetudo onto the robot over its own Wi-Fi AP.",
         ])
         _pcb_help(ctx)
