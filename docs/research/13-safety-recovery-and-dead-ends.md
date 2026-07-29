@@ -55,9 +55,10 @@ redundancy mirror.
 - **"boot0/SPL enforces toc1 against toc0's item0 key."** WRONG — the anchor is the eFuse; toc0 is
   hardware-proven irrelevant to toc1. The shortcut of signing the genuine item0 hash and changing
   only the modulus fails, because the hash includes the key.
-- **Trusting the offline verifiers.** Both `verify_toc1_generic.py` and the Unicorn
-  `verify_certif_emu` passed a hardware-**rejected** file. Offline verification is unreliable here;
-  **hardware is ground truth.**
+- **Treating internal verification as trust-anchor verification.** The offline TOC0/TOC1 tools can
+  prove layout, hashes, and self-signatures, but they cannot prove that the eFuse ROTPK trusts the
+  embedded root. An internally valid own-key image is still correctly rejected by burned hardware;
+  **hardware is ground truth for acceptance.**
 - **Physical eMMC driver `*0x4a03c744`.** Not initialized in recon (faults) — use the live logical
   handle `*0x4a03c750` ([04](04-boot0-write-and-verify.md)).
 - **"The read-back is encrypted / needs the physical driver."** WRONG — it is XOR transport-only,

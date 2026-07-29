@@ -43,15 +43,22 @@ adds an earlier BROM wall (a self-signed toc0 is rejected one stage sooner — s
 
 ## Why the reject is silent
 
-The SPL's `printf` (`0x2227c`) gates on a debug-level byte. `main` lowers that level to `0` from the
-config byte at `[r3+0x3f0]` **right after** the `HELLO! SBOOT is starting!` / `sboot commit` banner.
-So when the key check fails, the SPL's `root certif pk verify failed` string is printed to a silenced
-UART. What looks like a hang after `sboot commit` (see [10](10-uart-boot-signatures.md)) is a
-**normal failed check**, not a crash.
+The SPL's `printf` (`0x2227c`) gates on a debug-level byte. `main` loads the fixed config pointer
+`0x20080`, reads `debug_mode` at config offset `0x3f0`, and lowers the level to `0` **right after**
+the `HELLO! SBOOT is starting!` / `sboot commit` banner. The secure-boot configuration is the 1 KiB
+`sbrom_toc0_config` immediately before item1's run address (`0x20480`): it starts at TOC0 file
+offset `0x80`, so `debug_mode` is file offset **`0x470`**. The signed firmware item starts later at
+file offset `0xf80` and its certificate digest covers only that item.
 
-This also gives a route to the direct proof: re-enabling that debug byte (or NOP-ing the
-`set_debug_level` call at `0x30382` in a re-signed toc0) would print the exact suppressed reject
-string. See [12](12-status-and-forward-paths.md).
+So when the key check fails, the SPL's `root certif pk verify failed` string is printed to a
+silenced UART. What looks like a hang after `sboot commit` (see
+[10](10-uart-boot-signatures.md)) is a **normal failed check**, not a crash.
+
+This also gives a route to the direct proof without changing signed code: set file byte `0x470` to
+`1`, recompute the additive TOC0 checksum, and retain the genuine certificate and item1 byte for
+byte. [`tools/enable_toc0_debug.py`](tools/enable_toc0_debug.py) builds exactly that image and
+refuses any input other than the captured, hardware-accepted reference hash. See
+[12](12-status-and-forward-paths.md).
 
 ## The elimination argument, stated precisely
 

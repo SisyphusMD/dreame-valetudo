@@ -20,21 +20,28 @@ same fuse governs both, so this is low-value). The offline verifiers false-pass
 ([08](08-toc1-format-and-resigning.md), [13](13-safety-recovery-and-dead-ends.md)), so a structural
 reject of the own-key images cannot be excluded by tooling alone — only by hardware.
 
-## The direct-read proof (the one thing more definitive — unfinished)
+## The direct-read proof (the one thing more definitive — prepared, not run)
 
 boot0 does `efuse pk dump` on a key **mismatch**, but its debug UART is gated off (the same debug
-byte that silences the reject string — [07](07-spl-verification-the-wall.md)). Two routes to the
-definitive read:
+byte that silences the reject string — [07](07-spl-verification-the-wall.md)). The offline mapping
+is now closed:
 
-1. **Flip the debug-enable byte, then let genuine boot0 dump.** boot0's debug-enable is the config
-   byte at `[struct+0x3f0]`. **If** it is sourced from a **writable** partition/config (not the
-   signed boot0 — check the offline eMMC mirror), flip it via FEL, boot **genuine-toc0 +
-   self-signed-toc1**, and capture genuine boot0 printing the **real ROTPK**. This is definitive:
-   it reads the fuse value out directly.
-2. **Re-enable the debug UART inside a re-signed toc0.** NOP the `set_debug_level` call at `0x30382`,
-   recompute the toc0 content-hash, re-sign ([06](06-toc0-format-and-signature.md)). This surfaces
-   the exact suppressed reject string (names the failing check) but only settles burned-vs-empty
-   indirectly.
+- `sbrom_toc0_config` begins at TOC0 file offset `0x80` and is loaded at `0x20080`.
+- the SPL reads its `debug_mode` at config offset `0x3f0`, or file offset **`0x470`**.
+- item1 begins at file offset `0xf80`; the certificate pins `sha256(item1)`, not the preceding
+  configuration.
+- changing `0x470` from `0` to `1` and recomputing `add_sum` changes no signed byte. The generated
+  reference image differs only at `0x470` and the checksum bytes; item1 remains identical.
+
+[`tools/enable_toc0_debug.py`](tools/enable_toc0_debug.py) implements that offline transformation.
+It pins the exact hardware-accepted input SHA-256, verifies the genuine raw-RSA certificate and
+firmware digest, and has no USB or flash capability.
+
+The remaining hardware experiment is deliberately separate: prepare the identity-matched genuine
+toc0/toc1 recovery pair first, enable UART capture, use the existing identity-gated chain tool to
+boot **debug-enabled genuine toc0 + self-signed toc1**, capture the mismatch dump, then restore the
+genuine pair before leaving the bench. It has not been run. Do not fold this research-only image
+into the production root or restore paths.
 
 ## The three forward levers for an own-key root
 
@@ -54,9 +61,27 @@ Any of these — and only these — would let an owner-signed toc1 boot with a g
    fault-injection on the ROTPK `memcmp` (`0x2ffaa`). The byte-level RE verified the check's *logic*
    is sound; nobody has fuzzed the *parser* for an exploitable flaw. Unexplored.
 
+## Go/no-go decision (2026-07-29)
+
+Do **not** restart a production “skip the build service” implementation. The local corpus contains
+only the project-generated throwaway development key, not a vendor private key; a private key
+cannot be recovered from the genuine public key or signed images. A fresh review of current
+upstream TOC0 tooling and published A133 material found no demonstrated parser bypass for this
+chain. Searching for or depending on leaked signing material is not a maintainable product path.
+
+Continue only as bounded research:
+
+1. run the prepared debug-config experiment above to turn the fuse conclusion into a direct read;
+2. if useful afterward, fuzz the genuine DER/parser logic offline and treat hardware only as a
+   tightly gated oracle;
+3. leave voltage/clock fault injection as a separate invasive hardware project, not a release goal.
+
+This is a **no-go for 0.3 and 0.4 product work**, not a claim that future vulnerability research is
+mathematically impossible.
+
 ## Consequence
 
-If the fuse is burned (the working conclusion), an own-key root is dead on that unit and the only way
-to run modified firmware is the vendor-key / build-service path (which re-signs only toc1 —
-[08](08-toc1-format-and-resigning.md)). The direct read would convert "overwhelmingly supported" into
-"proven," which is the remaining piece of real work.
+If the fuse is burned (the working conclusion), an own-key root is dead on that unit and the only
+currently demonstrated way to run modified firmware is the vendor-key/build-service path (which
+re-signs only toc1 — [08](08-toc1-format-and-resigning.md)). The prepared direct read would convert
+“overwhelmingly supported” into “proven”; it would not provide a signing bypass.
