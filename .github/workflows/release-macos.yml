@@ -8,7 +8,7 @@ name: Release (macOS pkg)
 # releases (the only two it can reach); publish.yml's nas-pkg job bridges them to the NAS.
 #
 # NOTE: the native-library bundling + codesign is the one piece that can't be dry-run off-CI.
-# The x86_64 leg is built and signed the same way but is untested on real Intel hardware.
+# Both architectures are installed and exercised on native floor and current GitHub runners.
 on:
   push:
     # Stable and prerelease (v1.2.3-rc.N) tags both build the signed .pkg; the publish step marks
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    name: Build signed pkg (${{ matrix.arch }})
+    name: Build and test signed pkg (${{ matrix.arch }}, macOS 15 floor)
     # Forgejo Actions also reads .github/workflows but has no macOS runner — only run on GitHub.
     if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ${{ matrix.os }}
@@ -28,11 +28,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-26 is GitHub's current image (bleeding-edge by choice).
-          - os: macos-26
+          - os: macos-15
             arch: arm64
-          # x86_64 macOS is being sunset by GitHub (~2027); macos-26-intel is the latest Intel image.
-          - os: macos-26-intel
+          - os: macos-15-intel
             arch: x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,6 +43,8 @@ jobs:
         run: bash packaging/test-homebrew-formula.sh "$GITHUB_REF_NAME"
 
       - name: Build sunxi-fel + the PyInstaller fastboot client
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "15.0"
         run: |
           set -euo pipefail
           # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
@@ -163,69 +163,47 @@ jobs:
           xcrun stapler staple "$PKG"
 
       - name: Install, exercise, and uninstall the signed package
-        run: |
-          set -euo pipefail
-          PKG="dreame-valetudo-macos-${{ matrix.arch }}.pkg"
-          LX=/usr/local/libexec/dreame-valetudo
-          TEST_HOME=$(mktemp -d)
-          cleanup() {
-            if [ -x "$LX/uninstall.sh" ]; then sudo "$LX/uninstall.sh" >/dev/null; fi
-            rm -rf "$TEST_HOME"
-          }
-          trap cleanup EXIT
-
-          mkdir -p "$TEST_HOME/dreame-valetudo/backups"
-          printf 'keep\n' > "$TEST_HOME/dreame-valetudo/backups/uninstall-must-preserve"
-          pkgutil --check-signature "$PKG"
-          xcrun stapler validate "$PKG"
-          sudo installer -pkg "$PKG" -target /
-
-          pkgutil --pkg-info com.sisyphusmd.dreame-valetudo \
-            | grep -Fx "version: ${GITHUB_REF_NAME#v}"
-          test -x /usr/local/bin/dreame-valetudo
-          for helper in dreame-valetudo dreame-fastboot sunxi-fel tmux uninstall.sh; do
-            test -x "$LX/$helper"
-          done
-          for binary in dreame-valetudo dreame-fastboot sunxi-fel tmux; do
-            codesign --verify --deep --strict "$LX/$binary"
-          done
-          if otool -L "$LX/sunxi-fel" "$LX/tmux" \
-              | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
-            echo "installed helper still references a Homebrew-only library" >&2
-            exit 1
-          fi
-
-          runtime=$(/usr/local/bin/dreame-valetudo version | awk '{print $NF}')
-          HOME="$TEST_HOME" DREAME_NO_TMUX=1 DREAME_NO_UPDATE_CHECK=1 \
-            DREAME_BENCH_BUILD="$runtime" DREAME_BENCH_CHANNEL="pkg-${{ matrix.arch }}" \
-            /usr/local/bin/dreame-valetudo bench run host-smoke --campaign package-ci
-          set +e
-          fastboot_out=$("$LX/dreame-fastboot" devices 2>&1)
-          fastboot_rc=$?
-          set -e
-          if (( fastboot_rc > 1 )) \
-              || { (( fastboot_rc == 1 )) && [[ -n "$fastboot_out" ]]; } \
-              || grep -Eqi 'Traceback|NoBackendError|no libusb backend|library not loaded' \
-                   <<<"$fastboot_out"; then
-            echo "installed fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out" >&2
-            exit 1
-          fi
-
-          sudo "$LX/uninstall.sh"
-          test ! -e /usr/local/bin/dreame-valetudo
-          test ! -e "$LX"
-          ! pkgutil --pkgs | grep -qx com.sisyphusmd.dreame-valetudo
-          test -f "$TEST_HOME/dreame-valetudo/backups/uninstall-must-preserve"
+        run: >-
+          bash packaging/test-macos-package.sh
+          "dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pkg-${{ matrix.arch }}
           path: dreame-valetudo-macos-${{ matrix.arch }}.pkg
 
+  current:
+    name: Test floor-built pkg (${{ matrix.arch }}, macOS 26 current)
+    if: ${{ github.server_url == 'https://github.com' }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            arch: arm64
+          - os: macos-26-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pkg-${{ matrix.arch }}
+          path: .
+      - name: Install, exercise, and uninstall the floor-built signed package
+        run: >-
+          bash packaging/test-macos-package.sh
+          "dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
+
   publish:
     name: Append the signed .pkgs to the GitHub + Forgejo releases
     if: ${{ github.server_url == 'https://github.com' }}
-    needs: build
+    needs: [build, current]
     runs-on: ubuntu-latest
     permissions:
       contents: write

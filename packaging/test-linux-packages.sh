@@ -135,9 +135,15 @@ if [ "${1:-}" = "--inside-single" ]; then
 fi
 
 [ "$#" -eq 4 ] || fail "usage: $0 <old.deb> <new.deb> <old.rpm> <new.rpm>"
-: "${DEBIAN_IMAGE:?set DEBIAN_IMAGE to a pinned image}"
-: "${UBUNTU_IMAGE:?set UBUNTU_IMAGE to a pinned image}"
-: "${FEDORA_IMAGE:?set FEDORA_IMAGE to a pinned image}"
+: "${DEBIAN_FLOOR_IMAGE:?set DEBIAN_FLOOR_IMAGE to a pinned image}"
+: "${DEBIAN_CURRENT_IMAGE:?set DEBIAN_CURRENT_IMAGE to a pinned image}"
+: "${UBUNTU_FLOOR_IMAGE:?set UBUNTU_FLOOR_IMAGE to a pinned image}"
+: "${UBUNTU_CURRENT_IMAGE:?set UBUNTU_CURRENT_IMAGE to a pinned image}"
+: "${FEDORA_FLOOR_IMAGE:?set FEDORA_FLOOR_IMAGE to a pinned image}"
+: "${FEDORA_CURRENT_IMAGE:?set FEDORA_CURRENT_IMAGE to a pinned image}"
+: "${RHEL_FLOOR_IMAGE:?set RHEL_FLOOR_IMAGE to a pinned image}"
+: "${RHEL_MIDDLE_IMAGE:?set RHEL_MIDDLE_IMAGE to a pinned image}"
+: "${RHEL_CURRENT_IMAGE:?set RHEL_CURRENT_IMAGE to a pinned image}"
 : "${OPENSUSE_IMAGE:?set OPENSUSE_IMAGE to a pinned image}"
 
 old_deb=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
@@ -178,7 +184,13 @@ run_case() {
   docker image rm "$image" >/dev/null 2>&1 || true
 }
 
-run_case "Debian 12" "$DEBIAN_IMAGE" apt "$old_deb" "$new_deb"
-run_case "Ubuntu 22.04 (glibc floor)" "$UBUNTU_IMAGE" apt "$old_deb" "$new_deb"
-run_case "Fedora 43" "$FEDORA_IMAGE" dnf "$old_rpm" "$new_rpm"
+run_case "Debian 12 (oldstable floor)" "$DEBIAN_FLOOR_IMAGE" apt "$old_deb" "$new_deb"
+run_case "Debian 13 (current stable)" "$DEBIAN_CURRENT_IMAGE" apt "$old_deb" "$new_deb"
+run_case "Ubuntu 22.04 (glibc floor)" "$UBUNTU_FLOOR_IMAGE" apt "$old_deb" "$new_deb"
+run_case "Ubuntu 26.04 (current LTS)" "$UBUNTU_CURRENT_IMAGE" apt "$old_deb" "$new_deb"
+run_case "Fedora 43 (supported floor)" "$FEDORA_FLOOR_IMAGE" dnf "$old_rpm" "$new_rpm"
+run_case "Fedora 44 (current)" "$FEDORA_CURRENT_IMAGE" dnf "$old_rpm" "$new_rpm"
+run_case "Rocky Linux 8 (RHEL-compatible glibc floor)" "$RHEL_FLOOR_IMAGE" dnf "$old_rpm" "$new_rpm"
+run_case "Rocky Linux 9 (RHEL-compatible maintained release)" "$RHEL_MIDDLE_IMAGE" dnf "$old_rpm" "$new_rpm"
+run_case "Rocky Linux 10 (RHEL-compatible current)" "$RHEL_CURRENT_IMAGE" dnf "$old_rpm" "$new_rpm"
 run_case "openSUSE Leap 16.0" "$OPENSUSE_IMAGE" zypper "$old_rpm" "$new_rpm"

@@ -32,11 +32,15 @@ _CFG = "abcdef0123456789abcdef0123456789"
 
 
 @pytest.fixture(autouse=True)
-def _trust_the_test_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+def _provide_test_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         fetch_mod,
         "VALETUDO_SHA256",
         {"aarch64": hashlib.sha256(b"valetudo binary").hexdigest()},
+    )
+    monkeypatch.setattr(
+        "dreame_valetudo.phases.doctor.shutil.which",
+        lambda tool: f"/usr/bin/{tool}",
     )
 
 

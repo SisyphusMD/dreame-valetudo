@@ -41,6 +41,24 @@ Run `dreame-valetudo` and follow the prompts. Re-run the same command at any tim
 The terminal can close during a run. The work continues in a private tmux session, and running
 `dreame-valetudo` again offers to rejoin it.
 
+## Supported computers
+
+Release packages are qualified on the oldest maintained host we support and the current release.
+Older systems may work, but are not claimed until they are in this matrix.
+
+| Platform | Supported floor | Current qualification |
+|---|---|---|
+| macOS, Apple Silicon or Intel | macOS 15 | macOS 26 |
+| Debian / Raspberry Pi OS | Debian 12 / Raspberry Pi OS Bookworm | Debian 13 |
+| Ubuntu | Ubuntu 22.04 LTS | Ubuntu 26.04 LTS |
+| Fedora | Oldest maintained Fedora (currently 43) | Fedora 44 |
+| RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 8, 9, and 10 |
+| openSUSE Leap | Leap 16.0 | Leap 16.0 |
+
+The `.deb` and `.rpm` require glibc 2.28 or newer. Source installs additionally require Python 3.11
+or newer. CI installs, upgrades, exercises, and removes the actual packages on every Linux row; on
+macOS it does the same on native arm64 and Intel runners at both ends of the supported range.
+
 ## Install
 
 **Homebrew** is the simplest route on macOS or Linux. Prefer not to touch a terminal? Use the signed
@@ -108,12 +126,13 @@ git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo    # or th
 cd dreame-valetudo && uv run dreame-valetudo
 ```
 [`uv`](https://docs.astral.sh/uv/) handles the interpreter and the on-demand `pyusb`. Or install it as
-a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl** and **tmux** at
-runtime (macOS: `brew install libusb tmux`; Linux: `sudo apt install libusb-1.0-0 curl tmux`) — every
-packaged install pulls tmux in for you, but a source checkout can't, and without it a run ends when
-its terminal closes instead of surviving to be rejoined. Plus a toolchain to build
-`sunxi-fel` on the first run (`git make pkg-config libusb-1.0-0-dev libfdt-dev`, or a system
-`sunxi-tools`). On Linux, install the udev rule from `packaging/udev/`.
+a tool: `uv tool install .` (or `pipx install .`). You also need **libusb**, **curl**, and **tmux** at
+runtime (macOS: `brew install libusb tmux`; Linux: `sudo apt install libusb-1.0-0 curl tmux`). Every
+packaged install pulls tmux in for you; a source checkout cannot, and without it a run ends when its
+terminal closes instead of surviving to be rejoined. Building `sunxi-fel` on the first run also
+needs either a system `sunxi-tools` or, on Debian/Ubuntu,
+`sudo apt install git make pkg-config libusb-1.0-0-dev libfdt-dev`. On Linux, install the udev rule
+from `packaging/udev/`.
 
 ## What you need
 
@@ -130,17 +149,17 @@ The tool automates everything else, and prints this checklist on a fresh run:
   with photos: [dreame_gen3.pdf](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf) and the
   [Valetudo Dreame install page](https://valetudo.cloud/pages/installation/dreame/).
 - **A USB cable** from the board (micro-USB) to your computer.
-- **A computer**: a Mac (Apple Silicon is the reference arch; Intel untested but should work) or a
-  Linux box (any arch).
+- **A computer**: a Mac or Linux box. Apple Silicon is the hardware-bench reference; native CI
+  exercises both Apple Silicon and Intel Macs, plus amd64/arm64 Linux packages.
 - **An email address** — the image builder emails you the finished firmware build.
 - **~30-45 minutes**.
 
 ## Supported models
 
 Every model below is the **same Allwinner MR813 "gen3" silicon**, rooted the same way (**USB FEL →
-fastboot** via the Breakout PCB; no soldering, warranty seals intact). The low-level flow is
-byte-identical; a model is just a profile (its dustbuilder page, Valetudo class, and whether it boots
-the ddr3 or ddr4 loader, chosen automatically). Pick one interactively, or with `DREAME_MODEL=<key>`.
+fastboot** via the Breakout PCB; no soldering, warranty seals intact). A model is just a profile with
+its DustBuilder page, Valetudo class, and hardware loader details. Pick one interactively, or with
+`DREAME_MODEL=<key>`; the loader is chosen automatically.
 
 **Status** reflects what has been verified on real hardware, not whether it can work: **✅ Verified**
 is rooted end-to-end on real hardware; **🧪 Untested** is the same flow with model data taken verbatim
@@ -153,7 +172,7 @@ non-destructive, so an Untested model still validates the whole USB path before 
 | `x40-master` | [Dreame X40 Master](https://valetudo.cloud/pages/general/supported-robots/#x40-master) | `r2465` | 🧪 Untested |
 | `x30-ultra` | [Dreame X30 Ultra](https://valetudo.cloud/pages/general/supported-robots/#x30-ultra) | `r9316` | ✅ Verified |
 | `l40-ultra` | [Dreame L40 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l40-ultra) | `r2492` | 🧪 Untested |
-| `l20-ultra` | [Dreame L20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l20-ultra) | `r2394` | 🧪 Untested |
+| `l20-ultra` | [Dreame L20 Ultra](https://valetudo.cloud/pages/general/supported-robots/#l20-ultra) | `r2394` | ✅ Verified |
 | `l10s-ultra` | [Dreame L10s Ultra](https://valetudo.cloud/pages/general/supported-robots/#l10s-ultra) | `r2228` | 🧪 Untested |
 | `l10s-pro-ultra-heat` | [Dreame L10s Pro Ultra Heat](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338` | ✅ Verified |
 | `l10s-pro-ultra-heat-h` | [Dreame L10s Pro Ultra Heat (**R2338H** rev.)](https://valetudo.cloud/pages/general/supported-robots/#l10s-pro-ultra-heat) | `r2338h` | 🧪 Untested |
@@ -336,28 +355,21 @@ the writable `/data` area, including Wi-Fi, maps, settings, and `/data/valetudo`
 installed again afterward. Returning to stock is two separate operations: restore the firmware with
 this tool, then use the physical factory reset to clear the prior rooted installation's data.
 
-`dreame-valetudo restore` reconstructs a durable stock-restore kit from the pre-root recon capture,
-validates its gzip streams and GPT checksums, verifies both stock boot-container certificate chains
-against Dreame's hardware-root public key, and binds the captured source hashes, saved model,
-recorded identity, and connected robot together. If redundant signed containers differ, it selects
-only a hardware-authenticated chain whose signed boot/rootfs content pins match independently
-recomputed payload digests and valid self-signed format footers.
-Firmware contents alone cannot prove that some other tool never rooted the robot before the
-capture, so recon also asks whether it was still on untouched factory firmware and records the
-answer. An unknown-history capture is preserved as disaster-recovery evidence but cannot be used by
-`restore`. An older capture requires both a one-time typed confirmation of which robot it came from
-and the same explicit stock-history attestation; the tool never silently labels files as stock.
-Restore then writes private/misc, both boot/rootfs slots, and the original toc1, stopping on the
-first command that does not return `OKAY`. After reboot it watches for an automatic return to FEL,
-then requires physical confirmation that stock booted normally before recording the restore as
-complete. If the terminal closes or boot cannot be confirmed, the next `restore` resumes that
-observation without flashing again.
+`dreame-valetudo restore` first derives a durable stock-recovery kit from that robot's pre-root recon
+capture. Before writing, it validates the captured partitions and signed boot chain, then binds the
+kit to the saved model, recorded identity, and robot currently attached. It restores private/misc,
+both stock boot/rootfs slots, and toc1, stopping on the first response that is not `OKAY`.
 
-It deliberately does not rewrite toc0 because the normal DustBuilder rooting flow never changes it.
-It also does not replay all of UDISK (`/data`): the recon capture contains the complete
-boot-critical prefix, not the whole roughly 3.9 GB eMMC. Perform the robot's normal full factory
-reset after it boots stock to clear Valetudo's old files and local data. This command does not cover
-the separate experimental toc0/self-root research path.
+After reboot, the tool watches for an automatic return to FEL and asks you to confirm that stock
+actually booted. A closed terminal or unanswered confirmation resumes without flashing a second
+time. A capture whose stock history is unknown stays useful recovery evidence but is never silently
+promoted into restorable stock; older captures require an explicit one-time origin and stock-history
+attestation.
+
+Restore deliberately leaves toc0 and `/data` alone because normal DustBuilder rooting does not
+change toc0 and recon does not copy the robot's entire user-data partition. Once stock boots, use the
+physical factory reset to clear Valetudo, Wi-Fi, maps, and settings. The exact validation and A/B
+selection rules are documented in [How it works](docs/DESIGN.md#factory-backups-and-stock-restore).
 
 There is no config or secrets file; every knob is an optional environment variable:
 

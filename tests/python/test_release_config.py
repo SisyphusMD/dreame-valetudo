@@ -14,6 +14,7 @@ _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 _MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
 _MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
+_LINUX_PACKAGES = _ROOT / "packaging" / "test-linux-packages.sh"
 
 
 def _job(text: str, name: str) -> str:
@@ -81,12 +82,14 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     forgejo = _job(_CI.read_text(), "macos")
     macos = _MACOS_CI.read_text()
 
-    assert "needs: [shellcheck, python, build, integration]" in forgejo
+    assert "needs: [shellcheck, python, python-floor, build, integration]" in forgejo
     assert "packaging/wait-github-macos-ci.sh" in forgejo
     assert 'github.event.pull_request.head.repo.full_name == github.repository' in forgejo
     assert 'os.environ["GITHUB_EVENT_PATH"]' in forgejo
     assert '["pull_request"]["head"]["sha"]' in forgejo
     assert "secrets." not in forgejo
+    assert "macos-15\n" in macos
+    assert "macos-15-intel" in macos
     assert "macos-26\n" in macos
     assert "macos-26-intel" in macos
     assert "ruff check dreame_valetudo libexec tests/python" in macos
@@ -96,6 +99,14 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     assert "permissions:" not in macos
     assert "persist-credentials: false" in macos
 
+    release = _MACOS.read_text()
+    assert 'MACOSX_DEPLOYMENT_TARGET: "15.0"' in release
+    assert "runs-on: ${{ matrix.os }}" in release
+    assert "needs: [build, current]" in release
+    assert release.count("bash packaging/test-macos-package.sh") == 2
+    assert release.index("- os: macos-15") < release.index("  current:")
+    assert release.index("- os: macos-26", release.index("  current:")) > release.index("  current:")
+
 
 def test_native_macos_ci_uses_the_pinned_linux_test_toolchain() -> None:
     linux = _CI.read_text()
@@ -104,6 +115,26 @@ def test_native_macos_ci_uses_the_pinned_linux_test_toolchain() -> None:
         pin = re.search(rf'{name}="([^"]+)"', linux)
         assert pin is not None
         assert f'{name}="{pin.group(1)}"' in macos
+
+
+def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
+    project = (_ROOT / "pyproject.toml").read_text()
+    floor_job = _job(_CI.read_text(), "python-floor")
+
+    assert 'requires-python = ">=3.11"' in project
+    assert 'depName=python-3.11-floor packageName=python/cpython' in floor_job
+    assert 'python-version: "3.11.0"' in floor_job
+    assert 'pip install "pytest==$PYTEST" -e .' in floor_job
+    assert "pytest -q tests/python" in floor_job
+
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    floor_rules = [
+        rule
+        for rule in config["packageRules"]
+        if "python-3.11-floor" in rule.get("matchDepNames", [])
+    ]
+    assert len(floor_rules) == 1
+    assert floor_rules[0]["allowedVersions"] == r"/^3\.11\.0$/"
 
 
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
@@ -125,12 +156,12 @@ def test_homebrew_templates_use_the_replicated_release_tarball() -> None:
         assert "bump by hand with each CPython minor" in formula
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    python_rules = [
+    homebrew_rules = [
         rule for rule in config["packageRules"]
-        if "python/cpython" in rule.get("matchDepNames", [])
+        if "python/cpython" in rule.get("matchDepNames", []) and "prBodyNotes" in rule
     ]
-    assert len(python_rules) == 1
-    assert any("packaging/homebrew/*.rb" in note for note in python_rules[0]["prBodyNotes"])
+    assert len(homebrew_rules) == 1
+    assert any("packaging/homebrew/*.rb" in note for note in homebrew_rules[0]["prBodyNotes"])
 
 
 def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
@@ -207,7 +238,85 @@ def test_stable_release_pushes_commit_and_tag_atomically() -> None:
 def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:
     text = (_ROOT / "packaging" / "nfpm.yaml").read_text()
     deb, rpm = text.split("overrides:\n", 1)
-    deb_floor = re.search(r"libc6 \(>= ([0-9.]+)\)", deb)
-    rpm_floor = re.search(r"glibc >= ([0-9.]+)", rpm)
-    assert deb_floor is not None and rpm_floor is not None
-    assert deb_floor.group(1) == rpm_floor.group(1) == "2.35"
+    floor = (_ROOT / "packaging" / "glibc-floor.txt").read_text().strip()
+    assert floor == "2.28"
+    assert "libc6 (>= ${GLIBC_FLOOR})" in deb
+    assert "glibc >= ${GLIBC_FLOOR}" in rpm
+
+    dockerfile = (_ROOT / "packaging" / "deb.Dockerfile").read_text()
+    assert "packaging/check-glibc-floor.py" in dockerfile
+    assert '"$(cat packaging/glibc-floor.txt)"' in dockerfile
+    for workflow in (_CI, _PUBLISH):
+        contents = workflow.read_text()
+        assert "export GLIBC_FLOOR" in contents
+        assert "GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)" in contents
+        assert "-e GLIBC_FLOOR" in contents
+
+
+def test_bundled_python_updates_require_a_matching_source_checksum() -> None:
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    rules = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("matchDepNames") == ["python/cpython"]
+        and "prBodyNotes" in rule
+    ]
+
+    assert len(rules) == 1
+    assert rules[0]["matchUpdateTypes"] == ["patch", "minor", "major"]
+    assert rules[0]["automerge"] is False
+    assert "BUNDLE_PYTHON_SHA256" in rules[0]["prBodyNotes"][0]
+
+
+def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
+    workflow = _CI.read_text()
+    smoke = _LINUX_PACKAGES.read_text()
+
+    for image in (
+        'debian:12-slim@sha256:',
+        'debian:13-slim@sha256:',
+        'ubuntu:22.04@sha256:',
+        'ubuntu:26.04@sha256:',
+        'fedora:43@sha256:',
+        'fedora:44@sha256:',
+        'rockylinux/rockylinux:8@sha256:',
+        'rockylinux/rockylinux:9@sha256:',
+        'rockylinux/rockylinux:10@sha256:',
+        'opensuse/leap:16.0@sha256:',
+    ):
+        assert image in workflow
+    for label in (
+        "Debian 12 (oldstable floor)",
+        "Debian 13 (current stable)",
+        "Ubuntu 22.04 (glibc floor)",
+        "Ubuntu 26.04 (current LTS)",
+        "Fedora 43 (supported floor)",
+        "Fedora 44 (current)",
+        "Rocky Linux 8 (RHEL-compatible glibc floor)",
+        "Rocky Linux 9 (RHEL-compatible maintained release)",
+        "Rocky Linux 10 (RHEL-compatible current)",
+        "openSUSE Leap 16.0",
+    ):
+        assert label in smoke
+
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    floors = {
+        name: rule["allowedVersions"]
+        for rule in config["packageRules"]
+        for name in rule.get("matchDepNames", [])
+        if name
+        in {
+            "debian-12-compat",
+            "ubuntu-22.04-compat",
+            "fedora-43-compat",
+            "rocky-8-compat",
+            "rocky-9-compat",
+        }
+    }
+    assert floors == {
+        "debian-12-compat": "/^12-slim$/",
+        "ubuntu-22.04-compat": r"/^22\.04$/",
+        "fedora-43-compat": "/^43$/",
+        "rocky-8-compat": "/^8$/",
+        "rocky-9-compat": "/^9$/",
+    }

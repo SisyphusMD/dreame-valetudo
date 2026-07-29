@@ -22,10 +22,11 @@ are produced in two places (`.deb`/tarball on Forgejo, `.pkg` on GitHub), so the
 without making one registry authoritative. `brew install sisyphusmd/tap/dreame-valetudo-rc`
 installs the newest candidate for hardware testing without touching the stable formula.
 
-Pre-merge CI installs the Linux packages across four distro families and installs the source
-tarball into an isolated environment. Tag builds additionally execute both `.deb` architectures,
-and each native macOS leg installs, tests, and removes the exact Homebrew formula and signed `.pkg`
-before those release assets are published.
+Pre-merge CI installs the Linux packages at every supported floor and current release, and installs
+the source tarball into an isolated environment. Native macOS CI runs the full suite on macOS 15
+and 26 on both Apple Silicon and Intel. Tag builds additionally execute both `.deb` architectures;
+each `.pkg` is built and exercised on macOS 15, then installed and exercised again on macOS 26
+before either release asset is published.
 
 ## How a release flows
 
@@ -41,8 +42,9 @@ before those release assets are published.
    the notes + those assets, and **updates the Homebrew tap** — the stable formula for a plain tag,
    the separate `dreame-valetudo-rc` formula for a prerelease tag.
 3. **GitHub `release-macos.yml`** (mirrored tag, GitHub's macOS runners; the one job that needs a
-   Mac): a 2-leg matrix builds the **signed + notarized `.pkg` for arm64 AND x86_64**, then a
-   `publish` job appends **both** to the **GitHub** and **public-Forgejo** releases.
+   Mac): a 2-leg macOS 15 matrix builds and tests the **signed + notarized `.pkg` for arm64 AND
+   x86_64**. A second matrix installs those same artifacts on macOS 26, then `publish` appends both
+   to the **GitHub** and **public-Forgejo** releases.
 4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg`s on the public
    Forgejo release, then walks **every** tag, hashes each recognized copy, and repairs a missing or
    dissenting registry only when the other two have identical content. Without a two-registry
@@ -100,7 +102,7 @@ normal way; no dev branch is required (though you can dispatch from one).
 If the macOS secrets are missing, the Linux assets and tap still publish, but the overall publish
 workflow fails its qualification gate until both signed `.pkg`s are present.
 
-## Caveats to validate on the first release
+## Build and compatibility contracts
 
 - **The bundle is built per arch (PyInstaller can't cross-compile).** Each channel
   freezes Python + the package into a self-contained `dreame-valetudo` binary, plus a separate
@@ -122,16 +124,30 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   `pipx` there). The arm64 PyInstaller freeze under QEMU is the slowest step; if it's ever too slow
   or flaky, move the arm64 `.deb` to a GitHub native `ubuntu-24.04-arm` runner (mirroring the `.pkg`
   job's "GitHub builds what the cluster can't" pattern).
+- **Python 3.11.0 is the source-install floor; current CPython is bundled for package users.** The
+  full suite runs on the literal floor, while the ordinary and bundle jobs use the exact current
+  release pinned in `constants.py`. Updating bundled Python therefore does not raise the source
+  requirement.
+- **glibc 2.28 is the supported Linux package floor.** It includes maintained RHEL-compatible 8
+  hosts instead of inheriting whichever ABI the current general-purpose Python image happened to
+  use. The release freezes checksum-verified official CPython source inside pinned
+  `manylinux_2_28` builders, then opens both PyInstaller archives and rejects any embedded ELF that
+  needs a newer symbol. Some architectures may remain compatible with older glibc without that
+  becoming an untested support promise.
 - **No system `fastboot`, no python3 dep.** Every OS/install path uses the same libusb fastboot
   client (frozen into `dreame-fastboot` for the `.pkg`/`.deb`, run via `uv` for brew/source). The
   `.deb` ships a udev rule (installed via the postinstall) for sudo-less USB.
   `DREAME_FASTBOOT=system` is a documented manual override, never automatic.
-- **`macos-26` (arm64) + `macos-26-intel` (x86_64)** are the pinned runner images; bump them
-  together as GitHub's images move. Intel/x86_64 runners are on GitHub's sunset path (~2027); if
-  that leg disappears, drop it and fall back to brew/source for Intel.
+- **macOS 15 is the package floor; macOS 26 is the current qualification host.** Both run on native
+  arm64 and Intel workers. Build on the floor, then test that exact signed artifact on current so a
+  newer SDK cannot silently become the minimum. Intel/x86_64 runners are on GitHub's sunset path
+  (~2027); if that leg disappears, fall back to brew/source for Intel.
 - **The `.rpm` shares the `.deb`'s bundle + udev postinstall**, built from the same buildx binaries
   with a second `nfpm -p rpm` (config in `packaging/nfpm.yaml`; `overrides.rpm.depends`). Its runtime
   deps are SONAME/file requires (`libusb-1.0.so.0()(64bit)`, `/usr/bin/ssh`, …) rather than distro
-  package names. CI installs ordered RC builds in Fedora and openSUSE, exercises the frozen entry
-  point and helpers, upgrades, removes, and proves backups survive; Debian 12 and Ubuntu 22.04 run
-  the equivalent `.deb` test. Physical USB access and the udev rule still require a real host.
+  package names. CI installs ordered RC builds on the supported and current Fedora releases, Rocky
+  Linux 8/9/10 as the maintained RHEL-compatible hosts, and openSUSE Leap 16; it exercises the
+  frozen entry point and helpers, upgrades, removes, and proves backups survive. The equivalent
+  `.deb` test runs on
+  current Debian and Ubuntu LTS plus Debian 12 and Ubuntu 22.04 compatibility floors. Physical USB
+  access and the udev rule still require a real host.

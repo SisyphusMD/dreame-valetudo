@@ -17,7 +17,7 @@
       "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, and workflow shell blocks (pypi / github-releases / github-tags).",
       "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>pypi|github-releases|github-tags) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
+        "# renovate: datasource=(?<datasource>pypi|github-releases|github-tags) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
       ]
     },
     {
@@ -34,7 +34,7 @@
       "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block.",
       "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]
     }
   ],
@@ -43,6 +43,42 @@
       "description": "Docker Images",
       "matchDatasources": ["docker"],
       "addLabels": ["docker"]
+    },
+    {
+      "description": "The Debian 12 and Ubuntu 22.04 legs are compatibility floors, not current-release aliases; Renovate still refreshes their immutable digests.",
+      "matchDepNames": ["debian-12-compat"],
+      "allowedVersions": "/^12-slim$/"
+    },
+    {
+      "description": "The Debian 12 and Ubuntu 22.04 legs are compatibility floors, not current-release aliases; Renovate still refreshes their immutable digests.",
+      "matchDepNames": ["ubuntu-22.04-compat"],
+      "allowedVersions": "/^22\\.04$/"
+    },
+    {
+      "description": "Fedora 43 remains the oldest supported Fedora until 45 reaches GA; Renovate still refreshes its immutable digest.",
+      "matchDepNames": ["fedora-43-compat"],
+      "allowedVersions": "/^43$/"
+    },
+    {
+      "description": "macOS 15 is the cross-architecture support floor; runner-image updates may refresh current hosts but must not silently drop the floor.",
+      "matchDatasources": ["github-runners"],
+      "matchCurrentValue": "/^macos-15(?:-intel)?$/",
+      "allowedVersions": "/^macos-15(?:-intel)?$/"
+    },
+    {
+      "description": "Python 3.11.0 is the literal source floor; Renovate must not move even its patch version and turn this into a current-3.11 test.",
+      "matchDepNames": ["python-3.11-floor"],
+      "allowedVersions": "/^3\\.11\\.0$/"
+    },
+    {
+      "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
+      "matchDepNames": ["rocky-8-compat"],
+      "allowedVersions": "/^8$/"
+    },
+    {
+      "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
+      "matchDepNames": ["rocky-9-compat"],
+      "allowedVersions": "/^9$/"
     },
     {
       "description": "Major Updates",
@@ -89,17 +125,16 @@
       "prBodyNotes": ["Update `TMUX_SHA256` in `dreame_valetudo/constants.py` from the new release tarball before merging."]
     },
     {
-      "description": "CPython (the interpreter frozen into the bundle): patch bumps automerge on green; a NEW minor (e.g. 3.14 -> 3.15) is a bigger move that gets a human review.",
+      "description": "CPython is frozen into the bundle, and every version change requires the matching source checksum; a new minor also changes the Homebrew dependency.",
       "matchDepNames": ["python/cpython"],
-      "matchUpdateTypes": ["minor", "major"],
+      "matchUpdateTypes": ["patch", "minor", "major"],
       "automerge": false,
-      "prBodyNotes": ["A CPython minor bump must also update `depends_on \"python@3.x\"` in `packaging/homebrew/*.rb` by hand — no Renovate manager covers the formulae."]
+      "prBodyNotes": ["Update `BUNDLE_PYTHON_SHA256` from the matching python.org source tarball. A CPython minor bump must also update `depends_on \"python@3.x\"` in `packaging/homebrew/*.rb` by hand."]
     },
     {
-      "description": "The .deb builder image (docker `python`) freezes the same interpreter as the bundle; a MINOR bump (3.14 -> 3.15) must not slip in via automerge — it gets the same human review as the setup-python CPython pin.",
+      "description": "The manylinux builders define the shipped glibc ABI; every digest change requires the source-version and embedded-ELF audits.",
       "matchDatasources": ["docker"],
-      "matchDepNames": ["python"],
-      "matchUpdateTypes": ["minor", "major"],
+      "matchDepNames": ["quay.io/pypa/manylinux_2_28_x86_64", "quay.io/pypa/manylinux_2_28_aarch64"],
       "automerge": false
     }
   ]
