@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -324,6 +325,146 @@ def test_main_unknown_command_returns_1(tmp_path: Path) -> None:
     assert not (tmp_path / "robots").exists()
 
 
+def test_every_dispatchable_command_is_a_known_command() -> None:
+    """The pre-workspace gate and the dispatch chain are separate lists; nothing else joins them.
+
+    A command added to _dispatch but forgotten here would be answered with "Unknown command"
+    before _dispatch ever saw it — so the names are read back out of the source rather than
+    written down a second time, which would only move the drift into this file.
+    """
+    tree = ast.parse(Path(cli.__file__).read_text())
+    dispatch = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_dispatch"
+    )
+    dispatched: set[str] = set()
+    for node in ast.walk(dispatch):
+        # Only `cmd == "x"` / `cmd in ("x", "y")`: comparisons of anything else are about the
+        # command's own arguments, not its name.
+        if not isinstance(node, ast.Compare) or not (
+            isinstance(node.left, ast.Name) and node.left.id == "cmd"
+        ):
+            continue
+        for operand in node.comparators:
+            if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
+                dispatched.add(operand.value)
+            elif isinstance(operand, ast.Tuple | ast.List | ast.Set):
+                dispatched |= {
+                    element.value for element in operand.elts
+                    if isinstance(element, ast.Constant) and isinstance(element.value, str)
+                }
+
+    assert {"root", "bench", "status", "help"} <= dispatched  # the walk found real names
+    assert dispatched <= cli._KNOWN_COMMANDS
+    # A name in either table but unreachable is the same drift seen from the other side.
+    assert cli._FASTBOOT_ONLY <= cli._KNOWN_COMMANDS
+    assert cli._MODEL_INDEPENDENT_COMMANDS <= cli._KNOWN_COMMANDS
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["status", "extra"],
+        ["root", "--typo"],
+        ["root", "--force", "--force"],
+        ["recon", "--no-recovery-backup", "--unknown"],
+        ["clean", "--all", "extra"],
+        ["push", "first-key", "second-key"],
+        ["rename", "old", "new", "ignored"],
+        ["auto", "--typo"],
+    ],
+)
+def test_ignored_or_repeated_arguments_stop_before_robot_selection(
+    tmp_path: Path, args: list[str],
+) -> None:
+    # An argument the tool would drop on the floor means the user asked for something it is not
+    # about to do — so it must stop before selection persists a robot named after the mistake.
+    con = ScriptedConsole()
+    assert main(
+        args,
+        env={
+            "DREAME_WORK": str(tmp_path), "DREAME_ROBOT": "must-not-exist",
+            "DREAME_MODEL": "x40-ultra",
+        },
+        console=con, runner=RecordingRunner(),
+    ) == 1
+    assert _has(con, "Usage:")
+    assert not (tmp_path / "robots").exists()
+
+
+def test_production_unknown_command_never_creates_or_migrates_a_workspace(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    legacy = home / "dreame-valetudo-work"
+    legacy.mkdir(parents=True)
+    (legacy / "sentinel").write_text("must remain untouched")
+    con = ScriptedConsole()
+
+    assert main(
+        ["frobnicate"],
+        env={"HOME": str(home), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1"},
+        console=con, runner=SubprocessRunner(),
+    ) == 1
+    assert _has(con, "Unknown command: frobnicate")
+    assert not (home / "dreame-valetudo").exists()
+    assert (legacy / "sentinel").read_text() == "must remain untouched"
+
+
+@pytest.mark.parametrize("command", ["root", "restore"])
+def test_destructive_subcommand_help_is_workspace_free_and_never_dispatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str,
+) -> None:
+    called: list[str] = []
+    monkeypatch.setattr(cli, command, lambda *_args, **_kwargs: called.append(command))
+    home = tmp_path / "home"
+    home.mkdir()
+    con = ScriptedConsole()
+
+    assert main(
+        [command, "--help"],
+        env={"HOME": str(home), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1"},
+        console=con, runner=SubprocessRunner(),
+    ) == 0
+    assert _has(con, "Phase 2 DESTRUCTIVE")
+    assert called == []
+    assert not (home / "dreame-valetudo").exists()
+
+
+def test_production_bench_list_never_creates_or_migrates_a_workspace(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    legacy = home / "dreame-valetudo-work"
+    legacy.mkdir(parents=True)
+    (legacy / "sentinel").write_text("must remain untouched")
+    con = ScriptedConsole()
+
+    assert main(
+        ["bench", "list"],
+        env={"HOME": str(home), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1"},
+        console=con, runner=SubprocessRunner(),
+    ) == 0
+    assert _has(con, "Hardware qualification scenarios")
+    assert not (home / "dreame-valetudo").exists()
+    assert (legacy / "sentinel").read_text() == "must remain untouched"
+
+
+@pytest.mark.parametrize("args", [["version"], ["help"], ["bench", "list"], ["root", "--help"]])
+def test_pure_invocations_never_probe_native_helper_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str],
+) -> None:
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+
+    def unexpected_probe(_env: object) -> Path:
+        raise AssertionError("a pure invocation resolved libexec")
+
+    monkeypatch.setattr(cli, "resolve_libexec", unexpected_probe)
+
+    assert main(
+        args, env={"HOME": str(tmp_path), "DREAME_NO_UPDATE_CHECK": "1"},
+        console=ScriptedConsole(), runner=SubprocessRunner(),
+    ) == 0
+
+
 def test_fix_wifi_prints_without_forcing_a_robot_selection(tmp_path: Path) -> None:
     Robot(tmp_path / "robots" / "one").state_set("model_key", "x40-ultra")
     Robot(tmp_path / "robots" / "two").state_set("model_key", "x30-ultra")
@@ -374,17 +515,60 @@ def test_post_root_ssh_commands_select_the_robot(
     assert selected == ["kitchen"]
 
 
-def test_main_invalid_model_is_clean_error_not_traceback(tmp_path: Path) -> None:
+def test_model_specific_command_rejects_an_invalid_model_without_a_traceback(
+    tmp_path: Path,
+) -> None:
     con = ScriptedConsole()
     env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "no-such-model"}
-    assert main(["status"], env=env, console=con, runner=RecordingRunner()) == 1
+    assert main(["auto"], env=env, console=con, runner=RecordingRunner()) == 1
     assert _has(con, "Unknown model key")
 
 
 @pytest.mark.parametrize(
-    "command",
-    ("backup", "doctor", "fetch", "recon", "image", "restore", "root", "push", "verify-form"),
+    ("args", "expected"),
+    [
+        (["version"], f"dreame-valetudo {__version__}"),
+        (["help"], "Phase 2 DESTRUCTIVE"),
+        (["status"], "No robots yet"),
+        (["bench", "list"], "Hardware qualification scenarios"),
+    ],
 )
+def test_model_independent_commands_ignore_a_stale_model_override(
+    tmp_path: Path, args: list[str], expected: str,
+) -> None:
+    # A model saved from an earlier robot — or one this release no longer knows — says nothing
+    # about a command that only reports. It must not be able to refuse one.
+    con = ScriptedConsole()
+    assert main(
+        args, env={"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "no-such-model"},
+        console=con, runner=RecordingRunner(),
+    ) == 0
+    assert _has(con, expected)
+
+
+def test_bench_report_ignores_a_stale_model_override(tmp_path: Path) -> None:
+    con = ScriptedConsole()
+    # A campaign with everything still pending reports non-zero; the point is that it reports.
+    assert main(
+        ["bench", "report", "--campaign", "rc"],
+        env={"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "no-such-model"},
+        console=con, runner=RecordingRunner(),
+    ) == 1
+    assert _has(con, "Hardware campaign: rc")
+    assert not _has(con, "Unknown model key")
+
+
+def test_host_only_bench_run_ignores_a_stale_model_override(tmp_path: Path) -> None:
+    con = ScriptedConsole()
+    assert main(
+        ["bench", "run", "host-smoke", "--campaign", "rc"],
+        env={"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "no-such-model"},
+        console=con, runner=RecordingRunner(_host_smoke_result),
+    ) == 0
+    assert _has(con, "Bench scenario passed")
+
+
+@pytest.mark.parametrize("command", sorted(cli._FASTBOOT_ONLY))
 def test_main_refuses_every_fastboot_phase_on_uart_model(
     tmp_path: Path, command: str,
 ) -> None:
@@ -393,6 +577,18 @@ def test_main_refuses_every_fastboot_phase_on_uart_model(
     env = {"DREAME_WORK": str(tmp_path), "DREAME_MODEL": "z10-pro", "DREAME_ROBOT": "t"}
     assert main([command], env=env, console=con, runner=RecordingRunner()) == 1
     assert _has(con, "UART method")
+
+
+@pytest.mark.parametrize(
+    "command", ("valetudo", "update-valetudo", "fix-did", "fix-impl", "fix-key"),
+)
+def test_post_root_commands_stay_available_to_a_uart_model(command: str) -> None:
+    """A UART robot rooted through the guided manual walkthrough still needs these.
+
+    None of them touch fastboot or FEL — they are SSH/AP operations against an already-rooted
+    robot — so the fastboot guard must not claim them. This pins the false-rejection direction:
+    widening _FASTBOOT_ONLY to cover them would silently strand every UART-model owner."""
+    assert command not in cli._FASTBOOT_ONLY
 
 
 def test_verify_all_forms_runs_without_selecting_or_creating_a_robot(
