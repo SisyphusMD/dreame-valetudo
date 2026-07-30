@@ -14,7 +14,7 @@ from conftest import FB, CtxFactory
 from dreame_valetudo import console
 from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
-from dreame_valetudo.constants import ADOPTED_ROOT, STAGE1_SHA256
+from dreame_valetudo.constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES, STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
@@ -27,7 +27,7 @@ from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
-from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, Robot
+from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, RECOVERY_STAGING_DIR, Robot
 from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 _CFG = "abcdef0123456789abcdef0123456789"
@@ -123,6 +123,10 @@ def test_model_code_inside_longer_token_is_unrecognised(make_ctx: CtxFactory) ->
     _verify_reported_model(ctx, {"model": "xr2338h"})
     assert "does not report a recognisable model" in ctx.console.text()
     assert "Bootloader model verified" not in ctx.console.text()
+
+
+def _staging(ctx: Context) -> Path:
+    return ctx.need_robot().recon_dir / RECOVERY_STAGING_DIR
 
 
 def _dist_ready(ctx: Context) -> None:
@@ -797,11 +801,13 @@ def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> No
         ("getvar", "variant"),
         ("getvar", "hw-revision"),
         ("getvar", "version-bootloader"),
-        ("get_staged", str(ctx.need_robot().recon_dir / "dustx100.bin")),
+        # Slices land in staging and only supersede a previous capture once all three plus the
+        # zip validate, so an interrupted re-pull cannot destroy the existing un-brick copy.
+        ("get_staged", str(_staging(ctx) / "dustx100.bin")),
         ("oem", "stage1"),
-        ("get_staged", str(ctx.need_robot().recon_dir / "dustx101.bin")),
+        ("get_staged", str(_staging(ctx) / "dustx101.bin")),
         ("oem", "stage2"),
-        ("get_staged", str(ctx.need_robot().recon_dir / "dustx102.bin")),
+        ("get_staged", str(_staging(ctx) / "dustx102.bin")),
     ]
 
 
@@ -966,3 +972,36 @@ def test_an_adopted_robot_keeps_its_own_name(make_ctx: CtxFactory) -> None:
     assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
     assert ctx.pending_name is None
     assert ctx.robot_label() == "Kitchen Vacuum"
+
+
+def test_a_failed_repull_leaves_the_previous_recovery_capture_intact(
+    make_ctx: CtxFactory,
+) -> None:
+    """The capture on disk is the only un-brick copy; an interrupted re-pull must not consume it."""
+    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=True)
+    robot = ctx.need_robot()
+    good = {
+        name: (robot.recon_dir / f"{name}.bin").read_bytes() for name in RECOVERY_DUMP_NAMES
+    }
+    good_zip = (robot.recon_dir / RECOVERY_BACKUP_ZIP).read_bytes()
+
+    def failing(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(str(a) for a in argv)
+        if "get_staged" in joined:
+            # A truncated slice: the transfer started and then the link dropped.
+            Path(str(argv[-1])).write_bytes(b"\xff" * 16)
+            return Result(argv, 0, "OKAY uploaded 16 bytes", "")
+        if "getvar config" in joined:
+            return Result(argv, 0, f"OKAY {_CFG}", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx.runner._responder = failing  # type: ignore[attr-defined]
+    assert recon_module._pull_recovery_backup(ctx, robot) is False
+
+    for name, blob in good.items():
+        current = robot.recon_dir / f"{name}.bin"
+        assert current.read_bytes() == blob, f"{name}.bin was destroyed by the failed re-pull"
+    assert (robot.recon_dir / RECOVERY_BACKUP_ZIP).read_bytes() == good_zip
+    assert not (robot.recon_dir / RECOVERY_STAGING_DIR).exists()

@@ -8,6 +8,8 @@ disaster-recovery backup.
 from __future__ import annotations
 
 import re
+import shutil
+from pathlib import Path
 
 from ..console import Die, die, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
@@ -21,6 +23,7 @@ from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import (
     RECOVERY_BACKUP_ZIP,
+    RECOVERY_STAGING_DIR,
     Robot,
     Workspace,
     protect_recon_artifacts,
@@ -406,8 +409,35 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
 
 
 def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
+    """Capture into staging and publish only once complete, so a failed re-pull keeps the old copy.
+
+    Any capture already on disk is this robot's only un-brick source, and a second pull writes the
+    same filenames. Writing in place meant an interrupted re-pull (nudged USB cable, sleeping host,
+    full disk) destroyed a good capture and left nothing restorable. Staging costs one extra
+    same-filesystem rename per artifact and removes that whole class of accident."""
     rd = robot.recon_dir
-    dumps = [rd / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
+    staging = rd / RECOVERY_STAGING_DIR
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.mkdir(parents=True)
+    except OSError as exc:
+        ctx.console.warn(f"Could not stage the recovery capture, so nothing was touched ({exc}).")
+        return False
+    try:
+        if not _capture_recovery_into(ctx, staging):
+            return False
+        _publish_recovery_capture(staging, rd)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (upload to check.builder.dontvacuum.me "
+                     "if the builder rejects your config)")
+    ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
+                     "partition and miio device key. Share it only intentionally.")
+    return True
+
+
+def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
+    dumps = [staging / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
     try:
         total_dumps = len(dumps)
         for index, dump in enumerate(dumps, 1):
@@ -428,17 +458,20 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
                       for dump in dumps)
     total = sum(dump.stat().st_size for dump in dumps) / (1 << 20)
     ctx.console.info(f"Recovery backup pulled: {sizes} (total {total:.1f} MiB)")
-    zip_path = rd / RECOVERY_BACKUP_ZIP
+    zip_path = staging / RECOVERY_BACKUP_ZIP
     with ctx.console.progress("Zipping the recovery backup"):
         zipped = ctx.runner.run(
             ["zip", "-q", "-j", str(zip_path), *(str(dump) for dump in dumps)], check=False
         ).ok
-    if not zipped:
-        return False
-    if not recovery_zip_valid(zip_path):
-        return False
-    ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
-                     "rejects your config)")
-    ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
-                     "partition and miio device key. Share it only intentionally.")
-    return True
+    return bool(zipped) and recovery_zip_valid(zip_path)
+
+
+def _publish_recovery_capture(staging: Path, recon_dir: Path) -> None:
+    """Move a fully validated capture over the previous one, largest artifacts first.
+
+    Same-filesystem renames, so each artifact is replaced whole or not at all. A crash partway
+    leaves the refresh marker set, which already flags the capture as untrusted."""
+    for name in (*(f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES), RECOVERY_BACKUP_ZIP):
+        source = staging / name
+        if source.is_file():
+            source.replace(recon_dir / name)

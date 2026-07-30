@@ -35,6 +35,10 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 # `dreame_samples.zip` forward to this (see migrate.py), so readers only ever need this name.
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
 
+# A replacement capture lands here first and is proven complete before it supersedes the
+# previous one; recon removes it on both success and failure.
+RECOVERY_STAGING_DIR = ".recovery-staging"
+
 
 def rename_no_replace(src: Path, dst: Path) -> None:
     """Atomically publish ``src`` only while every kind of ``dst`` entry is still absent.
