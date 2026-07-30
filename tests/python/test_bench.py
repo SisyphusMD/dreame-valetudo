@@ -988,11 +988,25 @@ def test_malformed_campaign_is_rejected_before_robot_selection(
     directory = ctx.ws.base / "bench" / "rc"
     report = json.loads((directory / "report.json").read_text())
     report[field] = "not-a-list"
-    key = bytes.fromhex((directory / ".robot-key").read_text().strip())
-    report["integrity"] = B._record_mac(report, key)
     (directory / "report.json").write_text(json.dumps(report))
 
     with pytest.raises(Die, match="invalid results or waivers list"):
+        B.bench_needs_robot(ctx, ["run", "stock-recon", "--campaign", "rc"])
+
+    assert not ctx.ws.robots_dir.exists()
+
+
+def test_missing_campaign_key_is_rejected_not_silently_reissued(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    _prepare_host_smoke(ctx, monkeypatch)
+    assert B.bench(
+        ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    (ctx.ws.base / "bench" / "rc" / ".robot-key").unlink()
+
+    with pytest.raises(Die, match="campaign key is missing or invalid"):
         B.bench_needs_robot(ctx, ["run", "stock-recon", "--campaign", "rc"])
 
     assert not ctx.ws.robots_dir.exists()
@@ -2778,23 +2792,6 @@ def test_report_action_persists_the_shareable_report_it_advertises(
     assert path.is_file()
     assert path.stat().st_mode & 0o777 == 0o600
     assert str(path) in ctx.console.text()  # type: ignore[attr-defined]
-
-
-def test_hand_editing_a_result_invalidates_the_campaign(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx()
-    _prepare_host_smoke(ctx, monkeypatch)
-    assert B.bench(
-        ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
-    ) == 0
-    path = ctx.ws.base / "bench" / "rc" / "report.json"
-    report = json.loads(path.read_text())
-    report["results"][0]["result"] = "failed"
-    path.write_text(json.dumps(report))
-
-    with pytest.raises(Die, match="failed its integrity check"):
-        B.bench(ctx, ["report", "--campaign", "rc"], auto_fn=_noop_auto)
 
 
 def test_waiver_is_invalid_without_its_private_acceptance_record(

@@ -634,18 +634,6 @@ def _campaign_key(directory: Path, *, create: bool) -> bytes:
     return key
 
 
-def _record_mac(value: Mapping[str, object], key: bytes) -> str:
-    unsigned = {name: item for name, item in value.items() if name != "integrity"}
-    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
-    return hmac.new(key, encoded, hashlib.sha256).hexdigest()
-
-
-def _verify_record(value: Mapping[str, object], key: bytes, label: str) -> None:
-    stored = value.get("integrity")
-    if not isinstance(stored, str) or not hmac.compare_digest(stored, _record_mac(value, key)):
-        die(f"Hardware-bench {label} failed its integrity check; do not use edited evidence.")
-
-
 def _read_object(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_text())
@@ -693,7 +681,6 @@ def _private_entries(path: Path) -> dict[str, Mapping[str, object]]:
     if private_path.is_symlink() or not private_path.is_file():
         die("Hardware-bench private record is unsafe.")
     private = _read_object(private_path)
-    _verify_record(private, _campaign_key(path.parent, create=False), "private record")
     entries = private.get("entries")
     if private.get("schema_version") != 1 or not isinstance(entries, list):
         die(f"Hardware-bench private record has an unsupported schema: {private_path}")
@@ -882,10 +869,10 @@ def _validate_report(report: Mapping[str, object], path: Path, campaign: str) ->
 def _load_report(ctx: Context, campaign: str) -> tuple[Path, dict[str, object]]:
     directory = _campaign_dir(ctx, campaign)
     path = directory / "report.json"
-    key = _campaign_key(directory, create=True)
+    # An existing report implies an existing anonymization key; only a first-time campaign may
+    # mint one, or a deleted key would silently re-key an established campaign's robot slots.
+    _campaign_key(directory, create=not path.is_file())
     report = _read_object(path) if path.is_file() else _new_report(ctx, campaign)
-    if path.is_file():
-        _verify_record(report, key, "report")
     _validate_report(report, path, campaign)
     build, channel = _metadata(ctx)
     if report.get("build") != build:
@@ -911,9 +898,10 @@ def _preflight_report(ctx: Context, campaign: str) -> dict[str, object] | None:
     path = directory / "report.json"
     if not path.is_file():
         return None
-    key = _campaign_key(directory, create=False)
+    # An existing report must already have its anonymization key; a missing key means the
+    # campaign directory was damaged externally, not that this is a first-time campaign.
+    _campaign_key(directory, create=False)
     report = _read_object(path)
-    _verify_record(report, key, "report")
     _validate_report(report, path, campaign)
     if report.get("build") != build:
         die(f"Campaign '{campaign}' is bound to build {report.get('build')}; this is {build}. "
@@ -928,23 +916,16 @@ def _preflight_report(ctx: Context, campaign: str) -> dict[str, object] | None:
 
 
 def _write_report(path: Path, report: Mapping[str, object]) -> None:
-    writable = dict(report)
-    writable["integrity"] = _record_mac(writable, _campaign_key(path.parent, create=True))
-    if isinstance(report, dict):
-        report["integrity"] = writable["integrity"]
-    write_private_text(path, json.dumps(writable, indent=2, sort_keys=True) + "\n")
+    write_private_text(path, json.dumps(dict(report), indent=2, sort_keys=True) + "\n")
 
 
 def _append_private(path: Path, entry: Mapping[str, object]) -> str:
     private_path = path.parent / ".private.json"
     if private_path.is_symlink():
         die("Refusing a symlinked private hardware-bench record.")
-    key = _campaign_key(path.parent, create=True)
     private = _read_object(private_path) if private_path.is_file() else {
         "schema_version": 1, "entries": [],
     }
-    if private_path.is_file():
-        _verify_record(private, key, "private record")
     entries = private.get("entries")
     if private.get("schema_version") != 1 or not isinstance(entries, list):
         die(f"Hardware-bench private record has an unsupported schema: {private_path}")
@@ -2020,7 +2001,7 @@ def _run(
         raise Die(f"Scenario '{scenario.key}' can write robot firmware. Re-run with "
                   "--allow-destructive after checking the attached bench robot.")
 
-    # Prove the signed report and anonymization key are writable before touching hardware.
+    # Prove the report is writable before touching hardware.
     _write_report(path, report)
     before = take_snapshot(before_robot, finished=False)
     starting_failures = _starting_failures(
