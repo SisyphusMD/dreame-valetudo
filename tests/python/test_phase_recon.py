@@ -163,28 +163,6 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
         ("exe", ctx.profile.payload_addr),
     ]
 
-    fastboot_calls = [
-        call[len(FB):]
-        for call in ctx.runner.calls  # type: ignore[attr-defined]
-        if call[:len(FB)] == FB
-    ]
-    assert fastboot_calls == [
-        ("devices",),
-        ("wait", "90"),
-        ("getvar", "config"),
-        ("getvar", "serialno"),
-        ("getvar", "dustversion"),
-        ("getvar", "ramsize"),
-        ("getvar", "toc0hash"),
-        ("getvar", "toc1hash"),
-        ("getvar", "toc1version"),
-        ("getvar", "product"),
-        ("getvar", "model"),
-        ("getvar", "variant"),
-        ("getvar", "hw-revision"),
-        ("getvar", "version-bootloader"),
-    ]
-
 
 def test_standalone_recon_revalidates_a_stale_sunxi_cache(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,

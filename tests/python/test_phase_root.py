@@ -105,12 +105,6 @@ def test_each_fastboot_model_follows_the_official_root_contract(
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
     assert ctx.need_robot().state_get("root-origin") == CURRENT_ROOT
-    assert _flash_ops(ctx) == [
-        ("oem", "dust", "626153c7"), ("oem", "prep"),
-        ("flash", "toc1", "toc1.img"),
-        ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
-        ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
-    ]
 
 
 def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> None:

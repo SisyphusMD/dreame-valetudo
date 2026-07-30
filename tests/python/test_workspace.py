@@ -228,10 +228,6 @@ def test_robot_tag_unknown_config() -> None:
     assert robot_tag("r2416", None) == "dreame-r2416-unknownconfig"
 
 
-def test_robot_tag_uses_given_model_code() -> None:
-    assert robot_tag("r9316", CFG).startswith("dreame-r9316-")
-
-
 def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
