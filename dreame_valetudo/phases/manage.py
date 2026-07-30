@@ -17,6 +17,13 @@ from .misc import _summary
 
 
 def _robot_dirs(ctx: Context) -> list[Path]:
+    """Real robot directories only — a symlinked entry is skipped rather than followed.
+
+    Kept deliberately, unlike the symlink guards removed elsewhere. This feeds recursive deletion,
+    and captures run to gigabytes, so relocating a robot dir onto external storage with a symlink is
+    a reasonable thing for an owner to do. Following one during `clean --all` would delete their
+    data outside the workspace, which is unrecoverable — the asymmetry, not any attacker, is what
+    justifies the check on delete paths."""
     robots = ctx.ws.robots_dir
     if not robots.is_dir() or robots.is_symlink():
         return []

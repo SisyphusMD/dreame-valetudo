@@ -300,12 +300,9 @@ def test_fix_key_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
     assert state["configured"] == state["factory"]
 
 
-def test_fix_key_secret_tempfile_is_private_and_ignores_the_old_fixed_symlink(
-    make_ctx: CtxFactory, tmp_path: Path,
+def test_fix_key_streams_the_secret_from_an_owner_only_tempfile(
+    make_ctx: CtxFactory,
 ) -> None:
-    victim = tmp_path / "victim"
-    victim.write_text("do not overwrite")
-
     def responder(argv: tuple[str, ...]) -> Result:
         return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(
             argv, 0, "", ""
@@ -313,7 +310,6 @@ def test_fix_key_secret_tempfile_is_private_and_ignores_the_old_fixed_symlink(
 
     ctx = make_ctx(responder=responder, confirms=[True])
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.base / ".mikey").symlink_to(victim)
     seen: list[tuple[str, int]] = []
 
     def redirect(
@@ -327,8 +323,6 @@ def test_fix_key_secret_tempfile_is_private_and_ignores_the_old_fixed_symlink(
     ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
     assert fix_key(ctx) is True
     assert seen == [("A1b2C3d4E5f6G7h8", 0o600)]
-    assert victim.read_text() == "do not overwrite"
-    assert (ctx.ws.base / ".mikey").is_symlink()
     assert not list(ctx.ws.base.glob(".mikey.*"))
 
 
