@@ -35,6 +35,9 @@
   their output remains visible after a tmux session closes.
 - The UART walkthrough now includes the known-good USB image, complete identity backup, exact
   DustBuilder options, verified transfer, docking, and post-install success checks.
+- Recon now records the model it inspected, and rooting refuses to flash unless that record matches
+  the selected model — before the robot is touched at all. A robot whose recon completed under
+  0.2.x carries no such record: run `recon --force` on it before rooting.
 
 ### Fixed
 

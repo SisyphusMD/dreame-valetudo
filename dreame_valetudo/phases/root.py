@@ -177,6 +177,28 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not robot.state_has("recon"):
         die("SAFETY STOP: this robot has no completed reconnaissance record. A failed or "
             "interrupted recon cannot authorize a flash; re-run recon successfully first.")
+
+    # Both authorization checks run before the first runner call, so a robot the completed recon
+    # never covered is refused while it is still merely plugged in. `model_key` is written early in
+    # recon and survives an aborted run, so it cannot stand in for the marker: only the completion
+    # marker proves which model the FINISHED recon inspected. The robot's own identity is checked
+    # against recon/config.txt, which is where it lives — the marker deliberately does not carry a
+    # second copy of that secret.
+    recon_state = robot.state_get("recon") or ""
+    recon_models = [field.removeprefix("model=") for field in recon_state.split()
+                    if field.startswith("model=")]
+    if len(recon_models) != 1 or recon_models[0] != ctx.profile.key:
+        die("SAFETY STOP: the completed recon is not bound to the currently selected model. A "
+            "legacy, missing, duplicate, or mismatched model authorization cannot permit a "
+            "hardware write; run 'dreame-valetudo recon --force' for this model first.")
+    expect_cfg = robot.config(
+        robot_env=ctx.env.get("DREAME_ROBOT"), config_env=ctx.env.get("DREAME_CONFIG")
+    )
+    if not expect_cfg:
+        die(f"SAFETY STOP: no recorded config value to verify the connected robot against "
+            f"(missing/unreadable {robot.recon_dir / 'config.txt'}). Refusing to flash blind — "
+            "re-run recon for this robot first.")
+
     # A non-forced completed run must return before self-provisioning; clean --all deliberately
     # removes staged firmware, and rebuilding it for a robot that will not be flashed is pure risk.
     # A real first flash (or explicit --force reflash) still self-provisions its prerequisites.
@@ -205,18 +227,10 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not dust:
         die("check.txt is empty.")
 
-    # Neither identity check here needs the device, so both run before the user accepts brick risk
-    # or performs the FEL button sequence. FAIL CLOSED: no recorded identity => refuse.
-    expect_cfg = robot.config(
-        robot_env=ctx.env.get("DREAME_ROBOT"), config_env=ctx.env.get("DREAME_CONFIG")
-    )
-    if not expect_cfg:
-        die(f"SAFETY STOP: no recorded config value to verify the connected robot against "
-            f"(missing/unreadable {robot.recon_dir / 'config.txt'}). Refusing to flash blind — "
-            "re-run recon for this robot first.")
+    # This identity check does not need the device either, so it runs before the user accepts brick
+    # risk or performs the FEL button sequence.
     _check_image_built_for(dust, expect_cfg)
 
-    recon_state = robot.state_get("recon") or ""
     backup_state = next(
         (field.removeprefix("backup=") for field in recon_state.split()
          if field.startswith("backup=")),
@@ -268,6 +282,11 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not ctx.fastboot.getvar_succeeded(res) or not live_cfg:
         ctx.fastboot.report_failure(res)
         die("Couldn't read the connected robot's config value — aborting before any write.")
+    # Full 32-hex equality, deliberately. Narrowing this to the leading 8 characters was considered
+    # and rejected: the claim that the suffix bytes vary between FEL sessions has no supporting
+    # evidence, and it would cut the wrong-robot gate on the destructive path from 128 bits to 32.
+    # Restore the narrower form only if a bench run actually shows the suffix changing across
+    # sessions on one robot.
     if live_cfg != expect_cfg:
         die(f"SAFETY STOP: connected robot config={live_cfg} but this image was built for "
             f"{expect_cfg}. Wrong robot or wrong image — refusing to flash. (Different robot? Use "

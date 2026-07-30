@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from conftest import FB, CtxFactory
 
+from dreame_valetudo import migrate as migrate_module
 from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import (
@@ -69,7 +70,7 @@ def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
     with zipfile.ZipFile(rd / RECOVERY_BACKUP_ZIP, "w") as archive:
         for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
             archive.writestr(name, b"backup")
-    ctx.need_robot().state_set("recon", f"config={cfg} backup=obtained")
+    ctx.need_robot().state_set("recon", f"model={ctx.profile.key} backup=obtained")
 
 
 def _ok_responder(live_cfg: str = _CFG) -> object:
@@ -227,14 +228,15 @@ def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
     _stage_image(ctx)
     _write_recon(ctx)
     (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).unlink()
-    ctx.need_robot().state_set("recon", f"config={_CFG} backup=missing")
+    ctx.need_robot().state_set("recon", "model=x40-ultra backup=missing")
     with pytest.raises(Die, match="Aborted"):
         root(ctx)
     assert "requested disaster-recovery backup was NOT obtained" in ctx.console.text()
     assert _flash_ops(ctx) == []
 
 
-@pytest.mark.parametrize("marker", [f"config={_CFG}", f"config={_CFG} backup=future-value"])
+@pytest.mark.parametrize("marker", ["model=x40-ultra",
+                                    "model=x40-ultra backup=future-value"])
 def test_root_treats_old_or_unrecognised_backup_markers_as_unknown(
     make_ctx: CtxFactory, marker: str,
 ) -> None:
@@ -314,7 +316,7 @@ def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
-    ctx.need_robot().state_set("recon", f"config={_CFG} backup=not-requested")
+    ctx.need_robot().state_set("recon", "model=x40-ultra backup=not-requested")
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
 
@@ -376,6 +378,81 @@ def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFa
 
     assert ctx.runner.calls == []
     assert not robot.state_has("rooted")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "backup=obtained",                                  # 0.2.x: never bound to a model
+        "model=d10s-pro backup=obtained",                   # bound to a DIFFERENT model
+        "model=x40-ultra model=x40-ultra backup=obtained",  # ambiguous
+        "model=x40-ultra model=d10s-pro backup=obtained",   # conflicting
+    ],
+)
+def test_root_refuses_an_unbound_or_ambiguous_recon_model(
+    make_ctx: CtxFactory, marker: str,
+) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    ctx.need_robot().state_set("recon", marker)
+
+    with pytest.raises(Die, match="not bound to the currently selected model"):
+        root(ctx)
+
+    # The whole point of this gate: the refusal lands before the robot is touched at all.
+    assert ctx.runner.calls == []
+    assert not ctx.need_robot().state_has("rooted")
+
+
+def test_root_flashes_a_correctly_bound_robot(make_ctx: CtxFactory) -> None:
+    """The false-negative direction: a marker that DOES match must reach the flash.
+
+    Every rejection above is worthless if the accept path silently stopped working, and a gate that
+    refuses legitimate hardware is only ever discovered on someone's robot.
+    """
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    assert robot.state_get("recon") == "model=x40-ultra backup=obtained"
+
+    root(ctx)
+
+    assert robot.state_has("rooted")
+    assert _flash_ops(ctx) == [
+        ("oem", "dust", "626153c7"), ("oem", "prep"),
+        ("flash", "toc1", "toc1.img"),
+        ("flash", "boot1", "boot.img"), ("flash", "rootfs1", "rootfs.img"),
+        ("flash", "boot2", "boot.img"), ("flash", "rootfs2", "rootfs.img"),
+    ]
+
+
+def test_root_still_flashes_after_a_launch_migration(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """recon and root are usually SEPARATE invocations, and every launch migrates first.
+
+    A workspace heal that drops a field the flash gate reads turns a legitimate robot into a
+    permanent SAFETY STOP that no --force clears. Unit tests never caught that, because none of
+    them ran migrate() between the two phases.
+    """
+    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    before = robot.state_get("recon")
+
+    # Point the migration at this workspace the way a real launch does, then run it.
+    monkeypatch.setattr(migrate_module, "base_dir", lambda _env: ctx.ws.base)
+    monkeypatch.setattr(migrate_module, "robot_dirs", lambda _env: [robot.work])
+    migrate_module._heal_robot_state_privacy({"HOME": str(ctx.home)})
+
+    assert robot.state_get("recon") == before, "a launch migration changed the flash authorization"
+
+    root(ctx)
+
+    assert robot.state_has("rooted")
 
 
 def test_completion_marker_failure_reboots_but_blocks_an_automatic_reflash(

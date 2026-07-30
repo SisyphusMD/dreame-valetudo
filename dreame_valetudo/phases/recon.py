@@ -397,7 +397,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         # This marker must precede even recon completion. If storage fails on any later marker,
         # auto/root still recognize the accepted adoption and cannot fall into a flash.
         robot.state_set("root-origin", ADOPTED_ROOT)
-    robot.state_set("recon", f"backup={backup_state}")
+    # The model is what a later flash is authorized against; the robot's config identity stays in
+    # recon/config.txt only, so this marker never duplicates that secret into robot state.
+    robot.state_set("recon", f"model={ctx.profile.key} backup={backup_state}")
     if adopt_existing_root:
         robot.state_set("rooted", ADOPTED_ROOT)
         robot.state_set("valetudo", ADOPTED_ROOT)

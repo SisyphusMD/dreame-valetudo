@@ -38,6 +38,11 @@ from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 _CFG = "abcdef0123456789abcdef0123456789"
 
 
+def _marker(backup: str, model: str = "x40-ultra") -> str:
+    """The completed-recon marker, whose model field is what authorizes a later flash."""
+    return f"model={model} backup={backup}"
+
+
 @pytest.fixture(autouse=True)
 def _small_recovery_fixtures(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workspace_module, "RECOVERY_DUMP_BYTES", 1024)
@@ -428,6 +433,25 @@ def test_standalone_recon_checks_the_fastboot_host_before_fel(make_ctx: CtxFacto
     assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
 
 
+def test_recon_binds_its_completion_marker_to_the_model_and_the_robot(
+    make_ctx: CtxFactory,
+) -> None:
+    """The completion marker is what later authorizes the destructive flash, so it has to name the
+    model and the robot recon actually read — root refuses to flash on anything weaker."""
+    ctx = make_ctx(model="d10s-pro", responder=_responder())
+    _dist_ready(ctx)
+    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")  # d10s-pro is a ddr3 profile
+
+    recon(ctx, recovery_backup=False)
+
+    robot = ctx.need_robot()
+    assert robot.state_get("recon") == _marker("not-requested", model="d10s-pro")
+    # Phase 1 stays read-only: no partition write, flash-authorization token, or staged pull.
+    fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
+                if call[:len(FB)] == FB]
+    assert all(call[0] in {"devices", "wait", "getvar"} for call in fastboot), fastboot
+
+
 def test_recon_is_idempotent(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_responder())
     ctx.need_robot().state_set("recon", f"config={_CFG}")
@@ -574,7 +598,7 @@ def test_recon_saves_the_backup_when_samples_come_back_populated(make_ctx: CtxFa
     assert any("Backup:" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("Recovery backup pulled" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert robot.state_get("recon") == "backup=obtained"
+    assert robot.state_get("recon") == _marker("obtained")
     provenance = json.loads((robot.recon_dir / PROVENANCE_FILE).read_text())
     assert provenance["binding"] == "captured-same-session"
     assert provenance["firmware_state"] == "stock-user-attested"
@@ -776,7 +800,7 @@ def test_failed_provenance_publication_keeps_refresh_generation_untrusted(
 
     assert (recon_dir / RECOVERY_REFRESH_FILE).is_file()
     assert json.loads((recon_dir / PROVENANCE_FILE).read_text()) == {"old": "provenance"}
-    assert ctx.need_robot().state_get("recon") == "backup=missing"
+    assert ctx.need_robot().state_get("recon") == _marker("missing")
     assert "incomplete-generation marker" in ctx.console.text()
 
 
@@ -825,7 +849,7 @@ def test_recon_refuses_a_hollow_backup_when_a_staged_blob_is_empty(make_ctx: Ctx
     assert robot is not None
     assert not (robot.recon_dir / "dreame_recovery_backup.zip").exists()
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
-    assert robot.state_get("recon") == "backup=missing"
+    assert robot.state_get("recon") == _marker("missing")
     assert stat.S_IMODE(robot.recon_dir.stat().st_mode) == 0o700
     assert all(
         stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -840,7 +864,7 @@ def test_recon_refuses_nonempty_but_truncated_recovery_slices(
     ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"x" * 513))
     _dist_ready(ctx)
     recon(ctx, recovery_backup=True)
-    assert ctx.need_robot().state_get("recon") == "backup=missing"
+    assert ctx.need_robot().state_get("recon") == _marker("missing")
     assert not (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).exists()
 
 
@@ -860,7 +884,7 @@ def test_recon_refuses_a_zip_that_does_not_contain_all_three_exact_samples(
     _dist_ready(ctx)
     recon(ctx, recovery_backup=True)
 
-    assert ctx.need_robot().state_get("recon") == "backup=missing"
+    assert ctx.need_robot().state_get("recon") == _marker("missing")
     assert any("no recovery backup" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
@@ -868,7 +892,7 @@ def test_recon_records_a_deliberately_skipped_backup(make_ctx: CtxFactory) -> No
     ctx = make_ctx(model="x40-ultra", responder=_responder())
     _dist_ready(ctx)
     recon(ctx, recovery_backup=False)
-    assert ctx.need_robot().state_get("recon") == "backup=not-requested"
+    assert ctx.need_robot().state_get("recon") == _marker("not-requested")
 
 
 def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
@@ -894,7 +918,7 @@ def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
     assert all((robot.recon_dir / name).read_bytes() == b"factory flash"
                for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"))
     assert recovery_zip.read_bytes() == b"factory recovery archive"
-    assert robot.state_get("recon") == "backup=obtained"
+    assert robot.state_get("recon") == _marker("obtained")
     fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
                 if call[:len(FB)] == FB]
     assert not any(call[0] == "get_staged" or call[:2] == ("oem", "stage1")
