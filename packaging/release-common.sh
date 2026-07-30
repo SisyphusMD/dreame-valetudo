@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Shared helpers for forgejo-release.sh + github-release.sh. Only the logic that is byte-identical
-# between the two forges lives here: tag waiting, release lookup, and preserving/replacing an asset.
+# between the two forges lives here: tag validation/waiting, release lookup, release-state repair,
+# and immutable asset verification.
 # Each caller keeps its own setup, release CREATE, and asset
 # UPLOAD, because those genuinely differ (auth shape, endpoints, multipart vs data-binary upload).
 # Sourced, not executed. Callers must have set an `auth` array (the curl -H args) before calling.
-# $auth comes from the caller; rel_had_old is returned to it.
-# shellcheck disable=SC2154,SC2034
+# $auth comes from the caller.
+# shellcheck disable=SC2154
+
+# rel_validate_tag <tag> — accept only the two tag shapes the release workflows can cut. Checked
+# before any network call so a typo or a stray local tag can never address a release API.
+rel_validate_tag() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
+    || { echo "invalid release tag: $1" >&2; return 1; }
+}
 
 # rel_wait_for_tag <check-url> — poll until the tag exists (push-mirrors can lag before a release
 # can be created against the tag). Uses the caller's $auth.
@@ -24,29 +32,73 @@ rel_release_id() {
   curl -sf "${auth[@]}" "$1/tags/$2" 2>/dev/null | jq -r '.id // empty' || true
 }
 
-# rel_delete_asset <list-api> <delete-base> <name> — delete a same-named asset. No-op if absent.
-rel_delete_asset() {
-  local listing old
-  listing=$(curl -fsS "${auth[@]}" "$1") || return 1
-  old=$(jq -r --arg name "$3" '.[] | select(.name==$name) | .id' <<<"$listing")
-  [ -z "$old" ] || curl -fsS "${auth[@]}" -X DELETE "$2/$old" >/dev/null
+# rel_ensure_release_state <release-url> <expected-prerelease>
+#
+# The release may have been created by the other publisher or by a run that died mid-create, so its
+# visibility and stable/prerelease classification are not implied by this run's create payload.
+# Repair it, then read it back independently — a forge that accepts the PATCH but does not persist it
+# must not be mistaken for a repaired release.
+rel_ensure_release_state() {
+  local url="$1" expected="$2" state payload
+  state=$(curl -fsS "${auth[@]}" "$url") || return 1
+  if jq -e --argjson expected "$expected" \
+      '(.draft == false) and (.prerelease == $expected)' <<<"$state" >/dev/null; then
+    return 0
+  fi
+  payload=$(jq -n --argjson expected "$expected" '{draft:false, prerelease:$expected}')
+  curl -fsS "${auth[@]}" -X PATCH -H "Content-Type: application/json" \
+    -d "$payload" "$url" >/dev/null || return 1
+  state=$(curl -fsS "${auth[@]}" "$url") || return 1
+  jq -e --argjson expected "$expected" \
+    '(.draft == false) and (.prerelease == $expected)' <<<"$state" >/dev/null
 }
 
-# rel_preserve_and_delete_asset <list-api> <delete-base> <name> <backup-file>
+# rel_asset_state <list-api> <name> <local-file>
 #
-# A release API cannot overwrite an asset in place. Preserve the current bytes before deleting it,
-# so a failed replacement can put the known-good copy back instead of collapsing a two-registry
-# quorum to one. Sets rel_had_old for the forge-specific upload loop.
-rel_preserve_and_delete_asset() {
-  local listing old url
-  rel_had_old=false
+# 0 when the one existing same-named asset already holds identical bytes, 10 when it is absent, and
+# 1 for a duplicate name, unreadable metadata/bytes, or a content conflict. Published bytes are an
+# immutable promise for that tag: nothing is deleted, and a rebuild that differs needs a new tag.
+rel_asset_state() {
+  local listing matches count url remote
   listing=$(curl -fsS "${auth[@]}" "$1") || return 1
-  old=$(jq -r --arg name "$3" '.[] | select(.name==$name) | .id' <<<"$listing")
-  [ -n "$old" ] || return 0
-  url=$(jq -r --arg name "$3" '.[] | select(.name==$name) | .browser_download_url // empty' \
-    <<<"$listing")
-  [ -n "$url" ] || return 1
-  curl -fsSL "${auth[@]}" -o "$4" "$url" || return 1
-  curl -fsS "${auth[@]}" -X DELETE "$2/$old" >/dev/null || return 1
-  rel_had_old=true
+  matches=$(jq -c --arg name "$2" '[.[] | select(.name==$name)]' <<<"$listing") || return 1
+  count=$(jq -r 'length' <<<"$matches") || return 1
+  case "$count" in
+    0) return 10 ;;
+    1) ;;
+    # Two assets share the name, so which bytes a download URL serves is ambiguous.
+    *) echo "release contains duplicate assets named $2" >&2; return 1 ;;
+  esac
+  url=$(jq -r '.[0].browser_download_url // empty' <<<"$matches")
+  [ -n "$url" ] || { echo "release asset $2 has no download URL" >&2; return 1; }
+  remote=$(mktemp)
+  if ! curl -fsSL "${auth[@]}" -o "$remote" "$url"; then
+    rm -f "$remote"
+    return 1
+  fi
+  if cmp -s "$3" "$remote"; then
+    rm -f "$remote"
+    return 0
+  fi
+  rm -f "$remote"
+  echo "immutable release asset conflict for $2; publish different bytes under a new tag" >&2
+  return 1
+}
+
+# rel_verify_uploaded_asset <list-api> <name> <local-file> — confirm the upload actually landed with
+# the intended bytes. A 2xx upload is the forge's word; the readback is the evidence. Also settles
+# the race where the other publisher uploaded the same asset concurrently.
+rel_verify_uploaded_asset() {
+  local _ status
+  for _ in $(seq 1 6); do
+    if rel_asset_state "$1" "$2" "$3"; then
+      return 0
+    else
+      status=$?
+    fi
+    [ "$status" -eq 10 ] || return "$status"
+    sleep 2
+  done
+  echo "uploaded release asset did not become visible: $2" >&2
+  return 1
 }

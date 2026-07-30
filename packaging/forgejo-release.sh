@@ -3,15 +3,18 @@
 #   forgejo-release.sh <host> <token> <tag> <notes-file> [asset...]
 #
 # Waits for the tag to exist first (push-mirrors can lag), so a release is never created against
-# a missing tag. Re-running replaces same-named assets, so the Linux (.deb/tarball) and macOS
-# (.pkg) publishers can target the same release in any order. The wait/lookup/delete logic that is
-# identical to the GitHub publisher lives in release-common.sh; create + upload are forge-specific.
+# a missing tag. Same-named assets are immutable: a rerun accepts identical bytes, differing bytes
+# fail and need a new tag, and nothing is ever deleted — so the Linux (.deb/tarball) and macOS
+# (.pkg) publishers can target the same release in any order. The wait/lookup/state/verify logic
+# that is identical to the GitHub publisher lives in release-common.sh; create + upload are
+# forge-specific.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/release-common.sh"
 
 host="$1"; token="$2"; tag="$3"; notes_file="$4"; shift 4
 api="https://$host/api/v1/repos/SisyphusMD/dreame-valetudo"
 auth=(-H "Authorization: token $token")
+rel_validate_tag "$tag"
 
 echo "waiting for tag $tag on $host..."
 rel_wait_for_tag "$api/tags/$tag" || { echo "tag $tag never appeared on $host" >&2; exit 1; }
@@ -22,15 +25,17 @@ pre=false; case "$tag" in *-*) pre=true ;; esac
 id="$(rel_release_id "$api/releases" "$tag")"
 if [ -z "$id" ]; then
   if created=$(curl -fsS "${auth[@]}" -H "Content-Type: application/json" \
-      -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,prerelease:$pre}')" \
+      -d "$(jq -n --arg t "$tag" --rawfile b "$notes_file" --argjson pre "$pre" '{tag_name:$t,name:$t,body:$b,draft:false,prerelease:$pre}')" \
       "$api/releases"); then
     id=$(jq -r .id <<<"$created")
   else
-    # Another publisher can create the same release after our lookup but before this POST.
+    # Another publisher can create the same release between the lookup above and this POST.
     id="$(rel_release_id "$api/releases" "$tag")"
   fi
 fi
 [ -n "$id" ] && [ "$id" != "null" ] || { echo "could not create/find release for $tag on $host" >&2; exit 1; }
+rel_ensure_release_state "$api/releases/$id" "$pre" \
+  || { echo "could not repair/verify release state for $tag on $host" >&2; exit 1; }
 echo "release id on $host: $id"
 
 upload_asset() {
@@ -38,27 +43,26 @@ upload_asset() {
     -F "attachment=@$1" >/dev/null
 }
 
-rel_had_old=false
 for f in "$@"; do
+  [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] \
+    || { echo "release asset is missing, empty, non-regular, or symlinked: $f" >&2; exit 1; }
   name=$(basename "$f")
-  backup=$(mktemp)
-  if ! rel_preserve_and_delete_asset \
-      "$api/releases/$id/assets" "$api/releases/$id/assets" "$name" "$backup"; then
-    rm -f "$backup"
-    echo "could not safely prepare replacement for $name on $host" >&2
+  if rel_asset_state "$api/releases/$id/assets" "$name" "$f"; then
+    echo "  verified existing $name on $host"
+    continue
+  else
+    state=$?
+  fi
+  [ "$state" -eq 10 ] || exit "$state"
+  if upload_asset "$f" "$name"; then
+    rel_verify_uploaded_asset "$api/releases/$id/assets" "$name" "$f" \
+      || { echo "could not verify uploaded $name on $host" >&2; exit 1; }
+    echo "  uploaded immutable $name -> $host"
+  elif rel_verify_uploaded_asset "$api/releases/$id/assets" "$name" "$f"; then
+    # A rejected upload is also what losing the race to an identical concurrent upload looks like.
+    echo "  concurrent publisher uploaded identical $name -> $host"
+  else
+    echo "upload failed or raced with different bytes for $name on $host" >&2
     exit 1
   fi
-  if ! upload_asset "$f" "$name"; then
-    echo "upload failed for $name on $host" >&2
-    if [ "$rel_had_old" = true ]; then
-      rel_delete_asset "$api/releases/$id/assets" "$api/releases/$id/assets" "$name" \
-        && upload_asset "$backup" "$name" \
-        && echo "  restored previous $name -> $host" \
-        || echo "WARNING: could not restore previous $name on $host" >&2
-    fi
-    rm -f "$backup"
-    exit 1
-  fi
-  rm -f "$backup"
-  echo "  uploaded $name -> $host"
 done
