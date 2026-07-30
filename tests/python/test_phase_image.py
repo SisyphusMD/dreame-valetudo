@@ -9,6 +9,7 @@ fastboot by hand.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from collections.abc import Callable
@@ -451,3 +452,28 @@ def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
     assert not robot.state_has("image")
     assert prior in robot.image_provenance()
     assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)
+
+
+def test_an_interrupted_publish_never_destroys_the_previous_image(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The swap into fw_dir must supersede the previous build, not delete it first: a crash mid-
+    publish has to leave a complete prior build recoverable, never an emptied fw_dir with nothing in
+    it. Build B is complete, so the interruption lands in the swap itself, not in validation."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(_FEL, 0))
+    robot = ctx.need_robot()
+    assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)
+
+    def interrupted(_src: Path, _dst: Path) -> None:
+        raise OSError("connection dropped before the staged build was published")
+
+    monkeypatch.setattr("dreame_valetudo.phases.image.rename_no_replace", interrupted)
+    with contextlib.suppress(OSError):
+        image(ctx, force=True)
+
+    survivors = [
+        d for d in robot.work.iterdir()
+        if d.is_dir() and all((d / f).is_file() and (d / f).read_text() == "build A" for f in _FEL)
+    ]
+    assert survivors, "the previous build was destroyed by the interrupted publish"
+    assert not robot.state_has("image")  # root() re-runs image() rather than flashing a gap

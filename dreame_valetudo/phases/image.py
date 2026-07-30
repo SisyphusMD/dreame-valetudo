@@ -26,7 +26,7 @@ from ..platform_env import open_url
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, rename_no_replace
 from .recon import read_identity_from_robot
 
 
@@ -331,8 +331,16 @@ def image(ctx: Context, *, force: bool = False) -> None:
     if zp.parent == robot.fw_dir:  # a zip staged from the robot's own fw dir must survive the swap
         zp.rename(staging / zp.name)
         zip_path = str(robot.fw_dir / zp.name)
-    shutil.rmtree(robot.fw_dir, ignore_errors=True)
-    staging.rename(robot.fw_dir)
+    # Supersede the previous build; never delete it first. An rmtree-then-rename leaves an instant
+    # where fw_dir is gone with nothing in its place, so a crash there would strand recovery on the
+    # downloaded zip still existing. Set the old build aside, move the staged one into the freed
+    # slot, then drop the old copy — a complete build survives an interruption at any point.
+    superseded = robot.work / "fw.superseded"
+    shutil.rmtree(superseded, ignore_errors=True)
+    if robot.fw_dir.exists():
+        robot.fw_dir.rename(superseded)
+    rename_no_replace(staging, robot.fw_dir)
+    shutil.rmtree(superseded, ignore_errors=True)
     member_digests = {
         name: sha256_of(robot.fw_dir / name)
         for name in FEL_IMAGE_FILES
