@@ -51,7 +51,7 @@ jobs:
       - name: Lint, typecheck, and run Python tests
         run: |
           # renovate: datasource=pypi depName=ruff
-          RUFF="0.16.0"
+          RUFF="0.16.1"
           # renovate: datasource=pypi depName=mypy
           MYPY="2.3.0"
           # renovate: datasource=pypi depName=pytest
