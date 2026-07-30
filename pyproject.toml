@@ -6,10 +6,16 @@ description = "Guided, idempotent tool to root supported Dreame robot vacuums an
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-# The package itself imports no third-party runtime deps: pyusb is needed only by the fastboot
-# libusb client, which runs as a subprocess (via `uv run --with pyusb`, a pyusb-capable python, or
-# the frozen dreame-fastboot binary). PYUSB_VERSION is pinned in constants.py (Renovate-tracked).
+# The package itself imports no third-party runtime deps: pyusb and pyserial are needed only by the
+# subprocess helpers (the fastboot libusb client and the UART console), which run via
+# `uv run --with`, a capable python, or the frozen dreame-fastboot / dreame-uart binaries.
+# PYUSB_VERSION and PYSERIAL_VERSION are pinned in constants.py (Renovate-tracked).
 dependencies = []
+
+[project.optional-dependencies]
+# Source and tool installs opt into the subprocess-only UART helper dependency. The package itself
+# still imports nothing third-party, while a package manager can provision the exact helper stack.
+uart = ["pyserial==3.5"]
 
 [project.scripts]
 dreame-valetudo = "dreame_valetudo.cli:main"
@@ -25,6 +31,7 @@ packages = ["dreame_valetudo"]
 # PyInstaller bundle resolves them via resolve_libexec.
 [tool.hatch.build.targets.wheel.force-include]
 "libexec/fastboot-libusb.py" = "dreame_valetudo/libexec/fastboot-libusb.py"
+"libexec/uart-console.py" = "dreame_valetudo/libexec/uart-console.py"
 "libexec/dustbuilder-forms" = "dreame_valetudo/libexec/dustbuilder-forms"
 # Ship the changelog inside the package so the installed tool can show "what's new" on upgrade.
 "CHANGELOG.md" = "dreame_valetudo/CHANGELOG.md"
@@ -52,11 +59,12 @@ testpaths = ["tests/python"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["dreame_valetudo", "libexec/fastboot-libusb.py"]
+files = ["dreame_valetudo", "libexec/fastboot-libusb.py", "libexec/uart-console.py"]
 
-# pyusb ships no type stubs; the fastboot client is the only thing that imports it.
+# The two subprocess-only transport packages ship no type stubs; only the two libexec helpers
+# import them.
 [[tool.mypy.overrides]]
-module = ["usb.*"]
+module = ["usb.*", "serial.*"]
 ignore_missing_imports = true
 
 [dependency-groups]

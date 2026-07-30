@@ -44,6 +44,12 @@ SUNXI_TOOLS_REF = "d7bbd172a5da601a08f94479de308c6fb714a19a"
 # renovate: datasource=pypi depName=pyusb
 PYUSB_VERSION = "1.3.1"
 
+# pyserial feeds the standalone UART helper. Like pyusb it stays outside the package's runtime
+# imports: source installs run it through an isolated uv environment resolved from the [uart] extra,
+# and release packages freeze it into the native dreame-uart helper.
+# renovate: datasource=pypi depName=pyserial
+PYSERIAL_VERSION = "3.5"
+
 # Release bundles freeze this exact CPython source. Linux compiles it inside the glibc-floor
 # builder; macOS setup-python supplies the same release on native hosts.
 # renovate: datasource=github-tags depName=python/cpython versioning=pep440

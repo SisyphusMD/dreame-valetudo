@@ -49,6 +49,9 @@ class ScriptedConsole(Console):
     def ask(self, prompt: str) -> str:
         return self._asks.pop(0) if self._asks else ""
 
+    def ask_secret(self, prompt: str) -> str:
+        return self._asks.pop(0) if self._asks else ""
+
     def text(self) -> str:
         return "\n".join(f"{kind}: {msg}" for kind, msg in self.lines)
 
