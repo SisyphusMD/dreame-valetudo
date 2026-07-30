@@ -90,6 +90,11 @@ jobs:
           set -euo pipefail
           ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
 
+      - name: Enforce the pre-0.4 release boundary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 packaging/check-release-boundary.py "$VERSION"
+
       - name: Stamp the version (pyproject + package + uv.lock)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -190,6 +195,7 @@ jobs:
           [ "$VERSION" = "$QUALIFIED_VERSION" ] && [ "$TAG" = "$QUALIFIED_TAG" ] \
             || { echo "::error::qualified prerelease intent changed between runners"; exit 1; }
           ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null
+          python3 packaging/check-release-boundary.py "$VERSION"
           python3 packaging/stamp-version.py "$VERSION"
           python3 packaging/stamp-version.py "$VERSION" --check
           printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \

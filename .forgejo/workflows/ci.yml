@@ -59,9 +59,9 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py
+          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           mypy
-          python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py
+          python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
@@ -87,7 +87,8 @@ jobs:
           python -m compileall -q dreame_valetudo libexec docs/research/tools \
             packaging/stamp-version.py \
             packaging/build-source-tar.py \
-            packaging/check-doc-links.py
+            packaging/check-doc-links.py \
+            packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 

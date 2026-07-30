@@ -99,6 +99,11 @@ jobs:
           ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md || { echo "::error::CHANGELOG already has [${VERSION}]"; exit 1; }
           ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
 
+      - name: Enforce the pre-0.4 release boundary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 packaging/check-release-boundary.py "$VERSION"
+
       - name: Detect dependency bumps since the previous release (latest per dep)
         id: deps
         env:
@@ -247,6 +252,7 @@ jobs:
           [ "$VERSION" = "$QUALIFIED_VERSION" ] && [ "$TAG" = "$QUALIFIED_TAG" ] \
             || { echo "::error::qualified release intent changed between runners"; exit 1; }
           ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null
+          python3 packaging/check-release-boundary.py "$VERSION"
 
           DEPS=""
           if [ -n "$PREV_TAG" ]; then
