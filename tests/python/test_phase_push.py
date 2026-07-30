@@ -20,6 +20,7 @@ from dreame_valetudo.constants import ADOPTED_ROOT
 from dreame_valetudo.context import Context
 from dreame_valetudo.log import scrub
 from dreame_valetudo.phases import fetch as fetch_mod
+from dreame_valetudo.phases import push as push_mod
 from dreame_valetudo.phases.push import (
     _device_conf_value,
     _live_robot_identity,
@@ -80,6 +81,43 @@ def _text(
     return responder
 
 
+_TAR_STATUS = {"files-tar-rc1": 1, "files-tar-rc2": 2}
+
+
+def _write_factory_archive(path: Path, files_size: int, failure: str | None) -> None:
+    """A stand-in for what `tar czf - /mnt/private /mnt/misc /etc/*.pem` sends back."""
+    payload = random.Random(1).randbytes(files_size)
+    with tarfile.open(path, "w:gz") as archive:
+        def add(name: str, data: bytes) -> None:
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+
+        if failure != "files-missing-config":
+            config = _CFG.encode()
+            if failure == "files-wrong-config":
+                config = b"b" * 32
+            add(
+                "mnt/private/ULI/factory/config.txt",
+                b"" if failure == "files-empty-config" else b"config: " + config,
+            )
+        if failure == "files-duplicate-config":
+            add("mnt/private/ULI/factory/config.txt", b"config: " + _CFG.encode())
+        if failure != "files-missing-did":
+            add("mnt/private/ULI/factory/did.txt", b"" if failure == "files-empty-did" else b"1234")
+        if failure != "files-missing-key":
+            add(
+                "mnt/private/ULI/factory/key.txt",
+                b"" if failure == "files-empty-key" else b"A1b2C3d4E5f6G7h8",
+            )
+        if failure != "files-missing-misc":
+            add("mnt/misc/factory.marker", b"misc")
+        for pem in ("etc/OTA_Key_pub.pem", "etc/publickey.pem"):
+            if failure not in ("files-missing-pems", f"files-missing-{Path(pem).name}"):
+                add(pem, b"-----BEGIN PUBLIC KEY-----\n")
+        add("etc/padding.bin", payload)
+
+
 def _redirect(
     files_size: int = 2000, failure: str | None = None,
 ) -> Callable[[tuple[str, ...], str | None, str | None], Result]:
@@ -99,15 +137,7 @@ def _redirect(
                     unrelated.size = len(padding)
                     archive.addfile(unrelated, io.BytesIO(padding))
             else:
-                payload = random.Random(1).randbytes(files_size)
-                with tarfile.open(path, "w:gz") as archive:
-                    member = tarfile.TarInfo("mnt/private/ULI/factory/config.txt")
-                    member.size = len(payload)
-                    archive.addfile(member, io.BytesIO(payload))
-                    if failure != "files-missing-misc":
-                        misc = tarfile.TarInfo("mnt/misc/factory.marker")
-                        misc.size = 4
-                        archive.addfile(misc, io.BytesIO(b"misc"))
+                _write_factory_archive(path, files_size, failure)
                 if failure == "files-corrupt":
                     path.write_bytes(path.read_bytes()[:-8])
                 elif failure == "files-deflate-corrupt":
@@ -117,10 +147,10 @@ def _redirect(
                                      + b"\x00" * 2048 + b"\x00" * 8)
                 elif failure == "files-not-tar":
                     with gzip.open(path, "wb") as stream:
-                        stream.write(payload)
+                        stream.write(random.Random(1).randbytes(files_size))
             if failure == "files-transport":
                 return Result(argv, 255, "", "connection lost")
-            return Result(argv, 2 if failure == "files-tar-nonzero" else 0, "", "tar warning")
+            return Result(argv, _TAR_STATUS.get(failure or "", 0), "", "tar warning")
         if stdout_path and "/dev/by-name/" in argv[-1]:
             path = Path(stdout_path)
             payload = random.Random(argv[-1]).randbytes(4096)
@@ -710,15 +740,38 @@ def test_push_discards_an_interrupted_backup_instead_of_leaving_a_decoy(
     assert list(ctx.backups_dir.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure", ["files-tar-rc1", "files-tar-rc2"])
 def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
-    make_ctx: CtxFactory,
+    make_ctx: CtxFactory, failure: str,
 ) -> None:
+    # tar reports 1 for "file changed as we read it" over a live /mnt/private and 2 for the
+    # unmatched /etc/*.pem glob. The members, not the status, decide whether the backup is good.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
     ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-tar-nonzero")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure=failure)  # type: ignore[attr-defined]
     assert push(ctx) is True
     assert list(ctx.backups_dir.glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["files-missing-pems", "files-missing-publickey.pem", "files-missing-OTA_Key_pub.pem"],
+)
+def test_push_accepts_a_robot_that_carries_no_recovery_pems(
+    make_ctx: CtxFactory, failure: str,
+) -> None:
+    # Only three fastboot profiles are hardware-verified, so an absent /etc/*.pem is an unknown,
+    # not a defect: validate the PEMs when the robot has them, never demand them.
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure=failure)  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    assert push_mod.factory_backup_archive_valid(published / "files.tar.gz")
 
 
 def test_push_refuses_a_valid_archive_without_both_factory_trees(make_ctx: CtxFactory) -> None:
@@ -726,7 +779,7 @@ def test_push_refuses_a_valid_archive_without_both_factory_trees(make_ctx: CtxFa
     _valetudo_bin(ctx)
     ctx.runner._responder = _text()  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect(failure="files-missing-misc")  # type: ignore[attr-defined]
-    with pytest.raises(Die, match="does not contain both /mnt/private and /mnt/misc"):
+    with pytest.raises(Die, match="missing the factory members"):
         push(ctx)
     assert not list(ctx.backups_dir.glob("*/manifest.json"))
     assert not any(call[-1] == "cat > /data/valetudo" for call in ctx.runner.calls)  # type: ignore[attr-defined]
@@ -740,9 +793,149 @@ def test_push_refuses_factory_directories_that_contain_no_files(make_ctx: CtxFac
         files_size=32 * 1024, failure="files-directories-only",
     )
 
-    with pytest.raises(Die, match="does not contain both /mnt/private and /mnt/misc"):
+    with pytest.raises(Die, match="missing the factory members"):
         push(ctx)
     assert not list(ctx.backups_dir.glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "files-missing-config",
+        "files-empty-config",
+        "files-duplicate-config",
+        "files-missing-did",
+    ],
+)
+def test_push_refuses_an_archive_missing_an_unambiguous_factory_identity(
+    make_ctx: CtxFactory, failure: str,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(  # type: ignore[attr-defined]
+        files_size=32 * 1024, failure=failure,
+    )
+
+    with pytest.raises(Die, match="missing the factory members"):
+        push(ctx)
+
+    assert not list(ctx.backups_dir.glob("*"))
+    assert not any(call[-1] == "cat > /data/.valetudo.update" for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_push_refuses_an_archive_recorded_against_another_robot(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-wrong-config")  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="carries a different robot's factory config"):
+        push(ctx)
+
+    assert not list(ctx.backups_dir.glob("*"))
+    assert not any(call[-1] == "cat > /data/.valetudo.update" for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_push_tolerates_a_blank_factory_did_in_the_archive(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-empty-did")  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+
+
+def test_published_manifest_binds_the_exact_validated_archive(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    robot = ctx.need_robot()
+    robot.state_set("rooted", "adopted-existing")
+    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(files_size=4096)  # type: ignore[attr-defined]
+
+    assert backup(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    archive = published / "files.tar.gz"
+    saved = json.loads((published / "manifest.json").read_text())
+    assert saved["factory_archive_size"] == archive.stat().st_size
+    assert saved["factory_archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert push_mod.factory_backup_archive_valid(archive)
+
+    # A structurally valid archive that is not the one the manifest describes is not this backup.
+    replacement = published / "other.tar.gz"
+    _redirect(files_size=8192)(("ssh", "tar czf -"), str(replacement), None)
+    assert push_mod._tar_has_factory_data(replacement)
+    replacement.replace(archive)
+
+    assert not push_mod.factory_backup_archive_valid(archive)
+
+
+def test_legacy_backups_without_a_recorded_digest_stay_valid(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    robot = ctx.need_robot()
+    robot.state_set("rooted", "adopted-existing")
+    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+
+    assert backup(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    saved = json.loads((published / "manifest.json").read_text())
+    del saved["factory_archive_sha256"], saved["factory_archive_size"]
+    (published / "manifest.json").write_text(json.dumps(saved))
+
+    assert push_mod.factory_backup_archive_valid(published / "files.tar.gz")
+
+
+def test_empty_factory_key_preserves_the_secure_storage_copy_beside_the_backup(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="w10-pro", robot_name=f"r2104-{_CFG[:12]}", confirms=[True])
+    ctx.need_robot().recon_dir.mkdir(parents=True)
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    _valetudo_bin(ctx)
+    normal = _text(model="dreame.vacuum.r2104", did="12345", key="")
+
+    def secure_storage(argv: tuple[str, ...]) -> Result:
+        if "dreame_release.na -c 7" in argv[-1]:
+            return Result(argv, 0, "MI_DID = 5\nMI_KEY = A1b2C3d4E5f6G7h8\n", "")
+        return normal(argv)  # type: ignore[operator]
+
+    ctx.runner._responder = secure_storage  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    preserved = published / "secure-storage-mi-key.txt"
+    assert preserved.read_text() == "A1b2C3d4E5f6G7h8\n"
+    assert preserved.stat().st_mode & 0o777 == 0o600
+    assert push_mod.factory_backup_archive_valid(published / "files.tar.gz")
+    # The backup already read the key, so the install pass reuses it instead of asking again.
+    assert sum("dreame_release.na -c 7" in c[-1] for c in ctx.runner.calls) == 1  # type: ignore[attr-defined]
+
+    preserved.unlink()
+    assert not push_mod.factory_backup_archive_valid(published / "files.tar.gz")
+
+
+def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
+    make_ctx: CtxFactory,
+) -> None:
+    # key_in_secure_storage is what the W10 Pro is known for, not an enumeration of every unit that
+    # can behave that way, so an unexpected empty key is reported rather than treated as fatal.
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text(key="")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+
+    assert ctx.profile.key_in_secure_storage == "no"
+    assert push(ctx) is True
+
+    published = next(ctx.backups_dir.iterdir())
+    assert not (published / "secure-storage-mi-key.txt").exists()
+    assert push_mod.factory_backup_archive_valid(published / "files.tar.gz")
+    assert "backup has no copy of it" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_push_refuses_a_different_same_model_robot_by_factory_config(make_ctx: CtxFactory) -> None:
@@ -836,6 +1029,32 @@ def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
     assert "reboot" not in commands
 
 
+def test_capture_issues_exactly_the_pinned_remote_commands(make_ctx: CtxFactory) -> None:
+    # One legible tar over the three source trees. The /etc/*.pem glob is what makes the recovery
+    # PEMs optional, so it must not turn into a shell program that demands them.
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+
+    calls = ctx.runner.calls  # type: ignore[attr-defined]
+    start = next(i for i, call in enumerate(calls) if call[-1] == "true")
+    end = next(i for i, call in enumerate(calls) if "by-name/misc" in call[-1])
+    assert [call[-1] for call in calls[start:end + 1]] == [
+        "true",
+        "test -d /mnt/private/ULI/factory",
+        (
+            "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
+            "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null"
+        ),
+        "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null",
+        "gzip -1c /dev/by-name/private 2>/dev/null",
+        "gzip -1c /dev/by-name/misc 2>/dev/null",
+    ]
+
+
 def test_standalone_backup_and_push_have_the_same_capture_transcript(
     make_ctx: CtxFactory,
 ) -> None:
@@ -907,7 +1126,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
     _valetudo_bin(ctx)
     streamed: list[str] = []
-    backup_redirect = _redirect()
+    backup_redirect = _redirect(failure="files-empty-key")
 
     def responder(argv: tuple[str, ...]) -> Result:
         cmd = argv[-1]
@@ -975,7 +1194,7 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
         return Result(argv, 0, "", "")  # dreame_release.na -c 7 -> no MI_KEY
 
     ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
     assert push(ctx) is True  # completes; nothing to restore, so it just informs
     assert not any("key_orig.txt" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
@@ -1041,9 +1260,10 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
         return Result(argv, 0, "", "")
 
     ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
     assert push(ctx) is True  # push still completes; the malformed key is skipped, not fatal
     assert not any("key_orig.txt" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert not (next(ctx.backups_dir.iterdir()) / "secure-storage-mi-key.txt").exists()
 
 
 def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -> None:
