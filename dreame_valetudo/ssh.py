@@ -8,12 +8,17 @@ guard is the real protection.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hmac
+import os
 import re
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .console import Console, die
+from .console import Console, Die, die
 from .constants import ROBOT_SSH_OPTS
 from .log import scrub
 from .run import Result, Runner
@@ -128,6 +133,89 @@ def _path_present(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
+def _key_half_status(path: Path, *, private: bool) -> os.stat_result | None:
+    """Stat a key half through symlinks, rejecting only what OpenSSH itself would reject.
+
+    Follows links deliberately: dotfile managers (stow, chezmoi, 1Password) legitimately symlink
+    ~/.ssh/id_*, every discovery path here already follows, and refusing the target after offering
+    it in the picker would strand those users with no override. Permission strictness is
+    private-half only, matching OpenSSH — it never checks .pub, which ssh-keygen writes through the
+    caller's umask (umask 002 yields 0664)."""
+    role = "private" if private else "public"
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        die(f"The SSH {role} key at {path} cannot be inspected safely: {exc}")
+    if not stat.S_ISREG(status.st_mode):
+        die(f"The SSH {role} key at {path} must resolve to a regular file, not a directory or device.")
+    # A root run is an anticipated mode (see udev.DREAME_NO_UDEV_CHECK), and under sudo the
+    # operator's own key is owned by the invoking user, not by euid 0.
+    if status.st_uid != os.geteuid() and not _owned_by_invoking_user(status):
+        die(f"The SSH {role} key at {path} is not owned by the current user.")
+    if private:
+        mode = stat.S_IMODE(status.st_mode)
+        if mode & 0o077:
+            die(
+                f"The SSH private key at {path} has unsafe permissions {mode:04o}; "
+                "it must be accessible only by its owner."
+            )
+    if status.st_size <= 0:
+        die(f"The SSH {role} key at {path} is empty.")
+    return status
+
+
+def _owned_by_invoking_user(status: os.stat_result) -> bool:
+    if os.geteuid() != 0:
+        return False
+    sudo_uid = os.environ.get("SUDO_UID")
+    return sudo_uid is not None and sudo_uid.isdigit() and status.st_uid == int(sudo_uid)
+
+
+def _public_identity(value: str, *, source: str) -> tuple[str, bytes]:
+    lines = value.strip().splitlines()
+    fields = lines[0].split() if len(lines) == 1 else []
+    if len(fields) < 2 or re.fullmatch(r"[A-Za-z0-9@._+-]+", fields[0]) is None:
+        die(f"The SSH public key {source} is not one complete OpenSSH public-key line.")
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise Die(f"The SSH public key {source} has an invalid key blob.") from exc
+    if not blob:
+        die(f"The SSH public key {source} has an empty key blob.")
+    return fields[0], blob
+
+
+def _validated_ssh_keypair(runner: Runner, key: Path) -> str:
+    """Return the public-key text only when both halves are a matching, usable pair.
+
+    Robot SSH runs non-interactively with IdentitiesOnly/IdentityAgent=none (see ssh_base), so a
+    passphrase-protected or mismatched key cannot authenticate at all. Proving it here turns an
+    opaque 'Permission denied' in the middle of the flash into a clear message at key selection."""
+    pub = Path(f"{key}.pub")
+    if _key_half_status(key, private=True) is None or _key_half_status(pub, private=False) is None:
+        die(f"Cannot validate an incomplete SSH key pair at {key} and {pub}.")
+    public_text = pub.read_text()
+    derived = runner.run(
+        ["ssh-keygen", "-y", "-P", "", "-f", str(key)], check=False, stdin="", timeout=10,
+    )
+    if not derived.ok:
+        die(
+            f"Could not validate the SSH private key at {key} without a passphrase. "
+            "Passphrase-protected, unreadable, or invalid keys cannot be used because robot SSH "
+            "commands run non-interactively; choose an unencrypted private key."
+        )
+    derived_type, derived_blob = _public_identity(derived.stdout, source=f"derived from {key}")
+    public_type, public_blob = _public_identity(public_text, source=f"at {pub}")
+    if derived_type != public_type or not hmac.compare_digest(derived_blob, public_blob):
+        die(
+            f"The SSH public key at {pub} does not match the private key at {key}. "
+            "Refusing to authorize a key that push cannot use."
+        )
+    return public_text
+
+
 def _keygen(runner: Runner, console: Console, key: Path, comment: str) -> None:
     pub = Path(f"{key}.pub")
     # The chooser and this call are separated by user input; recheck here so a key created in that
@@ -141,13 +229,16 @@ def _keygen(runner: Runner, console: Console, key: Path, comment: str) -> None:
         stdin="",
     ).ok:
         die("ssh-keygen failed")
+    _validated_ssh_keypair(runner, key)
 
 
 def ensure_sshkey(runner: Runner, console: Console, key: Path) -> None:
     """Ensure key + key.pub exist, generating a dedicated ed25519 key if not."""
     pub = Path(f"{key}.pub")
-    private_ok, public_ok = key.is_file(), pub.is_file()
+    private_ok = _key_half_status(key, private=True) is not None
+    public_ok = _key_half_status(pub, private=False) is not None
     if private_ok and public_ok:
+        _validated_ssh_keypair(runner, key)
         console.info(f"SSH key: using {key} (override with DREAME_SSHKEY=...)")
         return
     if private_ok:
@@ -242,12 +333,14 @@ def choose_sshkey(ctx: Context) -> Path:
     return chosen
 
 
-def stage_pub_for_upload(ws_base: Path, key: Path) -> Path:
+def stage_pub_for_upload(runner: Runner, ws_base: Path, key: Path) -> Path:
     """Browser file-pickers hide dot-dirs, so a key in ~/.ssh is hard to select for the dustbuilder
-    upload. Copy the .pub to a plainly-named, non-hidden path under the work dir and return it."""
+    upload. Copy the .pub to a plainly-named, non-hidden path under the work dir and return it.
+
+    Revalidated here because this copy is what the operator uploads to the image builder: staging a
+    public half whose private key cannot sign would bake an unusable key into the built image."""
     dst = ws_base / "dreame-valetudo-public-key.pub"
+    public_text = _validated_ssh_keypair(runner, key)
     ws_base.mkdir(parents=True, exist_ok=True)
-    src = Path(f"{key}.pub")
-    if src.is_file():
-        dst.write_text(src.read_text())
+    dst.write_text(public_text)
     return dst

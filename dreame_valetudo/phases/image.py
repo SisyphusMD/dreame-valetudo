@@ -69,7 +69,7 @@ def _open_dustbuilder(ctx: Context) -> None:
     if not cfg:
         die("No config value yet — run recon first.")
     key = choose_sshkey(ctx)
-    pub = stage_pub_for_upload(ctx.ws.base, key)
+    pub = stage_pub_for_upload(ctx.runner, ctx.ws.base, key)
     _print_checklist(ctx, cfg, pub)
     # Copy the config to the clipboard — best-effort, and only when pbcopy exists (no shell, so the
     # config value is never interpolated into a command line).

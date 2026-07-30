@@ -111,10 +111,17 @@ def test_valetudo_prints_phase3_guidance(make_ctx: CtxFactory) -> None:
 def test_sshkey_shows_the_public_key(make_ctx: CtxFactory, tmp_path: Path) -> None:
     key = tmp_path / "id_dreame"
     key.write_text("PRIV")
-    (tmp_path / "id_dreame.pub").write_text("ssh-ed25519 AAAAdummy valetudo-dreame\n")
-    ctx = make_ctx(env={"DREAME_SSHKEY": str(key)})
+    key.chmod(0o600)
+    (tmp_path / "id_dreame.pub").write_text("ssh-ed25519 AAAA valetudo-dreame\n")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("ssh-keygen", "-y"):
+            return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(env={"DREAME_SSHKEY": str(key)}, responder=responder)
     sshkey(ctx)
-    assert _said(ctx, "ssh-ed25519 AAAAdummy")
+    assert _said(ctx, "ssh-ed25519 AAAA")
 
 
 def test_status_lists_prior_robots_with_furthest_phase(make_ctx: CtxFactory) -> None:

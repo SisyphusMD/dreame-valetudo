@@ -55,6 +55,8 @@ def test_every_model_checklist_is_static_and_matches_its_exact_guide(
 
 def _curl_only(argv: tuple[str, ...]) -> Result:
     # The unsupported list is empty (no match); everything else is a benign OKAY.
+    if argv[:2] == ("ssh-keygen", "-y"):  # the staged .pub is proven against its private half
+        return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
     if argv and argv[0] == "curl":
         if any("unsupported.txt" in a for a in argv):
             return Result(argv, 0, "", "")
@@ -66,7 +68,7 @@ def _curl_plus_getvars(argv: tuple[str, ...]) -> Result:
     # Like _curl_only, but answers the identity getvars (and the FEL/fastboot bring-up returns OKAY),
     # so the tool-driven on-demand read succeeds.
     joined = " ".join(argv)
-    if argv and argv[0] == "curl":
+    if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
         return _curl_only(argv)
     for var, val in _IDENT.items():
         if f"getvar {var}" in joined:
@@ -84,6 +86,7 @@ def _reject_ctx(
 ) -> Context:
     key = tmp_path / "k"
     key.write_text("PRIV")
+    key.chmod(0o600)
     (tmp_path / "k.pub").write_text("ssh-ed25519 AAAA test\n")  # pre-made pair -> no SSH prompt
     home = tmp_path / "home"
     home.mkdir()
@@ -214,7 +217,7 @@ def test_missing_values_declined_never_tells_the_user_to_run_fastboot(make_ctx: 
 
 def _staging_responder(argv: tuple[str, ...]) -> Result:
     """_curl_only, plus an unzip that produces the six FEL files the staging check requires."""
-    if argv and argv[0] == "curl":
+    if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
         return _curl_only(argv)
     if argv and argv[0] == "unzip":
         dest = Path(argv[argv.index("-d") + 1])
@@ -388,7 +391,7 @@ def _two_build_responder(
     seen = {"unzips": 0}
 
     def r(argv: tuple[str, ...]) -> Result:
-        if argv and argv[0] == "curl":
+        if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
             return _curl_only(argv)
         if argv and argv[0] == "unzip":
             seen["unzips"] += 1

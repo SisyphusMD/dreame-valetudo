@@ -34,6 +34,15 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
 
     def responder(argv: tuple[str, ...]) -> Result:
         joined = " ".join(argv)
+        if argv[:3] == ("ssh-keygen", "-t", "ed25519"):
+            generated = Path(argv[argv.index("-f") + 1])
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("PRIV")
+            generated.chmod(0o600)
+            Path(f"{generated}.pub").write_text("ssh-ed25519 AAAA valetudo-dreame\n")
+            return Result(argv, 0, "", "")
+        if argv[:2] == ("ssh-keygen", "-y"):  # the staged .pub is proven against its private half
+            return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
         if "getvar config" in joined:
             return Result(argv, 0, f"OKAY {_CFG}", "")
         if argv[0] == "curl":
