@@ -32,6 +32,12 @@ copy_doc_list() {
   done < "$list"
 }
 copy_doc_list packaging/source-docs.txt
+# The collector guide documents commands that only exist from 0.4 on; shipping it in a 0.3 archive
+# would describe subcommands that package does not have.
+if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-rc\.[0-9]+|\.dev[0-9]+)?$ ]] \
+    && { [ "${BASH_REMATCH[1]}" -gt 0 ] || [ "${BASH_REMATCH[2]}" -ge 4 ]; }; then
+  copy_doc_list packaging/source-docs-uart.txt
+fi
 find "$stage" -name __pycache__ -type d -prune -exec rm -rf {} +
 find "$stage" -name '*.pyc' -delete
 if find "$stage" -type l -print -quit | grep -q .; then

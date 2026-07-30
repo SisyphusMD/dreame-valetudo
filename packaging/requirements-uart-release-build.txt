@@ -1,0 +1,7 @@
+# Future 0.4 UART helper build dependency. This file is deliberately separate from the 0.3 frozen
+# build closure; official 0.3 refs must not wire it into any artifact build.
+--only-binary=:all:
+
+# renovate: datasource=pypi depName=pyserial
+pyserial==3.5 \
+    --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0

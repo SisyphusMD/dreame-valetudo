@@ -8,6 +8,43 @@ The upstream procedure was last checked against the Valetudo Dreame UART guide o
 <https://valetudo.cloud/pages/installation/dreame/#uart-shell>. The current CLI walkthrough follows
 that procedure; the automation described here is future 0.4 work.
 
+## Bench-collector status
+
+The 0.4 development line carries the first U0-U2 implementation plus the reviewed U3 `/tmp` backup
+capture for physical evidence collection. It is deliberately not part of 0.3 and does not enable U4:
+
+- `uart-observe` opens the chosen adapter receive-only, proves the selected model from the boot
+  banner, and retains the byte-for-byte capture plus a private summary.
+- `uart-adopt` derives the login password from hidden local input, runs only the reviewed inventory
+  allowlist, stages the four-path archive under robot `/tmp`, verifies the robot/host SHA-256, and
+  publishes a private bundle containing the archive and full command evidence.
+- U1 boot bytes remain a separate, model-only observation. They are never copied into an
+  identity-bound U2/U3 bundle because the pre-login banner does not yet prove which same-model
+  physical robot emitted it.
+- The full factory config and the exact live hashes of every required identity member bind repeat
+  runs to the same robot. A same-model identity mismatch stops before U3 or a new backup is
+  published.
+- Stock or unknown firmware still gets a complete evidence bundle, but is never marked rooted.
+  Persistent root requires both a live UID-0 shell and the exact DustBuilder MOTD. Valetudo
+  requires a canonical executable whose size, hash, architecture, and currently running
+  `/proc/<pid>/exe` identity agree. No collector path runs `install.sh`, prepares a USB disk, or
+  writes persistent robot storage.
+
+The collector exists to maximize what can be learned during the first Z10 Pro bench session. Its
+hardware results are inputs to the remaining 0.4 implementation, not a claim that UART installation
+is release-qualified.
+
+The current boot evidence has no known pre-authentication unique robot identifier. The collector
+therefore asks the operator to keep one robot and adapter connected and re-read that robot's dustbin
+serial before U2; the serial-derived credential should fail on a different robot, and no identity
+bundle is published until the logged-in identity is verified. That is not a technical continuity
+proof. The first bench session must check whether the boot stream exposes a stable unique value or
+another non-secret challenge that can bind U1 to U2. Until that evidence exists, 0.4 must not claim
+automatic same-model session binding.
+
+For the exact source-package install and bench commands, see `UART-COLLECTOR.md` in this directory.
+That operational guide ships only in 0.4+ source archives; 0.3 projections deliberately omit it.
+
 ## Scope and non-goals
 
 The target is every profile whose `method == "uart"`, with the Dreame Z10 Pro (`p2028`) as the
@@ -41,10 +78,25 @@ Add a standalone `libexec/uart-console.py` helper using a Renovate-pinned `pyser
 libusb fastboot helper, the main package keeps zero import-time dependencies: source runs resolve an
 on-demand helper environment, while release packages carry a frozen helper binary.
 
+The dependency must be provisioned before a hardware session. A checkout uses
+`uv sync --extra uart`; a tool install uses `uv tool install '.[uart]'` or
+`pipx install '.[uart]'`. Homebrew installs the exact hash-pinned pyserial resource in the formula
+virtualenv. Native `.pkg`, `.deb`, and `.rpm` channels carry `dreame-uart` with pyserial frozen in.
+The source archive includes `uv.lock`, and the fallback resolver uses only that package-matched lock
+in frozen offline mode; it never borrows an unrelated global `dreame-uart` or resolves dependencies
+after the serial session begins.
+
 The helper owns bytes and timing, not policy. It exposes framed operations such as open, read-until,
 write-line, drain, and close. The Python phase owns the state machine and sends every helper command
 through `Runner`, preserving transcript-equivalence tests. Never put shell commands, model choices,
 or retry policy inside the helper.
+
+The CLI authenticates the selected helper again immediately before every process spawn and removes
+ambient Python, uv, and dynamic-loader controls from that process. This detects stale packages and
+ordinary concurrent replacement. It is not a security boundary against a malicious process already
+running as the same host user: that user can modify package files and race a pathname between hash
+and `exec`. Do not run the collector alongside untrusted code under the account that owns its
+installation and private evidence directories.
 
 Serial handling must tolerate fragmented UTF-8, binary boot noise, carriage-return variants, and
 unrelated kernel output interleaved with the prompt. After login, establish a random command nonce
@@ -137,9 +189,11 @@ destination.
 
 ### Physical Z10 Pro campaign
 
-The bench conductor begins with U1/U2 against the already-rooted Z10 Pro: boot observation, model
-match, login, read-only inventory, adoption, complete backup, reconnect/resume at each prompt, and
-Valetudo maintenance. It must preserve the existing installation.
+The bench conductor begins with U1/U2 against the already-rooted Z10 Pro: boot observation,
+pre-authentication continuity discovery, model match, login, read-only inventory, adoption,
+complete backup, and reconnect/resume at each prompt. It must preserve the existing installation.
+Valetudo maintenance remains a later 0.4 lifecycle step after the identity and transport evidence
+from that session has been reviewed.
 
 U3 qualifies USB preparation on a sacrificial stick, including intentional wrong-disk selection,
 hot-unplug, and readback verification, then verifies the robot spawns exactly one UART shell.
