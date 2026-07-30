@@ -205,14 +205,24 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
         assert 'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .' in gate
 
 
-def test_stable_release_uses_renovate_pinned_uv_and_limits_the_lock_diff() -> None:
-    text = _RELEASE.read_text()
-    sync = text[text.index("      - name: Sync uv.lock") :]
-    assert "# renovate: datasource=pypi depName=uv" in sync
-    assert re.search(r'UV="\d+\.\d+\.\d+"', sync)
-    assert 'python -m pip install "uv==$UV"' in sync
-    assert "uv.lock.before" in sync
-    assert "after != expected" in sync
+def test_both_release_gates_stamp_every_version_record_including_the_lock() -> None:
+    stamp = (_ROOT / "packaging" / "stamp-version.py").read_text()
+
+    # uv.lock carries the project's own version, so a bump that skips it dirties the next local
+    # `uv` run. Rewriting that one record by rule — rather than re-locking — keeps the stamp
+    # deterministic and offline, which is what lets the tag job reproduce it byte-for-byte.
+    assert 'Path("uv.lock")' in stamp
+    assert 'name = "dreame-valetudo"' in stamp
+    assert "must contain exactly one version record" in stamp
+    # Written to a sibling temp file and renamed, so a failure can't leave a half-written record.
+    assert "tempfile.mkstemp" in stamp
+    assert "target.replace(path)" in stamp
+
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        assert 'python3 packaging/stamp-version.py "$VERSION"\n' in text, workflow
+        assert 'python3 packaging/stamp-version.py "$VERSION" --check' in text, workflow
+        assert "uv lock" not in text, workflow
 
 
 def test_macos_build_reads_the_sunxi_pin_from_constants() -> None:
@@ -233,9 +243,35 @@ def test_macos_build_verifies_the_pinned_tmux_release_tarball() -> None:
 
 def test_stable_release_pushes_commit_and_tag_atomically() -> None:
     text = _RELEASE.read_text()
-    step = text[text.index("      - name: Commit, tag, push") :]
+    step = text[text.index("      - name: Push the commit and tag atomically") :]
     assert "push --atomic origin" in step
-    assert '"HEAD:${{ github.ref_name }}" "${TAG}"' in step
+    assert '"HEAD:${{ github.ref_name }}" "$TAG"' in step
+
+
+def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> None:
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        gate, tag = _job(text, "gate"), _job(text, "tag")
+
+        # The job that runs third-party lint/test code holds no credential at all, and neither
+        # checkout leaves one behind for a later step to pick up.
+        assert "secrets." not in gate, workflow
+        assert text.count("persist-credentials: false") == 2, workflow
+        assert "token: ${{ secrets" not in text, workflow
+
+        # The job that does hold the token re-derives the edits on a tree the gate never touched
+        # and refuses to push anything whose bytes the gate did not qualify.
+        assert "ACTUAL_INTENT_SHA256=$(git diff --binary | sha256sum" in tag, workflow
+        assert '[ "$ACTUAL_INTENT_SHA256" = "$QUALIFIED_INTENT_SHA256" ]' in tag, workflow
+        assert tag.index("QUALIFIED_INTENT_SHA256") < tag.index("CLUSTER_FORGEJO_REPO_WRITE_PAT")
+
+        # An annotated tag object: a lightweight ref could be retargeted to another commit later
+        # without leaving a trace of the version it was cut for.
+        assert "git tag -a -m" in tag, workflow
+        assert '[ "$(git cat-file -t "refs/tags/$TAG")" = tag ]' in tag, workflow
+
+        # Forgejo has no `permissions:` field; it warns and ignores it, so it must never appear.
+        assert "permissions:" not in text, workflow
 
 
 def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:
