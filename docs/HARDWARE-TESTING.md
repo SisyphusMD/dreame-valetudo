@@ -191,6 +191,20 @@ on every other physically available fastboot model because that is non-destructi
 loader, enumeration, identity, and model-table errors. Run `first-root` only when that particular
 robot was already intended to be rooted.
 
+## UART collector sequence
+
+These run only against a `method == "uart"` profile, and the fastboot scenarios above are refused
+against one. Neither writes persistent robot state: `uart-observe` never transmits, and
+`uart-adopt` reads an existing shell and stages its archive under robot `/tmp`.
+
+| ID | Class | Starting state | What it proves | Expected result |
+|---|---:|---|---|---|
+| `uart-observe` | H1 | any, adapter attached RX-only | Receive-only capture of one boot, the model proven from the banner, and a byte-for-byte retained capture bound to the collector/helper fingerprint | fresh `uart-observed` evidence whose recorded SHA-256 matches the retained bytes |
+| `uart-adopt` | H2 | `uart-observe` passed on the same robot and adapter | Serial-derived login, the reviewed read-only inventory, live identity binding, and a verified `/tmp` archive published as a private backup generation | identity-bound `uart-identity`/`uart-backup`/`uart-generation`; rooted only on both live UID-0 and the DustBuilder MOTD |
+
+A campaign is bound to one collector + helper fingerprint. Rebuilding or replacing the UART helper
+requires a new campaign.
+
 ## Failure and interruption scenarios
 
 These reproduce mistakes a normal user can make without intentionally damaging flash.

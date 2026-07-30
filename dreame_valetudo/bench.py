@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import math
 import os
 import platform
 import re
@@ -45,6 +46,12 @@ from .phases.push import (
 from .phases.recon import recon
 from .phases.restore import restore, stock_restore_kit_valid
 from .phases.root import root
+from .phases.uart import (
+    _collector_fingerprint,
+    adopt_uart,
+    observe_uart,
+    uart_adoption_status,
+)
 from .profiles import load_profile
 from .recovery import (
     PROVENANCE_FILE,
@@ -84,6 +91,12 @@ class Scenario:
 
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario("host-smoke", "H0", "installed entry point, version, and host launch", True),
+    Scenario(
+        "uart-observe", "H1", "fresh receive-only UART model and prompt evidence", True,
+    ),
+    Scenario(
+        "uart-adopt", "H2", "identity-bound UART inventory and private temporary backup", True,
+    ),
     Scenario("research-baseline", "H1", "full readable research baseline and off-host copies"),
     Scenario("stock-recon", "H1", "FEL, fastboot identity, and recovery capture", True),
     Scenario(
@@ -251,6 +264,7 @@ _USB_STACK_SCENARIOS = frozenset({
     "already-rooted-recon", "already-rooted-root",
 })
 _IDENTITY_ADOPTING_RECON = frozenset({"stock-recon", "legacy-root-adoption"})
+_UART_SCENARIOS = frozenset({"uart-observe", "uart-adopt"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +333,17 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
         if positional:
             raise Die("Unexpected positional arguments after the bench scenario.")
         assert scenario is not None
+        if scenario.key in _UART_SCENARIOS and ctx.profile.method != "uart":
+            raise Die(f"Scenario '{scenario.key}' requires a UART-method model.")
+        if (
+            ctx.profile.method == "uart"
+            and scenario.key not in _UART_SCENARIOS
+            and scenario.key != "host-smoke"
+        ):
+            raise Die(
+                f"Scenario '{scenario.key}' is a fastboot qualification and cannot be recorded "
+                f"against UART model {ctx.profile.key}."
+            )
         if not scenario.automated:
             raise Die(
                 f"Scenario '{scenario.key}' requires operator-controlled timing or another "
@@ -605,6 +630,16 @@ def _bind_hardware_fingerprint(report: dict[str, object], ctx: Context) -> None:
             "campaign after changing hardware artifacts.")
 
 
+def _bind_uart_fingerprint(report: dict[str, object], current: str) -> None:
+    """The UART equivalent: the collector+helper stack IS the hardware stack for these scenarios."""
+    recorded = report.get("hardware_fingerprint")
+    if recorded is None:
+        report["hardware_fingerprint"] = current
+    elif recorded != current:
+        die("This UART campaign is bound to a different collector/helper stack. Use a new "
+            "campaign after rebuilding or replacing the UART helper.")
+
+
 def _verify_recorded_hardware_stack(report: dict[str, object], ctx: Context) -> None:
     if report.get("hardware_fingerprint") is None:
         return
@@ -819,17 +854,20 @@ def _validate_report(report: Mapping[str, object], path: Path, campaign: str) ->
         if not isinstance(model, str):
             die("Hardware-bench report has an invalid model binding.")
         try:
-            profile = load_profile(model)
+            load_profile(model)
         except ValueError:
             die("Hardware-bench report has an unknown model binding.")
-        if profile.method != "fastboot":
-            die("Hardware-bench report is bound to an unsupported UART model.")
     results = report.get("results")
     waivers = report.get("waivers")
     if not isinstance(results, list) or not isinstance(waivers, list):
         die("Hardware-bench report has an invalid results or waivers list.")
     for entry in results:
         _validate_result_entry(entry)
+        if model is not None and isinstance(entry, dict):
+            uart_model = load_profile(str(model)).method == "uart"
+            key = entry.get("scenario")
+            if key != "host-smoke" and ((key in _UART_SCENARIOS) is not uart_model):
+                die("Hardware-bench report mixes incompatible UART and fastboot scenarios.")
     private = _private_entries(path)
     for result in results:
         assert isinstance(result, dict)
@@ -941,9 +979,15 @@ def _robot_slot_for(ctx: Context, campaign: str, robot: Robot | None) -> str | N
     # The raw workspace name and config never leave this process. A campaign-specific secret key
     # makes even a guessable name such as "kitchen" irrecoverable from a shared report, while the
     # same selected robot still gets a stable reference across campaign entries.
-    config = robot.config(
-        robot_env=ctx.env.get("DREAME_ROBOT") if ctx.robot is robot else None,
-        config_env=ctx.env.get("DREAME_CONFIG") if ctx.robot is robot else None,
+    # A UART robot has no fastboot recon, so there is no config.txt to key on; its workspace name
+    # is the only stable local reference.
+    config = (
+        None
+        if ctx.profile.method == "uart"
+        else robot.config(
+            robot_env=ctx.env.get("DREAME_ROBOT") if ctx.robot is robot else None,
+            config_env=ctx.env.get("DREAME_CONFIG") if ctx.robot is robot else None,
+        )
     )
     local = config[:8].lower() if config is not None else robot.work.name
     digest = hmac.new(key, local.encode(), hashlib.sha256).hexdigest()[:12]
@@ -996,14 +1040,25 @@ def _bind_report_model(report: dict[str, object], model_key: str | None) -> None
     if model_key is None:
         return
     profile = load_profile(model_key)
-    if profile.method != "fastboot":
-        die("This hardware qualification runner currently covers fastboot models only.")
     recorded = report.get("model_key")
     if recorded is None:
         report["model_key"] = profile.key
     elif recorded != profile.key:
         die(f"This campaign is bound to model {recorded}; use a separate campaign for "
             f"{profile.key}.")
+
+
+def _report_scenarios(report: Mapping[str, object]) -> tuple[Scenario, ...]:
+    """Only the scenarios a report's bound model can ever run — the two sets are disjoint."""
+    model = report.get("model_key")
+    if not isinstance(model, str):
+        return SCENARIOS
+    uart_model = load_profile(model).method == "uart"
+    return tuple(
+        scenario
+        for scenario in SCENARIOS
+        if scenario.key == "host-smoke" or ((scenario.key in _UART_SCENARIOS) is uart_model)
+    )
 
 
 def _robot_workspace(ctx: Context, name: object, message: str) -> Robot:
@@ -1930,6 +1985,247 @@ def _record_observation(
     return 0
 
 
+def _uart_record(robot: Robot, name: str) -> dict[str, object] | None:
+    raw = robot.state_get(name)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _uart_evidence(
+    ctx: Context,
+    scenario: Scenario,
+    *,
+    expected_collector: str | None = None,
+    expected_helper: str | None = None,
+    previous_observation: str | None = None,
+    previous_generation: str | None = None,
+) -> tuple[dict[str, object], list[str]]:
+    robot = ctx.need_robot()
+    observed_raw = robot.state_get("uart-observed")
+    observed = _uart_record(robot, "uart-observed")
+    failures: list[str] = []
+    evidence: dict[str, object] = {}
+    if previous_observation is not None and observed_raw == previous_observation:
+        failures.append("UART observation state was not refreshed by this bench run")
+    capture_file = observed.get("capture_file") if observed is not None else None
+    byte_count = observed.get("byte_count") if observed is not None else None
+    login_prompts = observed.get("login_prompts") if observed is not None else None
+    action_transcript = observed.get("action_transcript") if observed is not None else None
+    action_seconds = (
+        action_transcript.get("seconds") if isinstance(action_transcript, dict) else None
+    )
+    recorded_action_sha256 = observed.get("action_sha256") if observed is not None else None
+    action_valid = (
+        isinstance(action_transcript, dict)
+        and set(action_transcript) == {"op", "baud", "seconds"}
+        and action_transcript.get("op") == "receive-only-observe"
+        and action_transcript.get("baud") == int(ctx.profile.baud)
+        and isinstance(action_seconds, (int, float))
+        and not isinstance(action_seconds, bool)
+        and math.isfinite(action_seconds)
+        and 1 <= action_seconds <= 600
+        and hashlib.sha256(
+            json.dumps(
+                action_transcript, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        == recorded_action_sha256
+    )
+    if (
+        observed is None
+        or observed.get("schema") != 2
+        or observed.get("status") != "verified"
+        or observed.get("model_key") != ctx.profile.key
+        or observed.get("model_code") != ctx.profile.model_code
+        or observed.get("baud") != int(ctx.profile.baud)
+        or observed.get("discovered_models") != [ctx.profile.model_code.lower()]
+        or not isinstance(capture_file, str)
+        or not isinstance(observed.get("capture_sha256"), str)
+        or not _DIGEST_RE.fullmatch(str(observed["capture_sha256"]))
+        or not isinstance(observed.get("collector_fingerprint"), str)
+        or not _DIGEST_RE.fullmatch(str(observed["collector_fingerprint"]))
+        or not isinstance(observed.get("helper_sha256"), str)
+        or not _DIGEST_RE.fullmatch(str(observed["helper_sha256"]))
+        or not isinstance(observed.get("action_sha256"), str)
+        or not _DIGEST_RE.fullmatch(str(observed["action_sha256"]))
+        or not action_valid
+        or not isinstance(byte_count, int)
+        or isinstance(byte_count, bool)
+        or byte_count < 0
+        or not isinstance(login_prompts, int)
+        or isinstance(login_prompts, bool)
+        or not 0 <= login_prompts <= 1
+    ):
+        failures.append("fresh UART observation state is absent or invalid")
+    else:
+        if (
+            expected_collector is not None
+            and observed.get("collector_fingerprint") != expected_collector
+        ) or (
+            expected_helper is not None
+            and observed.get("helper_sha256") != expected_helper
+        ):
+            failures.append(
+                "fresh UART observation was produced by a different collector/helper stack"
+            )
+        relative = Path(capture_file)
+        path = robot.work / relative if relative is not None else robot.work
+        try:
+            capture_valid = (
+                relative is not None
+                and len(relative.parts) == 2
+                and relative.parts[0] == "uart"
+                and relative.name not in {"", ".", ".."}
+                and not path.is_symlink()
+                and path.is_file()
+                and path.stat().st_size == byte_count
+                and hashlib.sha256(path.read_bytes()).hexdigest()
+                == observed["capture_sha256"]
+            )
+        except (OSError, ValueError):
+            capture_valid = False
+        if not capture_valid:
+            failures.append("fresh UART observation bytes do not match their recorded SHA-256")
+        evidence["observation"] = {
+            "capture_sha256": observed["capture_sha256"],
+            "byte_count": observed.get("byte_count"),
+            "login_prompts": observed.get("login_prompts"),
+            "collector_fingerprint": observed["collector_fingerprint"],
+            "helper_sha256": observed.get("helper_sha256"),
+            "action_sha256": observed["action_sha256"],
+        }
+    if scenario.key == "uart-observe":
+        return evidence, failures
+
+    identity = _uart_record(robot, "uart-identity")
+    generation = _uart_record(robot, "uart-generation")
+    backup = _uart_record(robot, "uart-backup")
+    if (
+        previous_generation is not None
+        and robot.state_get("uart-generation") == previous_generation
+    ):
+        failures.append("UART adoption generation was not refreshed by this bench run")
+    try:
+        adoption_status = uart_adoption_status(ctx)
+    except Die:
+        adoption_status = None
+        failures.append("UART adoption records are not bound to this model and backup generation")
+    if identity is None or generation is None or backup is None:
+        failures.append("UART identity, backup, or canonical generation state is absent")
+        return evidence, failures
+    if (
+        expected_collector is not None
+        and identity.get("collector_fingerprint") != expected_collector
+    ) or (
+        expected_helper is not None
+        and identity.get("helper_sha256") != expected_helper
+    ):
+        failures.append("UART adoption was produced by a different collector/helper stack")
+    if adoption_status is None:
+        failures.append("UART canonical backup generation or portable artifact hashes are invalid")
+        return evidence, failures
+    evidence["adoption"] = {
+        "classification": identity.get("classification"),
+        "identity_fingerprint": identity.get("identity_fingerprint"),
+        "root_proven": identity.get("root_proven"),
+        "valetudo_proven": identity.get("valetudo_proven"),
+        "collector_fingerprint": identity.get("collector_fingerprint"),
+        "helper_sha256": identity.get("helper_sha256"),
+        "action_sha256": identity.get("action_sha256"),
+        "archive_sha256": backup.get("sha256"),
+    }
+    return evidence, failures
+
+
+def _run_uart(ctx: Context, scenario: Scenario, campaign: str) -> int:
+    if ctx.profile.method != "uart" or scenario.key not in _UART_SCENARIOS:
+        raise Die("Internal bench error: incompatible UART scenario dispatch.")
+    collector_fingerprint, helper_sha256 = _collector_fingerprint(ctx)
+    path, report = _load_report(ctx, campaign)
+    _bind_uart_fingerprint(report, collector_fingerprint)
+    _bind_report_model(report, ctx.profile.key)
+    robot_slot = _robot_slot(ctx, campaign)
+    _bind_report_robot(report, robot_slot)
+    _write_report(path, report)
+    robot = ctx.need_robot()
+    previous_observation = robot.state_get("uart-observed")
+    previous_generation = robot.state_get("uart-generation")
+    started = _now()
+    began = time.monotonic()
+    ctx.console.phase(f"Hardware bench: {scenario.key} ({scenario.safety})")
+    ctx.console.info(scenario.summary)
+    try:
+        if scenario.key == "uart-observe":
+            observe_uart(ctx)
+        else:
+            adopt_uart(ctx)
+    except BaseException as exc:
+        evidence, failures = _uart_evidence(
+            ctx,
+            scenario,
+            expected_collector=collector_fingerprint,
+            expected_helper=helper_sha256,
+            previous_observation=previous_observation,
+            previous_generation=previous_generation,
+        )
+        _append(report, "results", {
+            "scenario": scenario.key,
+            "safety": scenario.safety,
+            "scenario_definition": _scenario_definition(scenario),
+            "robot": robot_slot,
+            "host": _host_metadata(ctx),
+            "started_at": started,
+            "finished_at": _now(),
+            "elapsed_seconds": round(time.monotonic() - began, 3),
+            "method": "automated",
+            "result": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
+            "failure_type": type(exc).__name__,
+            "checks": failures,
+            "evidence": evidence,
+        })
+        try:
+            _write_report(path, report)
+        except OSError as record_error:
+            ctx.console.warn(f"Could not save the UART bench failure record: {record_error}")
+        raise
+    evidence, failures = _uart_evidence(
+        ctx,
+        scenario,
+        expected_collector=collector_fingerprint,
+        expected_helper=helper_sha256,
+        previous_observation=previous_observation,
+        previous_generation=previous_generation,
+    )
+    entry = {
+        "scenario": scenario.key,
+        "safety": scenario.safety,
+        "scenario_definition": _scenario_definition(scenario),
+        "robot": robot_slot,
+        "host": _host_metadata(ctx),
+        "started_at": started,
+        "finished_at": _now(),
+        "elapsed_seconds": round(time.monotonic() - began, 3),
+        "method": "automated",
+        "result": "failed" if failures else "passed",
+        "checks": failures,
+        "evidence": evidence,
+    }
+    _append(report, "results", entry)
+    _write_report(path, report)
+    if failures:
+        for failure in failures:
+            ctx.console.err(f"Bench check failed: {failure}")
+        return 1
+    ctx.console.say(f"Bench scenario passed: {scenario.key}")
+    ctx.console.info(f"Campaign report: {path}")
+    return 0
+
+
 def _run(
     ctx: Context,
     scenario: Scenario,
@@ -1944,8 +2240,10 @@ def _run(
             f"Scenario '{scenario.key}' requires operator-controlled timing or another installed "
             f"version. Follow {HARDWARE_GUIDE_URL}, then use 'bench record'."
         )
+    if scenario.key in _UART_SCENARIOS:
+        return _run_uart(ctx, scenario, campaign)
     if scenario.key != "host-smoke" and ctx.profile.method != "fastboot":
-        raise Die("This hardware qualification runner currently covers fastboot models only.")
+        raise Die("This scenario requires a fastboot-method model.")
     path, report = _load_report(ctx, campaign)
     if scenario.key in _USB_STACK_SCENARIOS:
         _verify_recorded_hardware_stack(report, ctx)
@@ -2281,7 +2579,7 @@ def _report(ctx: Context, campaign: str) -> int:
         f"Hardware campaign: {campaign} ({report.get('build')}, {report.get('channel')}, "
         f"model={report.get('model_key') or 'not bound'})"
     )
-    for scenario in SCENARIOS:
+    for scenario in _report_scenarios(report):
         state = latest.get(scenario.key)
         if state == "passed":
             label = "PASS"
@@ -2325,11 +2623,31 @@ def _plan(ctx: Context, campaign: str) -> int:
         for entry in waivers
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
     }
+    if ctx.profile.method == "uart":
+        # The UART scenarios have no fastboot lifecycle to snapshot: U1 and U2/U3 are each a fresh
+        # hardware session, so neither is ever gated on the other's saved state.
+        ctx.console.say(f"Hardware campaign plan: {campaign}")
+        for scenario in _report_scenarios(report):
+            state = latest.get(scenario.key)
+            if state == "passed":
+                label, next_command = "PASS", None
+            elif scenario.key in waived:
+                label, next_command = "WAIVED", None
+            else:
+                label = "READY"
+                next_command = (
+                    f"dreame-valetudo bench run {scenario.key} --campaign {campaign}"
+                )
+            ctx.console.info(f"{label:<9} {scenario.safety}  {scenario.key}")
+            if next_command is not None:
+                ctx.console.detail(f"    {next_command}")
+        ctx.console.info(f"Campaign report: {path}")
+        return 0
     snapshot = _snapshot(ctx, verify_recovery=True)
     ctx.console.say(f"Hardware campaign plan: {campaign}")
     ctx.console.info("READY can run from this robot's current saved state. WAIT explains the "
                      "missing or already-passed lifecycle boundary; it is never counted as a pass.")
-    for scenario in SCENARIOS:
+    for scenario in _report_scenarios(report):
         state = latest.get(scenario.key)
         reason: str | None = None
         if state == "passed":
