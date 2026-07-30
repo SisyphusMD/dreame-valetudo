@@ -279,7 +279,6 @@ def _scenario(key: str) -> Scenario:
         return _SCENARIO_BY_KEY[key]
     except KeyError:
         die(f"Unknown bench scenario '{key}'. Run 'dreame-valetudo bench list'.")
-    raise AssertionError("unreachable")
 
 
 def _action_and_scenario(args: Sequence[str]) -> tuple[str, Scenario | None]:
@@ -1030,7 +1029,7 @@ def _wrong_model_reference(ctx: Context, name: str, model_key: str) -> Robot:
     return robot
 
 
-def _manual_model(ctx: Context, options: Mapping[str, str | bool], scenario: Scenario) -> str | None:
+def _manual_model(ctx: Context, options: Mapping[str, str | bool]) -> str:
     raw = options.get("model") or ctx.env.get("DREAME_MODEL")
     if not isinstance(raw, str) or not raw:
         die("A manually recorded hardware scenario requires --model <model-key> or DREAME_MODEL.")
@@ -1354,10 +1353,7 @@ def _evidence(before: Snapshot, after: Snapshot) -> dict[str, object]:
 def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str]:
     markers = set(after.markers)
     failures: list[str] = []
-    if scenario.key in {
-        "stock-recon", "legacy-root-adoption", "recon-repeat", "fel-wrong-timing", "terminal-loss-prompt",
-        "usb-drop-recon", "ctrl-c-recon",
-    }:
+    if scenario.key in _RECOVERY_OUTPUT:
         if "recon" not in markers:
             failures.append("recon completion marker is absent")
         if not after.recovery_valid:
@@ -2184,7 +2180,7 @@ def _record(
     if note is not None and not isinstance(note, str):
         raise Die("Invalid bench note.")
     path, report = _load_report(ctx, campaign)
-    model_key = _manual_model(ctx, options, scenario)
+    model_key = _manual_model(ctx, options)
     robot = _manual_robot(ctx, options, scenario)
     if robot.state_get("model_key") != model_key:
         raise Die("The manual bench robot workspace does not match the recorded model.")
@@ -2232,7 +2228,7 @@ def _waive(
     ):
         raise Die("A waiver requires --reason, --risk, and --accepted-by.")
     path, report = _load_report(ctx, campaign)
-    model_key = _manual_model(ctx, options, scenario)
+    model_key = _manual_model(ctx, options)
     robot = _manual_robot(ctx, options, scenario)
     if robot.state_get("model_key") != model_key:
         raise Die("The manual bench robot workspace does not match the recorded model.")
