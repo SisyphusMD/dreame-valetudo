@@ -351,6 +351,26 @@ def _hardware_responder(config: str = _CONFIG, *, returns_to_fel: bool = False):
     return answer
 
 
+def test_the_disk_advisory_reserves_what_extraction_actually_writes(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The low-disk advisory must size to what restore writes — every required partition in full,
+    including both A/B copies — not a flat guess that understates the real footprint."""
+    ctx = make_ctx(robot_name="kitchen")
+    _recovery_capture(ctx)
+    reserved: list[int] = []
+    monkeypatch.setattr(
+        restore_mod, "warn_if_low_disk",
+        lambda _console, _dest, need_bytes: reserved.append(need_bytes),
+    )
+
+    prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    # boot1 + rootfs1 + boot2 + rootfs2 + private + misc, each extracted in full (sectors * 512).
+    expected = (128 + 2304 + 128 + 2304 + 64 + 128) * 512
+    assert reserved == [expected]
+
+
 def test_prepare_stock_restore_kit_validates_and_publishes_once(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name="kitchen")
     _recovery_capture(ctx)

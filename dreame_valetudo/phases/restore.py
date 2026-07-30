@@ -916,7 +916,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "(missing: " + ", ".join(missing) + ").")
     ctx.backups_dir.mkdir(parents=True, exist_ok=True)
     ctx.backups_dir.chmod(0o700)
-    warn_if_low_disk(ctx.console, ctx.backups_dir, 512 * (1 << 20))
     source_records: dict[str, dict[str, object]] = {}
     source_digests: dict[Path, str] = {}
     head = b""
@@ -936,6 +935,10 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "build a restore kit.")
     partitions, disk_bytes = _parse_gpt(head)
     required = _required_partitions(partitions, len(decrypted) * chunk_bytes)
+    # Size the advisory to what extraction actually writes: every required partition in full,
+    # including both the A and B copies (~1.2 GB on hardware), so a near-full disk is caught up
+    # front rather than part way through the kit.
+    warn_if_low_disk(ctx.console, ctx.backups_dir, sum(part.size for part in required.values()))
     first_partition = min(part.start for part in partitions.values())
     if first_partition > len(head):
         die("The reserved stock-firmware region is larger than the supported 64 MiB safety bound.")
