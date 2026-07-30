@@ -25,6 +25,7 @@ from .fel import Fel
 from .profiles import Profile
 from .run import Runner
 from .session import describe_run, name_the_robot_on_the_bar, session_name, working_tmux
+from .uart import UartConsole, resolve_uart_transport
 from .workspace import Robot, Workspace, backups_dir
 
 
@@ -36,6 +37,37 @@ def _local_now() -> str:
 def _stdin_isatty() -> bool:
     """Deferred so it reflects sys.stdin at Context-creation time, not import time."""
     return sys.stdin.isatty()
+
+
+def _packaged_uart_helper(env: Mapping[str, str]) -> Path | None:
+    """Where a release package puts the frozen dreame-uart helper, if this is one."""
+    override = env.get("DREAME_LIBEXEC")
+    if override:
+        return Path(override) / "dreame-uart"
+    if not getattr(sys, "frozen", False):
+        return None
+    executable = Path(sys.executable)
+    if executable.parent == Path("/usr/bin"):
+        return Path("/usr/lib/dreame-valetudo/dreame-uart")
+    return executable.parent / "dreame-uart"
+
+
+def validated_robot_config(
+    robot: Robot,
+    profile: Profile,
+    backups_root: Path,
+    *,
+    robot_env: str | None = None,
+    config_env: str | None = None,
+) -> str | None:
+    """Resolve identity only from the evidence contract for the selected hardware method."""
+    if profile.method == "uart":
+        # Deferred to keep context construction independent from phase dispatch imports.
+        from .phases.uart import validate_uart_adoption  # noqa: PLC0415
+
+        status = validate_uart_adoption(robot, profile, backups_root)
+        return status.config if status is not None else None
+    return robot.config(robot_env=robot_env, config_env=config_env)
 
 
 @dataclass
@@ -62,6 +94,7 @@ class Context:
     _libexec: Path | None = field(default=None, repr=False, compare=False)
     _fastboot: Fastboot | None = field(default=None, repr=False, compare=False)
     _fel: Fel | None = field(default=None, repr=False, compare=False)
+    _uart: UartConsole | None = field(default=None, repr=False, compare=False)
     _fastboot_checked: bool = field(default=False, repr=False, compare=False)
 
     # --- lazily resolved hardware seams ---
@@ -98,6 +131,18 @@ class Context:
                 self.runner, self.console, self.sunxi_fel, self.fastboot, sleep=self.sleep
             )
         return self._fel
+
+    @property
+    def uart(self) -> UartConsole:
+        if self._uart is None:
+            self._uart = UartConsole(
+                self.runner,
+                resolve_uart_transport(
+                    self.libexec,
+                    native_helper=_packaged_uart_helper(self.env),
+                ),
+            )
+        return self._uart
 
     def need_robot(self) -> Robot:
         if self.robot is None:
@@ -148,8 +193,15 @@ class Context:
         return backups_dir(self.env)
 
     def robot_config(self) -> str | None:
-        """This robot's recorded 'config' identity, with the env fallbacks applied uniformly."""
-        return self.need_robot().config(
+        """This robot's method-aware full ``config`` identity.
+
+        Fastboot recon stores it in ``recon/config.txt``. A UART adoption has no fastboot recon and
+        therefore carries the same full 32-hex value in its authenticated ``uart-identity`` state.
+        """
+        return validated_robot_config(
+            self.need_robot(),
+            self.profile,
+            self.backups_dir,
             robot_env=self.env.get("DREAME_ROBOT"), config_env=self.env.get("DREAME_CONFIG")
         )
 

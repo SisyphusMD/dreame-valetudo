@@ -14,6 +14,7 @@ import errno
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import zipfile
@@ -198,6 +199,60 @@ def write_private_text(path: Path, value: str) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def ensure_durable_private_directory(
+    path: Path,
+    *,
+    description: str = "private directory",
+) -> None:
+    """Create a 0700 directory and persist every entry it had to create along the way.
+
+    A UART session publishes irreplaceable identity material into this tree, so the directory
+    entries themselves must survive a host power loss — not just the file contents that
+    write_private_text already fsyncs.
+    """
+    missing: list[Path] = []
+    cursor = path
+    while True:
+        try:
+            item = cursor.lstat()
+        except FileNotFoundError:
+            missing.append(cursor)
+            parent = cursor.parent
+            if parent == cursor:
+                raise ValueError(f"the {description} has no existing directory ancestor") from None
+            cursor = parent
+            continue
+        except OSError as exc:
+            raise ValueError(f"the {description} cannot be inspected safely: {exc}") from exc
+        if not stat.S_ISDIR(item.st_mode):
+            raise ValueError(f"the {description} is not a real directory: {cursor}")
+        break
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        for directory in reversed(missing):
+            item = directory.lstat()
+            if not stat.S_ISDIR(item.st_mode):
+                raise ValueError(f"the {description} is not a real directory: {directory}")
+            directory.chmod(0o700)
+        for directory in missing:
+            _fsync_directory(directory)
+            _fsync_directory(directory.parent)
+        path.chmod(0o700)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(f"the {description} cannot be created safely: {exc}") from exc
+
+
 def remove_private_file(path: Path) -> None:
     """Durably remove a safety marker before its caller proceeds."""
     try:
@@ -269,6 +324,10 @@ class Robot:
     @property
     def fw_dir(self) -> Path:
         return self.work / "fw"
+
+    @property
+    def uart_dir(self) -> Path:
+        return self.work / "uart"
 
     def state_set(self, name: str, value: str = "done") -> None:
         write_private_text(self.state_dir / name, value + "\n")
