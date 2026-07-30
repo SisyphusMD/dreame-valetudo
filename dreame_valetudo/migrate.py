@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import filecmp
 import gzip
 import json
@@ -190,20 +189,14 @@ def _copied_tree_matches(src: Path, dst: Path) -> bool:
 
 
 def _remove_abandoned_staging(dst: Path) -> None:
+    """Remove staging left by a dead prior run. Unconditional: the workspace lock (session.py)
+    serializes whole invocations, so no live run can own a hidden copy here."""
     for staging in dst.parent.glob(f".{dst.name}.migration-*.payload"):
-        owner = staging.with_suffix(".owner")
-        if not owner.is_file() or owner.is_symlink():
-            continue
-        try:
-            with owner.open("r+") as fh:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if staging.is_dir() and not staging.is_symlink():
-                    shutil.rmtree(staging)
-                else:
-                    staging.unlink(missing_ok=True)
-                owner.unlink()
-        except OSError:
-            continue
+        with contextlib.suppress(OSError):
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging)
+            else:
+                staging.unlink(missing_ok=True)
 
 
 def _safe_move(
@@ -224,17 +217,10 @@ def _safe_move(
         if exc.errno != errno.EXDEV:
             raise
         _remove_abandoned_staging(dst)
-        # Kept open across copy, verification, and publication so cleanup cannot claim this payload.
-        owner = tempfile.NamedTemporaryFile(  # noqa: SIM115
-            mode="w+",
-            dir=dst.parent,
-            prefix=f".{dst.name}.migration-",
-            suffix=".owner",
-            delete=False,
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{dst.name}.migration-", suffix=".payload", dir=dst.parent)
         )
-        owner_path = Path(owner.name)
-        fcntl.flock(owner, fcntl.LOCK_EX)
-        temporary = owner_path.with_suffix(".payload")
+        temporary.rmdir()  # reserve a unique name; copytree/copy2 recreates it as dir/file/symlink
         published = False
         try:
             if src.is_dir() and not src.is_symlink():
@@ -263,13 +249,11 @@ def _safe_move(
             else:
                 src.unlink()
         finally:
-            owner.close()
             if not published:
                 if temporary.is_dir() and not temporary.is_symlink():
                     shutil.rmtree(temporary, ignore_errors=True)
                 else:
                     temporary.unlink(missing_ok=True)
-            owner_path.unlink(missing_ok=True)
     return True
 
 

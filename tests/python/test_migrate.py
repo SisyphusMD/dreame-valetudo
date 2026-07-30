@@ -639,7 +639,6 @@ def test_exdev_retry_removes_an_interrupted_staging_copy(
     staging = tmp_path / ".current.migration-abandoned.payload"
     staging.mkdir()
     (staging / "large-partial-copy").write_bytes(b"stale")
-    staging.with_suffix(".owner").write_text("")
     monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
 
     assert M._safe_move(src, dst, ScriptedConsole()) is True
@@ -647,31 +646,6 @@ def test_exdev_retry_removes_an_interrupted_staging_copy(
     assert dst.read_bytes() == SENTINEL
     assert not src.exists()
     assert not staging.exists()
-    assert not staging.with_suffix(".owner").exists()
-
-
-def test_concurrent_exdev_copies_never_delete_or_publish_each_others_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    dst = tmp_path / "current"
-    first.write_bytes(b"first backup")
-    second.write_bytes(b"second backup")
-    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
-    second_result: list[bool] = []
-
-    def publish_second_while_first_is_staged(first_staged: Path) -> None:
-        second_result.append(M._safe_move(second, dst, ScriptedConsole()))
-        assert first_staged.read_bytes() == b"first backup"
-
-    assert M._safe_move(first, dst, ScriptedConsole(), publish_second_while_first_is_staged) is False
-
-    assert second_result == [True]
-    assert first.read_bytes() == b"first backup"
-    assert not second.exists()
-    assert dst.read_bytes() == b"second backup"
-    assert not list(tmp_path.glob(".current.migration-*"))
 
 
 def test_exdev_directory_copy_verifies_file_bytes_before_removing_source(
