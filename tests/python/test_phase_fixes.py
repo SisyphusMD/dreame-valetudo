@@ -44,11 +44,23 @@ def _reachable_dreame(argv: tuple[str, ...]) -> Result | None:
     return None
 
 
-def _bind_impl_robot(ctx: Context) -> None:
+def _matching_fix_robot(argv: tuple[str, ...]) -> Result | None:
+    """Shared responder prefix: reachable Dreame AP that IS the selected robot."""
+    preflight = _reachable_dreame(argv)
+    if preflight is not None:
+        return preflight
+    if "factory_config=" in _remote(argv):
+        return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={_CONFIG}\n", "")
+    return None
+
+
+def _bind_recon_robot(ctx: Context, config: str | None = _CONFIG) -> Context:
     ctx.robot = Robot(ctx.ws.robots_dir / "bench")
     ctx.robot.state_set("model_key", ctx.profile.key)
     ctx.robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    (ctx.robot.recon_dir / "config.txt").write_text(f"config: {_CONFIG}\n")
+    if config is not None:
+        (ctx.robot.recon_dir / "config.txt").write_text(f"config: {config}\n")
+    return ctx
 
 
 def test_fix_wifi_preserves_the_official_reset_command(make_ctx: CtxFactory) -> None:
@@ -94,17 +106,94 @@ def test_fix_keeps_ap_advice_for_connection_failures(make_ctx: CtxFactory) -> No
         fix_did(ctx)
 
 
+@pytest.mark.parametrize(("command", "name"), [(fix_did, "fix-did"), (fix_key, "fix-key")])
+def test_fix_requires_recorded_recon_identity_before_reading_robot_data(
+    make_ctx: CtxFactory, command: Callable[[Context], bool], name: str,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        return _reachable_dreame(argv) or Result(argv, 0, "", "")
+
+    ctx = _bind_recon_robot(make_ctx(responder=responder), config=None)
+
+    with pytest.raises(Die, match=rf"re-run recon before {name}"):
+        command(ctx)
+
+    # Only the AP guard ran: no factory identity was read and nothing was rewritten.
+    remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    assert remotes == ["true", "test -d /mnt/private/ULI/factory"]
+
+
+@pytest.mark.parametrize(
+    ("command", "factory_path"), [(fix_did, "did.txt"), (fix_key, "key.txt")],
+)
+def test_fix_rejects_another_robot_before_any_repair_read_or_write(
+    make_ctx: CtxFactory, command: Callable[[Context], bool], factory_path: str,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _reachable_dreame(argv)
+        if pre is not None:
+            return pre
+        if "factory_config=" in _remote(argv):
+            return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={'b' * 32}\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
+
+    with pytest.raises(Die, match="factory config does not match"):
+        command(ctx)
+
+    remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    assert not any(factory_path in remote for remote in remotes)
+    assert not any(
+        marker in remote
+        for remote in remotes
+        for marker in ("did_orig.txt", "key_orig.txt", "dreame_release.na", "reboot")
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "factory_path", "field", "value"),
+    [(fix_did, "did.txt", "did", "12345"), (fix_key, "key.txt", "key", "ALREADYSET12345")],
+)
+def test_fix_proceeds_on_the_correctly_bound_robot(
+    make_ctx: CtxFactory,
+    command: Callable[[Context], bool],
+    factory_path: str,
+    field: str,
+    value: str,
+) -> None:
+    """The false-negative direction: the identity check must not block the intended robot."""
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _matching_fix_robot(argv)
+        if pre is not None:
+            return pre
+        remote = _remote(argv)
+        if factory_path in remote or f'$1 == "{field}"' in remote:
+            return Result(argv, 0, value + "\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = _bind_recon_robot(make_ctx(responder=responder, interactive=False))
+
+    assert command(ctx) is True
+
+    # The identity is proven BEFORE the repair reads the factory file it might rewrite.
+    remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
+    identity = next(i for i, r in enumerate(remotes) if "factory_config=" in r)
+    repair = next(i for i, r in enumerate(remotes) if factory_path in r)
+    assert identity < repair
+
+
 def test_fix_did_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None:
     """A piped (non-tty) run must ABORT at the confirm, never rewrite did.txt or reboot."""
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         if "did.txt" in _remote(argv):
             return Result(argv, 0, "-1\n", "")  # a repairable negative deviceId
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, interactive=False, confirms=[])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, interactive=False, confirms=[]))
     assert fix_did(ctx) is False
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("reboot" in r for r in remotes)      # never rebooted
@@ -113,7 +202,7 @@ def test_fix_did_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None
 
 def test_fix_did_already_positive_returns_true(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         if "did.txt" in _remote(argv):
@@ -122,14 +211,14 @@ def test_fix_did_already_positive_returns_true(make_ctx: CtxFactory) -> None:
             return Result(argv, 0, "12345\n", "")
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, interactive=False)
+    ctx = _bind_recon_robot(make_ctx(responder=responder, interactive=False))
     assert fix_did(ctx) is True
 
 
 def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactory) -> None:
     """The patched config goes over stdin (cat > ...), and no remote command interpolates JSON."""
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         cmd = _remote(argv)
@@ -146,7 +235,7 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(model="x40-ultra", responder=responder)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     streamed_modes: list[int] = []
 
     def redirect(
@@ -177,9 +266,11 @@ def _empty_key_then_secure_storage(argv: tuple[str, ...]) -> Result | None:
 
 def test_fix_key_restores_from_secure_storage(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(argv, 0, "", "")
+        return _matching_fix_robot(argv) or _empty_key_then_secure_storage(argv) or Result(
+            argv, 0, "", "",
+        )
 
-    ctx = make_ctx(responder=responder, confirms=[True])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     assert fix_key(ctx) is True
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("key_orig.txt" in r for r in remotes)          # the restore write ran
@@ -189,7 +280,7 @@ def test_fix_key_restores_from_secure_storage(make_ctx: CtxFactory) -> None:
 
 def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         if "key.txt" in _remote(argv):
@@ -198,7 +289,7 @@ def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFacto
             return Result(argv, 0, "ALREADYSET12345\n", "")
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, interactive=False)
+    ctx = _bind_recon_robot(make_ctx(responder=responder, interactive=False))
     assert fix_key(ctx) is True
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("key_orig.txt" in r for r in remotes)       # never wrote
@@ -213,7 +304,7 @@ def test_fix_refuses_to_infer_stale_config_from_a_failed_inspection(
     make_ctx: CtxFactory, command: Callable[[Context], bool], factory_path: str,
 ) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         cmd = _remote(argv)
@@ -224,7 +315,7 @@ def test_fix_refuses_to_infer_stale_config_from_a_failed_inspection(
             return Result(argv, 255, "", "SSH read failed")
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, confirms=[True])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     with pytest.raises(Die, match=r"Couldn't inspect device\.conf"):
         command(ctx)
     remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
@@ -235,7 +326,7 @@ def test_fix_did_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
     state = {"factory": "-1", "configured": "-1", "writes": 0}
 
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         cmd = _remote(argv)
@@ -251,12 +342,12 @@ def test_fix_did_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
             return Result(argv, 0, state["configured"] + "\n", "")
         return Result(argv, 0, "", "")
 
-    first = make_ctx(responder=responder, confirms=[True])
+    first = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     with pytest.raises(Die, match="Failed to apply"):
         fix_did(first)
     assert state == {"factory": "4294967295", "configured": "-1", "writes": 1}
 
-    retry = make_ctx(responder=responder, confirms=[True])
+    retry = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     assert fix_did(retry) is True
     assert state == {"factory": "4294967295", "configured": "4294967295", "writes": 2}
 
@@ -265,7 +356,7 @@ def test_fix_key_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
     state = {"factory": "", "configured": "", "writes": 0}
 
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         cmd = _remote(argv)
@@ -288,13 +379,13 @@ def test_fix_key_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
         state["configured"] = state["factory"]
         return Result(argv, 0, "", "")
 
-    first = make_ctx(responder=responder, confirms=[True])
+    first = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     first.runner._redirect_responder = redirect  # type: ignore[attr-defined]
     with pytest.raises(Die, match="Failed to apply"):
         fix_key(first)
     assert state["factory"] == "A1b2C3d4E5f6G7h8" and state["configured"] == ""
 
-    retry = make_ctx(responder=responder, confirms=[True])
+    retry = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     retry.runner._redirect_responder = redirect  # type: ignore[attr-defined]
     assert fix_key(retry) is True
     assert state["configured"] == state["factory"]
@@ -304,11 +395,11 @@ def test_fix_key_streams_the_secret_from_an_owner_only_tempfile(
     make_ctx: CtxFactory,
 ) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(
+        return _matching_fix_robot(argv) or _empty_key_then_secure_storage(argv) or Result(
             argv, 0, "", ""
         )
 
-    ctx = make_ctx(responder=responder, confirms=[True])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
     seen: list[tuple[str, int]] = []
 
@@ -329,9 +420,9 @@ def test_fix_key_streams_the_secret_from_an_owner_only_tempfile(
 def test_fix_key_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None:
     """A piped (non-tty) run must ABORT at the confirm, never rewrite key.txt or reboot."""
     def responder(argv: tuple[str, ...]) -> Result:
-        return _reachable_dreame(argv) or _empty_key_then_secure_storage(argv) or Result(argv, 0, "", "")
+        return _matching_fix_robot(argv) or _empty_key_then_secure_storage(argv) or Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, interactive=False, confirms=[])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, interactive=False, confirms=[]))
     assert fix_key(ctx) is False
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("key_orig.txt" in r for r in remotes)  # _apply_key_fix never ran
@@ -340,7 +431,7 @@ def test_fix_key_fails_closed_when_non_interactive(make_ctx: CtxFactory) -> None
 
 def test_fix_key_refuses_a_malformed_secure_storage_key(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         cmd = _remote(argv)
@@ -350,7 +441,7 @@ def test_fix_key_refuses_a_malformed_secure_storage_key(make_ctx: CtxFactory) ->
             return Result(argv, 0, "MI_KEY = has a space!\n", "")  # not [A-Za-z0-9]{8,64}
         return Result(argv, 0, "", "")
 
-    ctx = make_ctx(responder=responder, confirms=[True])
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
     with pytest.raises(Die, match="expected format"):
         fix_key(ctx)
     assert not any("key_orig.txt" in _remote(c) for c in ctx.runner.calls)  # type: ignore[attr-defined]
@@ -359,7 +450,7 @@ def test_fix_key_refuses_a_malformed_secure_storage_key(make_ctx: CtxFactory) ->
 # --- fix_did: the refuse-to-touch guards -------------------------------------------------------
 def _did_responder(did: str) -> object:
     def responder(argv: tuple[str, ...]) -> Result:
-        pre = _reachable_dreame(argv)
+        pre = _matching_fix_robot(argv)
         if pre is not None:
             return pre
         if "did.txt" in _remote(argv):
@@ -369,13 +460,15 @@ def _did_responder(did: str) -> object:
 
 
 def test_fix_did_dies_on_non_integer_did(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(responder=_did_responder("abc"), interactive=False)
+    ctx = _bind_recon_robot(make_ctx(responder=_did_responder("abc"), interactive=False))
     with pytest.raises(Die, match="isn't a plain integer"):
         fix_did(ctx)
 
 
 def test_fix_did_dies_on_out_of_range_did(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(responder=_did_responder("-5000000000"), interactive=False)
+    ctx = _bind_recon_robot(
+        make_ctx(responder=_did_responder("-5000000000"), interactive=False)
+    )
     with pytest.raises(Die, match="valid uint32"):
         fix_did(ctx)
 
@@ -423,7 +516,7 @@ def test_fix_impl_rejects_another_selected_robot_before_any_write(
         return Result(argv, 0, "", "")
 
     ctx = make_ctx(model="x40-ultra", responder=responder)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     redirects: list[tuple[str, ...]] = []
     ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
         lambda argv, _stdout, _stdin: redirects.append(argv) or Result(argv, 0, "", "")
@@ -444,7 +537,7 @@ def test_fix_impl_accepts_same_robot_with_changed_session_config_suffix(
         factory_config=f"{'a' * 8}{'b' * 24}",
     )
     ctx = make_ctx(model="x40-ultra", responder=responder)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
 
     fix_impl(ctx)
 
@@ -479,7 +572,7 @@ def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
         "model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}', ui_up=True,
     )
     ctx = make_ctx(model="x40-ultra", responder=r)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
         lambda argv, _stdout, _stdin: Result(argv, 1, "", "connection lost")
     )
@@ -493,7 +586,7 @@ def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
 def test_fix_impl_dies_on_unknown_model(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.zz9999\n", "", ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     with pytest.raises(Die, match="connected robot reports"):
         fix_impl(ctx)
 
@@ -502,7 +595,7 @@ def test_fix_impl_falls_back_to_profile_class_without_model_line(make_ctx: CtxFa
     # device.conf has no model= -> pin the SELECTED model's class and warn about it.
     r = _impl_responder("did=1\nkey=abc\n", '{"robot":{"implementation":"auto"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r, confirms=[True])
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     fix_impl(ctx)
     assert any(k == "warn" and "No readable model=" in m
                for k, m in ctx.console.lines)  # type: ignore[attr-defined]
@@ -514,7 +607,7 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     fix_impl(ctx)
     assert any("already pins" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert not any("cat > /data/valetudo_config.json" in _remote(c)
@@ -528,7 +621,7 @@ def test_fix_impl_does_not_claim_a_browser_opened_when_no_launcher_exists(
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r, system="Linux")
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
 
     fix_impl(ctx)
 
@@ -542,7 +635,7 @@ def test_fix_impl_hints_fix_did_when_ui_stays_down_with_null_did(make_ctx: CtxFa
     r = _impl_responder("model=dreame.vacuum.r2416\n", '{"robot":{"implementation":"auto"}}',
                         ui_up=False, log_report="Cannot read properties of null (reading 'did')")
     ctx = make_ctx(model="x40-ultra", responder=r)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     fix_impl(ctx)
     assert any("fix-did" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
 
@@ -557,7 +650,7 @@ def test_fix_impl_scrubs_the_shareable_failure_report(make_ctx: CtxFactory) -> N
         log_report=f"startup failed key={mikey} did={did}\n",
     )
     ctx = make_ctx(model="x40-ultra", responder=r)
-    _bind_impl_robot(ctx)
+    _bind_recon_robot(ctx)
     fix_impl(ctx)
 
     written = (ctx.ws.base / "fix-impl.log").read_text()

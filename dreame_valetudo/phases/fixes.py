@@ -67,6 +67,19 @@ def _require_robot_ap(ctx: Context, key: Path | None) -> None:
             "your ROUTER. Join the ROBOT's own AP and re-run.")
 
 
+def _require_selected_robot(ctx: Context, key: Path | None, command: str) -> None:
+    """Prove the robot on the AP is the selected one before a fix reads or rewrites its identity.
+
+    A Dreame AP response is not enough because another owned robot answers on the same address.
+    Fastboot workspaces bind by config + model; UART's guided install never captures config, so its
+    strongest available automatic binding is live model.
+    """
+    expected_config = ctx.robot_config()
+    if expected_config is None and ctx.profile.method == "fastboot":
+        die(f"No recorded config identity for the selected robot; re-run recon before {command}.")
+    _live_robot_identity(ctx, key, expected_config)
+
+
 def fix_wifi(ctx: Context) -> None:
     ctx.console.say("Fix: rooted robot won't stay on your Wi-Fi")
     ctx.console.info("Run ON THE ROBOT (over SSH), then reconfigure Wi-Fi from Valetudo:")
@@ -80,6 +93,7 @@ def fix_did(ctx: Context) -> bool:
     ctx.console.say("Fix: repair a device.conf Valetudo can't parse (negative factory deviceId)")
     ctx.console.say("You must be on the ROBOT's Wi-Fi AP (hold the two OUTER buttons if it's down).")
     _require_robot_ap(ctx, key)
+    _require_selected_robot(ctx, key, "fix-did")
 
     did = "".join(
         robot_ssh(ctx.runner, _TARGET, f"cat {_DID_TXT} 2>/dev/null", key=key, check=False)
@@ -129,6 +143,7 @@ def fix_key(ctx: Context) -> bool:
                     "the cloudKey only in secure storage)")
     ctx.console.say("You must be on the ROBOT's Wi-Fi AP (hold the two OUTER buttons if it's down).")
     _require_robot_ap(ctx, key)
+    _require_selected_robot(ctx, key, "fix-key")
 
     cur = "".join(
         robot_ssh(ctx.runner, _TARGET, f"cat {_KEY_TXT} 2>/dev/null", key=key, check=False)
@@ -181,13 +196,7 @@ def fix_impl(ctx: Context) -> None:
     ctx.console.say("Fix: pin Valetudo's robot implementation")
     _require_robot_ap(ctx, key)
 
-    expected_config = ctx.robot_config()
-    if expected_config is None and ctx.profile.method == "fastboot":
-        die("No recorded config identity for the selected robot; re-run recon before fix-impl.")
-    # This writes persistent robot state. A Dreame AP response is not enough because another owned
-    # robot can use the same address. Fastboot workspaces bind by config + model; UART's guided
-    # install never captures config, so its strongest available automatic binding is live model.
-    _live_robot_identity(ctx, key, expected_config)
+    _require_selected_robot(ctx, key, "fix-impl")
 
     conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
     model = ""
