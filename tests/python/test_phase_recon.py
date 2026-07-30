@@ -27,7 +27,12 @@ from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
-from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP, RECOVERY_STAGING_DIR, Robot
+from dreame_valetudo.workspace import (
+    RECOVERY_BACKUP_ZIP,
+    RECOVERY_STAGING_DIR,
+    Robot,
+    recovery_backup_valid,
+)
 from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 _CFG = "abcdef0123456789abcdef0123456789"
@@ -1005,3 +1010,35 @@ def test_a_failed_repull_leaves_the_previous_recovery_capture_intact(
         assert current.read_bytes() == blob, f"{name}.bin was destroyed by the failed re-pull"
     assert (robot.recon_dir / RECOVERY_BACKUP_ZIP).read_bytes() == good_zip
     assert not (robot.recon_dir / RECOVERY_STAGING_DIR).exists()
+
+
+def test_a_failed_repull_leaves_the_surviving_capture_usable_by_the_restore_gates(
+    make_ctx: CtxFactory,
+) -> None:
+    """Preserving the bytes is not enough: the gates must still accept them.
+
+    begin_recovery_refresh marks the capture untrusted before the pull. When the replacement never
+    leaves staging, that marker has to come back off, or root/restore refuse an intact un-brick copy.
+    """
+    ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
+    _dist_ready(ctx)
+    recon(ctx, recovery_backup=True)
+    robot = ctx.need_robot()
+    assert recovery_backup_valid(robot.recon_dir)
+
+    def failing(argv: tuple[str, ...]) -> Result:
+        joined = " ".join(str(a) for a in argv)
+        if "get_staged" in joined:
+            Path(str(argv[-1])).write_bytes(b"\xff" * 16)
+            return Result(argv, 0, "OKAY uploaded 16 bytes", "")
+        if "getvar config" in joined:
+            return Result(argv, 0, f"OKAY {_CFG}", "")
+        return Result(argv, 0, "OKAY", "")
+
+    ctx.runner._responder = failing  # type: ignore[attr-defined]
+    recon(ctx, recovery_backup=True, force=True)
+
+    assert recovery_backup_valid(robot.recon_dir)
+    assert not (robot.recon_dir / RECOVERY_REFRESH_FILE).exists(), (
+        "the refresh marker survived a failed re-pull, condemning an intact capture"
+    )

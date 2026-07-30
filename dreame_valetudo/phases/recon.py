@@ -27,6 +27,7 @@ from ..workspace import (
     Robot,
     Workspace,
     protect_recon_artifacts,
+    recovery_backup_valid,
     recovery_dump_valid,
     recovery_zip_valid,
 )
@@ -370,10 +371,21 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                                      "before attempting stock restore; the incomplete-generation "
                                      "marker prevents these files from being trusted.")
             elif pulled is False:
-                backup_state = "missing"
-                ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
-                                 "recovery backup was saved. Re-run recon before "
-                                 "attempting stock restore.")
+                # A False return means the replacement never left staging, so whatever was already
+                # on disk is untouched. Clear the refresh marker to say so: leaving it set would
+                # condemn a complete, previously proven un-brick copy, and root/restore would then
+                # refuse the very capture that survived — exactly when restore is most needed.
+                finish_recovery_refresh(robot.recon_dir)
+                if recovery_backup_valid(robot.recon_dir):
+                    backup_state = "obtained"
+                    ctx.console.warn("Recovery backup pull errored, so the capture was not "
+                                     "refreshed. The existing recovery backup is intact and still "
+                                     "usable for stock restore.")
+                else:
+                    backup_state = "missing"
+                    ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
+                                     "recovery backup was saved. Re-run recon before "
+                                     "attempting stock restore.")
 
     # A failed/skipped recovery pull cannot be allowed to silently turn an older rooted robot into
     # a reflash. The answer can only suppress writes: claiming an unrooted robot is rooted makes the
