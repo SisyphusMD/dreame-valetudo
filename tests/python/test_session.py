@@ -131,6 +131,17 @@ def test_pure_commands_run_inline(cmd: str) -> None:
     assert tmux_plan(("/usr/bin/dreame-valetudo", cmd), {}, _TMUX, _SESSION, interactive=True) is None
 
 
+@pytest.mark.parametrize(
+    "argv", [("bench", "list"), ("root", "--help"), ("push", "-h")],
+)
+def test_invocations_made_pure_by_their_arguments_run_inline(argv: tuple[str, ...]) -> None:
+    """Purity is a property of the whole invocation: `bench list` prints a table and `--help`
+    prints usage, so neither should attach the user to a flash already in progress."""
+    assert tmux_plan(
+        ("/usr/bin/dreame-valetudo", *argv), {}, _TMUX, _SESSION, interactive=True,
+    ) is None
+
+
 def test_no_bare_invocation_left_unwrapped() -> None:
     """No subcommand means the auto chain, which ends in the flash."""
     assert tmux_plan(("/usr/bin/dreame-valetudo",), {}, _TMUX, _SESSION, interactive=True) is not None
@@ -628,6 +639,16 @@ def test_a_pure_command_is_never_offered_the_chance_to_end_a_live_run(
     con, ran = _reexec_with(tmp_path, monkeypatch, [cmd])
     assert "kill-session" not in ran
     assert "has-session" not in ran      # not even asked, so nothing to offer
+    assert con.lines == []
+
+
+@pytest.mark.parametrize("args", [["bench", "list"], ["root", "--help"]])
+def test_an_invocation_made_pure_by_its_arguments_is_offered_no_such_chance_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str],
+) -> None:
+    con, ran = _reexec_with(tmp_path, monkeypatch, args)
+    assert "kill-session" not in ran
+    assert "has-session" not in ran
     assert con.lines == []
 
 
