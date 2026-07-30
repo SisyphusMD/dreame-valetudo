@@ -140,7 +140,12 @@ def _key_half_status(path: Path, *, private: bool) -> os.stat_result | None:
     ~/.ssh/id_*, every discovery path here already follows, and refusing the target after offering
     it in the picker would strand those users with no override. Permission strictness is
     private-half only, matching OpenSSH — it never checks .pub, which ssh-keygen writes through the
-    caller's umask (umask 002 yields 0664)."""
+    caller's umask (umask 002 yields 0664).
+
+    Ownership is deliberately NOT checked. OpenSSH checks permission bits, not uid, and on a
+    single-user machine a differing uid means a restored/synced home or an earlier sudo run — not an
+    intruder, who would already be the account owner. Refusing on uid only invents false
+    rejections."""
     role = "private" if private else "public"
     try:
         status = path.stat()
@@ -150,10 +155,6 @@ def _key_half_status(path: Path, *, private: bool) -> os.stat_result | None:
         die(f"The SSH {role} key at {path} cannot be inspected safely: {exc}")
     if not stat.S_ISREG(status.st_mode):
         die(f"The SSH {role} key at {path} must resolve to a regular file, not a directory or device.")
-    # A root run is an anticipated mode (see udev.DREAME_NO_UDEV_CHECK), and under sudo the
-    # operator's own key is owned by the invoking user, not by euid 0.
-    if status.st_uid != os.geteuid() and not _owned_by_invoking_user(status):
-        die(f"The SSH {role} key at {path} is not owned by the current user.")
     if private:
         mode = stat.S_IMODE(status.st_mode)
         if mode & 0o077:
@@ -164,13 +165,6 @@ def _key_half_status(path: Path, *, private: bool) -> os.stat_result | None:
     if status.st_size <= 0:
         die(f"The SSH {role} key at {path} is empty.")
     return status
-
-
-def _owned_by_invoking_user(status: os.stat_result) -> bool:
-    if os.geteuid() != 0:
-        return False
-    sudo_uid = os.environ.get("SUDO_UID")
-    return sudo_uid is not None and sudo_uid.isdigit() and status.st_uid == int(sudo_uid)
 
 
 def _public_identity(value: str, *, source: str) -> tuple[str, bytes]:
