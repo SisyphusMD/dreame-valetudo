@@ -61,6 +61,59 @@ def test_run_redirect_missing_tool_is_rc_127(tmp_path: Path) -> None:
     assert "command not found" in r.stderr
 
 
+def test_subprocess_timeout_is_a_clean_rc_124_with_partial_diagnostics() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys,time; print('partial-out', flush=True); "
+            "print('partial-err', file=sys.stderr, flush=True); time.sleep(10)"
+        ),
+    ]
+
+    result = SubprocessRunner().run(command, check=False, timeout=0.05)
+
+    assert result.returncode == 124
+    assert "partial-out" in result.stdout
+    assert "partial-err" in result.stderr
+    assert "timed out after 0.05s" in result.stderr
+    with pytest.raises(RunError, match="timed out"):
+        SubprocessRunner().run(command, timeout=0.05)
+
+
+def test_subprocess_timeout_before_output_is_a_clean_rc_124() -> None:
+    result = SubprocessRunner().run(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        check=False,
+        timeout=0.05,
+    )
+
+    assert result.returncode == 124
+    assert result.stdout == ""
+    assert result.stderr == "command timed out after 0.05s"
+
+
+def test_redirect_timeout_retains_partial_file_and_normalizes_the_error(tmp_path: Path) -> None:
+    output = tmp_path / "partial.bin"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys,time; sys.stdout.buffer.write(b'partial-private-output'); "
+            "sys.stdout.buffer.flush(); print('safe diagnostic', file=sys.stderr, flush=True); "
+            "time.sleep(10)"
+        ),
+    ]
+
+    result = SubprocessRunner().run_redirect(
+        command, stdout_path=str(output), check=False, timeout=0.05
+    )
+
+    assert result.returncode == 124
+    assert output.read_bytes() == b"partial-private-output"
+    assert "safe diagnostic" in result.stderr and "timed out after 0.05s" in result.stderr
+
+
 def test_run_redirect_streams_stdin_file_to_stdout_file(tmp_path: Path) -> None:
     # The un-brick backup uses run_redirect to pipe ssh/tar/dd output to a file; prove the
     # streaming primitive moves bytes end to end (cat < src > dst).
