@@ -127,6 +127,25 @@ def _write_trusted_recovery_generation(
     }))
 
 
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("backup=obtained", "obtained"),
+        ("model=x40-ultra backup=obtained", "obtained"),          # the field the flash gate added
+        ("model=x40-ultra backup=missing", "missing"),
+        ("model=x40-ultra backup=not-requested", "not-requested"),
+        ("model=x40-ultra", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_recon_backup_state_reads_the_field_not_the_whole_marker(
+    marker: str | None, expected: str | None,
+) -> None:
+    """A marker gaining a field must never turn a complete capture into a spurious bench failure."""
+    assert B._recon_backup_state(marker) == expected
+
+
 def test_every_qualification_scenario_is_unique_and_documented() -> None:
     keys = [scenario.key for scenario in B.SCENARIOS]
     assert len(keys) == len(set(keys))

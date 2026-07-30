@@ -1231,6 +1231,19 @@ def _backup_artifact_hashes(directory: Path) -> dict[str, str]:
     return values
 
 
+def _recon_backup_state(marker: str | None) -> str | None:
+    """The `backup=` field of a recon completion marker, or None if it carries none.
+
+    Read the one field rather than comparing the whole marker: the marker also carries the model
+    the flash gate is authorized against, and matching it as a literal string turned every added
+    field into a silent qualification failure.
+    """
+    for field in (marker or "").split():
+        if field.startswith("backup="):
+            return field.removeprefix("backup=")
+    return None
+
+
 def _recovery_provenance_valid(robot: Robot | None) -> bool:
     if robot is None:
         return False
@@ -1303,7 +1316,9 @@ def _snapshot_for_robot(
         recovery_refresh_pending=bool(
             robot and (robot.recon_dir / RECOVERY_REFRESH_FILE).exists()
         ),
-        recon_backup_obtained=bool(robot and robot.state_get("recon") == "backup=obtained"),
+        recon_backup_obtained=bool(
+            robot and _recon_backup_state(robot.state_get("recon")) == "obtained"
+        ),
         backup_counts=backup_counts,
         bound_factory_backups=bound_factory,
         backup_artifacts=backup_artifacts,
@@ -1629,9 +1644,8 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         )
         if failures:
             raise Die("Bench check failed after USB loss: " + "; ".join(failures) + ".")
-        state = robot.state_get("recon") or ""
         refresh = (robot.recon_dir / RECOVERY_REFRESH_FILE).is_file()
-        rejected = "backup=missing" in state and refresh
+        rejected = _recon_backup_state(robot.state_get("recon")) == "missing" and refresh
         if not rejected:
             raise Die("Bench check failed: the interrupted recovery generation was not rejected.")
         if ctx.interactive:
