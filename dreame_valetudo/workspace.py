@@ -9,8 +9,11 @@ Storage model, all under the ~/dreame-valetudo/ umbrella:
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import re
+import sys
 import tempfile
 import zipfile
 from collections.abc import Mapping
@@ -31,6 +34,46 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 # `get_staged` image the builder's checker wants). A launch self-heal renames the pre-rename
 # `dreame_samples.zip` forward to this (see migrate.py), so readers only ever need this name.
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
+
+
+def rename_no_replace(src: Path, dst: Path) -> None:
+    """Atomically publish ``src`` only while every kind of ``dst`` entry is still absent.
+
+    os.rename silently clobbers, and a check-then-rename has a window; publishing an irreplaceable
+    backup needs the kernel to enforce absence, so this drops to renamex_np/renameat2. There is no
+    stdlib equivalent, and no-clobber is the property that keeps a republish from destroying a
+    capture that can never be retaken."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(encoded_src, encoded_dst, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError:
+            raise OSError(
+                errno.ENOSYS,
+                "this Linux libc does not expose renameat2; cannot publish without the "
+                "no-clobber guarantee",
+                dst,
+            ) from None
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(-100, encoded_src, -100, encoded_dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive rename is unsupported on this platform", dst)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), dst)
 
 
 def recovery_dump_valid(path: Path) -> bool:

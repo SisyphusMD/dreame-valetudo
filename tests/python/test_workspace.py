@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -230,3 +231,19 @@ def test_robot_tag_unknown_config() -> None:
 
 def test_robot_tag_uses_given_model_code() -> None:
     assert robot_tag("r9316", _CFG).startswith("dreame-r9316-")
+
+
+def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _OldLibc:
+        pass
+
+    monkeypatch.setattr(workspace_module.sys, "platform", "linux")
+    monkeypatch.setattr(workspace_module.ctypes, "CDLL", lambda *_args, **_kwargs: _OldLibc())
+
+    with pytest.raises(OSError) as exc:
+        workspace_module.rename_no_replace(tmp_path / "source", tmp_path / "destination")
+
+    assert exc.value.errno == errno.ENOSYS
+    assert "renameat2" in str(exc.value)

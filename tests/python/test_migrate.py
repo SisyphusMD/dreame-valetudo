@@ -527,7 +527,7 @@ def test_exdev_falls_back_to_a_verified_copy(
 ) -> None:
     _seed_v0(tmp_path)
 
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     M.migrate(_env(tmp_path), ScriptedConsole())
     base = tmp_path / "dreame-valetudo"
     assert (base / "work" / "robots" / "kitchen" / "state" / "recon").read_bytes() == SENTINEL
@@ -551,7 +551,7 @@ def test_exdev_work_copy_is_locked_while_still_hidden(
         assert (staged / ".lock").read_text() == "held"
         staged_paths.append(staged)
 
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     M.migrate(_env(tmp_path), ScriptedConsole(), before_publish)
 
     assert len(staged_paths) == 1
@@ -568,7 +568,7 @@ def test_exdev_merge_copies_and_verifies_regular_files(
     dst.mkdir(parents=True)
     (src / "recon").write_bytes(SENTINEL)
 
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     assert M._safe_merge(src, dst, ScriptedConsole()) is True
     assert (dst / "recon").read_bytes() == SENTINEL
     assert not src.exists()
@@ -585,7 +585,7 @@ def test_exdev_file_copy_keeps_source_and_removes_unverified_destination(
     def corrupt_copy(_src: object, target: object, **_kw: object) -> None:
         Path(target).write_bytes(b"corrupt")
 
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     monkeypatch.setattr(M.shutil, "copy2", corrupt_copy)
     with pytest.raises(Die, match="did not verify"):
         M._safe_move(src, dst, ScriptedConsole())
@@ -609,7 +609,7 @@ def test_exdev_publish_never_clobbers_a_destination_that_appeared_during_copy(
         target.write_bytes(b"late arrival")
         raise FileExistsError(errno.EEXIST, "already exists", target)
 
-    monkeypatch.setattr(M, "_rename_no_replace", destination_appears)
+    monkeypatch.setattr(M, "rename_no_replace", destination_appears)
 
     assert M._safe_move(src, dst, ScriptedConsole()) is False
     assert src.read_bytes() == SENTINEL
@@ -624,7 +624,7 @@ def test_exclusive_rename_does_not_replace_an_existing_path(tmp_path: Path) -> N
     dst.write_bytes(b"keep me")
 
     with pytest.raises(FileExistsError):
-        M._rename_no_replace(src, dst)
+        M.rename_no_replace(src, dst)
 
     assert src.read_bytes() == SENTINEL
     assert dst.read_bytes() == b"keep me"
@@ -640,7 +640,7 @@ def test_exdev_retry_removes_an_interrupted_staging_copy(
     staging.mkdir()
     (staging / "large-partial-copy").write_bytes(b"stale")
     staging.with_suffix(".owner").write_text("")
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
 
     assert M._safe_move(src, dst, ScriptedConsole()) is True
 
@@ -658,7 +658,7 @@ def test_concurrent_exdev_copies_never_delete_or_publish_each_others_staging(
     dst = tmp_path / "current"
     first.write_bytes(b"first backup")
     second.write_bytes(b"second backup")
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     second_result: list[bool] = []
 
     def publish_second_while_first_is_staged(first_staged: Path) -> None:
@@ -674,22 +674,6 @@ def test_concurrent_exdev_copies_never_delete_or_publish_each_others_staging(
     assert not list(tmp_path.glob(".current.migration-*"))
 
 
-def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _OldLibc:
-        pass
-
-    monkeypatch.setattr(M.sys, "platform", "linux")
-    monkeypatch.setattr(M.ctypes, "CDLL", lambda *_args, **_kwargs: _OldLibc())
-
-    with pytest.raises(OSError) as exc:
-        M._rename_no_replace(tmp_path / "source", tmp_path / "destination")
-
-    assert exc.value.errno == errno.ENOSYS
-    assert "renameat2" in str(exc.value)
-
-
 def test_exdev_directory_copy_verifies_file_bytes_before_removing_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -703,7 +687,7 @@ def test_exdev_directory_copy_verifies_file_bytes_before_removing_source(
         (copied / "nested" / "recon").write_bytes(b"corrupt-data!\n")
         return copied
 
-    monkeypatch.setattr(M, "_rename_no_replace", _cross_device_then_publish)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
     monkeypatch.setattr(M.shutil, "copytree", corrupt_tree)
     with pytest.raises(Die, match="did not verify"):
         M._safe_move(src, dst, ScriptedConsole())

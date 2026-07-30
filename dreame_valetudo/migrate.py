@@ -24,16 +24,13 @@ reverse-migrate.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import errno
 import fcntl
 import filecmp
 import gzip
 import json
-import os
 import re
 import shutil
-import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -48,6 +45,7 @@ from .workspace import (
     home_dir,
     protect_recon_artifacts,
     protect_state_artifacts,
+    rename_no_replace,
     robot_dirs,
 )
 from .workspace import base_dir as workspace_base_dir
@@ -191,41 +189,6 @@ def _copied_tree_matches(src: Path, dst: Path) -> bool:
     return True
 
 
-def _rename_no_replace(src: Path, dst: Path) -> None:
-    """Atomically publish ``src`` only when ``dst`` is still absent (macOS + Linux)."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
-    if sys.platform == "darwin":
-        rename = libc.renamex_np
-        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(encoded_src, encoded_dst, 0x00000004)  # RENAME_EXCL
-    elif sys.platform.startswith("linux"):
-        try:
-            rename = libc.renameat2
-        except AttributeError:
-            raise OSError(
-                errno.ENOSYS,
-                "this Linux libc does not expose renameat2; cannot migrate without the "
-                "no-clobber guarantee",
-                dst,
-            ) from None
-        rename.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        rename.restype = ctypes.c_int
-        result = rename(-100, encoded_src, -100, encoded_dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
-    else:
-        raise OSError(errno.ENOTSUP, "exclusive rename is unsupported on this platform", dst)
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), dst)
-
-
 def _remove_abandoned_staging(dst: Path) -> None:
     for staging in dst.parent.glob(f".{dst.name}.migration-*.payload"):
         owner = staging.with_suffix(".owner")
@@ -253,7 +216,7 @@ def _safe_move(
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _rename_no_replace(src, dst)
+        rename_no_replace(src, dst)
     except OSError as exc:
         if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
             console.warn(f"Left {src.name} in place — {dst} already exists.")
@@ -288,7 +251,7 @@ def _safe_move(
             if before_publish is not None:
                 before_publish(temporary)
             try:
-                _rename_no_replace(temporary, dst)
+                rename_no_replace(temporary, dst)
             except OSError as publish_error:
                 if publish_error.errno in {errno.EEXIST, errno.ENOTEMPTY}:
                     console.warn(f"Left {src.name} in place — {dst} appeared during the copy.")
