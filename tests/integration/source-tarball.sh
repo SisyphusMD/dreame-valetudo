@@ -9,9 +9,12 @@ trap 'rm -rf "$tmp"' EXIT
 source_tree="$tmp/source"
 mkdir -p "$source_tree/packaging"
 cp -R "$repo/dreame_valetudo" "$repo/libexec" "$source_tree/"
-cp "$repo/pyproject.toml" "$repo/README.md" "$repo/LICENSE" "$repo/CHANGELOG.md" \
-  "$source_tree/"
-cp "$repo/packaging/build-tarball.sh" "$source_tree/packaging/"
+cp -R "$repo/docs" "$source_tree/"
+cp "$repo/pyproject.toml" "$repo/uv.lock" "$repo/README.md" "$repo/LICENSE" \
+  "$repo/CHANGELOG.md" "$source_tree/"
+cp "$repo/packaging/build-tarball.sh" "$repo/packaging/build-source-tar.py" \
+  "$repo/packaging/check-doc-links.py" "$repo/packaging/source-docs.txt" \
+  "$source_tree/packaging/"
 
 (
   cd "$source_tree"
@@ -48,4 +51,16 @@ HOME="$test_home" DREAME_NO_TMUX=1 DREAME_NO_UPDATE_CHECK=1 DREAME_NO_UDEV_CHECK
 test ! -e "$tmp/venv/bin/dreame-valetudo"
 test -f "$test_home/dreame-valetudo/backups/uninstall-must-preserve"
 
-echo "PASS: source tarball contents, isolated install, host smoke, and uninstall"
+# A second build must be byte-identical. Reproducibility is the whole point of normalising
+# uid/gid/mtime/mode, and only a rebuild-and-compare actually proves it.
+first_digest=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$tarball")
+rm -f "$tarball"
+(
+  cd "$source_tree"
+  bash packaging/build-tarball.sh >/dev/null
+)
+second_digest=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$tarball")
+test "$first_digest" = "$second_digest" \
+  || { echo "source tarball is not reproducible: $first_digest != $second_digest" >&2; exit 1; }
+
+echo "PASS: reproducible source tarball, contents, isolated install, host smoke, and uninstall"
