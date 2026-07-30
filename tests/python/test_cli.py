@@ -153,7 +153,7 @@ def test_uart_bench_run_is_rejected_before_robot_selection(tmp_path: Path) -> No
         },
         console=con, runner=RecordingRunner(),
     ) == 1
-    assert _has(con, "fastboot models only")
+    assert _has(con, "is a fastboot qualification and cannot be recorded")
     assert not (tmp_path / "robots").exists()
 
 

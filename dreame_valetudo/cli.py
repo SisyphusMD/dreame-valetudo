@@ -34,6 +34,7 @@ from .phases.push import backup, push, update_valetudo, valetudo_update_availabl
 from .phases.recon import recon
 from .phases.restore import restore
 from .phases.root import root
+from .phases.uart import adopt_uart, observe_uart, uart_adoption_status
 from .platform_env import apply_library_path
 from .profiles import (
     DEFAULT_MODEL_KEY,
@@ -81,10 +82,14 @@ _FASTBOOT_ONLY = frozenset(
     {"backup", "doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
 )
 
+# The mirror image: the UART serial-shell commands have no meaning on a fastboot model, whose
+# identity and backups come from recon instead.
+_UART_ONLY = frozenset({"uart-adopt", "uart-observe"})
+
 _ROBOT_COMMANDS = frozenset({
     "auto", "backup", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
-    "model", "push", "recon", "restore", "root", "sshkey", "update-valetudo", "valetudo",
-    "verify-form",
+    "model", "push", "recon", "restore", "root", "sshkey", "uart-adopt", "uart-observe",
+    "update-valetudo", "valetudo", "verify-form",
 })
 
 # Commands whose entire grammar is their own name. An extra word there is a typo the user believes
@@ -92,7 +97,8 @@ _ROBOT_COMMANDS = frozenset({
 _NO_ARGUMENT_COMMANDS = frozenset({
     "-V", "--version", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key",
     "fix-wifi", "help", "-h", "--help", "install-udev", "migrate", "model", "sshkey", "status",
-    "ui", "uninstall", "valetudo", "verify-form", "verify-forms", "version",
+    "uart-adopt", "uart-observe", "ui", "uninstall", "valetudo", "verify-form", "verify-forms",
+    "version",
 })
 
 # Every name _dispatch answers to, checked before the workspace exists so a typo cannot trigger the
@@ -163,7 +169,7 @@ def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True
     ctx.console.say("Which Dreame robot are you rooting?")
     for i, key in enumerate(SUPPORTED_MODELS, 1):
         p = load_profile(key)
-        suffix = " (UART - guided manual, not yet automated)" if p.method == "uart" else ""
+        suffix = " (UART - read-only observation/adoption)" if p.method == "uart" else ""
         ctx.console.info(f"   {i}) {p.model}{suffix}")
     back = ", b=back" if allow_back else ""
     choice = ctx.console.ask(f"Model [1-{len(SUPPORTED_MODELS)}{back}]?").strip()
@@ -189,6 +195,19 @@ def _bind_robot(ctx: Context) -> bool:
     """
     if not _profile_for_work(ctx):
         return False
+    if ctx.robot is None and ctx.profile.method == "uart":
+        # A UART model has no fastboot recon to auto-name from, and the evidence it collects has to
+        # land in a private per-robot workspace, so the name has to exist before the serial opens.
+        if not ctx.interactive:
+            raise Die(
+                "UART collection cannot auto-name a robot before its serial identity is proven — "
+                "set DREAME_ROBOT=<name>."
+            )
+        ctx.console.info(
+            "UART collection needs a workspace name before listening; it cannot safely derive one "
+            "from fastboot recon."
+        )
+        _name_new_robot(ctx, require_name=True)
     ctx.bind_robot()
     return True
 
@@ -210,21 +229,27 @@ def _profile_for_work(ctx: Context) -> bool:
     return select_model(ctx, allow_back=robot is not None)
 
 
-def _name_new_robot(ctx: Context, *, allow_back: bool = False) -> bool:
+def _name_new_robot(
+    ctx: Context, *, allow_back: bool = False, require_name: bool = False,
+) -> bool:
     """Name a brand-new robot up front. Blank — or non-interactive — leaves ctx.robot None so recon
-    auto-names it by device ID; a given name creates the robot dir now. Shared by the first-robot
-    and 'start FRESH' paths so a device is nameable from the very first run (recon or auto). A name
-    collision is not fatal — names stay unique (they're the human handle), so it just re-prompts."""
+    auto-names it by device ID; a given name creates the robot dir now. UART has no fastboot recon
+    identity to name from, so its post-model-selection call requires a name. Shared by the
+    first-robot and 'start FRESH' paths so a device is nameable from the very first run (recon or
+    auto). A name collision is not fatal — names stay unique (they're the human handle), so it just
+    re-prompts."""
     if not ctx.interactive:
         ctx.robot = None
         return True
     while True:
         back = ", b=back" if allow_back else ""
-        raw = ctx.console.ask(
-            f"Name for this robot [blank = auto-name by device ID{back}]:"
-        ).strip()
+        blank = "name required for UART collection" if require_name else "auto-name by device ID"
+        raw = ctx.console.ask(f"Name for this robot [blank = {blank}{back}]:").strip()
         if allow_back and raw.lower() in {"b", "back"}:
             return False
+        if not raw and require_name:
+            ctx.console.warn("Enter a name so this UART evidence has a private robot workspace.")
+            continue
         if not raw:
             ctx.robot = None
             ctx.console.info("New robot — created and named by device ID once recon reads it.")
@@ -318,7 +343,9 @@ def select_robot(ctx: Context) -> None:
         ctx.console.say(f"Found {len(dirs)} prior robot(s):")
         for i, d in enumerate(dirs, 1):
             robot = Robot(d)
-            ctx.console.info(f"   {i}) {robot.display_name()}   {_summary(robot)}")
+            ctx.console.info(
+                f"   {i}) {robot.display_name()}   {_summary(robot, ctx.backups_dir)}"
+            )
         fresh = len(dirs) + 1
         ctx.console.info(f"   {fresh}) start a FRESH robot")
         ctx.console.info("   (to remove one: dreame-valetudo forget <name>)")
@@ -463,7 +490,20 @@ def uart(ctx: Context) -> None:
 
 
 def auto(ctx: Context, rest: Sequence[str]) -> None:
-    if ctx.profile.method == "uart":
+    if (
+        ctx.profile.method == "uart"
+        and ctx.robot is not None
+        and ctx.robot.state_has("uart-adoption-attempt")
+    ):
+        die("A UART adoption or requalification attempt is incomplete. Run "
+            "'dreame-valetudo uart-adopt'; it will reconcile any published immutable backup or "
+            "keep prior capabilities revoked before opening the serial device.")
+    # Anything not already adopted through UART gets the guided manual walkthrough; nothing here
+    # drives the serial line on its own.
+    if (
+        ctx.profile.method == "uart"
+        and (ctx.robot is None or ctx.robot.state_get("root-origin") != ADOPTED_ROOT)
+    ):
         uart(ctx)
         return
     # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
@@ -497,6 +537,40 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
             "automatic rooting or installation continue from an uncertain firmware state. "
             "Inspect the robot, then run 'dreame-valetudo restore --force' only after deliberately "
             "deciding to repeat the complete stock restore.")
+    if (
+        ctx.profile.method == "uart"
+        and robot is not None
+        and robot.state_get("root-origin") == ADOPTED_ROOT
+    ):
+        status = uart_adoption_status(ctx)
+        if (
+            status is None
+            or not status.rooted
+            or (robot.state_get("rooted") == ADOPTED_ROOT) is not status.rooted
+            or (robot.state_get("valetudo") == ADOPTED_ROOT) is not status.valetudo
+        ):
+            die("The UART capability markers do not match the verified adoption evidence. Run "
+                "'dreame-valetudo uart-adopt' to reconcile them; no install or firmware path ran.")
+        ctx.console.info(
+            "Using the identity-bound UART adoption and immutable private backup generation "
+            f"{status.generation}; no firmware reflash is planned."
+        )
+        if not status.valetudo:
+            ctx.console.warn(
+                "Persistent root was proven, but Valetudo was not. This bench collector will not "
+                "install or modify it automatically."
+            )
+            ctx.console.info(
+                "After following the current manual UART installation guide, re-run "
+                "'dreame-valetudo uart-adopt' to collect fresh proof."
+            )
+            return
+        ctx.console.say(
+            "UART evidence collection and existing Valetudo adoption are complete; no persistent "
+            "robot state was changed."
+        )
+        ctx.console.say(f"Open the existing Valetudo UI at http://{ROBOT_AP_IP}")
+        return
     if robot is not None and robot.state_get("root-origin") == ADOPTED_ROOT:
         try:
             if not robot.state_has("rooted"):
@@ -567,7 +641,7 @@ def _model_lines() -> str:
         "  fastboot flow; hardware-specific loader details are handled automatically:",
         *fastboot,
         "",
-        "  Also selectable via the older UART serial-shell method (guided manual, not yet automated):",
+        "  Also selectable via the older UART serial-shell method (read-only adoption):",
         *uart_models,
     ]
     return "\n".join(lines)
@@ -588,6 +662,8 @@ def usage(console: Console) -> None:
         "  dreame-valetudo valetudo   Phase 3 — how to push the Valetudo binary onto the robot\n"
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
         "  dreame-valetudo backup [key]  capture/refresh factory data without changing the robot\n"
+        "  dreame-valetudo uart-observe  U1 receive-only boot/model observation\n"
+        "  dreame-valetudo uart-adopt    U2 inventory + U3 /tmp backup and root adoption\n"
         "  dreame-valetudo update-valetudo [key]  verify + atomically update an adopted robot\n"
         "  dreame-valetudo ui         on the robot's AP: wait for Valetudo, open the web UI\n"
         "  dreame-valetudo status     what's done / what's left, for every robot\n"
@@ -611,7 +687,8 @@ def usage(console: Console) -> None:
         "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_BACKUPS, DREAME_SSHKEY,\n"
         "                 DREAME_CONFIG, VALETUDO_VERSION, DREAME_PYTHON, DREAME_NO_LOG,\n"
         "                 DREAME_NO_TMUX, DREAME_IDLE_TIMEOUT, DREAME_NO_UPDATE_CHECK,\n"
-        "                 DREAME_NO_DECRYPT, DREAME_NO_UDEV_CHECK, DREAME_FASTBOOT.\n"
+        "                 DREAME_NO_DECRYPT, DREAME_NO_UDEV_CHECK, DREAME_FASTBOOT,\n"
+        "                 DREAME_UART_DEVICE, DREAME_UART_OBSERVE_SECONDS.\n"
     )
 
 
@@ -686,6 +763,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
         raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
                   f"(no args) for its guided flow, not 'dreame-valetudo {cmd}'.")
+    if cmd in _UART_ONLY and ctx.profile.method != "uart":
+        raise Die(f"{ctx.profile.model} uses fastboot, not the UART serial-shell path.")
     if cmd == "diagnose":
         diagnose(ctx)
         return 0
@@ -700,11 +779,14 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         robot = ctx.need_robot()
         destructive_history = any(robot.state_has(name) for name in (
             "rooted", "restored-stock", "flash-attempt", "restore-attempt",
+            "uart-observed", "uart-identity", "uart-backup", "uart-generation",
+            "uart-adoption-attempt", "uart-pending-cleanup",
         ))
         if destructive_history:
-            raise Die("The model cannot be changed after rooting or any firmware-write history — "
-                      "the physical robot model is immutable and every image/restore record is "
-                      "bound to the saved model.")
+            raise Die("The model cannot be changed after rooting, after hardware identity was "
+                      "captured, or after any firmware-write history — the physical robot model "
+                      "is immutable and every evidence/image/restore record is bound to the "
+                      "saved model.")
         # The command exists specifically to replace a saved choice, so it must not silently load it.
         prior_model = ctx.profile.key
         select_model(ctx, use_env=False)
@@ -732,6 +814,10 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 0 if push(ctx, rest[0] if rest else None) else 1
     elif cmd == "backup":
         return 0 if backup(ctx, rest[0] if rest else None) else 1
+    elif cmd == "uart-observe":
+        observe_uart(ctx)
+    elif cmd == "uart-adopt":
+        adopt_uart(ctx)
     elif cmd == "update-valetudo":
         return 0 if update_valetudo(ctx, rest[0] if rest else None) else 1
     elif cmd == "sshkey":

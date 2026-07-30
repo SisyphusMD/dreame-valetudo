@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
-from ..constants import RESTORE_BOOT_PENDING, ROBOT_AP_IP
+from ..console import Die
+from ..constants import ADOPTED_ROOT, RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from ..context import Context
 from ..platform_env import open_url
 from ..profiles import known_model_key_for_dir, load_profile
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..workspace import Robot
+from .uart import UartAdoptionStatus, validate_uart_adoption
 
-_PHASES = ("recon", "image", "rooted", "factory-backup", "valetudo", "restored-stock")
+_FASTBOOT_PHASES = ("recon", "image", "rooted", "factory-backup", "valetudo", "restored-stock")
+# A UART robot never runs recon/image/restore, so listing them would report five permanently
+# unchecked boxes for a completely adopted robot.
+_UART_PHASES = ("uart-observed", "uart-identity", "uart-backup", "rooted", "valetudo")
 
 
 @records_step("installing Valetudo")
@@ -72,16 +78,66 @@ def sshkey(ctx: Context) -> None:
                        "DREAME_SSHKEY=...")
 
 
-def _summary(robot: Robot) -> str:
-    cfg = robot.config() or "?"
+def _uart_record(robot: Robot, marker: str) -> dict[str, object] | None:
+    raw = robot.state_get(marker)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _status_details(
+    robot: Robot,
+    backups_root: Path | None = None,
+) -> tuple[str, tuple[str, ...], bool, UartAdoptionStatus | None, str | None]:
     key = known_model_key_for_dir(robot.work)
+    uart_method = False
+    profile = None
     if key:
         try:
-            model = load_profile(key).model
+            profile = load_profile(key)
+            model = profile.model
+            uart_method = profile.method == "uart"
         except ValueError:
             model = f"unknown model '{key}' — upgrade dreame-valetudo"
     else:
         model = "model not chosen yet"
+    phases = _UART_PHASES if uart_method else _FASTBOOT_PHASES
+    uart_status = None
+    uart_error = None
+    if uart_method and profile is not None and backups_root is not None:
+        try:
+            uart_status = validate_uart_adoption(robot, profile, backups_root)
+        except (Die, OSError, ValueError) as exc:
+            uart_error = str(exc)
+        if uart_error is None and not robot.state_has("uart-adoption-attempt"):
+            if uart_status is None:
+                if any(
+                    robot.state_has(marker)
+                    for marker in (
+                        "uart-identity",
+                        "uart-backup",
+                        "uart-generation",
+                        "root-origin",
+                        "rooted",
+                        "valetudo",
+                    )
+                ):
+                    uart_error = "capability markers exist without a complete UART adoption"
+            elif (
+                (robot.state_get("root-origin") == ADOPTED_ROOT) is not uart_status.rooted
+                or (robot.state_get("rooted") == ADOPTED_ROOT) is not uart_status.rooted
+                or (robot.state_get("valetudo") == ADOPTED_ROOT) is not uart_status.valetudo
+            ):
+                uart_error = "capability markers disagree with the verified UART adoption"
+    cfg = (
+        (uart_status.config if uart_status is not None else None)
+        if uart_method
+        else robot.config()
+    ) or "?"
     restore_attempt = robot.state_get("restore-attempt")
     if restore_attempt is not None:
         last = (
@@ -91,9 +147,15 @@ def _summary(robot: Robot) -> str:
         )
     elif robot.state_has("flash-attempt"):
         last = "root-attempt-uncertain"
+    elif uart_method and robot.state_has("uart-adoption-attempt"):
+        last = "uart-adoption-awaiting-reconcile"
+    elif uart_method and robot.state_has("uart-pending-cleanup"):
+        last = "uart-cleanup-pending"
+    elif uart_method and uart_error is not None:
+        last = "uart-adoption-invalid"
     else:
         last = "none"
-        for s in reversed(_PHASES):
+        for s in reversed(phases):
             if robot.state_has(s):
                 last = s
                 break
@@ -107,7 +169,26 @@ def _summary(robot: Robot) -> str:
         asked = " ".join(pending.read_text().split())
     if asked:
         summary += f"  paused at: \"{asked[:70]}{'…' if len(asked) > 70 else ''}\""
-    return summary
+    return summary, phases, uart_method, uart_status, uart_error
+
+
+def _summary(robot: Robot, backups_root: Path | None = None) -> str:
+    return _status_details(robot, backups_root)[0]
+
+
+def _marker_detail(robot: Robot, marker: str) -> str:
+    """UART markers hold JSON evidence records; show the one field a status line can use."""
+    if marker == "uart-observed":
+        record = _uart_record(robot, marker)
+        verified = record is not None and record.get("status") == "verified"
+        return "verified" if verified else "unreadable"
+    if marker in {"uart-identity", "uart-backup"}:
+        record = _uart_record(robot, marker)
+        classification = record.get("classification") if record is not None else None
+        return str(classification) if classification in {
+            "already-rooted", "rooted-no-valetudo", "stock-or-unknown",
+        } else "unreadable"
+    return robot.state_get(marker) or ""
 
 
 def status(ctx: Context) -> None:
@@ -119,11 +200,26 @@ def status(ctx: Context) -> None:
             continue
         found = True
         robot = Robot(d)
-        ctx.console.say(f"Robot: {d.name}   {_summary(robot)}")
-        for s in _PHASES:
+        summary, phases, uart_method, _uart_status, uart_error = _status_details(
+            robot, ctx.backups_dir
+        )
+        ctx.console.say(f"Robot: {d.name}   {summary}")
+        width = max(len(marker) for marker in phases)
+        for s in phases:
             if robot.state_has(s):
-                ctx.console.info(f"   [x] {s:<8} {robot.state_get(s)}")
+                if uart_error is not None and s in {
+                    "uart-identity", "uart-backup", "rooted", "valetudo",
+                }:
+                    ctx.console.warn(f"   [!] {s:<{width}} not trusted")
+                else:
+                    ctx.console.info(f"   [x] {s:<{width}} {_marker_detail(robot, s)}")
             else:
                 ctx.console.info(f"   [ ] {s}")
+        if uart_method and uart_error is not None:
+            ctx.console.warn(f"   [!] UART adoption invalid: {uart_error}")
+        if uart_method and robot.state_has("uart-adoption-attempt"):
+            ctx.console.warn("   [!] uart-adoption-attempt  re-run uart-adopt to reconcile")
+        if uart_method and robot.state_has("uart-pending-cleanup"):
+            ctx.console.warn("   [!] uart-pending-cleanup  cleanup runs before the next adoption")
     if not found:
         ctx.console.info("No robots yet. Run 'dreame-valetudo' to start one.")

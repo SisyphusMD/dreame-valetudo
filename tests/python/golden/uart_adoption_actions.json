@@ -1,0 +1,152 @@
+{
+  "u2": [
+    {
+      "arm_reject_pattern": "(?:^|[\\r\\n])[A-Za-z0-9]+_release login:[ \\t]*(?=$|[\\r\\n])",
+      "max_bytes": 4194304,
+      "op": "wait_unique_regex",
+      "pattern": "(?:^|[\\r\\n])p2028_release login:[ \\t]*(?=$|[\\r\\n])",
+      "settle_seconds": 3,
+      "timeout": 90
+    },
+    {
+      "data": "root",
+      "op": "write_line",
+      "timeout": 5
+    },
+    {
+      "max_bytes": 4194304,
+      "op": "wait_unique_regex",
+      "pattern": "(?:[Pp]assword):[ \\t]*(?=$|[\\r\\n])",
+      "reject_pattern": "(?:^|[\\r\\n])p2028_release login:[ \\t]*(?=$|[\\r\\n])",
+      "settle_seconds": 1,
+      "timeout": 30
+    },
+    {
+      "data": "<private>",
+      "max_bytes": 4194304,
+      "op": "write_line",
+      "settle_seconds": 1,
+      "timeout": 5
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { _dv_session=<private>; [ \"$(id -u)\" = 0 ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { cat /data/config/miio/device.conf 2>/dev/null; uname -n; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { uname -a; uname -m; cat /proc/cmdline; cat /etc/os-release 2>/dev/null || true; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { printf 'shell=%s\\n' \"$0\"; id; [ \"$(id -u)\" = 0 ] && echo LIVE_ROOT_UID_VERIFIED; if grep -Eiq '^built[[:space:]]+with[[:space:]]+dustbuilder[[:space:]]*$' /etc/motd /etc/banner 2>/dev/null; then echo PERSISTENT_ROOT_PROOF; fi; true; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { _dv_ok=1; for x in tar sha256sum base64 stat file cut wc readlink; do command -v \"$x\" 2>/dev/null || { printf '%s MISSING\\n' \"$x\"; _dv_ok=0; }; done; [ \"$_dv_ok\" = 1 ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { exec 3>&1; _dv_bytes=$({ tar cf - /mnt/private/ /mnt/misc/ /etc/OTA_Key_pub.pem /etc/publickey.pem; printf 'DV_TAR_RC %s\\n' \"$?\" >&3; } | wc -c); _dv_wc=$?; exec 3>&-; set -- $_dv_bytes; _dv_bytes=${1-}; _dv_fields=$#; set -- $(stat -f -c '%a %S' /tmp 2>/dev/null); _dv_blocks=${1-}; _dv_block_size=${2-}; _dv_stat_fields=$#; _dv_ok=1; case \"$_dv_bytes:$_dv_blocks:$_dv_block_size\" in *[!0-9:]*) _dv_ok=0;; esac; [ \"$_dv_fields\" = 1 ] && [ \"$_dv_stat_fields\" = 2 ] || _dv_ok=0; [ \"$_dv_wc\" = 0 ] || _dv_ok=0; _dv_free=$((_dv_blocks*_dv_block_size)); printf 'DV_ARCHIVE_BYTES %s\\nDV_WC_RC %s\\nDV_TMP_FREE_BYTES %s\\n' \"$_dv_bytes\" \"$_dv_wc\" \"$_dv_free\"; [ \"$_dv_ok\" = 1 ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 300
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { _dv_ok=1; for p in /mnt/private /mnt/misc /mnt/private/ULI/factory/config.txt /mnt/private/ULI/factory/did.txt /mnt/private/ULI/factory/key.txt /etc/OTA_Key_pub.pem /etc/publickey.pem; do if [ -e \"$p\" ] && [ ! -L \"$p\" ]; then printf '%s PRESENT ' \"$p\"; stat -c '%F %s %a' \"$p\" 2>/dev/null || _dv_ok=0; else printf '%s MISSING\\n' \"$p\"; _dv_ok=0; fi; done; [ \"$_dv_ok\" = 1 ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { sha256sum /mnt/private/ULI/factory/config.txt /mnt/private/ULI/factory/did.txt /mnt/private/ULI/factory/key.txt /etc/OTA_Key_pub.pem /etc/publickey.pem; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { for p in /proc/[0-9]*; do [ \"$(cat \"$p/comm\" 2>/dev/null)\" = valetudo ] || continue; _dv_run=$(readlink \"$p/exe\" 2>/dev/null) || continue; case \"$_dv_run\" in /usr/local/bin/valetudo|/data/valetudo) ;; *) continue;; esac; _dv_rsize=$(stat -Lc %s \"$p/exe\" 2>/dev/null) || continue; _dv_rhash=$(sha256sum \"$p/exe\" 2>/dev/null | cut -d' ' -f1) || continue; printf 'VALETUDO_RUNNING %s %s %s\\n' \"$_dv_run\" \"$_dv_rsize\" \"$_dv_rhash\"; done; for v in /usr/local/bin/valetudo /data/valetudo; do if [ -f \"$v\" ] && [ -x \"$v\" ] && [ ! -L \"$v\" ]; then _dv_vsize=$(stat -c %s \"$v\" 2>/dev/null) || continue; _dv_vhash=$(sha256sum \"$v\" 2>/dev/null | cut -d' ' -f1) || continue; printf 'VALETUDO_EXECUTABLE %s %s %s\\n' \"$v\" \"$_dv_vsize\" \"$_dv_vhash\"; printf 'VALETUDO_FILE %s: ' \"$v\"; file \"$v\" 2>/dev/null || true; fi; done; true; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { ip addr 2>/dev/null || ifconfig 2>/dev/null || true; wget -S -O /dev/null http://127.0.0.1/ 2>&1 || true; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    }
+  ],
+  "u3": [
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { [ \"${_dv_session-}\" = <private> ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 33554432,
+      "op": "command",
+      "require_success": true,
+      "timeout": 30
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { umask 077; mkdir <private> && chmod 700 <private> && [ ! -L <private> ] && [ \"$(stat -c %u <private>)\" = 0 ] && [ \"$(stat -c %a <private>)\" = 700 ] && tar cf <private>/identity.tar /mnt/private/ /mnt/misc/ /etc/OTA_Key_pub.pem /etc/publickey.pem && chmod 600 <private>/identity.tar && [ ! -L <private>/identity.tar ] && [ -f <private>/identity.tar ] && [ \"$(stat -c %u <private>/identity.tar)\" = 0 ] && [ \"$(stat -c %a <private>/identity.tar)\" = 600 ] && [ \"$(stat -c %s <private>/identity.tar)\" = 10240 ] && printf 'DV_ARCHIVE %s ' \"$(stat -c %s <private>/identity.tar)\" && sha256sum <private>/identity.tar | cut -d' ' -f1; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 1048576,
+      "op": "command",
+      "require_success": true,
+      "timeout": 300
+    },
+    {
+      "begin": "__DV_BEGIN_<nonce>__",
+      "encoding": "base64",
+      "end": "__DV_END_<nonce>__:",
+      "line": "printf '\\n__DV_BEGIN_<nonce>__\\n'; { base64 <private>/identity.tar; _dv_export=$?; rm -f <private>/identity.tar; _dv_rm=$?; rmdir <private>; _dv_rmdir=$?; [ \"$_dv_export\" = 0 ] && [ \"$_dv_rm\" = 0 ] && [ \"$_dv_rmdir\" = 0 ]; }; _dv_rc=$?; printf '\\n__DV_END_<nonce>__:%s\\n' \"$_dv_rc\"",
+      "max_bytes": 1062592,
+      "op": "binary_command",
+      "require_success": true,
+      "timeout": 305
+    }
+  ]
+}
