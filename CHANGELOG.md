@@ -4,6 +4,13 @@
 
 ### Added
 
+- UART-method robots get two read-only serial commands: `uart-observe` captures one boot passively
+  and proves the selected model from its banner, and `uart-adopt` logs into an already-rooted shell,
+  runs a reviewed read-only inventory, and publishes an identity-bound private backup staged under
+  the robot's `/tmp`. Neither writes persistent robot state, prepares a USB stick, or runs
+  `install.sh`; the manual installation walkthrough is unchanged. Two matching `bench` scenarios
+  record the evidence. The serial helper's pyserial dependency stays out of the package: install the
+  `uart` extra, or use the `dreame-uart` helper shipped with a release.
 - `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
   one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
   data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up
