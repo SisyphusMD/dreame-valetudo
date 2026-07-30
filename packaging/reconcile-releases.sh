@@ -3,9 +3,14 @@
 #
 # A remote filename or byte count is not evidence that an artifact is intact. Reconcile downloads
 # each recognized asset that is available, accepts bytes only when at least two registries have the
-# same SHA-256, and repairs the dissenting or missing registry from that quorum. With no quorum it
-# warns and leaves every copy untouched. Only the release matrix below is eligible for replication;
-# an unexpected similarly-prefixed upload can never spread to the other registries.
+# same SHA-256, and fills that content into any registry MISSING the asset. With no quorum it warns
+# and leaves every copy untouched. Only the release matrix below is eligible for replication; an
+# unexpected similarly-prefixed upload can never spread to the other registries.
+#
+# Published bytes are immutable, so a registry that already serves a different copy is reported for
+# operator review rather than repaired: overwriting means deleting first, and a delete plus a failed
+# re-upload destroys the copy outright. Removing a bad asset, or cutting a new tag, is a decision
+# with no automatic safe answer.
 #
 # Warn-only: a reconcile problem must not make an otherwise valid release disappear. The next
 # release retries every tag.
@@ -17,6 +22,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 REPO="SisyphusMD/dreame-valetudo"
 CLUSTER_HOST="forgejo.bryantserver.com"
 NAS_HOST="forgejo.nas.bryantserver.com"
+# Stands in for a registry copy whose bytes could not be established. It can never equal a SHA-256,
+# so such a copy neither joins a quorum nor is mistaken for a missing asset that may be filled.
+UNVERIFIED="unverified"
+
+valid_release_tag() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]
+}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -37,6 +49,12 @@ asset_url() {
   awk -F '|' -v wanted="$wanted" '$1 == wanted {print $2; exit}' "$metadata"
 }
 
+# Two assets under one name make every download URL ambiguous, so the copy is unusable as evidence.
+asset_count() {
+  local metadata="$1" wanted="$2"
+  awk -F '|' -v wanted="$wanted" '$1 == wanted {count++} END {print count + 0}' "$metadata"
+}
+
 recognized_asset() {
   local wanted="$1" version="$2"
   case "$wanted" in
@@ -51,7 +69,7 @@ recognized_asset() {
 # Uses the loop-scoped $assets and the content hashes gathered for this tag.
 reconcile_registry() {
   local registry="$1" label="$2"; shift 2
-  local todo=() artifact name local_hash remote_hash
+  local todo=() blocked=0 artifact name local_hash remote_hash
   for artifact in "${assets[@]}"; do
     name="$(basename "$artifact")"
     local_hash="${wanted_hash[$name]}"
@@ -60,19 +78,33 @@ reconcile_registry() {
       github) remote_hash="${github_hash[$name]-}" ;;
       nas) remote_hash="${nas_hash[$name]-}" ;;
     esac
-    [ "$remote_hash" = "$local_hash" ] || todo+=("$artifact")
+    if [ -z "$remote_hash" ]; then
+      todo+=("$artifact")
+    elif [ "$remote_hash" = "$UNVERIFIED" ]; then
+      echo "::warning::reconcile: could not establish $label's $tag $name; untouched"
+      blocked=$((blocked + 1))
+    elif [ "$remote_hash" != "$local_hash" ]; then
+      echo "::warning::reconcile: $label already publishes other $name bytes for $tag; untouched"
+      blocked=$((blocked + 1))
+    fi
   done
 
   if [ "${#todo[@]}" -eq 0 ]; then
+    [ "$blocked" -eq 0 ] || return 1
     echo "  $label: all ${#assets[@]} quorum-verified assets already match — skipped"
     return 0
   fi
-  echo "  $label: repairing ${#todo[@]}/${#assets[@]} asset(s) from content quorum"
-  "$@" "${todo[@]}"
+  echo "  $label: filling ${#todo[@]}/${#assets[@]} missing asset(s) from the content quorum"
+  "$@" "${todo[@]}" || return 1
+  [ "$blocked" -eq 0 ]
 }
 
 fail=0
 for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
+  if ! valid_release_tag "$tag"; then
+    echo "::warning::reconcile: ignoring tag outside the release grammar: $tag"
+    continue
+  fi
   version="${tag#v}"
   dir="$(mktemp -d)"
   mkdir -p "$dir/cluster" "$dir/github" "$dir/nas"
@@ -113,18 +145,24 @@ for tag in $(git tag -l 'v*.*.*' --sort=-v:refname); do
     for registry in cluster github nas; do
       metadata_var="${registry}_metadata"
       metadata="${!metadata_var}"
-      url="$(asset_url "$metadata" "$name")"
-      [ -n "$url" ] || continue
+      count="$(asset_count "$metadata" "$name")"
+      [ "$count" -gt 0 ] || continue
       available=$((available + 1)); seen=$((seen + 1))
+      digest="$UNVERIFIED"
       path="$dir/$registry/$name"
-      if ! curl -fsSL -o "$path" "$url"; then
+      url="$(asset_url "$metadata" "$name")"
+      if [ "$count" -gt 1 ]; then
+        echo "::warning::reconcile: $tag $name resolves to $count assets on $registry"
+      elif [ -z "$url" ]; then
+        echo "::warning::reconcile: $tag $name has no download URL on $registry"
+      elif ! curl -fsSL -o "$path" "$url"; then
         echo "::warning::reconcile: could not download $tag $name from $registry"
         rm -f "$path"
-        continue
+      else
+        digest="$(sha256_file "$path")"
+        counts["$digest"]=$(( ${counts[$digest]-0} + 1 ))
+        source["$digest"]="$path"
       fi
-      digest="$(sha256_file "$path")"
-      counts["$digest"]=$(( ${counts[$digest]-0} + 1 ))
-      source["$digest"]="$path"
       case "$registry" in
         cluster) cluster_hash["$name"]="$digest" ;;
         github) github_hash["$name"]="$digest" ;;
