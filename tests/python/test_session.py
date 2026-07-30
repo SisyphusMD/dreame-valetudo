@@ -797,12 +797,7 @@ def test_an_interactive_run_inside_the_session_holds_its_final_screen(
         _record_bound_robot(work)
         return 0, None
 
-    class _RecordsPrompt(ScriptedConsole):
-        def confirm(self, prompt: str) -> bool:
-            self.lines.append(("confirm", prompt))
-            return False
-
-    con = _RecordsPrompt()
+    con = ScriptedConsole()
     monkeypatch.setattr(cli_mod, "_run", fake_run)
     monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
     monkeypatch.setattr(sys, "stdout", _Tty(True))
@@ -879,15 +874,10 @@ def test_the_final_question_matches_the_run_outcome_and_no_does_not_rerun(
         _record_bound_robot(tmp_path / "work")
         return rc, None
 
-    class _SaysNo(ScriptedConsole):
-        def confirm(self, asked: str) -> bool:
-            self.lines.append(("confirm", asked))
-            return False
-
     monkeypatch.setattr(cli_mod, "_run", fake_run)
     monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
     monkeypatch.setattr(sys, "stdout", _Tty(True))
-    con = _SaysNo()
+    con = ScriptedConsole()
     assert main(
         ["auto"],
         env={IN_SESSION: "1", "HOME": str(tmp_path), "DREAME_WORK": str(tmp_path / "work")},
@@ -983,12 +973,7 @@ def test_interrupted_run_question_uses_saved_context(
     monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
     monkeypatch.setattr(sys, "stdout", _Tty(True))
 
-    class _RecordsNo(ScriptedConsole):
-        def confirm(self, asked: str) -> bool:
-            self.lines.append(("confirm", asked))
-            return False
-
-    con = _RecordsNo()
+    con = ScriptedConsole()
     assert main(["auto"], env={IN_SESSION: "1", "HOME": str(tmp_path),
                                 "DREAME_WORK": str(work)}, console=con) == 130
     assert con.lines == [("confirm", prompt)]

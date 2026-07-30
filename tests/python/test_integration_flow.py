@@ -8,15 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import CtxFactory
+from conftest import CFG, CtxFactory, stage_dist
 
-from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.phases.image import image
 from dreame_valetudo.phases.recon import recon
 from dreame_valetudo.phases.root import root
 from dreame_valetudo.run import Result
 
-_CFG = "abcdef0123456789abcdef0123456789"
 _FW = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
 _FW_SIZES = {
     "fsbl.bin": 32 * 1024,
@@ -44,7 +42,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
         if argv[:2] == ("ssh-keygen", "-y"):  # the staged .pub is proven against its private half
             return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
         if "getvar config" in joined:
-            return Result(argv, 0, f"OKAY {_CFG}", "")
+            return Result(argv, 0, f"OKAY {CFG}", "")
         if argv[0] == "curl":
             return Result(argv, 0, "<form><input name='config'></form>", "")
         if argv[0] == "unzip":
@@ -63,17 +61,14 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[False, True, True, True],
                    asks=["", "1"], env={"HOME": str(home)})
     # stage1 present so recon proceeds
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
-    (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
+    stage_dist(ctx)
 
     # 1) recon: no robot yet -> creates it, named by device identity
     assert ctx.robot is None
     recon(ctx, recovery_backup=False)
     robot = ctx.robot
     assert robot is not None
-    assert robot.work.name == f"r2416-{_CFG[:12]}"
+    assert robot.work.name == f"r2416-{CFG[:12]}"
     assert robot.state_has("recon")
 
     # 2) image: stages the built zip into THIS robot's fw dir. The zip lands WHILE the phase waits,

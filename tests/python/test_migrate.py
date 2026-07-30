@@ -10,16 +10,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import ScriptedConsole
+from conftest import CFG, ScriptedConsole
 
 from dreame_valetudo import migrate as M
 from dreame_valetudo.console import Die
 from dreame_valetudo.workspace import Robot
 
 SENTINEL = b"do-not-lose-me\n"
-_CFG = "abcdef0123456789abcdef0123456789"  # a 32-hex config value
-_BK0 = f"dreame-r2416-kitchen-{_CFG}-backup-20200101-000000"  # legacy: name segment + '-backup-'
-_BK1 = f"dreame-r2416-{_CFG}-20200101-000000"                 # consolidated: config-based, name-free
+_BK0 = f"dreame-r2416-kitchen-{CFG}-backup-20200101-000000"  # legacy: name segment + '-backup-'
+_BK1 = f"dreame-r2416-{CFG}-20200101-000000"                 # consolidated: config-based, name-free
 
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
@@ -34,7 +33,7 @@ def test_current_workspace_self_heals_private_state_and_backup_modes(tmp_path: P
     state.mkdir(parents=True)
     state.chmod(0o755)
     (state / "name").write_text("Kitchen\n")
-    (state / "recon").write_text(f"config={_CFG} backup=obtained\n")
+    (state / "recon").write_text(f"config={CFG} backup=obtained\n")
     backup = base / "backups" / _BK1
     backup.mkdir(parents=True)
     backup.chmod(0o755)
@@ -490,7 +489,7 @@ def test_unreadable_legacy_backup_candidate_does_not_abort_other_repairs(
     _seed_v1(tmp_path)
     blocked = tmp_path / "dreame-r2416-blocked-backup-20200101-000001"
     blocked.mkdir()
-    healthy_name = f"dreame-r2416-kitchen-{_CFG}-backup-20200102-000000"
+    healthy_name = f"dreame-r2416-kitchen-{CFG}-backup-20200102-000000"
     healthy = tmp_path / healthy_name
     healthy.mkdir()
     (healthy / "files.tar.gz").write_bytes(SENTINEL)
@@ -508,7 +507,7 @@ def test_unreadable_legacy_backup_candidate_does_not_abort_other_repairs(
 
     assert blocked.is_dir()
     assert not healthy.exists()
-    moved = tmp_path / "dreame-valetudo" / "backups" / f"dreame-r2416-{_CFG}-20200102-000000"
+    moved = tmp_path / "dreame-valetudo" / "backups" / f"dreame-r2416-{CFG}-20200102-000000"
     assert (moved / "files.tar.gz").read_bytes() == SENTINEL
     assert str(blocked) in con.text()
     assert "incomplete" in con.text().lower()

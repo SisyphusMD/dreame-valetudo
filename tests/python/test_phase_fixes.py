@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CtxFactory, dreame_ap_prefix
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
@@ -36,12 +36,7 @@ def _remote(call: tuple[str, ...]) -> str:
     return call[-1] if call else ""
 
 
-def _reachable_dreame(argv: tuple[str, ...]) -> Result | None:
-    """Shared responder prefix: the robot is reachable and IS a Dreame AP."""
-    cmd = _remote(argv)
-    if cmd == "true" or cmd == "test -d /mnt/private/ULI/factory":
-        return Result(argv, 0, "", "")
-    return None
+_reachable_dreame = dreame_ap_prefix
 
 
 def _matching_fix_robot(argv: tuple[str, ...]) -> Result | None:

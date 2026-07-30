@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CFG, CtxFactory, dreame_ap_prefix
 
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import ADOPTED_ROOT
@@ -30,8 +30,6 @@ from dreame_valetudo.phases.push import (
     valetudo_update_available,
 )
 from dreame_valetudo.run import Result
-
-_CFG = "abcdef0123456789abcdef0123456789"
 
 
 @pytest.fixture(autouse=True)
@@ -59,14 +57,13 @@ def _text(
     model: str = "dreame.vacuum.r2416",
 ) -> object:
     def responder(argv: tuple[str, ...]) -> Result:
+        pre = dreame_ap_prefix(argv, is_dreame=is_dreame)
+        if pre is not None:
+            return pre
         cmd = argv[-1]
-        if cmd == "true":
-            return Result(argv, 0, "", "")
-        if cmd == "test -d /mnt/private/ULI/factory":
-            return Result(argv, 0 if is_dreame else 1, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(
-                argv, 0, f"model={model}\ndid={did}\nfactory_config=config: {_CFG}\n", ""
+                argv, 0, f"model={model}\ndid={did}\nfactory_config=config: {CFG}\n", ""
             )
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, key + "\n", "")  # normal unit: key already present
@@ -94,7 +91,7 @@ def _write_factory_archive(path: Path, files_size: int, failure: str | None) -> 
             archive.addfile(member, io.BytesIO(data))
 
         if failure != "files-missing-config":
-            config = _CFG.encode()
+            config = CFG.encode()
             if failure == "files-wrong-config":
                 config = b"b" * 32
             add(
@@ -102,7 +99,7 @@ def _write_factory_archive(path: Path, files_size: int, failure: str | None) -> 
                 b"" if failure == "files-empty-config" else b"config: " + config,
             )
         if failure == "files-duplicate-config":
-            add("mnt/private/ULI/factory/config.txt", b"config: " + _CFG.encode())
+            add("mnt/private/ULI/factory/config.txt", b"config: " + CFG.encode())
         if failure != "files-missing-did":
             add("mnt/private/ULI/factory/did.txt", b"" if failure == "files-empty-did" else b"1234")
         if failure != "files-missing-key":
@@ -166,9 +163,9 @@ def _redirect(
 
 
 def _ctx(make_ctx: CtxFactory) -> Context:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     assert ctx.backups_dir.is_relative_to(ctx.ws.base.parent)
     return ctx
 
@@ -180,12 +177,12 @@ def _update_ctx(
     confirms: list[bool] | None = None,
 ) -> Context:
     ctx = make_ctx(
-        robot_name=f"r2416-{_CFG[:12]}",
+        robot_name=f"r2416-{CFG[:12]}",
         confirms=confirms if confirms is not None else [True, True],
     )
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     robot.state_set("rooted")
     robot.state_set("valetudo", installed)
     _valetudo_bin(ctx)
@@ -523,7 +520,7 @@ def test_push_refuses_a_missing_env_override_before_ssh(
 ) -> None:
     missing = tmp_path / "missing-key"
     ctx = make_ctx(
-        robot_name=f"r2416-{_CFG[:12]}",
+        robot_name=f"r2416-{CFG[:12]}",
         env={"DREAME_SSHKEY": str(missing)},
     )
     with pytest.raises(Die, match=r"SSH key not found: .*missing-key.*DREAME_SSHKEY"):
@@ -535,7 +532,7 @@ def test_push_refuses_a_missing_cli_key_before_ssh(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:
     missing = tmp_path / "missing-cli-key"
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
     with pytest.raises(Die, match=r"SSH key not found: .*missing-cli-key.*command line"):
         push(ctx, missing)
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
@@ -593,11 +590,11 @@ def test_push_distinguishes_the_r2338h_revision_even_though_its_impl_class_is_sh
 ) -> None:
     ctx = make_ctx(
         model="l10s-pro-ultra-heat",
-        robot_name=f"r2338-{_CFG[:12]}",
+        robot_name=f"r2338-{CFG[:12]}",
         confirms=[True],
     )
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="dreame.vacuum.r2338h")  # type: ignore[attr-defined]
 
@@ -610,9 +607,9 @@ def test_push_distinguishes_the_r2338h_revision_even_though_its_impl_class_is_sh
 def test_push_requires_physical_confirmation_when_the_live_model_is_missing(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True, True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True, True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
@@ -628,9 +625,9 @@ def test_push_requires_physical_confirmation_when_the_live_model_is_missing(
 def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_declined(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True, False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True, False])
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
 
@@ -642,10 +639,10 @@ def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_decline
 
 def test_push_refuses_a_missing_live_model_noninteractively(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(
-        robot_name=f"r2416-{_CFG[:12]}", confirms=[True], interactive=False,
+        robot_name=f"r2416-{CFG[:12]}", confirms=[True], interactive=False,
     )
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
 
@@ -891,9 +888,9 @@ def test_legacy_backups_without_a_recorded_digest_stay_valid(make_ctx: CtxFactor
 def test_empty_factory_key_preserves_the_secure_storage_copy_beside_the_backup(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(model="w10-pro", robot_name=f"r2104-{_CFG[:12]}", confirms=[True])
+    ctx = make_ctx(model="w10-pro", robot_name=f"r2104-{CFG[:12]}", confirms=[True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     normal = _text(model="dreame.vacuum.r2104", did="12345", key="")
 
@@ -969,15 +966,15 @@ def test_live_identity_accepts_same_robot_with_changed_session_config_suffix(
         if "grep -E '^(model|did)='" in argv[-1]:
             return Result(
                 argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
-                f"factory_config=config: {_CFG[:8]}{'0' * 24}\n", "",
+                f"factory_config=config: {CFG[:8]}{'0' * 24}\n", "",
             )
         return normal(argv)  # type: ignore[operator]
 
     ctx.runner._responder = changed_session  # type: ignore[attr-defined]
 
-    identity = _live_robot_identity(ctx, None, _CFG)
+    identity = _live_robot_identity(ctx, None, CFG)
 
-    assert identity["factory_config"] == f"config: {_CFG[:8]}{'0' * 24}"
+    assert identity["factory_config"] == f"config: {CFG[:8]}{'0' * 24}"
 
 
 def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory) -> None:
@@ -1017,7 +1014,7 @@ def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
 
     published = next(ctx.backups_dir.iterdir())
     saved = json.loads((published / "manifest.json").read_text())
-    assert saved["config"] == _CFG
+    assert saved["config"] == CFG
     assert saved["model_key"] == ctx.profile.key
     assert saved["valetudo_version"] is None
     assert robot.state_get("factory-backup") == published.name
@@ -1119,11 +1116,11 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
     the secret is STREAMED over stdin, never placed on a command line."""
     ctx = make_ctx(
         model="w10-pro",
-        robot_name=f"r2104-{_CFG[:12]}",
+        robot_name=f"r2104-{CFG[:12]}",
         confirms=[True],
     )
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     streamed: list[str] = []
     backup_redirect = _redirect(failure="files-empty-key")
@@ -1134,7 +1131,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2104\ndid=12345\n"
-                                  f"factory_config=config: {_CFG}\n", "")
+                                  f"factory_config=config: {CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty: cloudKey only in secure storage
         if "dreame_release.na -c 7" in cmd:
@@ -1160,11 +1157,11 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
 def test_heat_model_prints_the_official_mcu_resync_guidance(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(
         model="l10s-pro-ultra-heat",
-        robot_name=f"r2338-{_CFG[:12]}",
+        robot_name=f"r2338-{CFG[:12]}",
         confirms=[True],
     )
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.runner._responder = _text(model="dreame.vacuum.r2338")  # type: ignore[attr-defined]
     ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
@@ -1186,7 +1183,7 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
-                                  f"factory_config=config: {_CFG}\n", "")
+                                  f"factory_config=config: {CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty
         if "did.txt" in cmd:
@@ -1250,7 +1247,7 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
-                                  f"factory_config=config: {_CFG}\n", "")
+                                  f"factory_config=config: {CFG}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")
         if "dreame_release.na -c 7" in cmd:
@@ -1268,9 +1265,9 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
 
 def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -> None:
     home = tmp_path / "home"
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True], env={"HOME": str(home)})
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True], env={"HOME": str(home)})
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     # a tool-generated key living under the workspace (what choose_sshkey produces by default)
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
@@ -1295,9 +1292,9 @@ def test_push_warns_and_omits_a_dedicated_key_copy_that_failed(
     make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     home = tmp_path / "home"
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", confirms=[True], env={"HOME": str(home)})
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True], env={"HOME": str(home)})
     ctx.need_robot().recon_dir.mkdir(parents=True)
-    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
     key = ctx.ws.base / "id_dreame"

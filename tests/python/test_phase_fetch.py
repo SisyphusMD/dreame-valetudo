@@ -6,10 +6,9 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CtxFactory, stage_dist
 
 from dreame_valetudo.console import Die, UserAbort
-from dreame_valetudo.context import Context
 from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.fetch import fetch, fetch_valetudo
 from dreame_valetudo.run import Result
@@ -20,12 +19,6 @@ def _write_curl_target(argv: tuple[str, ...], data: bytes) -> None:
     target = argv[argv.index("-o") + 1]
     with Path(target).open("wb") as f:
         f.write(data)
-
-
-def _mark_stage1(ctx: Context, digest: str) -> None:
-    # Tests that pre-stage payloads are asserting a later gate, so record which verified archive
-    # those fixtures represent just as production extraction does.
-    (ctx.ws.dist / ".stage1-sha256").write_text(f"{digest}\n")
 
 
 def test_fetch_revalidates_a_stale_sunxi_cache(
@@ -61,12 +54,9 @@ def test_fetch_verifies_and_reaches_cache_ready(
 ) -> None:
     ctx = make_ctx()
     # Pre-stage the extracted files so no tar is needed, and pin stage1 to the test bytes.
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
-    _mark_stage1(ctx, digest)
+    stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: hashlib.sha256(b"s1").hexdigest()}
     )
@@ -90,12 +80,9 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
-    _mark_stage1(ctx, digest)
+    stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -114,10 +101,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("old payload")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("old fsbl")
-    _mark_stage1(ctx, "old-digest")
+    stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
     digest = hashlib.sha256(b"new archive").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
 
@@ -144,10 +128,7 @@ def test_failed_stage1_reextraction_cannot_leave_old_payloads_usable(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("old payload")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("old fsbl")
-    _mark_stage1(ctx, "old-digest")
+    stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"new archive").hexdigest())
 
     def responder(argv: tuple[str, ...]) -> Result:

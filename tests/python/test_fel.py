@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from conftest import FB
 
 from dreame_valetudo import console
 from dreame_valetudo.console import Console, Die
@@ -17,7 +18,7 @@ from dreame_valetudo.fel import Fel, print_fel_entry
 from dreame_valetudo.run import RecordingRunner, Result
 
 SUNXI = Path("/x/sunxi-fel")
-_PY = Transport("python", ("python3", "/x/fastboot-libusb.py"))
+_PY = Transport("python", FB)
 
 
 def _fel(responder: object) -> tuple[Fel, RecordingRunner]:

@@ -5,13 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CFG, CtxFactory
 
 from dreame_valetudo.phases.misc import sshkey, status, ui, valetudo
 from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import Robot
-
-_CFG = "abcdef0123456789abcdef0123456789"
 
 
 def _said(ctx: object, needle: str) -> bool:
@@ -127,14 +125,14 @@ def test_sshkey_shows_the_public_key(make_ctx: CtxFactory, tmp_path: Path) -> No
 def test_status_lists_prior_robots_with_furthest_phase(make_ctx: CtxFactory) -> None:
     ctx = make_ctx()
     ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)
-    robot = Robot(ctx.ws.robots_dir / f"r2416-{_CFG[:12]}")
+    robot = Robot(ctx.ws.robots_dir / f"r2416-{CFG[:12]}")
     robot.recon_dir.mkdir(parents=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     robot.state_set("recon", "done")
     robot.state_set("rooted", "done")
     robot.state_set("factory-backup", "dreame-r2416-current")
     status(ctx)
-    assert _said(ctx, f"r2416-{_CFG[:12]}")
+    assert _said(ctx, f"r2416-{CFG[:12]}")
     assert any("[x] rooted" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("[x] factory-backup" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert any("[ ] valetudo" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]

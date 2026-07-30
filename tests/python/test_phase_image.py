@@ -16,10 +16,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CFG, CtxFactory, stage_dist
 
 from dreame_valetudo.console import Die
-from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
 from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
@@ -29,7 +28,6 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import Robot
 
-_CFG = "abcdef0123456789abcdef0123456789"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
 
 _FASTBOOT_MODELS = tuple(
@@ -81,7 +79,7 @@ def _reject_ctx(
     make_ctx: CtxFactory, tmp_path: Path, *,
     identity: bool, zip_: bool, confirms: list[bool],
     responder: Callable[[tuple[str, ...]], Result] = _curl_only,
-    stage_dist: bool = False,
+    pre_staged: bool = False,
     model: str = "x30-ultra",
     model_code: str = "r9316",
 ) -> Context:
@@ -94,16 +92,13 @@ def _reject_ctx(
     ctx = make_ctx(
         model=model, responder=responder, confirms=confirms,
         env={"DREAME_SSHKEY": str(key), "HOME": str(home)},
-        robot_name=f"{model_code}-{_CFG[:12]}",
+        robot_name=f"{model_code}-{CFG[:12]}",
     )
-    if stage_dist:  # so the on-demand read's FEL bring-up doesn't self-provision via fetch
-        ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-        (ctx.ws.dist / "payload.bin").write_text("p")
-        (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
-        (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
+    if pre_staged:  # so the on-demand read's FEL bring-up doesn't self-provision via fetch
+        stage_dist(ctx)
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     if identity:
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in _IDENT.items())
@@ -192,7 +187,7 @@ def test_r2338h_checker_help_never_invents_the_incompatible_r2338_radio(
 def test_missing_values_are_read_off_the_robot_by_the_tool(make_ctx: CtxFactory, tmp_path: Path) -> None:
     # No identity.txt (older recon). confirms: [open browser] [not accepted] [reconnect+FEL? yes].
     ctx = _reject_ctx(make_ctx, tmp_path, identity=False, zip_=True,
-                      confirms=[True, False, True], responder=_curl_plus_getvars, stage_dist=True)
+                      confirms=[True, False, True], responder=_curl_plus_getvars, pre_staged=True)
     with pytest.raises(Die, match="not recognized"):
         image(ctx)
 

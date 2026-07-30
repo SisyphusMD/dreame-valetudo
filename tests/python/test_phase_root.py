@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from conftest import FB, CtxFactory
+from conftest import CFG, FB, CtxFactory, config_responder
 
 from dreame_valetudo import migrate as migrate_module
 from dreame_valetudo import workspace as workspace_module
@@ -30,7 +30,6 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import RECOVERY_BACKUP_ZIP
 
-_CFG = "abcdef0123456789abcdef0123456789"
 _MIN_IMAGE_BYTES = {
     "fsbl.bin": 32 * 1024,
     "payload.bin": 4 * 1024 * 1024,
@@ -63,7 +62,7 @@ def _stage_image(ctx: Context, dust: str = "626153c7") -> None:
     robot.state_set("image", f"model={ctx.profile.key} staged")
 
 
-def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
+def _write_recon(ctx: Context, cfg: str = CFG) -> None:
     rd = ctx.need_robot().recon_dir
     rd.mkdir(parents=True, exist_ok=True)
     (rd / "config.txt").write_text(f"config: {cfg}\n")
@@ -71,16 +70,6 @@ def _write_recon(ctx: Context, cfg: str = _CFG) -> None:
         for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
             archive.writestr(name, b"backup")
     ctx.need_robot().state_set("recon", f"model={ctx.profile.key} backup=obtained")
-
-
-def _ok_responder(live_cfg: str = _CFG) -> object:
-    def responder(argv: tuple[str, ...]) -> Result:
-        joined = " ".join(argv)
-        if "getvar config" in joined:
-            return Result(argv, 0, f"OKAY {live_cfg}", "")
-        return Result(argv, 0, "OKAY", "")  # sunxi-fel, wait, oem, flash, reboot all OK
-
-    return responder
 
 
 def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
@@ -107,8 +96,8 @@ def test_each_fastboot_model_follows_the_official_root_contract(
     ) else [True]
     ctx = make_ctx(
         model=model,
-        robot_name=f"{profile.model_code}-{_CFG[:12]}",
-        responder=_ok_responder(),
+        robot_name=f"{profile.model_code}-{CFG[:12]}",
+        responder=config_responder(),
         confirms=confirmations,
     )
     _stage_image(ctx)
@@ -125,7 +114,7 @@ def test_each_fastboot_model_follows_the_official_root_contract(
 
 
 def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder())
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder())
     ctx.need_robot().state_set("rooted")
     root(ctx)
     assert "already rooted" in ctx.console.text()
@@ -135,7 +124,7 @@ def test_root_does_not_restage_an_already_rooted_robot(make_ctx: CtxFactory) -> 
 def test_root_treats_an_incomplete_existing_root_adoption_as_a_safety_stop(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
     ctx.need_robot().state_set("root-origin", ADOPTED_ROOT)
 
     root(ctx)
@@ -147,7 +136,7 @@ def test_root_treats_an_incomplete_existing_root_adoption_as_a_safety_stop(
 def test_root_does_not_reverse_a_completed_stock_restore_without_force(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
     ctx.need_robot().state_set("restored-stock")
 
     with pytest.raises(Die, match="restored to stock"):
@@ -161,7 +150,7 @@ def test_root_refuses_an_uncertain_stock_restore_even_when_forced(
     make_ctx: CtxFactory,
     force: bool,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
     ctx.need_robot().state_set("restore-attempt", "uncertain stock restore")
 
     with pytest.raises(Die, match="prior stock-restore attempt"):
@@ -174,7 +163,7 @@ def test_root_refuses_an_uncertain_stock_restore_even_when_forced(
 def test_root_directs_completed_restore_to_observation_only_resume(
     make_ctx: CtxFactory, force: bool,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}")
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
     ctx.need_robot().state_set("restore-attempt", "flashed-awaiting-stock-boot model=x40-ultra")
 
     with pytest.raises(Die, match="without --force"):
@@ -185,8 +174,8 @@ def test_root_directs_completed_restore_to_observation_only_resume(
 
 def test_forced_new_root_clears_the_stock_restore_marker(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(
-        robot_name=f"r2416-{_CFG[:12]}",
-        responder=_ok_responder(),
+        robot_name=f"r2416-{CFG[:12]}",
+        responder=config_responder(),
         confirms=[True],
     )
     _stage_image(ctx)
@@ -206,7 +195,7 @@ def test_forced_new_root_clears_the_stock_restore_marker(make_ctx: CtxFactory) -
 def test_root_revalidates_a_stale_sunxi_cache_before_flash(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder())
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder())
     _stage_image(ctx)
     _write_recon(ctx)
     (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
@@ -223,7 +212,7 @@ def test_root_revalidates_a_stale_sunxi_cache_before_flash(
 def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(),
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(),
                    confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
@@ -240,7 +229,7 @@ def test_root_requires_a_separate_confirmation_when_requested_backup_is_missing(
 def test_root_treats_old_or_unrecognised_backup_markers_as_unknown(
     make_ctx: CtxFactory, marker: str,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(),
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(),
                    confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
@@ -255,7 +244,7 @@ def test_root_treats_old_or_unrecognised_backup_markers_as_unknown(
 def test_root_checks_backup_evidence_instead_of_trusting_the_obtained_marker(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
     (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).unlink()
@@ -269,7 +258,7 @@ def test_root_checks_backup_evidence_instead_of_trusting_the_obtained_marker(
 def test_root_does_not_treat_an_incomplete_capture_refresh_as_recovery(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
     begin_recovery_refresh(ctx.need_robot().recon_dir)
@@ -284,7 +273,7 @@ def test_root_does_not_treat_an_incomplete_capture_refresh_as_recovery(
 def test_root_accepts_the_three_recovery_dumps_when_the_archive_is_missing(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -296,7 +285,7 @@ def test_root_accepts_the_three_recovery_dumps_when_the_archive_is_missing(
 
 
 def test_root_rejects_a_recovery_archive_corrupted_after_recon(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
     (ctx.need_robot().recon_dir / RECOVERY_BACKUP_ZIP).write_bytes(b"corrupt")
@@ -313,7 +302,7 @@ def test_recovery_dump_production_floor_is_brick_relevant() -> None:
 def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     ctx.need_robot().state_set("recon", "model=x40-ultra backup=not-requested")
@@ -325,7 +314,7 @@ def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
 def test_root_refuses_an_implausibly_short_image_before_any_device_command(
     make_ctx: CtxFactory, name: str,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     with (ctx.need_robot().fw_dir / name).open("r+b") as image:
@@ -338,7 +327,7 @@ def test_root_refuses_an_implausibly_short_image_before_any_device_command(
 def test_rooted_marker_is_written_while_interrupts_are_still_masked(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -356,7 +345,7 @@ def test_rooted_marker_is_written_while_interrupts_are_still_masked(
 
 
 def test_root_fails_closed_when_recon_identity_missing(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     # no recon config.txt written -> expect_cfg is empty -> must refuse, not flash blind
     with pytest.raises(Die, match="SAFETY STOP"):
@@ -366,11 +355,11 @@ def test_root_fails_closed_when_recon_identity_missing(make_ctx: CtxFactory) -> 
 
 
 def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     robot.state_set("model_key", ctx.profile.key)
 
     with pytest.raises(Die, match="no completed reconnaissance record"):
@@ -392,7 +381,7 @@ def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFa
 def test_root_refuses_an_unbound_or_ambiguous_recon_model(
     make_ctx: CtxFactory, marker: str,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     ctx.need_robot().state_set("recon", marker)
@@ -411,7 +400,7 @@ def test_root_flashes_a_correctly_bound_robot(make_ctx: CtxFactory) -> None:
     Every rejection above is worthless if the accept path silently stopped working, and a gate that
     refuses legitimate hardware is only ever discovered on someone's robot.
     """
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -437,7 +426,7 @@ def test_root_still_flashes_after_a_launch_migration(
     permanent SAFETY STOP that no --force clears. Unit tests never caught that, because none of
     them ran migrate() between the two phases.
     """
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -458,7 +447,7 @@ def test_root_still_flashes_after_a_launch_migration(
 def test_completion_marker_failure_reboots_but_blocks_an_automatic_reflash(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -486,12 +475,12 @@ def test_failed_forced_reflash_invalidates_the_old_rooted_marker(make_ctx: CtxFa
     def responder(argv: tuple[str, ...]) -> Result:
         joined = " ".join(argv)
         if "getvar config" in joined:
-            return Result(argv, 0, f"OKAY {_CFG}", "")
+            return Result(argv, 0, f"OKAY {CFG}", "")
         if argv[:2] == FB and len(argv) > 3 and argv[2:4] == ("flash", "toc1"):
             return Result(argv, 0, "FAILED write error", "")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     robot = ctx.need_robot()
@@ -512,9 +501,9 @@ def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> 
     """The staged image's check.txt is hex8(config[0:4] ^ 0xC9ACBCC6). A token belonging to a
     different config must stop the flash — the live/recon cross-check cannot catch this, because
     both of its operands come from the connected robot."""
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx, dust="d88e8f82")  # built for 11223344…, not this robot's abcdef01…
-    _write_recon(ctx, _CFG)
+    _write_recon(ctx, CFG)
     with pytest.raises(Die, match="SAFETY STOP: the staged image was built for config 11223344"):
         root(ctx)
     assert not ctx.need_robot().state_has("rooted")
@@ -522,9 +511,9 @@ def test_root_refuses_an_image_built_for_another_robot(make_ctx: CtxFactory) -> 
 
 
 def test_root_accepts_the_image_built_for_this_robot(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx, dust="626153c7")  # hex8(abcdef01 ^ C9ACBCC6)
-    _write_recon(ctx, _CFG)
+    _write_recon(ctx, CFG)
     root(ctx)
     assert ctx.need_robot().state_has("rooted")
     assert ("flash", "rootfs2", "rootfs.img") in _flash_ops(ctx)
@@ -534,7 +523,7 @@ def test_root_accepts_the_image_built_for_this_robot(make_ctx: CtxFactory) -> No
 def test_root_refuses_a_staged_member_changed_without_changing_its_size(
     make_ctx: CtxFactory, name: str,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     path = ctx.need_robot().fw_dir / name
@@ -550,9 +539,9 @@ def test_root_refuses_a_staged_member_changed_without_changing_its_size(
 def test_root_refuses_a_malformed_image_identity_token(
     make_ctx: CtxFactory, dust: str,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx, dust=dust)
-    _write_recon(ctx, _CFG)
+    _write_recon(ctx, CFG)
     with pytest.raises(Die, match=r"check\.txt is not the expected 8-hex identity token"):
         root(ctx)
     assert ctx.runner.calls == []
@@ -560,17 +549,17 @@ def test_root_refuses_a_malformed_image_identity_token(
 
 
 def test_root_refuses_on_config_mismatch(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder("beef" * 8),
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder("beef" * 8),
                    confirms=[True])
     _stage_image(ctx)
-    _write_recon(ctx, _CFG)  # recon says _CFG, but the device reports beefbeef...
+    _write_recon(ctx, CFG)  # recon says CFG, but the device reports beefbeef...
     with pytest.raises(Die, match="SAFETY STOP"):
         root(ctx)
     assert _flash_ops(ctx) == []
 
 
 def test_root_aborts_without_confirmation(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[False])
     _stage_image(ctx)
     _write_recon(ctx)
     with pytest.raises(Die, match="Aborted"):
@@ -581,7 +570,7 @@ def test_root_aborts_without_confirmation(make_ctx: CtxFactory) -> None:
 def test_root_self_provisions_image_when_unstaged(make_ctx: CtxFactory) -> None:
     # root self-provisions: instead of dying "stage the image first" it RUNS the image phase
     # (which fails fast here since no built zip appears), proving the self-provision chain fired.
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _write_recon(ctx)  # recon present, but image NOT staged
     with pytest.raises(Die):
         root(ctx)
@@ -590,7 +579,7 @@ def test_root_self_provisions_image_when_unstaged(make_ctx: CtxFactory) -> None:
 
 
 def test_root_restages_when_the_image_marker_outlives_its_files(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _write_recon(ctx)
     ctx.need_robot().state_set("image", "stale")
 
@@ -606,11 +595,11 @@ def test_root_reads_config_from_stderr_like_system_fastboot(make_ctx: CtxFactory
     exactly like recon (stdout+stderr merged) so the system transport can flash."""
     def responder(argv: tuple[str, ...]) -> Result:
         if "getvar config" in " ".join(argv):
-            return Result(argv, 0, "", f"config: {_CFG}\nFinished. Total time: 0.001s\n")
+            return Result(argv, 0, "", f"config: {CFG}\nFinished. Total time: 0.001s\n")
         return Result(argv, 0, "OKAY", "")
 
     ctx = make_ctx(
-        robot_name=f"r2416-{_CFG[:12]}",
+        robot_name=f"r2416-{CFG[:12]}",
         responder=responder,
         confirms=[True],
         transport_mode="system",
@@ -627,7 +616,7 @@ def test_root_surfaces_a_failed_pre_flash_identity_read(make_ctx: CtxFactory) ->
             return Result(argv, 1, "", "FAILED [Errno 13] Access denied")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     with pytest.raises(Die, match="connected robot's config"):
@@ -640,10 +629,10 @@ def test_root_rejects_failed_config_reply_even_when_error_contains_matching_iden
 ) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         if "getvar config" in " ".join(argv):
-            return Result(argv, 1, f"FAIL {_CFG}\n", "")
+            return Result(argv, 1, f"FAIL {CFG}\n", "")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
 
@@ -659,7 +648,7 @@ def test_standalone_root_checks_the_fastboot_host_before_fel(make_ctx: CtxFactor
             return Result(argv, 1, "", "FAILED no libusb backend available")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     with pytest.raises(Die, match="fastboot client"):
@@ -670,7 +659,7 @@ def test_standalone_root_checks_the_fastboot_host_before_fel(make_ctx: CtxFactor
 def test_root_strips_all_whitespace_from_dust_token(make_ctx: CtxFactory) -> None:
     """check.txt is fed to `oem dust` after removing ALL whitespace (tr -d '[:space:]'), not just
     the ends — internal whitespace must never reach the flash-authorization argument."""
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx, dust=" 6261\t53\nC7 \r")
     _write_recon(ctx)
     root(ctx)
@@ -683,12 +672,12 @@ def test_root_hard_stops_on_non_okay_flash(make_ctx: CtxFactory) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
         joined = " ".join(argv)
         if "getvar config" in joined:
-            return Result(argv, 0, f"OKAY {_CFG}", "")
+            return Result(argv, 0, f"OKAY {CFG}", "")
         if argv[:2] == FB and len(argv) > 3 and argv[2] == "flash" and argv[3] == "toc1":
             return Result(argv, 0, "FAILED write error", "")  # no OKAY -> gate must stop
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     with pytest.raises(Die, match="did NOT return OKAY"):
@@ -733,10 +722,10 @@ def test_root_flash_window_ignores_sigint_until_the_sequence_completes(
             os.kill(os.getpid(), signal.SIGINT)  # delivered inside the masked window
             fired["count"] += 1
         if "getvar config" in " ".join(argv):
-            return Result(argv, 0, f"OKAY {_CFG}", "")
+            return Result(argv, 0, f"OKAY {CFG}", "")
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     root(ctx)  # must complete without the signal escaping
@@ -753,7 +742,7 @@ def test_root_aborts_when_live_config_unreadable(make_ctx: CtxFactory) -> None:
             return Result(argv, 0, "OKAY (no hex here)", "")  # no 32-hex token
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     with pytest.raises(Die, match="Couldn't read the connected robot's config"):
@@ -762,7 +751,7 @@ def test_root_aborts_when_live_config_unreadable(make_ctx: CtxFactory) -> None:
 
 
 def test_root_aborts_on_empty_check_txt(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     _stage_image(ctx, dust="   \n\t")
     _write_recon(ctx)
     with pytest.raises(Die, match=r"check\.txt is empty"):
@@ -775,7 +764,7 @@ def test_root_aborts_when_fel_never_appears(make_ctx: CtxFactory) -> None:
             return Result(argv, 0, "device not found", "")  # FEL never comes up
         return Result(argv, 0, "OKAY", "")
 
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=responder, confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[True])
     _stage_image(ctx)
     _write_recon(ctx)
     ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
@@ -785,7 +774,7 @@ def test_root_aborts_when_fel_never_appears(make_ctx: CtxFactory) -> None:
 
 
 def test_root_skips_when_already_rooted(make_ctx: CtxFactory) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{_CFG[:12]}", responder=_ok_responder(), confirms=[True])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
     robot = ctx.need_robot()
     robot.state_set("image", "staged")  # a rooted robot was staged first
     robot.state_set("rooted")
