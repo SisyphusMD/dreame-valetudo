@@ -17,14 +17,14 @@ import platform
 import re
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar, TextIO
 
 from .console import Console, Progress, _fmt_elapsed
 from .constants import RECOVERY_DUMP_NAMES
 from .profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
-from .run import Result, RunError, Runner
+from .run import Result, RunError, Runner, RunningCommand
 
 # Redaction patterns, applied to every line before it is written. Order matters: the SSH-key blob is
 # base64 (matches the hex/int rules), so it must be redacted whole first.
@@ -337,6 +337,13 @@ class LoggingConsole(Console):
         self._log.line(self._PREFIX["answer"], answer)
         return answer
 
+    def ask_secret(self, prompt: str) -> str:
+        self._log.line(self._PREFIX["prompt"], prompt)
+        answer = super().ask_secret(prompt)
+        # The answer itself never reaches the shareable log — only whether one was given.
+        self._log.line(self._PREFIX["answer"], "<secret entered>" if answer else "<empty>")
+        return answer
+
 
 class LoggingRunner(Runner):
     """Wraps a real Runner, logging each command's name + exit code — never its stdin or stdout (so
@@ -353,9 +360,10 @@ class LoggingRunner(Runner):
         return result
 
     def run(self, argv: Sequence[str], *, check: bool = True, stdin: str | None = None,
-            timeout: float | None = None) -> Result:
+            timeout: float | None = None,
+            env: Mapping[str, str | None] | None = None) -> Result:
         t = self._log.mono()
-        result = self._inner.run(argv, check=False, stdin=stdin, timeout=timeout)
+        result = self._inner.run(argv, check=False, stdin=stdin, timeout=timeout, env=env)
         return self._finish(result, t, check)
 
     def run_redirect(self, argv: Sequence[str], *, stdout_path: str | None = None,
@@ -365,6 +373,47 @@ class LoggingRunner(Runner):
         result = self._inner.run_redirect(argv, stdout_path=stdout_path, stdin_path=stdin_path,
                                           check=False, timeout=timeout)
         return self._finish(result, t, check)
+
+    def start(self, argv: Sequence[str], *, stdin: str | None = None,
+              timeout: float | None = None,
+              env: Mapping[str, str | None] | None = None) -> RunningCommand:
+        started = self._log.mono()
+        return _LoggingCommand(
+            self._inner.start(argv, stdin=stdin, timeout=timeout, env=env),
+            self._log,
+            started,
+        )
+
+
+class _LoggingCommand(RunningCommand):
+    """Logs a cancellable command's outcome exactly once, whichever way it finished.
+
+    poll() is called repeatedly while the helper arms, so the log line must be written on the
+    first terminal result and never again — otherwise one command produces a run of near-identical
+    entries.
+    """
+
+    def __init__(self, inner: RunningCommand, log: RunLog, started: float) -> None:
+        self._inner = inner
+        self._log = log
+        self._started = started
+        self._result: Result | None = None
+
+    def _record(self, result: Result) -> Result:
+        if self._result is None:
+            self._result = result
+            self._log.command(result, self._log.mono() - self._started)
+        return self._result
+
+    def poll(self) -> Result | None:
+        result = self._inner.poll()
+        return None if result is None else self._record(result)
+
+    def wait(self, timeout: float | None = None) -> Result:
+        return self._record(self._inner.wait(timeout))
+
+    def cancel(self) -> Result:
+        return self._record(self._inner.cancel())
 
 
 class _RecordingProgress(Progress):
@@ -432,6 +481,12 @@ class BufferingConsole(Console):
         self._pending.append(("??", prompt))
         answer = self._inner.ask(prompt)
         self._pending.append(("->", answer))
+        return answer
+
+    def ask_secret(self, prompt: str) -> str:
+        self._pending.append(("??", prompt))
+        answer = self._inner.ask_secret(prompt)
+        self._pending.append(("->", "<secret entered>" if answer else "<empty>"))
         return answer
 
     def progress(self, label: str, *, timer: bool = True) -> Progress:

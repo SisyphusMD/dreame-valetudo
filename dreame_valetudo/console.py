@@ -11,10 +11,12 @@ message, and wording assertions never couple to presentation.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import select
 import shutil
 import sys
+import termios
 import textwrap
 import threading
 import time
@@ -295,6 +297,19 @@ class Console:
         _bookmark(None)  # see confirm(): deliberately not a finally
         return answer
 
+    def ask_secret(self, prompt: str) -> str:
+        """Read a local secret without echoing it or exposing it to the shareable run log.
+
+        UART authentication is derived from the physical under-dustbin serial. That value must
+        never appear on screen or in a campaign log, so it needs a distinct IO seam rather than
+        relying on every caller to remember special logging rules.
+        """
+        self._suspend_progress()
+        _bookmark(prompt)
+        answer = self._secret_prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(None)  # see confirm(): deliberately not a finally
+        return answer
+
     # -- the funnel and rendering -----------------------------------------------------------
 
     def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
@@ -395,6 +410,58 @@ class Console:
                 print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
                 return ""
         return self._prompt_until_idle(rendered)
+
+    def _secret_prompt(self, rendered: str) -> str:
+        """Read one no-echo tty line, honoring the detached-session deadline like _prompt does.
+
+        There is deliberately no piped fallback: input() would echo the serial into the terminal
+        scrollback, which is the one place this value must never appear.
+        """
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise Die(
+                "Secret input requires an attached controlling terminal; refusing a piped or "
+                "echo-capable fallback. Reattach this run and try again."
+            )
+        try:
+            fd = sys.stdin.fileno()
+            original = termios.tcgetattr(fd)
+        except (AttributeError, OSError, termios.error) as exc:
+            raise Die("Could not place the controlling terminal in no-echo mode.") from exc
+        hidden = list(original)
+        hidden[3] &= ~termios.ECHO
+        probe = _IDLE_PROBE[0] if _IDLE_PROBE else None
+        timeout = _IDLE_TIMEOUT[0] if _IDLE_TIMEOUT else 0.0
+        line = ""
+        self._last_line_blank = False
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, hidden)
+            print(rendered, end="", flush=True)
+            if probe is None or timeout <= 0:
+                line = sys.stdin.readline()
+            else:
+                deadline: float | None = None
+                last_probe = 0.0
+                attached: bool | None = None
+                while True:
+                    if select.select([sys.stdin], [], [], 2.0)[0]:
+                        line = sys.stdin.readline()
+                        break
+                    now = time.monotonic()
+                    if now - last_probe >= 15.0 or (deadline is not None and now >= deadline):
+                        attached, last_probe = probe(), now
+                    deadline = next_deadline(attached, deadline, now, timeout)
+                    if deadline is not None and now >= deadline:
+                        raise Die(
+                            "No secret was entered and this window has been detached for a while; "
+                            "stopping with your place saved."
+                        )
+        finally:
+            with contextlib.suppress(OSError, termios.error):
+                termios.tcsetattr(fd, termios.TCSANOW, original)
+            print()  # the un-echoed Enter never reached the terminal
+        if not line:
+            raise Die("Secret input ended before a value was entered.")
+        return line.rstrip("\r\n")
 
     def replay(self, data: bytes) -> None:
         """Write a previously captured terminal screen without re-rendering it."""
