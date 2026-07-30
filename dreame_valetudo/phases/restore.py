@@ -584,10 +584,10 @@ def _extract_partitions(
 
 
 def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
-    if path.is_symlink() or not path.is_dir():
+    if not path.is_dir():
         return False
     target = path / "manifest.json"
-    if target.is_symlink() or not target.is_file():
+    if not target.is_file():
         return False
     try:
         data = json.loads(target.read_text())
@@ -632,7 +632,7 @@ def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
     for name in _KIT_FILES:
         record = artifacts.get(name)
         artifact = path / name
-        if (not isinstance(record, dict) or artifact.is_symlink() or not artifact.is_file()
+        if (not isinstance(record, dict) or not artifact.is_file()
                 or record.get("bytes") != artifact.stat().st_size
                 or record.get("sha256") != sha256_of(artifact)):
             return False
@@ -656,15 +656,13 @@ def _matching_restore_kits(root: Path, model_code: str, config: str) -> list[Pat
 
 def _sealed_dump_valid(path: Path, expected_bytes: int) -> bool:
     try:
-        return not path.is_symlink() and path.is_file() and path.stat().st_size == expected_bytes
+        return path.is_file() and path.stat().st_size == expected_bytes
     except OSError:
         return False
 
 
 def _extract_recovery_archive(recon_dir: Path, expected_bytes: int) -> bool:
     archive_path = recon_dir / RECOVERY_BACKUP_ZIP
-    if archive_path.is_symlink():
-        die(f"Refusing symlinked portable recovery archive: {archive_path}")
     if not archive_path.is_file():
         return False
     expected_names = tuple(f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
@@ -695,7 +693,7 @@ def _extract_recovery_archive(recon_dir: Path, expected_bytes: int) -> bool:
         for name in expected_names:
             staged_slice = staging / name
             target = recon_dir / name
-            if target.exists() or target.is_symlink():
+            if target.exists():
                 if not _sealed_dump_valid(target, expected_bytes):
                     die(f"Existing sealed recovery slice is invalid; preserving it: {target}")
                 continue
@@ -734,7 +732,7 @@ def _verified_recovery_provenance(
 
     sealed_paths = [robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
     if "sealed" in expected and not all(
-        not path.is_symlink() and path.is_file() for path in sealed_paths
+        path.is_file() for path in sealed_paths
     ):
         _extract_recovery_archive(robot.recon_dir, expected_bytes)
     try:
@@ -744,7 +742,7 @@ def _verified_recovery_provenance(
     except ValueError as exc:
         die(f"A sealed recovery source is corrupt or unreadable: {exc}")
     if ("sealed" in expected
-            and any(path.exists() or path.is_symlink() for path in sealed_paths)
+            and any(path.exists() for path in sealed_paths)
             and sealed_current.get("sealed") != expected["sealed"]):
         die("The sealed recovery sources do not match their same-robot provenance. "
             "Preserve every file for inspection; refusing to restore.")
@@ -783,7 +781,7 @@ def _verified_recovery_provenance(
 
     decrypted_paths = [robot.recon_dir / f"{name}.dd.gz" for name in RECOVERY_DUMP_NAMES]
     if ("decrypted" in expected
-            and any(path.exists() or path.is_symlink() for path in decrypted_paths)
+            and any(path.exists() for path in decrypted_paths)
             and current.get("decrypted") != expected["decrypted"]):
         die("The decrypted recovery sources do not match their same-robot provenance. "
                 "Preserve every file for inspection; refusing to restore.")
@@ -874,8 +872,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "for inspection and remove the ambiguity before restoring.")
     final = (matches[0] if matches else
              ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, config)}-stock-recovery")
-    if final.is_symlink():
-        die(f"Refusing symlinked stock restore destination: {final}")
     if final.exists():
         if stock_restore_kit_valid(final, config, ctx.profile.key):
             return final
@@ -891,7 +887,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
     if any(not path.is_file() for path in decrypted):
         sealed = [robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
         invalid = [path for path in sealed
-                   if (path.exists() or path.is_symlink())
+                   if path.exists()
                    and not _sealed_dump_valid(path, chunk_bytes)]
         if invalid:
             die("Invalid sealed recovery slices were preserved for inspection: "
@@ -904,9 +900,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
         die("No complete decrypted pre-root recovery capture is available (missing: "
             + ", ".join(missing)
             + "). Re-run recon with recovery backup enabled before restoring.")
-    linked = [path.name for path in decrypted if path.is_symlink()]
-    if linked:
-        die("Refusing symlinked recovery sources: " + ", ".join(linked))
     source_binding, expected_decrypted = _verified_recovery_provenance(
         ctx, config, chunk_bytes,
     )

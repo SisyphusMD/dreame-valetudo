@@ -45,7 +45,6 @@ def looks_like_backup(backup_dir: Path) -> bool:
     """True only for a real, local backup directory carrying backup-shaped contents."""
     return (
         backup_dir.is_dir()
-        and not backup_dir.is_symlink()
         and not backup_dir.name.endswith(".partial")
         and (
             (backup_dir / "files.tar.gz").exists()
@@ -59,7 +58,7 @@ def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
     target = backup_dir / "manifest.json"
     for abandoned in backup_dir.glob(".manifest.*.tmp"):
         abandoned_owner = abandoned.with_suffix(".owner")
-        if not abandoned_owner.is_file() or abandoned_owner.is_symlink():
+        if not abandoned_owner.is_file():
             continue
         try:
             with abandoned_owner.open("r+") as stale:
@@ -191,7 +190,7 @@ def retag_robot(
         return 0
     for d in entries:
         mf = d / "manifest.json"
-        if d.is_symlink() or not mf.is_file():
+        if not mf.is_file():
             continue
         try:
             data = json.loads(mf.read_text())

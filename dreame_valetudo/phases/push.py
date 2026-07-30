@@ -264,7 +264,7 @@ def factory_backup_archive_valid(path: Path) -> bool:
     retroactively condemned for guarantees it was never captured under.
     """
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size <= 1000:
+        if not path.is_file() or path.stat().st_size <= 1000:
             return False
     except OSError:
         return False

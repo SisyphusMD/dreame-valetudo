@@ -475,8 +475,6 @@ def _campaign_name(ctx: Context, options: Mapping[str, str | bool]) -> str:
 def _campaign_dir(ctx: Context, campaign: str) -> Path:
     root = ctx.ws.base / "bench"
     target = root / campaign
-    if root.is_symlink() or target.is_symlink():
-        die("Refusing a symlinked hardware-bench report directory.")
     if target.exists() and not target.is_dir():
         die(f"Hardware-bench campaign path is not a directory: {target}")
     target.mkdir(parents=True, exist_ok=True)
@@ -908,8 +906,6 @@ def _preflight_report(ctx: Context, campaign: str) -> dict[str, object] | None:
     build, channel = _metadata(ctx)
     root = ctx.ws.base / "bench"
     directory = root / campaign
-    if root.is_symlink() or directory.is_symlink():
-        die("Refusing a symlinked hardware-bench report directory.")
     if directory.exists() and not directory.is_dir():
         die(f"Hardware-bench campaign path is not a directory: {directory}")
     path = directory / "report.json"

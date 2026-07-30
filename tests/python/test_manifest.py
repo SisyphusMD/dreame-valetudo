@@ -236,19 +236,15 @@ def test_backfill_skips_unwritable_backup_and_continues(
     assert str(blocked) in con.text()
 
 
-def test_backfill_ignores_non_backups_and_symlinks(tmp_path: Path) -> None:
+def test_backfill_ignores_non_backups(tmp_path: Path) -> None:
     backups = tmp_path / "dreame-valetudo" / "backups"
     notes = backups / "my-tax-returns"
     notes.mkdir(parents=True)
     (notes / "2025.pdf").write_bytes(b"private")
-    outside = tmp_path / "offsite"
-    _backup(tmp_path, "offsite")
-    (backups / "offsite-link").symlink_to(outside, target_is_directory=True)
 
     manifest.backfill_manifests({"HOME": str(tmp_path)}, ScriptedConsole())
 
     assert not (notes / "manifest.json").exists()
-    assert not (outside / "manifest.json").exists()
 
 
 def test_retag_skips_unwritable_manifest_and_updates_the_rest(

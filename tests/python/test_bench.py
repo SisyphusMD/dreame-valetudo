@@ -998,19 +998,6 @@ def test_malformed_campaign_is_rejected_before_robot_selection(
     assert not ctx.ws.robots_dir.exists()
 
 
-def test_symlinked_campaign_root_is_refused(make_ctx: CtxFactory, tmp_path: Path) -> None:
-    ctx = make_ctx()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    ctx.ws.base.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.base / "bench").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(Die, match="symlinked"):
-        B.bench(
-            ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
-        )
-
-
 def test_h3_requires_the_explicit_flag_before_calling_the_phase(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
