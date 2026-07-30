@@ -59,9 +59,9 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
-          ruff check dreame_valetudo libexec tests/python
+          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
-          python -m compileall -q docs/research/tools
+          python -m compileall -q docs/research/tools packaging/stamp-version.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
@@ -84,7 +84,8 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "pytest==$PYTEST" -e .
-          python -m compileall -q dreame_valetudo libexec docs/research/tools
+          python -m compileall -q dreame_valetudo libexec docs/research/tools \
+            packaging/stamp-version.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
