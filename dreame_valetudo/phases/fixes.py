@@ -232,9 +232,12 @@ def fix_impl(ctx: Context) -> None:
     else:
         ctx.console.info(f"robot.implementation: {cur} -> {impl}")
         data.setdefault("robot", {})["implementation"] = impl
-        # Stream the patched bytes over stdin (cat > ...). Never interpolate JSON into the remote
-        # command line: a value with $, a backtick, or a backslash escape would be mangled by the
-        # remote shell and corrupt the config.
+        # Stream the patched bytes over stdin to a staging path, then publish with an atomic
+        # rename: the live config is only ever replaced whole, so a dropped AP connection mid-
+        # transfer cannot truncate it. Streaming (never interpolating JSON into the remote command
+        # line) also keeps a value with $, a backtick, or a backslash escape from being mangled by
+        # the remote shell.
+        staged = "/data/valetudo_config.json.update"
         patched_file = ctx.ws.base / "valetudo_config.json.patched"
         ctx.ws.base.mkdir(parents=True, exist_ok=True)
         try:
@@ -242,12 +245,21 @@ def fix_impl(ctx: Context) -> None:
             patched_file.touch(mode=0o600)
             patched_file.write_text(json.dumps(data, indent=2) + "\n")
             patched_file.chmod(0o600)
-            if not ctx.runner.run_redirect(
-                [*ssh_base(_TARGET, key),
-                 ("cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
-                  "cat > /data/valetudo_config.json")],
+            streamed = ctx.runner.run_redirect(
+                [*ssh_base(_TARGET, key), f"cat > {staged}"],
                 stdin_path=str(patched_file), check=False,
-            ).ok:
+            ).ok
+            published = streamed and robot_ssh(
+                ctx.runner, _TARGET,
+                "set -e\n"
+                "cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null "
+                "|| true\n"
+                f"mv -f {staged} /data/valetudo_config.json\n"
+                "sync\n",
+                key=key, check=False,
+            ).ok
+            if not published:
+                robot_ssh(ctx.runner, _TARGET, f"rm -f {staged}", key=key, check=False)
                 die("Couldn't write the patched config to the robot.")
         finally:
             patched_file.unlink(missing_ok=True)

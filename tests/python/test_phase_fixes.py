@@ -215,6 +215,28 @@ def test_fix_did_already_positive_returns_true(make_ctx: CtxFactory) -> None:
     assert fix_did(ctx) is True
 
 
+def test_fix_did_stages_the_factory_file_before_replacing_it(make_ctx: CtxFactory) -> None:
+    """did.txt is written to a temp and atomically renamed, never redirected straight into the live
+    factory file, so a dropped AP link mid-write cannot truncate the identity."""
+    def responder(argv: tuple[str, ...]) -> Result:
+        pre = _matching_fix_robot(argv)
+        if pre is not None:
+            return pre
+        cmd = _remote(argv)
+        if cmd == "cat /mnt/private/ULI/factory/did.txt 2>/dev/null":
+            return Result(argv, 0, "-1\n", "")  # a repairable negative deviceId
+        return Result(argv, 0, "", "")
+
+    ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
+    assert fix_did(ctx) is True
+    apply = next(_remote(c) for c in ctx.runner.calls  # type: ignore[attr-defined]
+                 if "did_orig.txt" in _remote(c))
+    assert "> '/mnt/private/ULI/factory/did.txt.update'" in apply
+    assert ("mv -f '/mnt/private/ULI/factory/did.txt.update' "
+            "'/mnt/private/ULI/factory/did.txt'") in apply
+    assert "> '/mnt/private/ULI/factory/did.txt'" not in apply  # never redirect into the live file
+
+
 def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactory) -> None:
     """The patched config goes over stdin (cat > ...), and no remote command interpolates JSON."""
     def responder(argv: tuple[str, ...]) -> Result:
@@ -248,7 +270,12 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
     ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
     fix_impl(ctx)
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
-    assert any("cat > /data/valetudo_config.json" in r for r in remotes)
+    # Staged, then published atomically: the config streams to a temp path and only supersedes the
+    # live file via mv, so a dropped AP link mid-transfer cannot truncate it.
+    assert any(r == "cat > /data/valetudo_config.json.update" for r in remotes)
+    assert any("mv -f /data/valetudo_config.json.update /data/valetudo_config.json" in r
+               for r in remotes)
+    assert not any(r == "cat > /data/valetudo_config.json" for r in remotes)  # never the live file
     assert not any('{"robot"' in r for r in remotes)  # no JSON on any command line
     assert streamed_modes == [0o600]
     assert not (ctx.ws.base / "valetudo_config.json.patched").exists()
@@ -276,6 +303,13 @@ def test_fix_key_restores_from_secure_storage(make_ctx: CtxFactory) -> None:
     assert any("key_orig.txt" in r for r in remotes)          # the restore write ran
     assert not any("A1b2C3d4E5f6G7h8" in r for r in remotes)  # key is streamed over stdin, not argv
     assert any("reboot" in r for r in remotes)                # rebooted to pick up the restored key
+    # Both factory files are staged then atomically renamed, never redirected into the live file.
+    apply = next(r for r in remotes if "key_orig.txt" in r)
+    assert ("mv -f '/mnt/private/ULI/factory/key.txt.update' "
+            "'/mnt/private/ULI/factory/key.txt'") in apply
+    assert "mv -f '/data/config/miio/device.conf.new' '/data/config/miio/device.conf'" in apply
+    assert "> '/mnt/private/ULI/factory/key.txt'" not in apply
+    assert "> '/data/config/miio/device.conf'" not in apply
 
 
 def test_fix_key_already_present_returns_true_without_writing(make_ctx: CtxFactory) -> None:
@@ -599,7 +633,7 @@ def test_fix_impl_falls_back_to_profile_class_without_model_line(make_ctx: CtxFa
     fix_impl(ctx)
     assert any(k == "warn" and "No readable model=" in m
                for k, m in ctx.console.lines)  # type: ignore[attr-defined]
-    assert any("cat > /data/valetudo_config.json" in _remote(c)
+    assert any(_remote(c) == "cat > /data/valetudo_config.json.update"
                for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
@@ -610,7 +644,7 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
     _bind_recon_robot(ctx)
     fix_impl(ctx)
     assert any("already pins" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
-    assert not any("cat > /data/valetudo_config.json" in _remote(c)
+    assert not any("valetudo_config.json.update" in _remote(c)
                    for c in ctx.runner.calls)  # type: ignore[attr-defined]  # no rewrite
 
 

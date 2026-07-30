@@ -278,7 +278,10 @@ def factory_backup_archive_valid(path: Path) -> bool:
 
 def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
     """Rewrite the factory deviceId to `pos` in did.txt AND device.conf, backing up the original
-    once. No reboot here. Shared by push (pre-reboot) and fix-did."""
+    once. No reboot here. Shared by push (pre-reboot) and fix-did.
+
+    did.txt is written to a temp and atomically renamed (device.conf's sed -i already renames),
+    so a dropped AP connection mid-write cannot truncate the factory identity."""
     dconf = "/data/config/miio/device.conf"
     didtxt = "/mnt/private/ULI/factory/did.txt"
     factory = "/mnt/private/ULI/factory"
@@ -286,7 +289,8 @@ def _apply_did_fix(ctx: Context, key: str | Path | None, pos: str) -> bool:
         "set -e\n"
         "mount -o remount,rw /mnt/private 2>/dev/null || true\n"
         f"[ -f '{factory}/did_orig.txt' ] || cp '{didtxt}' '{factory}/did_orig.txt'\n"
-        f"printf '%s' '{pos}' > '{didtxt}'\n"
+        f"printf '%s' '{pos}' > '{didtxt}.update'\n"
+        f"mv -f '{didtxt}.update' '{didtxt}'\n"
         f"if [ -f '{dconf}' ]; then sed -i 's/^did=.*/did={pos}/' '{dconf}'; "
         f"grep -qxF 'did={pos}' '{dconf}'; fi\n"
         f"[ \"$(cat '{didtxt}')\" = '{pos}' ]\n"
@@ -303,7 +307,8 @@ def _apply_key_fix(ctx: Context, key: str | Path | None, mikey: str) -> bool:
     never interpolated into the remote command line, keeping it out of the local process table.
     `mikey` is still format-checked so a garbage read is refused before anything is written; the
     remote script only ever uses it as the shell var "$K" (proper quoting), so no value reaches a
-    command line."""
+    command line. key.txt and device.conf are each written to a temp and atomically renamed, so a
+    dropped AP connection mid-write cannot truncate either file."""
     if not _MIKEY_RE.fullmatch(mikey):
         return False
     dconf = "/data/config/miio/device.conf"
@@ -325,11 +330,12 @@ def _apply_key_fix(ctx: Context, key: str | Path | None, mikey: str) -> bool:
             "mount -o remount,rw /mnt/private 2>/dev/null || true\n"
             f"[ -f '{factory}/key_orig.txt' ] || cp '{_KEY_TXT}' "
             f"'{factory}/key_orig.txt' 2>/dev/null || true\n"
-            f"printf '%s' \"$K\" > '{_KEY_TXT}'\n"
+            f"printf '%s' \"$K\" > '{_KEY_TXT}.update'\n"
+            f"mv -f '{_KEY_TXT}.update' '{_KEY_TXT}'\n"
             f"if [ -f '{dconf}' ]; then\n"
             f"  awk -v k=\"$K\" '/^key=/{{print \"key=\" k; f=1; next}} {{print}} "
             f"END{{if (!f) print \"key=\" k}}' '{dconf}' > '{dconf}.new' && "
-            f"cat '{dconf}.new' > '{dconf}' && rm -f '{dconf}.new'\n"
+            f"mv -f '{dconf}.new' '{dconf}'\n"
             f"  grep -qxF \"key=$K\" '{dconf}'\n"
             f"fi\n"
             f"[ \"$(cat '{_KEY_TXT}')\" = \"$K\" ]\n"
