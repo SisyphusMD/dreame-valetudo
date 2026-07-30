@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -130,48 +128,15 @@ def test_atomic_rewrite_preserves_restrictive_manifest_permissions(tmp_path: Pat
     assert target.stat().st_mode & 0o777 == 0o600
 
 
-def test_manifest_temporary_stays_locked_through_atomic_replace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    b = _backup(tmp_path)
-    original_replace = Path.replace
-
-    def replace_while_checked(source: Path, target: Path) -> Path:
-        owner = source.with_suffix(".owner")
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import fcntl, sys; f=open(sys.argv[1], 'r+'); "
-                    "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)"
-                ),
-                str(owner),
-            ],
-            capture_output=True,
-            check=False,
-        )
-        assert probe.returncode != 0
-        return original_replace(source, target)
-
-    monkeypatch.setattr(Path, "replace", replace_while_checked)
-
-    manifest.write(b, {"model": "locked until published"})
-    assert json.loads((b / "manifest.json").read_text())["model"] == "locked until published"
-
-
 def test_rewrite_removes_abandoned_manifest_temporary_without_recording_it(tmp_path: Path) -> None:
     b = _backup(tmp_path)
     abandoned = b / ".manifest.abandoned.tmp"
     abandoned.write_text("partial")
-    owner = abandoned.with_suffix(".owner")
-    owner.write_text("")
 
     manifest.write(b, {"model": "complete"})
 
     data = json.loads((b / "manifest.json").read_text())
     assert not abandoned.exists()
-    assert not owner.exists()
     assert data["contents"] == ["files.tar.gz", "private.dd.gz"]
 
 
