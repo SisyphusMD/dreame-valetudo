@@ -293,7 +293,10 @@ output_reached_terminal "$RUNDIR/bench_list.out" "downgrade-readonly" ||
 pass "a completed bench table is replayed in full without a continuation prompt"
 
 # --- 4. the exit status is the RUN's, not the tmux client's ---------------------------------
-drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" status
+# A model-specific command, so the run genuinely fails inside the session on the invalid model:
+# status and the other reporting commands ignore a stale DREAME_MODEL and would exit 0, proving
+# nothing about whether the wrapper hands back the run's status or the tmux client's.
+drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" auto
 [ "$(rc_of fail1)" = "1" ] || fail "a failing wrapped run reported $(rc_of fail1), not the run's 1"
 text_of fail1 | grep -q "no-such-model" || fail "the failing run's error was not shown to the user"
 pass "a failing wrapped run returns its own status and shows its error"
