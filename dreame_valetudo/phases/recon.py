@@ -26,7 +26,7 @@ from ..workspace import (
     RECOVERY_STAGING_DIR,
     Robot,
     Workspace,
-    protect_recon_artifacts,
+    protect_private_dir,
     recovery_backup_valid,
     recovery_dump_valid,
     recovery_zip_valid,
@@ -87,11 +87,11 @@ def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
     _verify_reported_model(ctx, captured)
     if captured:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in captured.items())
         )
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
     return captured
 
 
@@ -269,7 +269,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    protect_recon_artifacts(robot.recon_dir)
+    protect_private_dir(robot.recon_dir)
     # A pending name describes the empty directory made by "start fresh", not the hardware:
     # discovering that the hardware already belongs to another directory must not rename it.
     if ctx.pending_name and existing is None:
@@ -286,7 +286,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # The reported-model gate above must pass before the config and model become durable inputs to
     # image/root. A rejected recon intentionally leaves only an empty, untrusted robot directory.
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
-    protect_recon_artifacts(robot.recon_dir)
+    protect_private_dir(robot.recon_dir)
     robot.state_set("model_key", ctx.profile.key)
 
     backup_state = _saved_backup_state(robot)
@@ -419,7 +419,7 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     try:
         return _pull_recovery_backup_unprotected(ctx, robot)
     finally:
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
 
 
 def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:

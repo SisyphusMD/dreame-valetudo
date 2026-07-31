@@ -42,8 +42,7 @@ from .workspace import (
     RECOVERY_BACKUP_ZIP,
     Robot,
     home_dir,
-    protect_recon_artifacts,
-    protect_state_artifacts,
+    protect_private_dir,
     rename_no_replace,
     robot_dirs,
 )
@@ -504,7 +503,7 @@ def _heal_robot_state_privacy(env: Mapping[str, str]) -> None:
     """Restrict old markers and fill safe provenance gaps ignored by older releases."""
     for d in robot_dirs(env):
         robot = Robot(d)
-        protect_state_artifacts(robot.state_dir)
+        protect_private_dir(robot.state_dir)
         marker = robot.state_get("recon")
         if marker is not None:
             fields = [field for field in marker.split() if not field.startswith("config=")]
@@ -553,7 +552,7 @@ def decrypt_recovery_backup(
     Shared by the launch self-heal (old dumps) and recon (fresh dumps captured by a re-run), so
     calling either is safe and repeatable. Opt out entirely with ``DREAME_NO_DECRYPT=1``."""
     try:
-        protect_recon_artifacts(recon_dir)
+        protect_private_dir(recon_dir)
     except OSError as exc:
         console.warn(f"  could not restrict recovery-backup permissions in {recon_dir}: {exc}")
         return 0

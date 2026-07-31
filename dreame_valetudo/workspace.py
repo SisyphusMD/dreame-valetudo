@@ -138,24 +138,14 @@ def robot_dirs(env: Mapping[str, str]) -> list[Path]:
             if path.is_dir() and not path.name.startswith(".")]
 
 
-def protect_recon_artifacts(recon_dir: Path) -> None:
-    """Restrict an existing recon directory and every regular artifact directly inside it."""
-    if recon_dir.is_symlink() or not recon_dir.is_dir():
+def protect_private_dir(directory: Path) -> None:
+    """Restrict an existing recon/state directory and every regular file directly inside it."""
+    if directory.is_symlink() or not directory.is_dir():
         return
-    recon_dir.chmod(0o700)
-    for artifact in recon_dir.iterdir():
-        if artifact.is_file() and not artifact.is_symlink():
-            artifact.chmod(0o600)
-
-
-def protect_state_artifacts(state_dir: Path) -> None:
-    """Restrict an existing state directory and every regular marker directly inside it."""
-    if state_dir.is_symlink() or not state_dir.is_dir():
-        return
-    state_dir.chmod(0o700)
-    for marker in state_dir.iterdir():
-        if marker.is_file() and not marker.is_symlink():
-            marker.chmod(0o600)
+    directory.chmod(0o700)
+    for entry in directory.iterdir():
+        if entry.is_file() and not entry.is_symlink():
+            entry.chmod(0o600)
 
 
 def write_private_text(path: Path, value: str) -> None:
