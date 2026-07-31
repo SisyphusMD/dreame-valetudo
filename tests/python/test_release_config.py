@@ -259,8 +259,27 @@ def test_macos_build_verifies_the_pinned_tmux_release_tarball() -> None:
 def test_stable_release_pushes_commit_and_tag_atomically() -> None:
     text = _RELEASE.read_text()
     step = text[text.index("      - name: Push the commit and tag atomically") :]
-    assert "push --atomic origin" in step
-    assert '"HEAD:${{ github.ref_name }}" "$TAG"' in step
+    assert "packaging/push-tag.sh" in step
+    assert '"$TAG" "$TOKEN" "${{ github.ref_name }}"' in step
+
+    script = (_ROOT / "packaging" / "push-tag.sh").read_text()
+    assert "push --atomic origin" in script
+    assert '"HEAD:${branch_ref}" "$tag"' in script
+    assert '[ "$(git cat-file -t "refs/tags/$tag")" = tag ]' in script
+    assert '[ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ]' in script
+    assert 'test -z "$(git status --porcelain)"' in script
+
+    # prerelease.yml is dispatchable from any branch (packaging/README.md), unlike release.yml's
+    # tag job which refuses non-main dispatches — so it does NOT hand the repo-write PAT to a
+    # script whose content would come from whatever ref was dispatched; its push stays inline,
+    # keeping the same three safety checks the shared script performs for release.yml.
+    prerelease_step = _PRERELEASE.read_text()
+    prerelease_step = prerelease_step[prerelease_step.index("      - name: Push the prerelease tag") :]
+    assert "bash packaging/push-tag.sh" not in prerelease_step
+    assert 'push origin "$TAG"' in prerelease_step
+    assert '[ "$(git cat-file -t "refs/tags/$TAG")" = tag ]' in prerelease_step
+    assert '[ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ]' in prerelease_step
+    assert 'test -z "$(git status --porcelain)"' in prerelease_step
 
 
 def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> None:
@@ -281,9 +300,10 @@ def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> 
         assert tag.index("QUALIFIED_INTENT_SHA256") < tag.index("CLUSTER_FORGEJO_REPO_WRITE_PAT")
 
         # An annotated tag object: a lightweight ref could be retargeted to another commit later
-        # without leaving a trace of the version it was cut for.
+        # without leaving a trace of the version it was cut for. release.yml's tag job delegates
+        # the re-verification (before it ever pushes) to packaging/push-tag.sh; prerelease.yml
+        # keeps it inline (see test_stable_release_pushes_commit_and_tag_atomically for both).
         assert "git tag -a -m" in tag, workflow
-        assert '[ "$(git cat-file -t "refs/tags/$TAG")" = tag ]' in tag, workflow
 
         # Forgejo has no `permissions:` field; it warns and ignores it, so it must never appear.
         assert "permissions:" not in text, workflow

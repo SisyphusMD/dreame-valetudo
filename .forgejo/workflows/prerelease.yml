@@ -188,6 +188,13 @@ jobs:
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
         run: |
           set -euo pipefail
+          # Kept inline rather than calling packaging/push-tag.sh: unlike release.yml's tag job
+          # (hard-refuses non-main dispatches), this workflow is dispatchable from any branch, so
+          # checkout would hand this job that branch's own copy of a script — and this step is the
+          # one place the repo-write PAT reaches shell. It stays text this repo's own workflow
+          # defines at the ref actually running, not something read back off the checkout and handed
+          # a credential.
+          #
           # An annotated tag object carries the rc message and dates; a lightweight ref would let a
           # later force-push retarget the version silently.
           [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]

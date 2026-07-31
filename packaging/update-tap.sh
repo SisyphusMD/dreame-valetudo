@@ -7,13 +7,13 @@
 # A prerelease tag (hyphenated, e.g. v0.1.0-rc.1) writes the SEPARATE `dreame-valetudo-rc` formula,
 # leaving the stable `dreame-valetudo` formula untouched; a stable tag writes the stable formula.
 set -euo pipefail
-[ "$#" -eq 2 ] || { echo "usage: $0 <tag> <tap-clone-dir>" >&2; exit 2; }
-tag="$1"; tapdir="$2"
-[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
-  || { echo "invalid release tag: $tag" >&2; exit 1; }
-version="${tag#v}"
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+. "$here/release-common.sh"
+[ "$#" -eq 2 ] || { echo "usage: $0 <tag> <tap-clone-dir>" >&2; exit 2; }
+tag="$1"; tapdir="$2"
+rel_validate_tag "$tag"
+version="${tag#v}"
 case "$tag" in
   *-*) formula="dreame-valetudo-rc" ;;   # prerelease channel
   *)   formula="dreame-valetudo" ;;      # stable channel

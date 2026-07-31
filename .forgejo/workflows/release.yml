@@ -246,25 +246,4 @@ jobs:
         env:
           TAG: ${{ needs.gate.outputs.tag }}
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
-        run: |
-          set -euo pipefail
-          # An annotated tag object carries the release message and dates; a lightweight ref would
-          # let a later force-push retarget the version silently.
-          [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]
-          [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ]
-          test -z "$(git status --porcelain)"
-          AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
-          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push --atomic origin \
-            "HEAD:${{ github.ref_name }}" "$TAG"
-
-      - name: Force the push-mirrors to propagate the commit + tag now (GitHub + NAS)
-        env:
-          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
-        run: |
-          set -euo pipefail
-          # Best-effort: sync-on-commit propagates the branch + tag pushes immediately in practice,
-          # and this endpoint needs more than the PAT's write:repository scope (403 otherwise).
-          # Warn-only so a scope refusal never fails a release whose refs already fanned out.
-          curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync" \
-            || echo "::warning::push_mirrors-sync refused (PAT scope); relying on sync_on_commit"
+        run: bash packaging/push-tag.sh "$TAG" "$TOKEN" "${{ github.ref_name }}"
