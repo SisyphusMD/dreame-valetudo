@@ -41,16 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Shellcheck every shipped and integration script
-        run: |
-          # renovate: datasource=docker depName=koalaman/shellcheck
-          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
-          cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
-          docker cp . "$cid":/work
-          check_rc=0
-          docker start -a "$cid" || check_rc=$?
-          docker rm "$cid" >/dev/null
-          exit "$check_rc"
+        run: bash packaging/shellcheck-all.sh
 
       - name: Compute the next -rc version
         id: ver

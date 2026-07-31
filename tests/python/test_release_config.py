@@ -175,13 +175,28 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
     }
     for workflow in (_CI, _RELEASE, _PRERELEASE):
         text = workflow.read_text()
-        for name, value in pins.items():
-            assert f'{name}="{value}"' in text, workflow
-        assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in text, workflow
-        assert "apt-get install -y shellcheck" not in text, workflow
-        assert '-v "$PWD:' not in text, workflow
-        assert 'docker create -w /work "$SHELLCHECK"' in text, workflow
-        assert 'docker cp . "$cid":/work' in text, workflow
+        for name in ("RUFF", "MYPY", "PYTEST"):
+            assert f'{name}="{pins[name]}"' in text, workflow
+
+    # ci.yml's shellcheck job runs on every pull_request, including forks, and is deliberately the
+    # one command in that job not gated to trusted refs — so its wrapper stays inline text this
+    # repo's own workflow defines, rather than a script read back off a fork's checkout and executed
+    # directly. Only the workflow_dispatch-only release/prerelease gates, never fork-triggered,
+    # share packaging/shellcheck-all.sh.
+    assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in ci
+    assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in ci
+    assert "apt-get install -y shellcheck" not in ci
+    assert '-v "$PWD:' not in ci
+    assert 'docker create -w /work "$SHELLCHECK"' in ci
+    assert 'docker cp . "$cid":/work' in ci
+
+    for workflow in (_RELEASE, _PRERELEASE):
+        assert "run: bash packaging/shellcheck-all.sh" in workflow.read_text(), workflow
+
+    # Both copies of the pin move together: Renovate's regex manager is configured to scan this
+    # script alongside the workflow YAMLs (.renovaterc.json), so a bump touches both in one PR.
+    script = (_ROOT / "packaging" / "shellcheck-all.sh").read_text()
+    assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in script
 
 
 def test_release_cutters_serialize_without_sharing_the_tag_publish_queue() -> None:
