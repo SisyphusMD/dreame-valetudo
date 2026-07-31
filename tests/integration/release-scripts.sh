@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Integration: drive forgejo-release.sh + github-release.sh + update-tap.sh end-to-end against a
-# STUBBED curl (no network, no forge). Published release bytes are immutable, so these assertions
-# cover what each publisher REFUSES as much as what it uploads: identical bytes are a no-op,
-# differing or ambiguous bytes abort the run, an unverified release state blocks the upload, and no
-# publisher ever issues a DELETE. Run directly: bash tests/integration/release-scripts.sh
+# Integration: drive forgejo-release.sh + github-release.sh + update-tap.sh + prune-superseded-rcs.sh
+# end-to-end against a STUBBED curl (no network, no forge). Published release bytes are immutable, so
+# these assertions cover what each publisher REFUSES as much as what it uploads: identical bytes are
+# a no-op, differing or ambiguous bytes abort the run, an unverified release state blocks the upload,
+# and no publisher ever issues a DELETE. The rc-pruning sweep is the one script that DOES delete —
+# whole superseded rc releases, only once the stable is verified present on all three registries —
+# and is covered with its own stub. Run directly: bash tests/integration/release-scripts.sh
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -328,8 +330,213 @@ fi
 cp "$tmp/template.rb" "$template"
 echo "  Homebrew formula: rc channel, tag grammar, and fail-closed template OK"
 
-# The whole point of the rewrite: no release path may remove published bytes, ever.
+# The whole point of the rewrite: no immutable-asset publisher may remove published bytes, ever.
+# (prune-superseded-rcs.sh, exercised below with its OWN stub, is the one script that DOES delete —
+# whole superseded rc releases, never a kept release's assets — so it uses a separate calls log.)
 ! grep -q -- '-X DELETE' "$history" || fail "a release script issued an asset DELETE"
 
-echo "PASS: release publishers treat published assets as immutable and the tap formula is built"
-echo "      from a local rebuild that both registries are proven to be serving"
+# ---- prune-superseded-rcs.sh: a self-healing rc sweep gated on the stable being present on ALL 3 --
+# Stub the three registries' release APIs with fixture files: <registry>.list.json is the releases
+# listing (tag_name + id), <registry>.tag.<stem>.json is the stable-by-tag response (id + assets).
+# A missing tag fixture => stub returns {} => that stable is ABSENT there, so its group is kept.
+cat > "$tmp/curl" <<'STUB'
+#!/usr/bin/env bash
+set -u
+printf 'curl %s\n' "$*" >> "$STUB_CALLS"
+method=GET; url=""; prev=""
+for a in "$@"; do
+  [ "$prev" = -X ] && method="$a"
+  case "$a" in http*://*) url="$a" ;; esac
+  prev="$a"
+done
+if [ "$method" = DELETE ]; then printf '204'; exit 0; fi   # emulate curl -o /dev/null -w '%{http_code}'
+registry=""
+case "$url" in
+  *forgejo.nas.bryantserver.com*) registry=nas ;;
+  *forgejo.bryantserver.com*)     registry=cluster ;;
+  *api.github.com*)               registry=github ;;
+esac
+case "$url" in
+  */releases/tags/*)
+    stem="${url##*/releases/tags/}"; stem="${stem%%\?*}"
+    if [ -f "$STUB_FIX/$registry.tag.$stem.json" ]; then cat "$STUB_FIX/$registry.tag.$stem.json"
+    else printf '{}\n'; fi ;;
+  */releases*)
+    if [ -f "$STUB_FIX/$registry.list.json" ]; then cat "$STUB_FIX/$registry.list.json"
+    else printf '[]\n'; fi ;;
+  *) printf '{}\n' ;;
+esac
+STUB
+chmod +x "$tmp/curl"
+export CLUSTER_TOKEN=ctok NAS_TOKEN=ntok GH_TOKEN=gtok
+
+write_list() {  # <file> then <tag> <id> pairs
+  local f=$1; shift; local out="[" first=1
+  while [ "$#" -ge 2 ]; do
+    [ "$first" -eq 1 ] || out+=","
+    out+=$(printf '{"tag_name":"%s","id":%s}' "$1" "$2"); first=0; shift 2
+  done
+  printf '%s]\n' "$out" > "$f"
+}
+write_stable() {  # <file> <tag> <version> <id> — a published stable carrying all 7 canonical assets
+  local f=$1 tag=$2 ver=$3 id=$4
+  jq -n --arg t "$tag" --argjson id "$id" --arg ver "$ver" '{
+    id:$id, tag_name:$t, draft:false, prerelease:false, assets:[
+      "dreame-valetudo_amd64.deb","dreame-valetudo_arm64.deb",
+      "dreame-valetudo.x86_64.rpm","dreame-valetudo.aarch64.rpm",
+      ("dreame-valetudo-"+$ver+".tar.gz"),
+      "dreame-valetudo-macos-arm64.pkg","dreame-valetudo-macos-x86_64.pkg"
+    ] | map({name:.})
+  }' > "$f"
+}
+
+# Scenario A — multiple versions: v0.1.0 and v0.2.0 stables present on all three (their rc pruned);
+# v0.3.0 has no stable yet (v0.3.0-rc.1 preserved). Ids are offset per registry so each registry's
+# own release id is what gets deleted.
+fixA="$tmp/prune-fixA"; mkdir -p "$fixA"
+for r in cluster nas github; do
+  case $r in cluster) o=100 ;; nas) o=1100 ;; github) o=2100 ;; esac
+  write_list "$fixA/$r.list.json" \
+    v0.1.0 "$o" v0.1.0-rc.1 "$((o+1))" v0.1.0-rc.2 "$((o+2))" \
+    v0.2.0 "$((o+20))" v0.2.0-rc.1 "$((o+21))" \
+    v0.3.0-rc.1 "$((o+31))"
+  write_stable "$fixA/$r.tag.v0.1.0.json" v0.1.0 0.1.0 "$o"
+  write_stable "$fixA/$r.tag.v0.2.0.json" v0.2.0 0.2.0 "$((o+20))"
+  # no v0.3.0 tag fixture => v0.3.0 stable absent everywhere => v0.3.0-rc.1 kept
+done
+
+: > "$calls"
+out=$(STUB_FIX="$fixA" bash "$root/packaging/prune-superseded-rcs.sh" 2>&1) \
+  || fail "prune sweep exited nonzero: $out"
+declare -A phost=([cluster]=forgejo.bryantserver.com [nas]=forgejo.nas.bryantserver.com [github]=api.github.com)
+for r in cluster nas github; do
+  case $r in cluster) o=100 ;; nas) o=1100 ;; github) o=2100 ;; esac
+  hre=${phost[$r]//./\\.}
+  # Each superseded rc: its release id AND its git tag deleted on THIS registry.
+  for entry in "$((o+1)) v0.1.0-rc.1" "$((o+2)) v0.1.0-rc.2" "$((o+21)) v0.2.0-rc.1"; do
+    rid=${entry%% *}; rtag=${entry#* }; tre=${rtag//./\\.}
+    grep -Eq -- "DELETE .*$hre.*/releases/$rid\$" "$calls" \
+      || fail "prune did not delete the $rtag release on $r"
+    grep -Eq -- "DELETE .*$hre.*/tags/$tre\$" "$calls" \
+      || fail "prune did not delete the $rtag git tag on $r"
+  done
+  # Preserved (no stable) and the stables themselves are NEVER deleted.
+  ! grep -Eq -- "DELETE .*$hre.*/releases/$((o+31))\$" "$calls" \
+    || fail "prune deleted the preserved v0.3.0-rc.1 release on $r"
+  ! grep -Eq -- "DELETE .*$hre.*/tags/v0\.3\.0-rc\.1\$" "$calls" \
+    || fail "prune deleted the preserved v0.3.0-rc.1 tag on $r"
+  ! grep -Eq -- "DELETE .*$hre.*/releases/$o\$" "$calls" \
+    || fail "prune deleted the stable v0.1.0 release on $r"
+  ! grep -Eq -- "DELETE .*$hre.*/releases/$((o+20))\$" "$calls" \
+    || fail "prune deleted the stable v0.2.0 release on $r"
+  ! grep -Eq -- "DELETE .*$hre.*/tags/v0\.1\.0\$" "$calls" \
+    || fail "prune deleted the stable v0.1.0 tag on $r"
+done
+# Tag-before-release ordering keeps a partial failure retryable: the release stays as the anchor the
+# next sweep enumerates from, so it is only removed after its tag is gone.
+tag_line=$(grep -nE -- 'DELETE .*forgejo\.bryantserver\.com.*/tags/v0\.1\.0-rc\.1$' "$calls" | head -1 | cut -d: -f1)
+rel_line=$(grep -nE -- 'DELETE .*forgejo\.bryantserver\.com.*/releases/101$' "$calls" | head -1 | cut -d: -f1)
+[ -n "$tag_line" ] && [ -n "$rel_line" ] && [ "$tag_line" -lt "$rel_line" ] \
+  || fail "prune must delete the git tag before the release object (retryable partial failures)"
+echo "  prune: superseded rc pruned on all 3, stable-less rc kept, stables never deleted OK"
+
+# Scenario B — all-3-or-none: v0.2.0 stable present on cluster+nas but ABSENT on github. The whole
+# group must be left intact (no delete anywhere).
+fixB="$tmp/prune-fixB"; mkdir -p "$fixB"
+for r in cluster nas github; do
+  case $r in cluster) o=200 ;; nas) o=1200 ;; github) o=2200 ;; esac
+  write_list "$fixB/$r.list.json" v0.2.0 "$((o+20))" v0.2.0-rc.1 "$((o+21))"
+done
+write_stable "$fixB/cluster.tag.v0.2.0.json" v0.2.0 0.2.0 220
+write_stable "$fixB/nas.tag.v0.2.0.json" v0.2.0 0.2.0 1220
+# no github.tag.v0.2.0.json => stable absent on github
+: > "$calls"
+STUB_FIX="$fixB" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "prune sweep exited nonzero when a stable was present on only two registries"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune deleted an rc while its stable was absent on one registry"
+echo "  prune: a stable present on only 2 of 3 registries prunes nothing (all-3-or-none) OK"
+
+# Scenario C — idempotent: listings hold only stables, no rc. A re-run issues no deletes.
+fixC="$tmp/prune-fixC"; mkdir -p "$fixC"
+for r in cluster nas github; do
+  case $r in cluster) o=300 ;; nas) o=1300 ;; github) o=2300 ;; esac
+  write_list "$fixC/$r.list.json" v0.1.0 "$o" v0.2.0 "$((o+20))"
+  write_stable "$fixC/$r.tag.v0.1.0.json" v0.1.0 0.1.0 "$o"
+  write_stable "$fixC/$r.tag.v0.2.0.json" v0.2.0 0.2.0 "$((o+20))"
+done
+: > "$calls"
+STUB_FIX="$fixC" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "idempotent prune sweep exited nonzero"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune issued a delete when no rc releases remained"
+echo "  prune: idempotent re-run over an rc-free backlog issues no deletes OK"
+
+# Scenario D — --dry-run over Scenario A's state: zero real DELETEs, same selection reported.
+: > "$calls"
+out=$(STUB_FIX="$fixA" bash "$root/packaging/prune-superseded-rcs.sh" --dry-run 2>&1) \
+  || fail "prune --dry-run exited nonzero"
+! grep -q -- '-X DELETE' "$calls" || fail "prune --dry-run issued a real DELETE"
+for t in v0.1.0-rc.1 v0.1.0-rc.2 v0.2.0-rc.1; do
+  printf '%s\n' "$out" | grep -Eq "would DELETE .*/tags/${t//./\\.}\$" \
+    || fail "prune --dry-run did not report it would delete $t"
+done
+if printf '%s\n' "$out" | grep -Eq 'would DELETE .*/tags/v0\.3\.0-rc\.1$'; then
+  fail "prune --dry-run reported deleting the stable-less v0.3.0-rc.1"
+fi
+echo "  prune: --dry-run reports the same selection and issues zero DELETEs OK"
+
+# Scenario E — fail-closed: one registry's listing is unreadable (non-array). The all-three view is
+# unreliable, so the sweep deletes nothing even though the other registries list a prunable rc.
+fixE="$tmp/prune-fixE"; mkdir -p "$fixE"
+printf '{"message":"internal error"}\n' > "$fixE/cluster.list.json"
+write_stable "$fixE/cluster.tag.v0.1.0.json" v0.1.0 0.1.0 400
+for r in nas github; do
+  case $r in nas) o=1400 ;; github) o=2400 ;; esac
+  write_list "$fixE/$r.list.json" v0.1.0 "$o" v0.1.0-rc.1 "$((o+1))"
+  write_stable "$fixE/$r.tag.v0.1.0.json" v0.1.0 0.1.0 "$o"
+done
+: > "$calls"
+STUB_FIX="$fixE" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "prune sweep exited nonzero when a registry listing was unreadable"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune deleted while a registry's release listing could not be read"
+echo "  prune: an unreadable registry listing fails closed and prunes nothing OK"
+
+# Scenario F — a canonical stable asset resolves to TWO assets on one registry (the ambiguous
+# duplicate reconcile refuses to trust). The stable is not cleanly present there, so the rc is kept.
+fixF="$tmp/prune-fixF"; mkdir -p "$fixF"
+for r in cluster nas github; do
+  case $r in cluster) o=500 ;; nas) o=1500 ;; github) o=2500 ;; esac
+  write_list "$fixF/$r.list.json" v0.1.0 "$o" v0.1.0-rc.1 "$((o+1))"
+  write_stable "$fixF/$r.tag.v0.1.0.json" v0.1.0 0.1.0 "$o"
+done
+jq '.assets += [{"name":"dreame-valetudo-0.1.0.tar.gz"}]' "$fixF/cluster.tag.v0.1.0.json" \
+  > "$fixF/cluster.tag.v0.1.0.dup" && mv "$fixF/cluster.tag.v0.1.0.dup" "$fixF/cluster.tag.v0.1.0.json"
+: > "$calls"
+STUB_FIX="$fixF" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "prune sweep exited nonzero when a canonical stable asset was duplicated"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune deleted an rc while a canonical stable asset was ambiguous (duplicated) on a registry"
+echo "  prune: a duplicated (ambiguous) canonical stable asset keeps the rc OK"
+
+# Scenario G — an interrupted publisher left the stable as draft:true on one registry (assets
+# attached but not consumable). An unpublishable stable must not authorize a prune, so the rc stays.
+fixG="$tmp/prune-fixG"; mkdir -p "$fixG"
+for r in cluster nas github; do
+  case $r in cluster) o=600 ;; nas) o=1600 ;; github) o=2600 ;; esac
+  write_list "$fixG/$r.list.json" v0.1.0 "$o" v0.1.0-rc.1 "$((o+1))"
+  write_stable "$fixG/$r.tag.v0.1.0.json" v0.1.0 0.1.0 "$o"
+done
+jq '.draft = true' "$fixG/github.tag.v0.1.0.json" > "$fixG/github.tag.v0.1.0.dft" \
+  && mv "$fixG/github.tag.v0.1.0.dft" "$fixG/github.tag.v0.1.0.json"
+: > "$calls"
+STUB_FIX="$fixG" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "prune sweep exited nonzero when a stable was a draft on one registry"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune deleted an rc while its stable was an unconsumable draft on a registry"
+echo "  prune: a draft/prerelease stable on any registry keeps the rc OK"
+
+echo "PASS: release publishers treat published assets as immutable, the tap formula is built from a"
+echo "      local rebuild both registries are proven to serve, and the rc sweep prunes only what a"
+echo "      fully fanned-out stable supersedes"
