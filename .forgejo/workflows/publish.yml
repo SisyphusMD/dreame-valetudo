@@ -226,9 +226,11 @@ jobs:
         run: |
           set -uo pipefail
           chmod +x packaging/prune-superseded-rcs.sh
-          # Warn-only: a prune problem must never fail the release or make a valid stable disappear.
-          # The sweep enumerates from the registries and self-verifies each stable, so it needs no tag
-          # argument; it exits 0 on every recoverable path, and this guard keeps the job green even if
-          # it ever returns nonzero.
-          bash packaging/prune-superseded-rcs.sh \
+          # DRY-RUN on the automatic path: the deletion logic does not yet reliably remove releases
+          # and tags against the real Forgejo/GitHub release-tag model (a deleted tag can strand its
+          # release as an untagged draft, the /tags API can 404 while the git ref survives, and a 404
+          # is wrongly treated as done). Until that is hardened and tested against the real APIs, the
+          # stable cut only REPORTS what it would prune; destructive pruning is done deliberately via
+          # the workflow_dispatch (prune-rcs.yml) with an operator watching. Warn-only regardless.
+          bash packaging/prune-superseded-rcs.sh --dry-run \
             || echo "::warning::prune-superseded-rcs exited nonzero; the stable release is unaffected"
