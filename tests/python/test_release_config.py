@@ -221,22 +221,15 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
 
 
 def test_both_release_gates_stamp_every_version_record_including_the_lock() -> None:
-    stamp = (_ROOT / "packaging" / "stamp-version.py").read_text()
-
-    # uv.lock carries the project's own version, so a bump that skips it dirties the next local
-    # `uv` run. Rewriting that one record by rule — rather than re-locking — keeps the stamp
-    # deterministic and offline, which is what lets the tag job reproduce it byte-for-byte.
-    assert 'Path("uv.lock")' in stamp
-    assert 'name = "dreame-valetudo"' in stamp
-    assert "must contain exactly one version record" in stamp
-    # Written to a sibling temp file and renamed, so a failure can't leave a half-written record.
-    assert "tempfile.mkstemp" in stamp
-    assert "target.replace(path)" in stamp
-
+    # The behavior stamp-version.py implements (all three files, the uv.lock rc normalization, the
+    # exactly-one-match guard) is pinned directly against the script in test_stamp_version.py; this
+    # only pins that both workflows actually call it, then verify it, rather than re-locking. The
+    # variable holding the version differs by step ($VERSION from a job-level output mapping,
+    # $version from next-version.sh's own output), so the call is matched by shape, not by name.
     for workflow in (_RELEASE, _PRERELEASE):
         text = workflow.read_text()
-        assert 'python3 packaging/stamp-version.py "$VERSION"\n' in text, workflow
-        assert 'python3 packaging/stamp-version.py "$VERSION" --check' in text, workflow
+        assert re.search(r'stamp-version\.py "\$\w+"\n', text), workflow
+        assert re.search(r'stamp-version\.py "\$\w+" --check', text), workflow
         assert "uv lock" not in text, workflow
 
 
