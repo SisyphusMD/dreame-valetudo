@@ -99,7 +99,10 @@ jobs:
           # asset is published. BuildKit carries QEMU for arm64; a plain docker run on this runner
           # cannot. The full distro upgrade matrix runs pre-merge in ci.yml on amd64.
           smoke_pkg() { # smoke_pkg <docker-platform> <deb>
-            local plat="$1" package="$2" result="package-smoke-${plat##*/}"
+            # Two statements: in one `local`, every argument expands before any assignment runs,
+            # so a self-reference trips `set -u`.
+            local plat="$1" package="$2"
+            local result="package-smoke-${plat##*/}"
             cp "$package" package-smoke.deb
             rm -rf "$result"
             docker buildx build --platform "$plat" \
