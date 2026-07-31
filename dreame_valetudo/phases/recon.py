@@ -15,7 +15,7 @@ from pathlib import Path
 from ..console import Die, die, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
-from ..fel import print_fel_entry
+from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import requires_positive_model_verification
 from ..migrate import decrypt_recovery_backup
 from ..profiles import SUPPORTED_MODELS, Profile, load_profile
@@ -41,18 +41,6 @@ _IDENTITY_VARS = (
     "serialno", "dustversion", "ramsize", "toc0hash", "toc1hash", "toc1version", "product",
     "model", "variant", "hw-revision", "version-bootloader",
 )
-
-
-def _wait_for_fel(ctx: Context) -> bool:
-    if ctx.interactive:
-        ctx.console.once(
-            "fel-readiness",
-            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
-        )
-    # Attachment — not an arbitrary USB allowance — decides how long this safe, read-only wait
-    # may remain alive. If the external rail-cycle clock expires, another button sequence can
-    # satisfy the same wait.
-    return ctx.fel.poll_fel()
 
 
 def _print_intro(ctx: Context) -> None:
@@ -144,7 +132,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
             fetch_stage1(ctx)
         check_fastboot_client(ctx)
         print_fel_entry(ctx.console, ctx.host)
-        if not _wait_for_fel(ctx):
+        if not wait_for_fel(ctx):
             ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
                              "connected to try again.")
             return {}
@@ -230,7 +218,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     check_fastboot_client(ctx)
     _print_intro(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    if not _wait_for_fel(ctx):
+    if not wait_for_fel(ctx):
         die("No FEL device — aborting recon.")
     ctx.fel.fel_boot_fastboot(
         ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr

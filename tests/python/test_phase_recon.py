@@ -18,10 +18,10 @@ from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from dreame_valetudo.context import Context
+from dreame_valetudo.fel import wait_for_fel
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
     _verify_reported_model,
-    _wait_for_fel,
     read_identity_from_robot,
     recon,
 )
@@ -317,8 +317,8 @@ def test_fel_readiness_prompt_is_not_asked_twice(make_ctx: CtxFactory) -> None:
     prompts: list[str] = []
     ctx.console.ask = lambda prompt: prompts.append(prompt) or ""
     ctx.fel.poll_fel = lambda: True  # type: ignore[method-assign]
-    assert _wait_for_fel(ctx)
-    assert _wait_for_fel(ctx)
+    assert wait_for_fel(ctx)
+    assert wait_for_fel(ctx)
     assert prompts == ["Ready to start watching for the robot? Press Enter when ready."]
 
 

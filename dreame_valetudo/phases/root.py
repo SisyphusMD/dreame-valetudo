@@ -22,7 +22,7 @@ from ..constants import (
     STAGED_IMAGE_MANIFEST,
 )
 from ..context import Context
-from ..fel import print_fel_entry
+from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import model_hazard_check
 from ..recovery import RECOVERY_REFRESH_FILE
 from ..session import describe_run, records_step
@@ -263,12 +263,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
 
     check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    if ctx.interactive:
-        ctx.console.once(
-            "fel-readiness",
-            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
-        )
-    if not ctx.fel.poll_fel():
+    if not wait_for_fel(ctx):
         die("No FEL device — aborting before any write.")
     ctx.fel.fel_boot_fastboot(
         robot.fw_dir, "fsbl.bin", "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr

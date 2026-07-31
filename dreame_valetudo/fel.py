@@ -13,11 +13,15 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .console import Console, die, next_idle_deadline
 from .fastboot import Fastboot
 from .run import Runner
 from .session import describe_run
+
+if TYPE_CHECKING:
+    from .context import Context
 
 # A dynamic-loader failure, from either platform's loader: macOS dyld ("Library not loaded", "no
 # such file"), Linux ld.so ("error while loading shared libraries").
@@ -49,6 +53,22 @@ def print_fel_entry(console: Console, host: str = "computer") -> None:
 
     if not console.once("fel-entry", full):
         console.action("Redo the PCB button sequence (steps above).")
+
+
+def wait_for_fel(ctx: Context) -> bool:
+    """Ask the operator once to start the FEL button sequence, then wait for the device.
+
+    Shared by recon, root and restore, which each handle a False return their own way (recon's
+    auxiliary read warns and skips; root and restore die before any write)."""
+    if ctx.interactive:
+        ctx.console.once(
+            "fel-readiness",
+            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
+        )
+    # Attachment — not an arbitrary USB allowance — decides how long this safe, read-only wait
+    # may remain alive. If the external rail-cycle clock expires, another button sequence can
+    # satisfy the same wait.
+    return ctx.fel.poll_fel()
 
 
 class Fel:

@@ -22,7 +22,7 @@ from .. import manifest
 from ..console import abort, die, warn_if_low_disk
 from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING
 from ..context import Context
-from ..fel import print_fel_entry
+from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import model_hazard_check
 from ..migrate import decrypt_recovery_backup
 from ..recovery import (
@@ -1120,8 +1120,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         fetch_stage1(ctx)
     check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    ctx.console.ask("Ready to start watching for the robot? Press Enter when ready.")
-    if not ctx.fel.poll_fel():
+    if not wait_for_fel(ctx):
         die("No FEL device — aborting before any restore write.")
     ctx.fel.fel_boot_fastboot(
         ctx.ws.dist,
