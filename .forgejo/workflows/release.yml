@@ -57,28 +57,16 @@ jobs:
           BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          # Only an exact stable tag is a version base. Mistyped/custom tags must not influence a
-          # release number even though the broad tag glob may notice them.
-          PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
-          CURRENT="${PREV_TAG#v}"; CURRENT="${CURRENT:-0.0.0}"
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-          esac
-          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP")
           # The date is qualified here and replayed by the tag job: "today" must not differ between
           # the two runners, or the reproduced CHANGELOG would not match the qualified bytes.
           RELEASE_DATE=$(date -u +%Y-%m-%d)
-          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "release_date=${RELEASE_DATE}" >> "$GITHUB_OUTPUT"
-          echo "previous=${PREV_TAG}" >> "$GITHUB_OUTPUT"   # range base for the dependency-bump notes
-          echo "Releasing ${NEXT} (bump=${BUMP}, previous=${PREV_TAG:-none})"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"   # range base for the dependency-bump notes
+          echo "Releasing ${version} (bump=${BUMP}, previous=${previous:-none})"
 
       - name: Sanity guards
         env:
@@ -101,20 +89,10 @@ jobs:
           PREV: ${{ steps.ver.outputs.previous }}
         run: |
           set -euo pipefail
-          # First release (no previous stable tag): the deps it ships ARE the initial set, not updates
-          # from a prior release, so emit no "### Dependencies" list — even if Renovate bumps landed
-          # before the first tag. Otherwise, collect Renovate's dep commits since the previous release,
-          # newest-first, and keep only the LATEST bump per dep: the dedup key is the subject minus its
-          # trailing " to <version>" (Renovate's format is "<type>(deps): update <dep> to <version>"),
-          # so repeated bumps of one image collapse to the most recent (git log is newest-first, so the
-          # first key seen is the latest).
+          DEPS=$(bash packaging/dependency-bumps.sh "$PREV")
           if [ -z "$PREV" ]; then
-            DEPS=""
             echo "first release — no dependency-update notes"
           else
-            DEPS=$(git log "${PREV}..HEAD" --pretty=format:'%s' \
-              | grep -E '^(chore|fix)\(deps\):' \
-              | awk '{ key=$0; sub(/ to [^ ]+$/, "", key); if (!seen[key]++) print }' || true)
             echo "dependency bumps to note:"; echo "${DEPS:-<none>}"
           fi
           {
@@ -228,33 +206,18 @@ jobs:
           set -euo pipefail
           # Same derivation as the gate, on a tree no gate step ever touched. Nothing here trusts
           # the gate beyond the version, the date, and the hash it has to match.
-          PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
-          CURRENT="${PREV_TAG#v}"; CURRENT="${CURRENT:-0.0.0}"
-          IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            *) echo "::error::invalid release bump"; exit 1 ;;
-          esac
-          VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          TAG="v$VERSION"
-          [ "$VERSION" = "$QUALIFIED_VERSION" ] && [ "$TAG" = "$QUALIFIED_TAG" ] \
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP")
+          [ "$version" = "$QUALIFIED_VERSION" ] && [ "$tag" = "$QUALIFIED_TAG" ] \
             || { echo "::error::qualified release intent changed between runners"; exit 1; }
-          ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null
-          python3 packaging/check-release-boundary.py "$VERSION"
+          ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null
+          python3 packaging/check-release-boundary.py "$version"
 
-          DEPS=""
-          if [ -n "$PREV_TAG" ]; then
-            DEPS=$(git log "${PREV_TAG}..HEAD" --pretty=format:'%s' \
-              | grep -E '^(chore|fix)\(deps\):' \
-              | awk '{ key=$0; sub(/ to [^ ]+$/, "", key); if (!seen[key]++) print }' || true)
-          fi
+          DEPS=$(bash packaging/dependency-bumps.sh "$previous")
           export DEPS
-          bash packaging/promote-changelog.sh "$VERSION" "$QUALIFIED_DATE"
-          python3 packaging/stamp-version.py "$VERSION"
-          sed -i -E "s#(releases/download/)[^/]+/#\1${TAG}/#g" README.md
+          bash packaging/promote-changelog.sh "$version" "$QUALIFIED_DATE"
+          python3 packaging/stamp-version.py "$version"
+          sed -i -E "s#(releases/download/)[^/]+/#\1${tag}/#g" README.md
           printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"

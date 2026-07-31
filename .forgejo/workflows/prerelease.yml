@@ -49,30 +49,11 @@ jobs:
           BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          # Base = the bump applied to the latest exact stable tag. Mistyped/custom tags are not
-          # version inputs even though the broad tag glob may notice them.
-          PREV_STABLE=$(git tag -l 'v*.*.*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
-          CURRENT="${PREV_STABLE#v}"; CURRENT="${CURRENT:-0.0.0}"
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-          esac
-          BASE="${MAJOR}.${MINOR}.${PATCH}"
-          # Next rc counter for this base: numeric max of existing v<base>-rc.<n>, + 1 (robust to
-          # however git version-sorts prerelease suffixes).
-          LAST=$(git tag -l "v${BASE}-rc.*" \
-            | grep -E "^v${MAJOR}\\.${MINOR}\\.${PATCH}-rc\\.[0-9]+$" \
-            | sed -E 's/.*-rc\.//' | sort -n | tail -n1 || true)
-          N=$(( ${LAST:-0} + 1 ))
-          NEXT="${BASE}-rc.${N}"
-          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "Prerelease ${NEXT} (candidate for ${BASE}, from ${GITHUB_REF_NAME})"
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP" --rc)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Prerelease ${version} (candidate for ${version%-rc.*}, from ${GITHUB_REF_NAME})"
 
       - name: Refuse if the tag already exists
         env:
@@ -167,28 +148,14 @@ jobs:
           set -euo pipefail
           # Same derivation as the gate, on a tree no gate step ever touched. Nothing here trusts
           # the gate beyond the version and the hash it has to match.
-          PREV_STABLE=$(git tag -l 'v*.*.*' --sort=-v:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
-          CURRENT="${PREV_STABLE#v}"; CURRENT="${CURRENT:-0.0.0}"
-          IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            *) echo "::error::invalid prerelease bump"; exit 1 ;;
-          esac
-          BASE="${MAJOR}.${MINOR}.${PATCH}"
-          LAST=$(git tag -l "v${BASE}-rc.*" \
-            | grep -E "^v${MAJOR}\\.${MINOR}\\.${PATCH}-rc\\.[0-9]+$" \
-            | sed -E 's/.*-rc\.//' | sort -n | tail -n1 || true)
-          VERSION="${BASE}-rc.$(( ${LAST:-0} + 1 ))"
-          TAG="v$VERSION"
-          [ "$VERSION" = "$QUALIFIED_VERSION" ] && [ "$TAG" = "$QUALIFIED_TAG" ] \
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP" --rc)
+          [ "$version" = "$QUALIFIED_VERSION" ] && [ "$tag" = "$QUALIFIED_TAG" ] \
             || { echo "::error::qualified prerelease intent changed between runners"; exit 1; }
-          ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null
-          python3 packaging/check-release-boundary.py "$VERSION"
-          python3 packaging/stamp-version.py "$VERSION"
-          python3 packaging/stamp-version.py "$VERSION" --check
+          ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null
+          python3 packaging/check-release-boundary.py "$version"
+          python3 packaging/stamp-version.py "$version"
+          python3 packaging/stamp-version.py "$version" --check
           printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
