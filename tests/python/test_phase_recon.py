@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import os
 import stat
 import zipfile
 from collections.abc import Callable
@@ -1022,3 +1024,73 @@ def test_a_failed_repull_leaves_the_surviving_capture_usable_by_the_restore_gate
     assert not (robot.recon_dir / RECOVERY_REFRESH_FILE).exists(), (
         "the refresh marker survived a failed re-pull, condemning an intact capture"
     )
+
+
+def test_publish_fsyncs_every_artifact_before_renaming_and_the_dir_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A power loss right after publish must not lose the only un-brick copy to page cache.
+
+    Pins the ordering with faked fds instead of real multi-GB IO: every staged artifact is fsynced
+    before ANY publish rename, and the recon directory is fsynced after they are all renamed.
+    """
+    staging = tmp_path / "staging"
+    recon_dir = tmp_path / "recon"
+    staging.mkdir()
+    recon_dir.mkdir()
+    artifacts = (*(f"{name}.bin" for name in RECOVERY_DUMP_NAMES), RECOVERY_BACKUP_ZIP)
+    for name in artifacts:
+        (staging / name).write_bytes(b"x")
+
+    events: list[tuple[str, Path]] = []
+    fds = itertools.count(1000)
+    opened: dict[int, Path] = {}
+
+    def spy_open(path: object, _flags: int, *_a: object, **_k: object) -> int:
+        fd = next(fds)
+        opened[fd] = Path(os.fspath(path))  # type: ignore[arg-type]
+        return fd
+
+    monkeypatch.setattr(recon_module.os, "open", spy_open)
+    monkeypatch.setattr(recon_module.os, "fsync", lambda fd: events.append(("fsync", opened[fd])))
+    monkeypatch.setattr(recon_module.os, "close", lambda _fd: None)
+    monkeypatch.setattr(Path, "replace", lambda self, _dst: events.append(("rename", self)))
+
+    recon_module._publish_recovery_capture(staging, recon_dir)
+
+    kinds = [kind for kind, _p in events]
+    first_rename = kinds.index("rename")
+    last_rename = len(kinds) - 1 - kinds[::-1].index("rename")
+    artifact_fsyncs = [i for i, (kind, p) in enumerate(events)
+                       if kind == "fsync" and p != recon_dir]
+    assert {p.name for _k, p in events if _k == "fsync"} == {*artifacts, recon_dir.name}
+    assert all(i < first_rename for i in artifact_fsyncs)  # every artifact fsynced before any rename
+    assert events[-1] == ("fsync", recon_dir)              # the recon dir is fsynced last...
+    assert last_rename < len(events) - 1                   # ...after every publish rename
+
+
+def test_publish_declines_without_touching_the_prior_capture_when_a_flush_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-rename flush failure (ENOSPC at writeback, EIO) must condemn nothing: the previous
+    un-brick copy is still whole, so publish declines and no rename runs."""
+    staging = tmp_path / "staging"
+    recon_dir = tmp_path / "recon"
+    staging.mkdir()
+    recon_dir.mkdir()
+    artifacts = (*(f"{name}.bin" for name in RECOVERY_DUMP_NAMES), RECOVERY_BACKUP_ZIP)
+    for name in artifacts:
+        (staging / name).write_bytes(b"replacement")
+        (recon_dir / name).write_bytes(b"intact prior copy")
+
+    renamed: list[Path] = []
+
+    def boom(_fd: int) -> None:
+        raise OSError("simulated writeback failure")
+
+    monkeypatch.setattr(recon_module.os, "fsync", boom)
+    monkeypatch.setattr(Path, "replace", lambda self, _dst: renamed.append(self))
+
+    assert recon_module._publish_recovery_capture(staging, recon_dir) is False
+    assert renamed == []
+    assert all((recon_dir / name).read_bytes() == b"intact prior copy" for name in artifacts)

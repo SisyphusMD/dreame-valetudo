@@ -7,6 +7,7 @@ disaster-recovery backup.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -440,7 +441,8 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
     try:
         if not _capture_recovery_into(ctx, staging):
             return False
-        _publish_recovery_capture(staging, rd)
+        if not _publish_recovery_capture(staging, rd):
+            return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (upload to check.builder.dontvacuum.me "
@@ -480,12 +482,35 @@ def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
     return bool(zipped) and recovery_zip_valid(zip_path)
 
 
-def _publish_recovery_capture(staging: Path, recon_dir: Path) -> None:
+def _publish_recovery_capture(staging: Path, recon_dir: Path) -> bool:
     """Move a fully validated capture over the previous one, largest artifacts first.
 
-    Same-filesystem renames, so each artifact is replaced whole or not at all. A crash partway
-    leaves the refresh marker set, which already flags the capture as untrusted."""
-    for name in (*(f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES), RECOVERY_BACKUP_ZIP):
-        source = staging / name
-        if source.is_file():
-            source.replace(recon_dir / name)
+    The dd/zip subprocesses leave ~1.2 GB in page cache; each staged artifact is fsynced before
+    any rename and the recon directory is fsynced after them all, so a power loss just after
+    publish cannot leave the only un-brick copy as unflushed cache while the state markers already
+    report it present. Same-filesystem renames, so each artifact is replaced whole or not at all; a
+    crash partway leaves the refresh marker set, which already flags the capture as untrusted.
+
+    Returns False, having touched nothing, when a staged artifact cannot be flushed before any
+    rename (a full disk surfacing at writeback, an I/O error): the previous capture is still whole,
+    so the caller must clear the refresh marker and keep it usable rather than condemn it."""
+    published = [name for name in (*(f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES),
+                                   RECOVERY_BACKUP_ZIP)
+                 if (staging / name).is_file()]
+    try:
+        for name in published:
+            fd = os.open(staging / name, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    except OSError:
+        return False
+    for name in published:
+        (staging / name).replace(recon_dir / name)
+    dir_fd = os.open(recon_dir, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    return True
