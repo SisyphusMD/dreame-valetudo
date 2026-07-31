@@ -94,6 +94,8 @@ class Fel:
             self.console.say("Waiting for the FEL device — do the button sequence now. Ctrl+C stops "
                              "waiting.")
             deadline: float | None = None
+            last_probe: float | None = None
+            attached: bool | None = None
             permission_warned = False
             with self.console.progress("Watching for the FEL device", timer=False) as p:
                 while True:
@@ -120,7 +122,9 @@ class Fel:
                         self.console.info(f"FEL up: {first}")
                         return True
                     now = time.monotonic()
-                    deadline = next_idle_deadline(deadline, now)
+                    deadline, last_probe, attached = next_idle_deadline(
+                        deadline, now, last_probe, attached
+                    )
                     if deadline is not None and now >= deadline:
                         p.close(done=False)
                         break

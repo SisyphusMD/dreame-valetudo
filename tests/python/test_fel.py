@@ -188,6 +188,39 @@ def test_poll_fel_does_not_give_up_when_attachment_is_unknown(
         console._IDLE_PROBE.clear()
 
 
+def test_poll_fel_throttles_the_attachment_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe spawns a real `tmux display-message` subprocess, so a minute-long FEL wait polling
+    every ~1s must NOT run it every iteration — only at the ~15s idle-prompt cadence."""
+    probes = 0
+
+    def probe() -> bool | None:
+        nonlocal probes
+        probes += 1
+        return True  # attached the whole time -> never times out, so the loop runs to success
+
+    calls = 0
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        nonlocal calls
+        calls += 1
+        if calls == 60:
+            return Result(argv, 0, "AWUSBFEX soc=00001855(H616)", "")
+        return Result(argv, 1, "", "usb device not found")
+
+    console.idle_timeout(1.0, probe)
+    # One monotonic second per iteration, so 60 iterations span ~59s of the wait.
+    monkeypatch.setattr("dreame_valetudo.fel.time.monotonic", lambda: float(calls))
+    try:
+        fel, _ = _fel(responder)
+        assert fel.poll_fel() is True
+        assert calls == 60
+        # Once at entry, then once per 15s across ~59s: four probes, never one-per-iteration.
+        assert probes == 4
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()
+
+
 def test_wait_fastboot_uses_libusb_client_not_google_fastboot() -> None:
     calls: list[tuple[str, ...]] = []
 
