@@ -93,3 +93,12 @@ def sha256_of(path: str | Path) -> str:
     """SHA-256 hex digest of a file."""
     with Path(path).open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def same_robot_config(a: str, b: str) -> bool:
+    """Whether two factory 'config' identities name the same robot.
+
+    Compared on the stable 8-hex prefix — the tail changes from session to session. Full-config
+    comparison is reserved for root's strict flash gate.
+    """
+    return a[:8].lower() == b[:8].lower()

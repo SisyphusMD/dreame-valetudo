@@ -27,7 +27,7 @@ from ..context import Context
 from ..profiles import known_model_key_for_code, load_profile
 from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
-from ..util import parse_config, parse_mikey, repair_did
+from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
 from .doctor import check_external_tools
 from .fetch import fetch_valetudo
@@ -172,7 +172,7 @@ def _archived_config_matches(path: Path, expected: str) -> bool:
     from session to session.
     """
     archived = _archived_factory_config(path)
-    return archived is not None and archived[:8].lower() == expected[:8].lower()
+    return archived is not None and same_robot_config(archived, expected)
 
 
 def _archived_factory_key_is_empty(path: Path) -> bool:
@@ -182,11 +182,6 @@ def _archived_factory_key_is_empty(path: Path) -> bool:
         return False
     member = _one_archived_file(members, _FACTORY_KEY_MEMBER)
     return member is not None and member.size == 0
-
-
-def _file_sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _backup_manifest(backup: Path) -> dict[str, object] | None:
@@ -216,7 +211,7 @@ def _archive_matches_manifest(path: Path, metadata: dict[str, object] | None) ->
     ):
         return False
     try:
-        return path.stat().st_size == size and _file_sha256(path) == digest
+        return path.stat().st_size == size and sha256_of(path) == digest
     except OSError:
         return False
 
@@ -444,7 +439,7 @@ def _live_robot_identity(
     if (
         expected_config is not None
         and live_config is not None
-        and live_config[:8].lower() != expected_config[:8].lower()
+        and not same_robot_config(live_config, expected_config)
     ):
         die("SAFETY STOP: the connected robot's factory config does not match the selected "
             "robot. Join the selected robot's Wi-Fi AP and re-run; no backup or install was "
@@ -529,7 +524,7 @@ def _capture_factory_backup(
         ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
         # Taken from the bytes that just passed validation, so the manifest describes a
         # proven-good archive rather than whatever ends up at that path afterwards.
-        archive_digest = _file_sha256(files_gz)
+        archive_digest = sha256_of(files_gz)
         archive_size = files_gz.stat().st_size
         if _archived_factory_key_is_empty(files_gz):
             if _preserve_secure_storage_key(ctx, key, staging) is not None:

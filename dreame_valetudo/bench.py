@@ -54,7 +54,7 @@ from .recovery import (
 )
 from .run import RunError
 from .ssh import resolve_sshkey
-from .util import parse_config
+from .util import parse_config, same_robot_config
 from .workspace import (
     RECOVERY_BACKUP_ZIP,
     Robot,
@@ -1235,7 +1235,7 @@ def _recovery_provenance_valid(robot: Robot | None) -> bool:
     parsed_stored_config = parse_config(stored_config) if isinstance(stored_config, str) else None
     if (
         parsed_stored_config is None
-        or parsed_stored_config[:8].lower() != config[:8].lower()
+        or not same_robot_config(parsed_stored_config, config)
         or provenance.get("model_key") != model_key
         or provenance.get("firmware_state") != "stock-user-attested"
     ):

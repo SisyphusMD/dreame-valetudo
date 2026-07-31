@@ -32,7 +32,7 @@ from ..recovery import (
     write_recovery_provenance,
 )
 from ..session import records_step
-from ..util import parse_config, sha256_of
+from ..util import parse_config, same_robot_config, sha256_of
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, robot_tag
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
@@ -603,7 +603,7 @@ def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
             or version not in {2, 3}
             or not isinstance(stored_config, str)
             or parse_config(stored_config) != stored_config
-            or stored_config[:8].lower() != config[:8].lower()
+            or not same_robot_config(stored_config, config)
             or data.get("model_key") != model_key
             or data.get("source_binding") not in {
                 "captured-same-session", "legacy-user-confirmed",
@@ -649,7 +649,7 @@ def _matching_restore_kits(root: Path, model_code: str, config: str) -> list[Pat
             if not name.startswith(prefix) or not name.endswith(suffix):
                 continue
             saved_config = name[len(prefix):-len(suffix)]
-            if len(saved_config) == 32 and saved_config[:8].lower() == config[:8].lower():
+            if len(saved_config) == 32 and same_robot_config(saved_config, config):
                 matches.append(path)
     return sorted(matches)
 
@@ -718,7 +718,7 @@ def _verified_recovery_provenance(
         return None, None
     stored_config = provenance["config"]
     if (parse_config(stored_config) != stored_config
-            or stored_config[:8].lower() != config[:8].lower()
+            or not same_robot_config(stored_config, config)
             or provenance["model_key"] != ctx.profile.key):
         die("SAFETY STOP: the recovery capture provenance belongs to a different robot or model. "
             "Refusing to build a stock restore kit from it.")
@@ -1135,7 +1135,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     if not ctx.fastboot.getvar_succeeded(result) or live_config is None:
         ctx.fastboot.report_failure(result)
         die("Couldn't read the connected robot's config identity — aborting before any write.")
-    if live_config[:8].lower() != config[:8].lower():
+    if not same_robot_config(live_config, config):
         die("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
             "— refusing to restore.")
     ctx.console.info("Robot and restore-kit identity confirmed.")
@@ -1143,6 +1143,8 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("The stock restore kit changed while hardware was being prepared. Refusing every write; "
             "preserve the kit for inspection and start again with verified artifacts.")
 
+    # Mirrors the dustbuilder fastboot `oem dust` unlock: the write-enable token is the config's
+    # 8-hex prefix XORed with the shared constant, not an independent secret.
     token = f"{int(config[:8], 16) ^ _DUST_XOR:08x}"
     marker_error: OSError | None = None
     ctx.console.say(">>> POWER-CYCLE CLOCK LIVE — restoring stock now <<<")
