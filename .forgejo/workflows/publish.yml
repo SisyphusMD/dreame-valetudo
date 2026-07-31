@@ -226,11 +226,13 @@ jobs:
         run: |
           set -uo pipefail
           chmod +x packaging/prune-superseded-rcs.sh
-          # DRY-RUN on the automatic path: the deletion logic does not yet reliably remove releases
-          # and tags against the real Forgejo/GitHub release-tag model (a deleted tag can strand its
-          # release as an untagged draft, the /tags API can 404 while the git ref survives, and a 404
-          # is wrongly treated as done). Until that is hardened and tested against the real APIs, the
-          # stable cut only REPORTS what it would prune; destructive pruning is done deliberately via
-          # the workflow_dispatch (prune-rcs.yml) with an operator watching. Warn-only regardless.
+          # DRY-RUN on the automatic path, deliberately. The deletion logic is now hardened against the
+          # real Forgejo/GitHub release-tag model — release deleted before its tag, tag removed via the
+          # git-refs endpoint, and removal confirmed by RE-READING the live list and git refs (never by
+          # trusting a 204/404), retried for eventual consistency — and the integration test drives that
+          # against a stateful stub. But it has not yet been validated against the live registries, so
+          # the automatic stable cut only REPORTS what it would prune; the first real destructive sweep
+          # is done deliberately via the workflow_dispatch (prune-rcs.yml) with an operator watching.
+          # Once that watched run confirms the rewrite on the real APIs, drop --dry-run here. Warn-only.
           bash packaging/prune-superseded-rcs.sh --dry-run \
             || echo "::warning::prune-superseded-rcs exited nonzero; the stable release is unaffected"
