@@ -62,6 +62,29 @@ durable stock-recovery kit under `backups/` before asking for permission to touc
 backup manifest is deliberately self-describing so a copied backup can be identified years later
 without the original workspace.
 
+## Why the recovery capture is a single copy, not a generation history
+
+Recon captures into `recon/.recovery-staging/` and moves the artifacts over the previous capture
+only once all three slices and the zip validate. That is deliberately the whole mechanism.
+
+A generational scheme was designed and rejected — immutable `recovery-generations/<id>/`
+directories selected by an atomically replaced `recovery-current` pointer, with compare-and-swap
+publication. It defends the wrong thing. The failure this layout must survive is an **accident**:
+a nudged USB cable, a sleeping host, a full disk, or an operator re-running recon. Staging covers
+every one of those, because a replacement that never validates never touches what is already on
+disk. The generational design instead assumed a concurrent writer racing the workspace — which on a
+single-user local tool means a process that already runs as the owner and could simply edit this
+program.
+
+It also made the accident case worse. Cloning a generation copies ~2.4 GB per robot, so writing a
+2 KB provenance file rewrote the entire capture; nothing pruned old generations, so a three-robot
+workspace grew from roughly 7 GB to 20-40 GB; and the clone ran *before* the free-space check, so a
+nearly-full disk filled the volume and failed the very capture the feature existed to protect.
+
+Reintroduce generations only if a concrete need appears for keeping more than one capture per robot
+(for example, retaining a pre-root capture alongside a later one). Durability against interruption
+is not that need — staging already provides it.
+
 ## Self-healing invariants (not versioned)
 
 Some upkeep runs on **every** launch, right after the versioned steps above — gaps-only and

@@ -88,6 +88,23 @@ PURE_COMMANDS = frozenset(
      "verify-forms"}
 )
 
+
+def pure_invocation(args: Sequence[str]) -> bool:
+    """Whether a COMPLETE invocation answers and exits without touching the workspace or the robot.
+
+    Judged on the whole argument list rather than the subcommand alone, because the arguments can
+    turn a wrapped command into a pure one: `bench list` prints the scenario table, and any
+    `--help` prints usage. Reading those as `bench`/`root` would attach the user to a run in
+    progress, and would create a workspace to answer a question about neither.
+    """
+    command = args[0] if args else "auto"
+    return (
+        command in PURE_COMMANDS
+        or (command == "bench" and len(args) >= 2 and args[1] == "list")
+        or any(argument in {"-h", "--help"} for argument in args[1:])
+    )
+
+
 # Held for the life of the process. The kernel drops it on exit — including a kill -9 or a power
 # loss — so there is never a stale lock to detect, and never a judgement call for the user about
 # whether some recorded pid is still alive. Module-level purely to keep the handle from being
@@ -383,8 +400,7 @@ def wraps_this_run(
         return False
     if env.get(IN_SESSION) or env.get("DREAME_NO_TMUX"):
         return False
-    cmd = self_cmd[1] if len(self_cmd) > 1 else "auto"
-    return cmd not in PURE_COMMANDS
+    return not pure_invocation(self_cmd[1:])
 
 
 def tmux_plan(

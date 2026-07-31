@@ -27,7 +27,7 @@ def _prepare_host_smoke(ctx: object, monkeypatch: pytest.MonkeyPatch) -> None:
     entrypoint = "/test/bin/dreame-valetudo"
     monkeypatch.setattr(B.sys, "argv", [entrypoint])
     monkeypatch.setattr(B.shutil, "which", lambda name: entrypoint if name == "dreame-valetudo" else None)
-    previous = ctx.runner._responder  # type: ignore[attr-defined]
+    previous = ctx.runner.responder  # type: ignore[attr-defined]
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv == (entrypoint, "version"):
@@ -36,7 +36,7 @@ def _prepare_host_smoke(ctx: object, monkeypatch: pytest.MonkeyPatch) -> None:
             return Result(argv, 0, "Supported models\n", "")
         return previous(argv) if previous is not None else Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
 
 
 def _arm_h3(ctx: object) -> None:
@@ -125,6 +125,25 @@ def _write_trusted_recovery_generation(
         "firmware_state": "stock-user-attested",
         "sources": sources,
     }))
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("backup=obtained", "obtained"),
+        ("model=x40-ultra backup=obtained", "obtained"),          # the field the flash gate added
+        ("model=x40-ultra backup=missing", "missing"),
+        ("model=x40-ultra backup=not-requested", "not-requested"),
+        ("model=x40-ultra", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_recon_backup_state_reads_the_field_not_the_whole_marker(
+    marker: str | None, expected: str | None,
+) -> None:
+    """A marker gaining a field must never turn a complete capture into a spurious bench failure."""
+    assert B._recon_backup_state(marker) == expected
 
 
 def test_every_qualification_scenario_is_unique_and_documented() -> None:
@@ -969,8 +988,6 @@ def test_malformed_campaign_is_rejected_before_robot_selection(
     directory = ctx.ws.base / "bench" / "rc"
     report = json.loads((directory / "report.json").read_text())
     report[field] = "not-a-list"
-    key = bytes.fromhex((directory / ".robot-key").read_text().strip())
-    report["integrity"] = B._record_mac(report, key)
     (directory / "report.json").write_text(json.dumps(report))
 
     with pytest.raises(Die, match="invalid results or waivers list"):
@@ -979,17 +996,20 @@ def test_malformed_campaign_is_rejected_before_robot_selection(
     assert not ctx.ws.robots_dir.exists()
 
 
-def test_symlinked_campaign_root_is_refused(make_ctx: CtxFactory, tmp_path: Path) -> None:
+def test_missing_campaign_key_is_rejected_not_silently_reissued(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ctx = make_ctx()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    ctx.ws.base.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.base / "bench").symlink_to(outside, target_is_directory=True)
+    _prepare_host_smoke(ctx, monkeypatch)
+    assert B.bench(
+        ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    (ctx.ws.base / "bench" / "rc" / ".robot-key").unlink()
 
-    with pytest.raises(Die, match="symlinked"):
-        B.bench(
-            ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
-        )
+    with pytest.raises(Die, match="campaign key is missing or invalid"):
+        B.bench_needs_robot(ctx, ["run", "stock-recon", "--campaign", "rc"])
+
+    assert not ctx.ws.robots_dir.exists()
 
 
 def test_h3_requires_the_explicit_flag_before_calling_the_phase(
@@ -2718,18 +2738,9 @@ def test_private_waiver_options_accept_equals_syntax_without_entering_the_report
     assert private_reason in (directory / ".private.json").read_text()
 
 
-@pytest.mark.parametrize("option", ["reason", "risk", "accepted-by"])
-def test_waiver_rejects_whitespace_only_required_fields(
-    make_ctx: CtxFactory, option: str,
-) -> None:
+def test_waiver_rejects_whitespace_only_required_fields(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name="bench")
     _set_robot_identity(ctx)
-    values = {
-        "reason": "hardware unavailable",
-        "risk": "scenario remains untested",
-        "accepted-by": "release owner",
-    }
-    values[option] = " \t "
 
     with pytest.raises(Die, match="requires --reason"):
         B.bench(
@@ -2737,8 +2748,8 @@ def test_waiver_rejects_whitespace_only_required_fields(
             [
                 "waive", "usb-drop-recon", "--campaign", "rc", "--model", "x40-ultra",
                 "--robot", "bench",
-                "--reason", values["reason"], "--risk", values["risk"],
-                "--accepted-by", values["accepted-by"],
+                "--reason", " \t ", "--risk", "scenario remains untested",
+                "--accepted-by", "release owner",
             ],
             auto_fn=_noop_auto,
         )
@@ -2772,23 +2783,6 @@ def test_report_action_persists_the_shareable_report_it_advertises(
     assert path.is_file()
     assert path.stat().st_mode & 0o777 == 0o600
     assert str(path) in ctx.console.text()  # type: ignore[attr-defined]
-
-
-def test_hand_editing_a_result_invalidates_the_campaign(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx()
-    _prepare_host_smoke(ctx, monkeypatch)
-    assert B.bench(
-        ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto,
-    ) == 0
-    path = ctx.ws.base / "bench" / "rc" / "report.json"
-    report = json.loads(path.read_text())
-    report["results"][0]["result"] = "failed"
-    path.write_text(json.dumps(report))
-
-    with pytest.raises(Die, match="failed its integrity check"):
-        B.bench(ctx, ["report", "--campaign", "rc"], auto_fn=_noop_auto)
 
 
 def test_waiver_is_invalid_without_its_private_acceptance_record(

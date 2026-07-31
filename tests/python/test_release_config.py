@@ -175,13 +175,28 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
     }
     for workflow in (_CI, _RELEASE, _PRERELEASE):
         text = workflow.read_text()
-        for name, value in pins.items():
-            assert f'{name}="{value}"' in text, workflow
-        assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in text, workflow
-        assert "apt-get install -y shellcheck" not in text, workflow
-        assert '-v "$PWD:' not in text, workflow
-        assert 'docker create -w /work "$SHELLCHECK"' in text, workflow
-        assert 'docker cp . "$cid":/work' in text, workflow
+        for name in ("RUFF", "MYPY", "PYTEST"):
+            assert f'{name}="{pins[name]}"' in text, workflow
+
+    # ci.yml's shellcheck job runs on every pull_request, including forks, and is deliberately the
+    # one command in that job not gated to trusted refs — so its wrapper stays inline text this
+    # repo's own workflow defines, rather than a script read back off a fork's checkout and executed
+    # directly. Only the workflow_dispatch-only release/prerelease gates, never fork-triggered,
+    # share packaging/shellcheck-all.sh.
+    assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in ci
+    assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in ci
+    assert "apt-get install -y shellcheck" not in ci
+    assert '-v "$PWD:' not in ci
+    assert 'docker create -w /work "$SHELLCHECK"' in ci
+    assert 'docker cp . "$cid":/work' in ci
+
+    for workflow in (_RELEASE, _PRERELEASE):
+        assert "run: bash packaging/shellcheck-all.sh" in workflow.read_text(), workflow
+
+    # Both copies of the pin move together: Renovate's regex manager is configured to scan this
+    # script alongside the workflow YAMLs (.renovaterc.json), so a bump touches both in one PR.
+    script = (_ROOT / "packaging" / "shellcheck-all.sh").read_text()
+    assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in script
 
 
 def test_release_cutters_serialize_without_sharing_the_tag_publish_queue() -> None:
@@ -205,14 +220,17 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
         assert 'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .' in gate
 
 
-def test_stable_release_uses_renovate_pinned_uv_and_limits_the_lock_diff() -> None:
-    text = _RELEASE.read_text()
-    sync = text[text.index("      - name: Sync uv.lock") :]
-    assert "# renovate: datasource=pypi depName=uv" in sync
-    assert re.search(r'UV="\d+\.\d+\.\d+"', sync)
-    assert 'python -m pip install "uv==$UV"' in sync
-    assert "uv.lock.before" in sync
-    assert "after != expected" in sync
+def test_both_release_gates_stamp_every_version_record_including_the_lock() -> None:
+    # The behavior stamp-version.py implements (all three files, the uv.lock rc normalization, the
+    # exactly-one-match guard) is pinned directly against the script in test_stamp_version.py; this
+    # only pins that both workflows actually call it, then verify it, rather than re-locking. The
+    # variable holding the version differs by step ($VERSION from a job-level output mapping,
+    # $version from next-version.sh's own output), so the call is matched by shape, not by name.
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        assert re.search(r'stamp-version\.py "\$\w+"\n', text), workflow
+        assert re.search(r'stamp-version\.py "\$\w+" --check', text), workflow
+        assert "uv lock" not in text, workflow
 
 
 def test_macos_build_reads_the_sunxi_pin_from_constants() -> None:
@@ -233,9 +251,55 @@ def test_macos_build_verifies_the_pinned_tmux_release_tarball() -> None:
 
 def test_stable_release_pushes_commit_and_tag_atomically() -> None:
     text = _RELEASE.read_text()
-    step = text[text.index("      - name: Commit, tag, push") :]
-    assert "push --atomic origin" in step
-    assert '"HEAD:${{ github.ref_name }}" "${TAG}"' in step
+    step = text[text.index("      - name: Push the commit and tag atomically") :]
+    assert "packaging/push-tag.sh" in step
+    assert '"$TAG" "$TOKEN" "${{ github.ref_name }}"' in step
+
+    script = (_ROOT / "packaging" / "push-tag.sh").read_text()
+    assert "push --atomic origin" in script
+    assert '"HEAD:${branch_ref}" "$tag"' in script
+    assert '[ "$(git cat-file -t "refs/tags/$tag")" = tag ]' in script
+    assert '[ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ]' in script
+    assert 'test -z "$(git status --porcelain)"' in script
+
+    # prerelease.yml is dispatchable from any branch (packaging/README.md), unlike release.yml's
+    # tag job which refuses non-main dispatches — so it does NOT hand the repo-write PAT to a
+    # script whose content would come from whatever ref was dispatched; its push stays inline,
+    # keeping the same three safety checks the shared script performs for release.yml.
+    prerelease_step = _PRERELEASE.read_text()
+    prerelease_step = prerelease_step[prerelease_step.index("      - name: Push the prerelease tag") :]
+    assert "bash packaging/push-tag.sh" not in prerelease_step
+    assert 'push origin "$TAG"' in prerelease_step
+    assert '[ "$(git cat-file -t "refs/tags/$TAG")" = tag ]' in prerelease_step
+    assert '[ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ]' in prerelease_step
+    assert 'test -z "$(git status --porcelain)"' in prerelease_step
+
+
+def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> None:
+    for workflow in (_RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        gate, tag = _job(text, "gate"), _job(text, "tag")
+
+        # The job that runs third-party lint/test code holds no credential at all, and neither
+        # checkout leaves one behind for a later step to pick up.
+        assert "secrets." not in gate, workflow
+        assert text.count("persist-credentials: false") == 2, workflow
+        assert "token: ${{ secrets" not in text, workflow
+
+        # The job that does hold the token re-derives the edits on a tree the gate never touched
+        # and refuses to push anything whose bytes the gate did not qualify.
+        assert "ACTUAL_INTENT_SHA256=$(git diff --binary | sha256sum" in tag, workflow
+        assert '[ "$ACTUAL_INTENT_SHA256" = "$QUALIFIED_INTENT_SHA256" ]' in tag, workflow
+        assert tag.index("QUALIFIED_INTENT_SHA256") < tag.index("CLUSTER_FORGEJO_REPO_WRITE_PAT")
+
+        # An annotated tag object: a lightweight ref could be retargeted to another commit later
+        # without leaving a trace of the version it was cut for. release.yml's tag job delegates
+        # the re-verification (before it ever pushes) to packaging/push-tag.sh; prerelease.yml
+        # keeps it inline (see test_stable_release_pushes_commit_and_tag_atomically for both).
+        assert "git tag -a -m" in tag, workflow
+
+        # Forgejo has no `permissions:` field; it warns and ignores it, so it must never appear.
+        assert "permissions:" not in text, workflow
 
 
 def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:

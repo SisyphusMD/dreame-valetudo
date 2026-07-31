@@ -9,16 +9,16 @@ fastboot by hand.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CFG, CtxFactory, stage_dist
 
 from dreame_valetudo.console import Die
-from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
 from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
@@ -28,7 +28,6 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import Robot
 
-_CFG = "abcdef0123456789abcdef0123456789"
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
 
 _FASTBOOT_MODELS = tuple(
@@ -55,6 +54,8 @@ def test_every_model_checklist_is_static_and_matches_its_exact_guide(
 
 def _curl_only(argv: tuple[str, ...]) -> Result:
     # The unsupported list is empty (no match); everything else is a benign OKAY.
+    if argv[:2] == ("ssh-keygen", "-y"):  # the staged .pub is proven against its private half
+        return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
     if argv and argv[0] == "curl":
         if any("unsupported.txt" in a for a in argv):
             return Result(argv, 0, "", "")
@@ -66,7 +67,7 @@ def _curl_plus_getvars(argv: tuple[str, ...]) -> Result:
     # Like _curl_only, but answers the identity getvars (and the FEL/fastboot bring-up returns OKAY),
     # so the tool-driven on-demand read succeeds.
     joined = " ".join(argv)
-    if argv and argv[0] == "curl":
+    if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
         return _curl_only(argv)
     for var, val in _IDENT.items():
         if f"getvar {var}" in joined:
@@ -78,28 +79,26 @@ def _reject_ctx(
     make_ctx: CtxFactory, tmp_path: Path, *,
     identity: bool, zip_: bool, confirms: list[bool],
     responder: Callable[[tuple[str, ...]], Result] = _curl_only,
-    stage_dist: bool = False,
+    pre_staged: bool = False,
     model: str = "x30-ultra",
     model_code: str = "r9316",
 ) -> Context:
     key = tmp_path / "k"
     key.write_text("PRIV")
+    key.chmod(0o600)
     (tmp_path / "k.pub").write_text("ssh-ed25519 AAAA test\n")  # pre-made pair -> no SSH prompt
     home = tmp_path / "home"
     home.mkdir()
     ctx = make_ctx(
         model=model, responder=responder, confirms=confirms,
         env={"DREAME_SSHKEY": str(key), "HOME": str(home)},
-        robot_name=f"{model_code}-{_CFG[:12]}",
+        robot_name=f"{model_code}-{CFG[:12]}",
     )
-    if stage_dist:  # so the on-demand read's FEL bring-up doesn't self-provision via fetch
-        ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-        (ctx.ws.dist / "payload.bin").write_text("p")
-        (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
-        (ctx.ws.dist / ".stage1-sha256").write_text(f"{STAGE1_SHA256}\n")
+    if pre_staged:  # so the on-demand read's FEL bring-up doesn't self-provision via fetch
+        stage_dist(ctx)
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     if identity:
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in _IDENT.items())
@@ -188,7 +187,7 @@ def test_r2338h_checker_help_never_invents_the_incompatible_r2338_radio(
 def test_missing_values_are_read_off_the_robot_by_the_tool(make_ctx: CtxFactory, tmp_path: Path) -> None:
     # No identity.txt (older recon). confirms: [open browser] [not accepted] [reconnect+FEL? yes].
     ctx = _reject_ctx(make_ctx, tmp_path, identity=False, zip_=True,
-                      confirms=[True, False, True], responder=_curl_plus_getvars, stage_dist=True)
+                      confirms=[True, False, True], responder=_curl_plus_getvars, pre_staged=True)
     with pytest.raises(Die, match="not recognized"):
         image(ctx)
 
@@ -214,7 +213,7 @@ def test_missing_values_declined_never_tells_the_user_to_run_fastboot(make_ctx: 
 
 def _staging_responder(argv: tuple[str, ...]) -> Result:
     """_curl_only, plus an unzip that produces the six FEL files the staging check requires."""
-    if argv and argv[0] == "curl":
+    if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
         return _curl_only(argv)
     if argv and argv[0] == "unzip":
         dest = Path(argv[argv.index("-d") + 1])
@@ -388,7 +387,7 @@ def _two_build_responder(
     seen = {"unzips": 0}
 
     def r(argv: tuple[str, ...]) -> Result:
-        if argv and argv[0] == "curl":
+        if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
             return _curl_only(argv)
         if argv and argv[0] == "unzip":
             seen["unzips"] += 1
@@ -448,3 +447,28 @@ def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
     assert not robot.state_has("image")
     assert prior in robot.image_provenance()
     assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)
+
+
+def test_an_interrupted_publish_never_destroys_the_previous_image(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The swap into fw_dir must supersede the previous build, not delete it first: a crash mid-
+    publish has to leave a complete prior build recoverable, never an emptied fw_dir with nothing in
+    it. Build B is complete, so the interruption lands in the swap itself, not in validation."""
+    ctx = _restage_ctx(make_ctx, tmp_path, _two_build_responder(_FEL, 0))
+    robot = ctx.need_robot()
+    assert all((robot.fw_dir / f).read_text() == "build A" for f in _FEL)
+
+    def interrupted(_src: Path, _dst: Path) -> None:
+        raise OSError("connection dropped before the staged build was published")
+
+    monkeypatch.setattr("dreame_valetudo.phases.image.rename_no_replace", interrupted)
+    with contextlib.suppress(OSError):
+        image(ctx, force=True)
+
+    survivors = [
+        d for d in robot.work.iterdir()
+        if d.is_dir() and all((d / f).is_file() and (d / f).read_text() == "build A" for f in _FEL)
+    ]
+    assert survivors, "the previous build was destroyed by the interrupted publish"
+    assert not robot.state_has("image")  # root() re-runs image() rather than flashing a gap

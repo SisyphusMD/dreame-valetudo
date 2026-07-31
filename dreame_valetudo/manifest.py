@@ -9,7 +9,7 @@ convention that an ABSENT manifest means a legacy backup.
 
 from __future__ import annotations
 
-import fcntl
+import contextlib
 import json
 import os
 import re
@@ -29,6 +29,8 @@ _MODEL_RE = re.compile(r"^dreame-([^-]+)-")  # the model code right after 'dream
 
 
 def _contents(backup_dir: Path) -> list[str]:
+    # Never record a manifest temp as backup content: an in-flight `.tmp`, or a legacy `.owner`
+    # lock artifact a crashed run could leave behind. Contents are irreplaceable backup provenance.
     return sorted(
         p.name
         for p in backup_dir.iterdir()
@@ -45,7 +47,6 @@ def looks_like_backup(backup_dir: Path) -> bool:
     """True only for a real, local backup directory carrying backup-shaped contents."""
     return (
         backup_dir.is_dir()
-        and not backup_dir.is_symlink()
         and not backup_dir.name.endswith(".partial")
         and (
             (backup_dir / "files.tar.gz").exists()
@@ -57,41 +58,22 @@ def looks_like_backup(backup_dir: Path) -> bool:
 
 def _dump(backup_dir: Path, payload: Mapping[str, object]) -> None:
     target = backup_dir / "manifest.json"
+    # The workspace lock (session.py) serializes whole invocations, so any leftover temp is a dead
+    # run's orphan — safe to remove unconditionally without probing for a live owner.
     for abandoned in backup_dir.glob(".manifest.*.tmp"):
-        abandoned_owner = abandoned.with_suffix(".owner")
-        if not abandoned_owner.is_file() or abandoned_owner.is_symlink():
-            continue
-        try:
-            with abandoned_owner.open("r+") as stale:
-                fcntl.flock(stale, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                abandoned.unlink()
-                abandoned_owner.unlink()
-        except OSError:
-            continue
-    temporary: Path | None = None
-    owner_path: Path | None = None
+        with contextlib.suppress(OSError):
+            abandoned.unlink()
+    fd, temporary_name = tempfile.mkstemp(prefix=".manifest.", suffix=".tmp", dir=backup_dir)
+    temporary = Path(temporary_name)
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w+",
-            dir=backup_dir,
-            prefix=".manifest.",
-            suffix=".owner",
-            delete=False,
-        ) as owner:
-            owner_path = Path(owner.name)
-            fcntl.flock(owner, fcntl.LOCK_EX)
-            temporary = owner_path.with_suffix(".tmp")
-            with temporary.open("x", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
-            temporary.chmod(0o600)
-            temporary.replace(target)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(target)
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        if owner_path is not None:
-            owner_path.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
 
 
 def protect_backups(env: Mapping[str, str], console: Console | None = None) -> None:
@@ -191,7 +173,7 @@ def retag_robot(
         return 0
     for d in entries:
         mf = d / "manifest.json"
-        if d.is_symlink() or not mf.is_file():
+        if not mf.is_file():
             continue
         try:
             data = json.loads(mf.read_text())

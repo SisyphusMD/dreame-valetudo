@@ -3,9 +3,8 @@
 #
 # The python suite drives a FAKE tmux, which cannot model the things this feature actually gets
 # wrong: the alternate screen (a client restores the terminal on exit, erasing everything the run
-# printed), the server's environment snapshot, or whether a wrapped run executes at all. 473 unit
-# tests once passed while the wrapper destroyed every run it started — these cases are the ones
-# that would have caught it.
+# printed), the server's environment snapshot, or whether a wrapped run executes at all — exactly
+# the failure modes a fake-tmux suite cannot observe.
 #
 # Each case runs the real binary under a real pty, in an isolated HOME and on a private tmux
 # server. No hardware: only commands that stop before touching a robot.
@@ -248,7 +247,7 @@ elif command -v dreame-valetudo >/dev/null 2>&1; then
   TOOL=(dreame-valetudo)
 else
   # Deliberately a failure, not a skip: skipping here would hide a broken wrapper behind a missing
-  # toolchain, which is exactly how this feature stayed broken through 473 green tests.
+  # toolchain instead of surfacing it, defeating the whole point of this suite.
   fail "neither an installed dreame-valetudo nor uv is available to run the tool"
 fi
 
@@ -294,7 +293,10 @@ output_reached_terminal "$RUNDIR/bench_list.out" "downgrade-readonly" ||
 pass "a completed bench table is replayed in full without a continuation prompt"
 
 # --- 4. the exit status is the RUN's, not the tmux client's ---------------------------------
-drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" status
+# A model-specific command, so the run genuinely fails inside the session on the invalid model:
+# status and the other reporting commands ignore a stale DREAME_MODEL and would exit 0, proving
+# nothing about whether the wrapper hands back the run's status or the tmux client's.
+drive fail1 120 "DREAME_WORK=$RUNDIR/work-bad" "DREAME_MODEL=no-such-model" -- "${TOOL[@]}" auto
 [ "$(rc_of fail1)" = "1" ] || fail "a failing wrapped run reported $(rc_of fail1), not the run's 1"
 text_of fail1 | grep -q "no-such-model" || fail "the failing run's error was not shown to the user"
 pass "a failing wrapped run returns its own status and shows its error"

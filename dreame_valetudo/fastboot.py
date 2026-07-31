@@ -146,7 +146,15 @@ class Fastboot:
         return [*self.transport.cmd, *(str(a) for a in args)]
 
     def fbt(self, *args: object, check: bool = True) -> Result:
-        """Drop-in for `fastboot`: devices|getvar|oem|flash|get_staged|reboot|wait."""
+        """Drop-in for `fastboot`: devices|getvar|oem|flash|get_staged|reboot|wait.
+
+        Images are passed as real filesystem paths, deliberately. Feeding them over `/dev/stdin`
+        from an unlinked verified fd was evaluated and rejected: it would close a swap-between-
+        verify-and-flash window that only opens to someone who already controls this account (and
+        could simply replace this program), while replacing the one externally proven interface on
+        the destructive path — and it would make the argv transcripts pin `/dev/stdin` instead of
+        which image reaches which partition, so the tests would stop catching a boot/rootfs
+        transposition. Revisit only with on-hardware proof for both transports on both platforms."""
         return self.runner.run(self._argv(args), check=check)
 
     def report_failure(self, result: Result) -> None:

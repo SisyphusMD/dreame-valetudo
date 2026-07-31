@@ -161,6 +161,17 @@ def _partition_entry(name: str, first_lba: int, sectors: int) -> bytes:
     return bytes(entry)
 
 
+def _seal_provenance(recon: Path, *, config: str = _CONFIG) -> None:
+    write_recovery_provenance(
+        recon,
+        config=config,
+        model_key="x40-ultra",
+        binding="captured-same-session",
+        firmware_state="stock-user-attested",
+        expected_bytes=_CHUNK,
+    )
+
+
 def _recovery_capture(
     ctx: object,
     *,
@@ -314,14 +325,7 @@ def _recovery_capture(
             gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as stream,
         ):
             stream.write(disk[index * _CHUNK:(index + 1) * _CHUNK])
-    write_recovery_provenance(
-        robot.recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(robot.recon_dir)
 
 
 def _stage1(ctx: object) -> None:
@@ -349,6 +353,26 @@ def _hardware_responder(config: str = _CONFIG, *, returns_to_fel: bool = False):
         return Result(argv, 0, "OKAY\n", "")
 
     return answer
+
+
+def test_the_disk_advisory_reserves_what_extraction_actually_writes(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The low-disk advisory must size to what restore writes — every required partition in full,
+    including both A/B copies — not a flat guess that understates the real footprint."""
+    ctx = make_ctx(robot_name="kitchen")
+    _recovery_capture(ctx)
+    reserved: list[int] = []
+    monkeypatch.setattr(
+        restore_mod, "warn_if_low_disk",
+        lambda _console, _dest, need_bytes: reserved.append(need_bytes),
+    )
+
+    prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    # boot1 + rootfs1 + boot2 + rootfs2 + private + misc, each extracted in full (sectors * 512).
+    expected = (128 + 2304 + 128 + 2304 + 64 + 128) * 512
+    assert reserved == [expected]
 
 
 def test_prepare_stock_restore_kit_validates_and_publishes_once(make_ctx: CtxFactory) -> None:
@@ -471,14 +495,7 @@ def test_prepare_can_recover_loose_slices_from_the_portable_archive(
             sealed = bytes([index + 1]) * _CHUNK
             archive.writestr(f"{name}.bin", sealed)
             (recon / f"{name}.bin").write_bytes(sealed)
-    write_recovery_provenance(
-        recon,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(recon)
     for name in RECOVERY_DUMP_NAMES:
         (recon / f"{name}.dd.gz").unlink()
         (recon / f"{name}.bin").unlink()
@@ -521,14 +538,7 @@ def test_prepare_regenerates_a_damaged_cache_from_verified_sealed_sources(
     }
     for index, name in enumerate(RECOVERY_DUMP_NAMES):
         (recon / f"{name}.bin").write_bytes(bytes([index + 1]) * _CHUNK)
-    write_recovery_provenance(
-        recon,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(recon)
     (recon / "dustx101.dd.gz").write_bytes(b"damaged gzip cache")
     refreshes: list[bool] = []
 
@@ -705,14 +715,7 @@ def _damage_partition_pin(ctx: object, *partitions: str) -> None:
             gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as stream,
         ):
             stream.write(raw[index * _CHUNK:(index + 1) * _CHUNK])
-    write_recovery_provenance(
-        robot.recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(robot.recon_dir)
 
 
 def test_prepare_selects_authenticated_backup_when_the_main_pair_no_longer_matches(
@@ -861,14 +864,7 @@ def test_prepare_refuses_same_model_sources_bound_to_a_different_robot(
 ) -> None:
     ctx = make_ctx(robot_name="kitchen")
     _recovery_capture(ctx)
-    write_recovery_provenance(
-        ctx.need_robot().recon_dir,
-        config="0123456789abcdef0123456789abcdef",
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(ctx.need_robot().recon_dir, config="0123456789abcdef0123456789abcdef")
 
     with pytest.raises(Die, match="different robot or model"):
         prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
@@ -908,14 +904,7 @@ def test_prepare_refuses_a_bad_gpt_checksum(make_ctx: CtxFactory) -> None:
         gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as stream,
     ):
         stream.write(raw)
-    write_recovery_provenance(
-        ctx.need_robot().recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(ctx.need_robot().recon_dir)
 
     with pytest.raises(Die, match="GPT header checksum"):
         prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
@@ -1207,7 +1196,7 @@ def test_restore_rechecks_the_kit_after_hardware_preparation_before_any_write(
             return Result(argv, 0, f"OKAY {_CONFIG}\n", "")
         return Result(argv, 0, "OKAY\n", "")
 
-    ctx.runner._responder = mutate_on_identity_check  # type: ignore[attr-defined]
+    ctx.runner.responder = mutate_on_identity_check  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match="changed while hardware was being prepared"):
         restore(ctx)

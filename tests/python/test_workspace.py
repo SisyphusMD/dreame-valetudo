@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from conftest import CFG
 
 from dreame_valetudo import workspace as workspace_module
 from dreame_valetudo.workspace import (
@@ -22,8 +24,6 @@ from dreame_valetudo.workspace import (
     slugify,
     work_dir,
 )
-
-_CFG = "abcdef0123456789abcdef0123456789"
 
 
 # --- Workspace paths -------------------------------------------------------------------------
@@ -60,9 +60,9 @@ def test_state_marker_round_trip(tmp_path: Path) -> None:
     r = Robot(tmp_path / "r2416-abc")
     assert not r.state_has("recon")
     assert r.state_get("recon") is None
-    r.state_set("recon", "config=" + _CFG)
+    r.state_set("recon", "config=" + CFG)
     assert r.state_has("recon")
-    assert r.state_get("recon") == "config=" + _CFG  # trailing newline stripped
+    assert r.state_get("recon") == "config=" + CFG  # trailing newline stripped
 
 
 def test_state_marker_default_value(tmp_path: Path) -> None:
@@ -176,18 +176,18 @@ def test_slugify() -> None:
 def test_config_from_recon_record(tmp_path: Path) -> None:
     r = Robot(tmp_path / "r2416-abc")
     r.recon_dir.mkdir(parents=True)
-    (r.recon_dir / "config.txt").write_text(f"config: {_CFG}\n")
-    assert r.config() == _CFG
+    (r.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    assert r.config() == CFG
 
 
 def test_config_falls_back_to_env_in_single_robot_mode(tmp_path: Path) -> None:
     r = Robot(tmp_path / "solo")  # no recon record
-    assert r.config(robot_env=None, config_env=_CFG) == _CFG
+    assert r.config(robot_env=None, config_env=CFG) == CFG
 
 
 def test_config_does_not_leak_env_when_a_robot_is_named(tmp_path: Path) -> None:
     r = Robot(tmp_path / "kitchen")  # no recon record, but DREAME_ROBOT is set
-    assert r.config(robot_env="kitchen", config_env=_CFG) is None
+    assert r.config(robot_env="kitchen", config_env=CFG) is None
 
 
 def test_identity_reads_captured_getvars(tmp_path: Path) -> None:
@@ -212,21 +212,33 @@ def test_config_present_but_no_hex_is_none(tmp_path: Path) -> None:
     r.recon_dir.mkdir(parents=True)
     (r.recon_dir / "config.txt").write_text("config: (unreadable)\n")
     # File present but no 32-hex token -> None, and NO env fallback (file exists).
-    assert r.config(config_env=_CFG) is None
+    assert r.config(config_env=CFG) is None
 
 
 # --- robot_tag --------------------------------------------------------------------------------
 def test_robot_tag_without_name() -> None:
-    assert robot_tag("r2416", _CFG) == f"dreame-r2416-{_CFG}"
+    assert robot_tag("r2416", CFG) == f"dreame-r2416-{CFG}"
 
 
 def test_robot_tag_with_name() -> None:
-    assert robot_tag("r2416", _CFG, "kitchen") == f"dreame-r2416-kitchen-{_CFG}"
+    assert robot_tag("r2416", CFG, "kitchen") == f"dreame-r2416-kitchen-{CFG}"
 
 
 def test_robot_tag_unknown_config() -> None:
     assert robot_tag("r2416", None) == "dreame-r2416-unknownconfig"
 
 
-def test_robot_tag_uses_given_model_code() -> None:
-    assert robot_tag("r9316", _CFG).startswith("dreame-r9316-")
+def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _OldLibc:
+        pass
+
+    monkeypatch.setattr(workspace_module.sys, "platform", "linux")
+    monkeypatch.setattr(workspace_module.ctypes, "CDLL", lambda *_args, **_kwargs: _OldLibc())
+
+    with pytest.raises(OSError) as exc:
+        workspace_module.rename_no_replace(tmp_path / "source", tmp_path / "destination")
+
+    assert exc.value.errno == errno.ENOSYS
+    assert "renameat2" in str(exc.value)

@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import FB
 
 from dreame_valetudo.console import Console, Die
 from dreame_valetudo.constants import PYUSB_VERSION
@@ -19,7 +20,7 @@ from dreame_valetudo.fastboot import Fastboot, Transport, find_helper, resolve_t
 from dreame_valetudo.log import LoggingConsole, RunLog
 from dreame_valetudo.run import RecordingRunner, Result
 
-_PY_TRANSPORT = Transport("python", ("python3", "/x/fastboot-libusb.py"))
+_PY_TRANSPORT = Transport("python", FB)
 
 
 def _quiet() -> Console:

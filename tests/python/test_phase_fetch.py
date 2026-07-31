@@ -6,10 +6,9 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import CtxFactory, stage_dist
 
 from dreame_valetudo.console import Die, UserAbort
-from dreame_valetudo.context import Context
 from dreame_valetudo.phases import fetch as fetch_mod
 from dreame_valetudo.phases.fetch import fetch, fetch_valetudo
 from dreame_valetudo.run import Result
@@ -20,12 +19,6 @@ def _write_curl_target(argv: tuple[str, ...], data: bytes) -> None:
     target = argv[argv.index("-o") + 1]
     with Path(target).open("wb") as f:
         f.write(data)
-
-
-def _mark_stage1(ctx: Context, digest: str) -> None:
-    # Tests that pre-stage payloads are asserting a later gate, so record which verified archive
-    # those fixtures represent just as production extraction does.
-    (ctx.ws.dist / ".stage1-sha256").write_text(f"{digest}\n")
 
 
 def test_fetch_revalidates_a_stale_sunxi_cache(
@@ -50,7 +43,7 @@ def test_fetch_refuses_stage1_on_checksum_mismatch(make_ctx: CtxFactory) -> None
             _write_curl_target(argv, b"tampered stage1")  # won't match the pinned sha
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="checksum mismatch"):
         fetch(ctx)
     assert not ctx.stage1_tgz.exists()  # refused + removed
@@ -61,12 +54,9 @@ def test_fetch_verifies_and_reaches_cache_ready(
 ) -> None:
     ctx = make_ctx()
     # Pre-stage the extracted files so no tar is needed, and pin stage1 to the test bytes.
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
-    _mark_stage1(ctx, digest)
+    stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: hashlib.sha256(b"s1").hexdigest()}
     )
@@ -76,7 +66,7 @@ def test_fetch_verifies_and_reaches_cache_ready(
             _write_curl_target(argv, b"s1")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch(ctx)
     kinds = ctx.console.text()  # type: ignore[attr-defined]
     assert "Cache ready." in kinds
@@ -90,12 +80,9 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("p")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("f")
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
-    _mark_stage1(ctx, digest)
+    stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -104,7 +91,7 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
             _write_curl_target(argv, data)
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="digest mismatch"):
         fetch(ctx)
     assert not ctx.valetudo_bin.exists()  # refused + removed
@@ -114,10 +101,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("old payload")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("old fsbl")
-    _mark_stage1(ctx, "old-digest")
+    stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
     digest = hashlib.sha256(b"new archive").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
 
@@ -131,7 +115,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
             (target / "nested" / "fsbl_ddr4.bin").write_text("new fsbl")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_mod.fetch_stage1(ctx)
 
     assert ctx.payload_bin.read_text() == "new payload"
@@ -144,10 +128,7 @@ def test_failed_stage1_reextraction_cannot_leave_old_payloads_usable(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
-    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
-    (ctx.ws.dist / "payload.bin").write_text("old payload")
-    (ctx.ws.dist / "fsbl_ddr4.bin").write_text("old fsbl")
-    _mark_stage1(ctx, "old-digest")
+    stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"new archive").hexdigest())
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -157,7 +138,7 @@ def test_failed_stage1_reextraction_cannot_leave_old_payloads_usable(
             return Result(argv, 2, "", "corrupt archive")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="extract failed"):
         fetch_mod.fetch_stage1(ctx)
 
@@ -181,7 +162,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
             _write_curl_target(argv, b"valetudo")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
 
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
@@ -236,6 +217,6 @@ def test_fetch_valetudo_can_explicitly_accept_an_unverified_override(
             _write_curl_target(argv, b"custom valetudo")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
     assert ctx.valetudo_bin.read_bytes() == b"custom valetudo"

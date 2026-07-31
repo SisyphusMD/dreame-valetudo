@@ -45,8 +45,8 @@ next `dreame-valetudo` run will offer to rejoin it.
 
 ## Supported computers
 
-We test release packages on every minimum version below, plus the newer releases listed beside it.
-Older systems might work, but we do not promise that until they are part of this test matrix.
+Release packages are tested on every minimum version below, plus the newer releases listed beside it.
+Older systems might work, but that isn't promised until they are part of this test matrix.
 
 | Operating system | Minimum supported version | Also tested on |
 |---|---|---|
@@ -166,9 +166,9 @@ The fastboot models below use the same Allwinner MR813 "gen3" platform and the s
 fastboot process. The model choice tells the tool which loader, DustBuilder page, and Valetudo build
 to use. You can pick from the menu or set `DREAME_MODEL=<key>`; the rest is automatic.
 
-**✅ Verified** means we have completed the entire process on that model. **🧪 Untested** means its
-profile comes from Valetudo and DustBuilder, but nobody has yet completed this tool's flow on that
-exact hardware. The read-only recon phase still checks the actual robot before any flash is allowed.
+**✅ Verified** means the whole process has been run end to end on that model. **🧪 Untested** means
+its profile comes from Valetudo and DustBuilder, but nobody has run this tool's full flow on that
+exact hardware yet. The read-only recon phase still checks the actual robot before any flash is allowed.
 
 | Key | Model | Code | Status |
 |---|---|---|---|
@@ -233,7 +233,7 @@ place.
 
 ## Release candidates (and switching back to stable)
 
-Before a stable release, we publish the real Homebrew formula, `.pkg`, `.deb`, `.rpm`, and tarball as
+Before a stable release, the real Homebrew formula, `.pkg`, `.deb`, `.rpm`, and tarball go out as
 a **release candidate** for hardware testing. RCs use a `-rc.N` tag and appear on the Releases pages
 ([forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases),
 [github](https://github.com/SisyphusMD/dreame-valetudo/releases)) as **Pre-release**. They are never

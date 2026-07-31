@@ -6,6 +6,10 @@ name: Prerelease
 # build the real .deb/.pkg/tarball and publish them as a GitHub + Forgejo *prerelease* (never
 # "latest"; the Homebrew tap stays on the last stable). Use it to validate the shipping artifacts on
 # hardware, then cut the matching stable release the normal way.
+#
+# Split in two like release.yml: `gate` decides what the rc IS and proves the tree is green while
+# holding no credential; `tag` is the only job handed the write token, and it re-derives the same
+# stamp from a fresh checkout and refuses to push unless the bytes hash to what the gate qualified.
 on:
   workflow_dispatch:
     inputs:
@@ -22,32 +26,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prerelease:
-    name: Cut prerelease
+  gate:
+    name: Qualify prerelease intent (secret-free)
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      intent_sha256: ${{ steps.intent.outputs.sha256 }}
     steps:
       - name: Checkout (full history + tags)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          persist-credentials: false
 
       - name: Shellcheck every shipped and integration script
-        run: |
-          # renovate: datasource=docker depName=koalaman/shellcheck
-          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
-          cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
-          docker cp . "$cid":/work
-          check_rc=0
-          docker start -a "$cid" || check_rc=$?
-          docker rm "$cid" >/dev/null
-          exit "$check_rc"
-
-      - name: Configure git identity
-        run: |
-          git config user.name "forgejo-actions[bot]"
-          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+        run: bash packaging/shellcheck-all.sh
 
       - name: Compute the next -rc version
         id: ver
@@ -55,26 +49,11 @@ jobs:
           BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          # Base = the bump applied to the latest STABLE tag (prereleases excluded from the lookup).
-          PREV_STABLE=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -vE -- '-' | head -n1 || true)
-          CURRENT="${PREV_STABLE#v}"; CURRENT="${CURRENT:-0.0.0}"
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-          esac
-          BASE="${MAJOR}.${MINOR}.${PATCH}"
-          # Next rc counter for this base: numeric max of existing v<base>-rc.<n>, + 1 (robust to
-          # however git version-sorts prerelease suffixes).
-          LAST=$(git tag -l "v${BASE}-rc.*" | sed -E 's/.*-rc\.//' | sort -n | tail -n1 || true)
-          N=$(( ${LAST:-0} + 1 ))
-          NEXT="${BASE}-rc.${N}"
-          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "Prerelease ${NEXT} (candidate for ${BASE}, from ${GITHUB_REF_NAME})"
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP" --rc)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Prerelease ${version} (candidate for ${version%-rc.*}, from ${GITHUB_REF_NAME})"
 
       - name: Refuse if the tag already exists
         env:
@@ -83,20 +62,39 @@ jobs:
           set -euo pipefail
           ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
 
-      - name: Stamp the version (pyproject + package)
+      - name: Enforce the pre-0.4 release boundary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 packaging/check-release-boundary.py "$VERSION"
+
+      - name: Stamp the version (pyproject + package + uv.lock)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          sed -i -E "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
-          sed -i -E "s/^__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" dreame_valetudo/__init__.py
-          grep -qE "^version = \"${VERSION}\"" pyproject.toml || { echo "::error::pyproject version stamp did not apply"; exit 1; }
-          grep -qE "^__version__ = \"${VERSION}\"" dreame_valetudo/__init__.py || { echo "::error::__version__ stamp did not apply"; exit 1; }
+          python3 packaging/stamp-version.py "$VERSION"
+          python3 packaging/stamp-version.py "$VERSION" --check
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           # renovate: datasource=github-tags depName=python/cpython versioning=pep440
           python-version: "3.14.6"
+
+      - name: Snapshot the exact intended prerelease diff
+        id: intent
+        run: |
+          set -euo pipefail
+          # The rc stamp is exactly these three files and nothing else. Hashing the patch here,
+          # before any third-party tool is installed, is what the tag job reproduces byte-for-byte.
+          printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \
+            | sort > "$RUNNER_TEMP/expected-release-paths"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --binary > "$RUNNER_TEMP/intended-release.patch"
+          sha256sum "$RUNNER_TEMP/intended-release.patch" \
+            | awk '{print "sha256=" $1}' >> "$GITHUB_OUTPUT"
 
       - name: Test gate (lint + typecheck + unit + integration)
         env:
@@ -112,7 +110,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
-          ruff check dreame_valetudo libexec tests/python
+          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
           pytest -q tests/python
           python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
@@ -120,23 +118,90 @@ jobs:
           python -m dreame_valetudo help | grep -q "Supported models"
           for t in tests/integration/*.sh; do bash "$t"; done
 
-      - name: Tag the stamped commit (branch untouched), push the tag
+      - name: Prove the test toolchain changed no prerelease byte
+        run: |
+          set -euo pipefail
+          git diff --binary | cmp - "$RUNNER_TEMP/intended-release.patch"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+
+  tag:
+    name: Authorize and push prerelease tag
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fresh checkout with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reproduce the qualified prerelease intent
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          TAG: ${{ steps.ver.outputs.tag }}
-          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          BUMP: ${{ inputs.bump }}
+          QUALIFIED_VERSION: ${{ needs.gate.outputs.version }}
+          QUALIFIED_TAG: ${{ needs.gate.outputs.tag }}
+          QUALIFIED_INTENT_SHA256: ${{ needs.gate.outputs.intent_sha256 }}
+        run: |
+          set -euo pipefail
+          # Same derivation as the gate, on a tree no gate step ever touched. Nothing here trusts
+          # the gate beyond the version and the hash it has to match.
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP" --rc)
+          [ "$version" = "$QUALIFIED_VERSION" ] && [ "$tag" = "$QUALIFIED_TAG" ] \
+            || { echo "::error::qualified prerelease intent changed between runners"; exit 1; }
+          ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null
+          python3 packaging/check-release-boundary.py "$version"
+          python3 packaging/stamp-version.py "$version"
+          python3 packaging/stamp-version.py "$version" --check
+          printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \
+            | sort > "$RUNNER_TEMP/expected-release-paths"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+          ACTUAL_INTENT_SHA256=$(git diff --binary | sha256sum | awk '{print $1}')
+          [ "$ACTUAL_INTENT_SHA256" = "$QUALIFIED_INTENT_SHA256" ] \
+            || { echo "::error::prerelease bytes differ from the qualified intent"; exit 1; }
+
+      - name: Commit and tag the reproduced prerelease
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
           set -euo pipefail
           # The version stamp rides on the TAGGED commit only; the branch is never pushed, so main
           # (or a feature branch) never carries an -rc marker. publish.yml/release-macos.yml check
           # out the tag, so the built artifacts still report the rc version.
-          git add pyproject.toml dreame_valetudo/__init__.py
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+          git add pyproject.toml dreame_valetudo/__init__.py uv.lock
           git commit -m "prerelease: ${VERSION}"
-          git show "HEAD:pyproject.toml" | grep -qE "^version = \"${VERSION}\"" \
-            || { echo "::error::prerelease commit is missing the version stamp"; exit 1; }
-          git tag "${TAG}"
+          python3 packaging/stamp-version.py "$VERSION" --check
+          git tag -a -m "prerelease: ${VERSION}" "$TAG"
+
+      - name: Push the prerelease tag
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          # Kept inline rather than calling packaging/push-tag.sh: unlike release.yml's tag job
+          # (hard-refuses non-main dispatches), this workflow is dispatchable from any branch, so
+          # checkout would hand this job that branch's own copy of a script — and this step is the
+          # one place the repo-write PAT reaches shell. It stays text this repo's own workflow
+          # defines at the ref actually running, not something read back off the checkout and handed
+          # a credential.
+          #
+          # An annotated tag object carries the rc message and dates; a lightweight ref would let a
+          # later force-push retarget the version silently.
+          [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]
+          [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ]
+          test -z "$(git status --porcelain)"
           AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
-          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "${TAG}"
+          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push origin "$TAG"
 
       - name: Force the push-mirrors to propagate the tag now (GitHub + NAS)
         env:

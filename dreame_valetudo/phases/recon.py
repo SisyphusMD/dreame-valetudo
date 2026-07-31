@@ -7,12 +7,15 @@ disaster-recovery backup.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+from pathlib import Path
 
 from ..console import Die, die, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
-from ..fel import print_fel_entry
+from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import requires_positive_model_verification
 from ..migrate import decrypt_recovery_backup
 from ..profiles import SUPPORTED_MODELS, Profile, load_profile
@@ -21,9 +24,11 @@ from ..session import records_step
 from ..util import parse_config, parse_getvar
 from ..workspace import (
     RECOVERY_BACKUP_ZIP,
+    RECOVERY_STAGING_DIR,
     Robot,
     Workspace,
-    protect_recon_artifacts,
+    protect_private_dir,
+    recovery_backup_valid,
     recovery_dump_valid,
     recovery_zip_valid,
 )
@@ -36,18 +41,6 @@ _IDENTITY_VARS = (
     "serialno", "dustversion", "ramsize", "toc0hash", "toc1hash", "toc1version", "product",
     "model", "variant", "hw-revision", "version-bootloader",
 )
-
-
-def _wait_for_fel(ctx: Context) -> bool:
-    if ctx.interactive:
-        ctx.console.once(
-            "fel-readiness",
-            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
-        )
-    # Attachment — not an arbitrary USB allowance — decides how long this safe, read-only wait
-    # may remain alive. If the external rail-cycle clock expires, another button sequence can
-    # satisfy the same wait.
-    return ctx.fel.poll_fel()
 
 
 def _print_intro(ctx: Context) -> None:
@@ -83,11 +76,11 @@ def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
     _verify_reported_model(ctx, captured)
     if captured:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
         (robot.recon_dir / "identity.txt").write_text(
             "".join(f"{k}: {v}\n" for k, v in captured.items())
         )
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
     return captured
 
 
@@ -139,7 +132,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
             fetch_stage1(ctx)
         check_fastboot_client(ctx)
         print_fel_entry(ctx.console, ctx.host)
-        if not _wait_for_fel(ctx):
+        if not wait_for_fel(ctx):
             ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
                              "connected to try again.")
             return {}
@@ -177,7 +170,9 @@ def _saved_backup_state(robot: Robot) -> str:
     if match:
         return match.group(1)
     archive = robot.recon_dir / RECOVERY_BACKUP_ZIP
-    dumps = tuple(robot.recon_dir / f"dustx10{i}.bin" for i in range(3))
+    dumps = tuple(robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
+    # Deliberately weaker than recovery_backup_valid: this only labels the marker text, it never
+    # gates a flash, so a non-empty file is enough evidence a backup was taken.
     if ((archive.is_file() and archive.stat().st_size > 0)
             or all(path.is_file() and path.stat().st_size > 0 for path in dumps)):
         return "obtained"
@@ -219,13 +214,11 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         else:
             ctx.console.info(f"Recon already done — {prior}. Re-run with '--force' to repeat.")
             return
-    if not stage1_ready(ctx):
-        die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
     check_fastboot_client(ctx)
     _print_intro(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    if not _wait_for_fel(ctx):
+    if not wait_for_fel(ctx):
         die("No FEL device — aborting recon.")
     ctx.fel.fel_boot_fastboot(
         ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
@@ -265,7 +258,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
 
     robot = ctx.robot
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
-    protect_recon_artifacts(robot.recon_dir)
+    protect_private_dir(robot.recon_dir)
     # A pending name describes the empty directory made by "start fresh", not the hardware:
     # discovering that the hardware already belongs to another directory must not rename it.
     if ctx.pending_name and existing is None:
@@ -282,7 +275,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # The reported-model gate above must pass before the config and model become durable inputs to
     # image/root. A rejected recon intentionally leaves only an empty, untrusted robot directory.
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
-    protect_recon_artifacts(robot.recon_dir)
+    protect_private_dir(robot.recon_dir)
     robot.state_set("model_key", ctx.profile.key)
 
     backup_state = _saved_backup_state(robot)
@@ -367,10 +360,21 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                                      "before attempting stock restore; the incomplete-generation "
                                      "marker prevents these files from being trusted.")
             elif pulled is False:
-                backup_state = "missing"
-                ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
-                                 "recovery backup was saved. Re-run recon before "
-                                 "attempting stock restore.")
+                # A False return means the replacement never left staging, so whatever was already
+                # on disk is untouched. Clear the refresh marker to say so: leaving it set would
+                # condemn a complete, previously proven un-brick copy, and root/restore would then
+                # refuse the very capture that survived — exactly when restore is most needed.
+                finish_recovery_refresh(robot.recon_dir)
+                if recovery_backup_valid(robot.recon_dir):
+                    backup_state = "obtained"
+                    ctx.console.warn("Recovery backup pull errored, so the capture was not "
+                                     "refreshed. The existing recovery backup is intact and still "
+                                     "usable for stock restore.")
+                else:
+                    backup_state = "missing"
+                    ctx.console.warn("Recovery backup pull errored — not fatal for rooting, but no "
+                                     "recovery backup was saved. Re-run recon before "
+                                     "attempting stock restore.")
 
     # A failed/skipped recovery pull cannot be allowed to silently turn an older rooted robot into
     # a reflash. The answer can only suppress writes: claiming an unrooted robot is rooted makes the
@@ -382,7 +386,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         # This marker must precede even recon completion. If storage fails on any later marker,
         # auto/root still recognize the accepted adoption and cannot fall into a flash.
         robot.state_set("root-origin", ADOPTED_ROOT)
-    robot.state_set("recon", f"backup={backup_state}")
+    # The model is what a later flash is authorized against; the robot's config identity stays in
+    # recon/config.txt only, so this marker never duplicates that secret into robot state.
+    robot.state_set("recon", f"model={ctx.profile.key} backup={backup_state}")
     if adopt_existing_root:
         robot.state_set("rooted", ADOPTED_ROOT)
         robot.state_set("valetudo", ADOPTED_ROOT)
@@ -402,12 +408,40 @@ def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
     try:
         return _pull_recovery_backup_unprotected(ctx, robot)
     finally:
-        protect_recon_artifacts(robot.recon_dir)
+        protect_private_dir(robot.recon_dir)
 
 
 def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
+    """Capture into staging and publish only once complete, so a failed re-pull keeps the old copy.
+
+    Any capture already on disk is this robot's only un-brick source, and a second pull writes the
+    same filenames. Writing in place meant an interrupted re-pull (nudged USB cable, sleeping host,
+    full disk) destroyed a good capture and left nothing restorable. Staging costs one extra
+    same-filesystem rename per artifact and removes that whole class of accident."""
     rd = robot.recon_dir
-    dumps = [rd / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
+    staging = rd / RECOVERY_STAGING_DIR
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.mkdir(parents=True)
+    except OSError as exc:
+        ctx.console.warn(f"Could not stage the recovery capture, so nothing was touched ({exc}).")
+        return False
+    try:
+        if not _capture_recovery_into(ctx, staging):
+            return False
+        if not _publish_recovery_capture(staging, rd):
+            return False
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (upload to check.builder.dontvacuum.me "
+                     "if the builder rejects your config)")
+    ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
+                     "partition and miio device key. Share it only intentionally.")
+    return True
+
+
+def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
+    dumps = [staging / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
     try:
         total_dumps = len(dumps)
         for index, dump in enumerate(dumps, 1):
@@ -428,17 +462,43 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
                       for dump in dumps)
     total = sum(dump.stat().st_size for dump in dumps) / (1 << 20)
     ctx.console.info(f"Recovery backup pulled: {sizes} (total {total:.1f} MiB)")
-    zip_path = rd / RECOVERY_BACKUP_ZIP
+    zip_path = staging / RECOVERY_BACKUP_ZIP
     with ctx.console.progress("Zipping the recovery backup"):
         zipped = ctx.runner.run(
             ["zip", "-q", "-j", str(zip_path), *(str(dump) for dump in dumps)], check=False
         ).ok
-    if not zipped:
+    return bool(zipped) and recovery_zip_valid(zip_path)
+
+
+def _publish_recovery_capture(staging: Path, recon_dir: Path) -> bool:
+    """Move a fully validated capture over the previous one, largest artifacts first.
+
+    The dd/zip subprocesses leave ~1.2 GB in page cache; each staged artifact is fsynced before
+    any rename and the recon directory is fsynced after them all, so a power loss just after
+    publish cannot leave the only un-brick copy as unflushed cache while the state markers already
+    report it present. Same-filesystem renames, so each artifact is replaced whole or not at all; a
+    crash partway leaves the refresh marker set, which already flags the capture as untrusted.
+
+    Returns False, having touched nothing, when a staged artifact cannot be flushed before any
+    rename (a full disk surfacing at writeback, an I/O error): the previous capture is still whole,
+    so the caller must clear the refresh marker and keep it usable rather than condemn it."""
+    published = [name for name in (*(f"{dump}.bin" for dump in RECOVERY_DUMP_NAMES),
+                                   RECOVERY_BACKUP_ZIP)
+                 if (staging / name).is_file()]
+    try:
+        for name in published:
+            fd = os.open(staging / name, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    except OSError:
         return False
-    if not recovery_zip_valid(zip_path):
-        return False
-    ctx.console.info(f"Backup: {zip_path} (upload to check.builder.dontvacuum.me if the builder "
-                     "rejects your config)")
-    ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
-                     "partition and miio device key. Share it only intentionally.")
+    for name in published:
+        (staging / name).replace(recon_dir / name)
+    dir_fd = os.open(recon_dir, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
     return True

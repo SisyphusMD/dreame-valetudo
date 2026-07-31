@@ -25,6 +25,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
         run: |
+          # Kept inline rather than calling packaging/shellcheck-all.sh: unlike the release/prerelease
+          # gates (workflow_dispatch-only, never fork-triggered), this job runs on every pull_request
+          # including forks, and actions/checkout puts the FORK's copy of that file in the workspace.
+          # This is the one command in this job not gated to trusted refs (see the file header) — it
+          # must stay text this repo's own workflow defines, never something read back off a fork's
+          # checkout and executed directly.
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
@@ -59,9 +65,9 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
-          ruff check dreame_valetudo libexec tests/python
+          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           mypy
-          python -m compileall -q docs/research/tools
+          python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 
@@ -84,7 +90,11 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "pytest==$PYTEST" -e .
-          python -m compileall -q dreame_valetudo libexec docs/research/tools
+          python -m compileall -q dreame_valetudo libexec docs/research/tools \
+            packaging/stamp-version.py \
+            packaging/build-source-tar.py \
+            packaging/check-doc-links.py \
+            packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
 

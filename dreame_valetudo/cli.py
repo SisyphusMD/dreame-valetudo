@@ -44,7 +44,6 @@ from .profiles import (
 from .run import RunError, Runner, SubprocessRunner
 from .session import (
     IN_SESSION,
-    PURE_COMMANDS,
     capture_pane,
     clear_outcome,
     client_attached,
@@ -54,6 +53,7 @@ from .session import (
     hold_workspace_lock,
     kill_session,
     lock_free,
+    pure_invocation,
     read_captured_pane,
     read_outcome,
     record_outcome,
@@ -71,22 +71,81 @@ from .update_check import check_for_update
 from .whatsnew import show_whats_new
 from .workspace import Robot, Workspace, slugify
 
-# The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk).
+# The FEL/fastboot phases must never run on a UART-method model (wrong engine — a brick risk), and
+# neither must the automated post-root commands: a UART model's whole route is the guided manual
+# walkthrough, so anything else reaches the robot with assumptions the walkthrough never made.
+# Commands that drive the FEL/fastboot transport itself. Deliberately NOT the post-root SSH
+# commands (valetudo, update-valetudo, fix-did, fix-impl, fix-key): none of them touch fastboot or
+# FEL, and a UART-method robot rooted through the guided manual walkthrough still needs them.
 _FASTBOOT_ONLY = frozenset(
     {"backup", "doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
 )
-
-# Pure commands that never touch the workspace — skip the first-run layout migration for them.
-# install-udev is a root system-setup step (run via sudo); it must never touch the user's workspace.
-# Shared with the tmux wrapper, which excludes exactly the same set for the same reason: one list,
-# so a command can't end up pure for one purpose and not the other.
-_NO_WORKSPACE = PURE_COMMANDS
 
 _ROBOT_COMMANDS = frozenset({
     "auto", "backup", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
     "model", "push", "recon", "restore", "root", "sshkey", "update-valetudo", "valetudo",
     "verify-form",
 })
+
+# Commands whose entire grammar is their own name. An extra word there is a typo the user believes
+# did something, so accepting and ignoring it would run a different command than they asked for.
+_NO_ARGUMENT_COMMANDS = frozenset({
+    "-V", "--version", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key",
+    "fix-wifi", "help", "-h", "--help", "install-udev", "migrate", "model", "sshkey", "status",
+    "ui", "uninstall", "valetudo", "verify-form", "verify-forms", "version",
+})
+
+# Every name _dispatch answers to, checked before the workspace exists so a typo cannot trigger the
+# first-launch migration or reach the robot picker (which persists the name it is given). Pinned
+# against the _dispatch chain by test, because an omission here would make a real command unknown.
+_KNOWN_COMMANDS = _ROBOT_COMMANDS | _NO_ARGUMENT_COMMANDS | frozenset({
+    "bench", "clean", "forget", "rename",
+})
+
+# These report on the workspace or on the program itself. A DREAME_MODEL left over from an earlier
+# robot says nothing about them, so it must not be able to refuse them by being stale or invalid.
+_MODEL_INDEPENDENT_COMMANDS = frozenset({
+    "-V", "--version", "clean", "fix-wifi", "forget", "help", "-h", "--help", "install-udev",
+    "migrate", "rename", "status", "ui", "uninstall", "verify-forms", "version",
+})
+
+
+def _only_options(cmd: str, rest: Sequence[str], allowed: frozenset[str]) -> None:
+    """Accept each allowed flag at most once. A repeat is as much a mistake as an unknown word —
+    it usually means the second one was meant to be something else."""
+    if any(argument not in allowed for argument in rest) or len(set(rest)) != len(rest):
+        choices = f" [{' '.join(sorted(allowed))}]" if allowed else ""
+        raise Die(f"Usage: dreame-valetudo {cmd}{choices}")
+
+
+def _validate_command_args(cmd: str, rest: Sequence[str]) -> None:
+    """Reject arguments that would be ignored, before they can select a robot or migrate anything."""
+    if cmd == "bench":
+        return  # Its richer grammar is validated by bench itself, before any robot is selected.
+    if cmd in _NO_ARGUMENT_COMMANDS:
+        _only_options(cmd, rest, frozenset())
+    elif cmd == "clean":
+        _only_options(cmd, rest, frozenset({"--all"}))
+    elif cmd in {"image", "root", "restore"}:
+        _only_options(cmd, rest, frozenset({"--force"}))
+    elif cmd in {"recon", "auto"}:
+        _only_options(cmd, rest, frozenset({"--force", "--no-recovery-backup"}))
+    elif cmd in {"push", "backup", "update-valetudo", "forget"}:
+        if len(rest) > 1:
+            raise Die(f"Usage: dreame-valetudo {cmd} [value]")
+    elif cmd == "rename" and len(rest) > 2:
+        raise Die("Usage: dreame-valetudo rename [old-name] [new-name]")
+
+
+def _profile_key_for_invocation(cmd: str, rest: Sequence[str], env: Mapping[str, str]) -> str:
+    """The model this invocation is about — the default where it is about no model at all."""
+    bench_action = rest[0] if cmd == "bench" and rest else None
+    bench_model_independent = bench_action in {"list", "record", "report", "waive"} or (
+        bench_action == "run" and len(rest) >= 2 and rest[1] == "host-smoke"
+    )
+    if cmd in _MODEL_INDEPENDENT_COMMANDS or bench_model_independent:
+        return DEFAULT_MODEL_KEY
+    return env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY
 
 
 def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True) -> bool:
@@ -622,6 +681,11 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         return 1
 
     select_robot(ctx)
+    # Checked the moment the model is known. The single-purpose branches below return early, so a
+    # guard placed after them would never see several of the commands it exists to stop.
+    if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
+        raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
+                  f"(no args) for its guided flow, not 'dreame-valetudo {cmd}'.")
     if cmd == "diagnose":
         diagnose(ctx)
         return 0
@@ -650,9 +714,6 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
             ctx.console.warn("The model changed, so the previously staged firmware was disarmed. "
                              "Run 'image' again for the new model before flashing.")
         return 0
-    if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
-        raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
-                  f"(no args) for its guided flow, not 'dreame-valetudo {cmd}'.")
     if cmd == "doctor":
         doctor(ctx)
     elif cmd == "fetch":
@@ -680,6 +741,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     elif cmd == "auto":
         auto(ctx, rest)
     else:
+        # Only reachable if a robot command is ever added to _ROBOT_COMMANDS without a matching
+        # branch here — must error visibly rather than fall through to a silent success return.
         ctx.console.err(f"Unknown command: {cmd}")
         usage(ctx.console)
         return 1
@@ -838,7 +901,7 @@ def _reexec_under_tmux(args: list[str], env: dict[str, str], con: Console, base:
         # channel installs one, but the source tarball cannot ship a native binary without becoming
         # per-architecture, so this is the one install where a closed terminal still ends the run.
         if (found is None and sys.stdin.isatty()
-                and not env.get("DREAME_NO_TMUX") and cmd_of(args) not in PURE_COMMANDS):
+                and not env.get("DREAME_NO_TMUX") and not pure_invocation(args)):
             # The one place naming tmux is right: this is a MISSING DEPENDENCY the user can go and
             # install, not the mechanism behind a run in progress. "A terminal-session helper" is
             # invisible in the wrong way — it hides the one word that makes the advice actionable.
@@ -953,8 +1016,9 @@ def main(
         base = Workspace.from_env(resolved).base
         result_base = _outcome_workspace(resolved, base)
         record_outcome(result_base, rc, log_path)
-        command = cmd_of(list(sys.argv[1:] if argv is None else argv))
-        if command not in PURE_COMMANDS:
+        invocation = list(sys.argv[1:] if argv is None else argv)
+        command = cmd_of(invocation)
+        if not pure_invocation(invocation):
             # The attachment rule belongs to every normal Console prompt: watching clears its
             # deadline, detaching starts it, and an unknown state never expires. Release first so
             # a finished run kept on screen never prevents another invocation from taking over.
@@ -1029,6 +1093,7 @@ def _run(
 
     ws = Workspace.from_env(resolved_env)
     cmd = args[0] if args else "auto"
+    pure = pure_invocation(args)
 
     # Production = a real subprocess runner, not a test seam. The recording runner in tests spawns
     # nothing, so this whole side-effecting block is skipped there (test_migrate drives migration
@@ -1036,6 +1101,17 @@ def _run(
     production = isinstance(run, SubprocessRunner)
     log: RunLog | None = None
     try:
+        # Answered before anything durable exists. A mistyped command or an argument that would be
+        # silently ignored must not create the workspace, run the first-launch layout migration, or
+        # reach the robot picker — which persists whatever name it is given.
+        if any(argument in {"-h", "--help"} for argument in args[1:]):
+            usage(con)
+            return 0, None
+        if cmd not in _KNOWN_COMMANDS:
+            con.err(f"Unknown command: {cmd}")
+            usage(con)
+            return 1, None
+        _validate_command_args(cmd, args[1:])
         if production:
             # Before anything touches the workspace or opens the run log: start the run inside
             # tmux so it outlives its terminal, and so a second invocation rejoins it instead of
@@ -1053,19 +1129,21 @@ def _run(
                     idle_timeout(
                         seconds, lambda: client_attached(Path(tmux_for_idle), session)
                     )
-            if cmd not in PURE_COMMANDS:
+            # Everything below belongs to a run that engages with the workspace or the robot. A pure
+            # invocation (help/version/install-udev/uninstall/verify-forms, `bench list`, any
+            # --help) must answer without creating a workspace, taking its lock, or probing for
+            # native helpers it will never load.
+            if not pure:
                 _warn_on_multiple_installs(con, resolved_env)
-            # One run per workspace. The tmux wrapper above already makes a second interactive
-            # invocation attach instead of starting a rival. Piped and opted-out runs reach here
-            # without that protection, so the lock remains load-bearing.
-            hold_workspace_lock(pre_migration_lock_path(resolved_env, ws.base), cmd)
-            # Help the fastboot client + sunxi-fel find libusb.
-            apply_library_path(resolve_libexec(resolved_env))
-            if cmd not in _NO_WORKSPACE:
+                # One run per workspace. The tmux wrapper above already makes a second interactive
+                # invocation attach instead of starting a rival. Piped and opted-out runs reach here
+                # without that protection, so the lock remains load-bearing.
+                hold_workspace_lock(pre_migration_lock_path(resolved_env, ws.base), cmd)
+                # Help the fastboot client + sunxi-fel find libusb.
+                apply_library_path(resolve_libexec(resolved_env))
                 # Migrate the on-disk layout BEFORE opening the run log: the log lives under work/,
                 # so opening it first would pre-create the migration destination and defeat the
-                # never-clobber move (stranding a legacy work dir). Pure commands (help/version/
-                # install-udev) skip both — they must never create OR migrate the workspace.
+                # never-clobber move (stranding a legacy work dir).
                 # Migration output goes to a buffering console and is replayed into the log the
                 # moment it opens, so a first-run migration problem still lands in the shareable log
                 # (the log itself can't exist yet).
@@ -1104,13 +1182,13 @@ def _run(
 
         # Expected input, command, and filesystem failures must surface as clean errors, so context
         # construction and dispatch both stay inside this handler.
-        profile = load_profile(resolved_env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY)
+        profile = load_profile(_profile_key_for_invocation(cmd, args[1:], resolved_env))
         ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
 
         if cmd == "bench":
             validate_bench_args(ctx, args[1:])
 
-        if production and cmd not in _NO_WORKSPACE:
+        if production and not pure:
             show_whats_new(resolved_env, con)
             check_for_update(ctx)
         # On Linux the USB device is gated behind a udev rule; fail fast with the fix rather than a

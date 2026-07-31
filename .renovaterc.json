@@ -31,8 +31,8 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block.",
-      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block (or packaging/shellcheck-all.sh, the one such pin extracted into a script).",
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]

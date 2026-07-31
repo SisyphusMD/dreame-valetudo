@@ -41,7 +41,7 @@ dreame-valetudo bench run stock-recon
 
 
 `bench plan` is the state-aware conductor view. It reads the selected robot's saved lifecycle and
-the signed campaign report, then labels each scenario PASS, READY, WAIT, RECORD, or SPECIAL and
+the campaign report, then labels each scenario PASS, READY, WAIT, RECORD, or SPECIAL and
 prints the exact command for every scenario that is safe to start now. This lets the same campaign
 tool work with a fresh stock robot, a newly rooted robot, or an older already-rooted reference
 without pretending that tests requiring an earlier lifecycle state were performed. It does not
@@ -52,7 +52,7 @@ recovery provenance, manifested backup counts, leftover partial generations, and
 superseded dangerous state. Where the result exists outside the computer, it asks for the necessary
 physical observation before recording a pass. If that final question is interrupted, the campaign
 records it as pending; rerunning the same scenario resumes only the observation and never repeats
-the completed hardware phase. Resume is accepted only while the signed result, current scenario
+the completed hardware phase. Resume is accepted only while the recorded result, current scenario
 definition, selected robot, and post-phase workspace evidence still match. H3 runs add a separate
 harness gate and still retain every normal production confirmation:
 
@@ -90,12 +90,13 @@ dreame-valetudo bench waive usb-drop-recon --model x40-ultra --robot x40 \
 
 `dreame-valetudo bench report` exits nonzero until every scenario passed or has an explicit waiver,
 and until the model, physical robot, and install channel are recorded. Every report and private
-record carries an HMAC from the campaign key, so editing checklist results or removing a waiver's
-private acceptance makes the campaign invalid instead of changing its conclusion. Share only the
-displayed `report.json`. Robot names, config identities, credentials, state contents, and backup
-paths are never written there; the adjacent `.robot-key` and `.private.json` are private campaign
-bookkeeping and must not be shared. Free-form operator notes and waiver details live only in
-`.private.json`; the shareable report records only that each required field was supplied.
+record is validated against its schema on load, and a waiver is rejected unless its private
+acceptance record still matches, so a malformed or incomplete edit is refused outright. Share only
+the displayed `report.json`. Robot names, config identities, credentials, state contents, and backup
+paths are never written there; the physical robot appears only as an anonymized slot derived from
+the campaign-local `.robot-key`, which (like `.private.json`) is private campaign bookkeeping and
+must not be shared. Free-form operator notes and waiver details live only in `.private.json`; the
+shareable report records only that each required field was supplied.
 
 ## Safety classes
 

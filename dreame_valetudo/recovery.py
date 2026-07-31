@@ -59,7 +59,7 @@ def recovery_source_records(
             [recon_dir / f"{name}.dd.gz" for name in RECOVERY_DUMP_NAMES], True,
         )
     for group, (paths, expanded) in groups.items():
-        if not all(not path.is_symlink() and path.is_file() for path in paths):
+        if not all(path.is_file() for path in paths):
             continue
         group_records: dict[str, dict[str, object]] = {}
         for path in paths:
@@ -108,9 +108,9 @@ def write_recovery_provenance(
 
 def read_recovery_provenance(recon_dir: Path) -> dict[str, Any] | None:
     path = recon_dir / PROVENANCE_FILE
-    if not path.exists() and not path.is_symlink():
+    if not path.exists():
         return None
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
         raise ValueError("the recovery provenance record is not a regular file")
     try:
         data = json.loads(path.read_text())

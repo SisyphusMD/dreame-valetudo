@@ -67,6 +67,19 @@ def _require_robot_ap(ctx: Context, key: Path | None) -> None:
             "your ROUTER. Join the ROBOT's own AP and re-run.")
 
 
+def _require_selected_robot(ctx: Context, key: Path | None, command: str) -> None:
+    """Prove the robot on the AP is the selected one before a fix reads or rewrites its identity.
+
+    A Dreame AP response is not enough because another owned robot answers on the same address.
+    Fastboot workspaces bind by config + model; UART's guided install never captures config, so its
+    strongest available automatic binding is live model.
+    """
+    expected_config = ctx.robot_config()
+    if expected_config is None and ctx.profile.method == "fastboot":
+        die(f"No recorded config identity for the selected robot; re-run recon before {command}.")
+    _live_robot_identity(ctx, key, expected_config)
+
+
 def fix_wifi(ctx: Context) -> None:
     ctx.console.say("Fix: rooted robot won't stay on your Wi-Fi")
     ctx.console.info("Run ON THE ROBOT (over SSH), then reconfigure Wi-Fi from Valetudo:")
@@ -80,6 +93,7 @@ def fix_did(ctx: Context) -> bool:
     ctx.console.say("Fix: repair a device.conf Valetudo can't parse (negative factory deviceId)")
     ctx.console.say("You must be on the ROBOT's Wi-Fi AP (hold the two OUTER buttons if it's down).")
     _require_robot_ap(ctx, key)
+    _require_selected_robot(ctx, key, "fix-did")
 
     did = "".join(
         robot_ssh(ctx.runner, _TARGET, f"cat {_DID_TXT} 2>/dev/null", key=key, check=False)
@@ -129,6 +143,7 @@ def fix_key(ctx: Context) -> bool:
                     "the cloudKey only in secure storage)")
     ctx.console.say("You must be on the ROBOT's Wi-Fi AP (hold the two OUTER buttons if it's down).")
     _require_robot_ap(ctx, key)
+    _require_selected_robot(ctx, key, "fix-key")
 
     cur = "".join(
         robot_ssh(ctx.runner, _TARGET, f"cat {_KEY_TXT} 2>/dev/null", key=key, check=False)
@@ -181,13 +196,7 @@ def fix_impl(ctx: Context) -> None:
     ctx.console.say("Fix: pin Valetudo's robot implementation")
     _require_robot_ap(ctx, key)
 
-    expected_config = ctx.robot_config()
-    if expected_config is None and ctx.profile.method == "fastboot":
-        die("No recorded config identity for the selected robot; re-run recon before fix-impl.")
-    # This writes persistent robot state. A Dreame AP response is not enough because another owned
-    # robot can use the same address. Fastboot workspaces bind by config + model; UART's guided
-    # install never captures config, so its strongest available automatic binding is live model.
-    _live_robot_identity(ctx, key, expected_config)
+    _require_selected_robot(ctx, key, "fix-impl")
 
     conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
     model = ""
@@ -223,9 +232,12 @@ def fix_impl(ctx: Context) -> None:
     else:
         ctx.console.info(f"robot.implementation: {cur} -> {impl}")
         data.setdefault("robot", {})["implementation"] = impl
-        # Stream the patched bytes over stdin (cat > ...). Never interpolate JSON into the remote
-        # command line: a value with $, a backtick, or a backslash escape would be mangled by the
-        # remote shell and corrupt the config.
+        # Stream the patched bytes over stdin to a staging path, then publish with an atomic
+        # rename: the live config is only ever replaced whole, so a dropped AP connection mid-
+        # transfer cannot truncate it. Streaming (never interpolating JSON into the remote command
+        # line) also keeps a value with $, a backtick, or a backslash escape from being mangled by
+        # the remote shell.
+        staged = "/data/valetudo_config.json.update"
         patched_file = ctx.ws.base / "valetudo_config.json.patched"
         ctx.ws.base.mkdir(parents=True, exist_ok=True)
         try:
@@ -233,12 +245,21 @@ def fix_impl(ctx: Context) -> None:
             patched_file.touch(mode=0o600)
             patched_file.write_text(json.dumps(data, indent=2) + "\n")
             patched_file.chmod(0o600)
-            if not ctx.runner.run_redirect(
-                [*ssh_base(_TARGET, key),
-                 ("cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null; "
-                  "cat > /data/valetudo_config.json")],
+            streamed = ctx.runner.run_redirect(
+                [*ssh_base(_TARGET, key), f"cat > {staged}"],
                 stdin_path=str(patched_file), check=False,
-            ).ok:
+            ).ok
+            published = streamed and robot_ssh(
+                ctx.runner, _TARGET,
+                "set -e\n"
+                "cp -f /data/valetudo_config.json /data/valetudo_config.json.bak 2>/dev/null "
+                "|| true\n"
+                f"mv -f {staged} /data/valetudo_config.json\n"
+                "sync\n",
+                key=key, check=False,
+            ).ok
+            if not published:
+                robot_ssh(ctx.runner, _TARGET, f"rm -f {staged}", key=key, check=False)
                 die("Couldn't write the patched config to the robot.")
         finally:
             patched_file.unlink(missing_ok=True)

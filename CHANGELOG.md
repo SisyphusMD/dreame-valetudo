@@ -4,37 +4,45 @@
 
 ### Added
 
-- `dreame-valetudo restore` can reconstruct an identity-bound stock recovery kit from the
-  pre-root capture and return a fastboot robot to stock. It leaves toc0 and user data alone, watches
-  for an automatic FEL fallback, and will resume boot confirmation without flashing twice.
-- `dreame-valetudo bench` records safety-tiered physical qualification campaigns against the real
-  production phases, including interruption, wrong-device, restore, and package-install scenarios.
-- Adopted rooted robots can capture a current factory backup without reinstalling anything, then
-  check and atomically update Valetudo without stepping through intermediate WebUI releases.
-- Read-only recon can adopt a robot rooted by an older or manual flow without reflashing it, while
-  still offering a deliberate current-method re-root when that is what the operator wants.
+- `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
+  one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
+  data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up
+  again without flashing twice.
+- `dreame-valetudo bench` runs hardware test campaigns against the real production phases and records
+  them, ordered by how much risk each step carries. Scenarios cover interruptions, wrong-device
+  mix-ups, restore, and package installs.
+- A rooted robot you adopt can capture a current factory backup without reinstalling anything, then
+  check and atomically update Valetudo without stepping through the intermediate WebUI releases.
+- Read-only recon can adopt a robot that was rooted by an older or manual method, no reflash needed.
+  If you would rather re-root it with the current method, it still offers that.
 - Runs now survive closed terminals and dropped SSH connections in a private tmux session. Re-running
   the command can rejoin the run, pending questions are remembered, and concurrent runs cannot race
   one another.
 - Fedora, RHEL 8 through 10, and openSUSE now have self-contained RPM packages. A new `uninstall`
   command finds Homebrew, package, source-tool, and macOS installer copies without touching robot
   backups.
-- DustBuilder guidance is now specific to each model and stamped with its last verified date. The
-  tool also guides unrecognized-config uploads with the current privacy and follow-up warnings.
+- DustBuilder guidance is now written per model and stamped with the date it was last verified. When
+  a config isn't recognized yet, the tool walks you through uploading it, with the current privacy
+  and follow-up warnings.
 
 ### Changed
 
-- All persistent files now live under `~/dreame-valetudo/`, with disposable work separated from
-  irreplaceable backups. Existing layouts migrate automatically with never-clobber behavior.
-- Recon records provenance for the complete three-slice recovery capture, produces the portable
-  `dreame_recovery_backup.zip`, and preserves any trusted pre-root generation on later rooted runs.
-- Release packages now enforce a glibc 2.28 floor and are qualified on deliberate oldest/current
-  Linux and macOS hosts, including both processor architectures.
+- All persistent files now live under `~/dreame-valetudo/`, keeping disposable work apart from the
+  irreplaceable backups. Existing layouts migrate forward automatically, and the migration never
+  overwrites anything.
+- Recon now records where the complete three-slice recovery capture came from, writes it out as the
+  portable `dreame_recovery_backup.zip`, and keeps any trusted pre-root capture in place when you root
+  the robot later.
+- Release packages now require glibc 2.28 or newer, and are tested on deliberately picked oldest and
+  current Linux and macOS hosts, on both processor architectures.
 - The README now marks the X40 Ultra, X30 Ultra, and L10s Pro Ultra Heat R2338 as hardware verified.
-- Status and other informational commands finish without an unrelated continuation prompt, while
-  their output remains visible after a tmux session closes.
+- Status and other informational commands no longer end with an unrelated continuation prompt, and
+  their output stays on screen after a tmux session closes.
 - The UART walkthrough now includes the known-good USB image, complete identity backup, exact
   DustBuilder options, verified transfer, docking, and post-install success checks.
+- Recon now records the model it inspected, and rooting won't flash unless that record matches the
+  selected model, checked before the robot is touched at all. A robot whose recon completed under
+  0.2.x carries no such record, so run `recon --force` on it before rooting.
 
 ### Fixed
 
@@ -42,21 +50,22 @@
   together before writing. R2338/R2338H and L20 hardware look-alikes are matched exactly, ambiguous
   USB setups stop, and every flash response must be `OKAY`.
 - Interrupted or rejected recon, root, restore, migration, image staging, and factory-backup work no
-  longer leaves partial state that can authorize a later write or overwrite a known-good generation.
+  longer leaves partial state behind that could authorize a later write or overwrite a known-good
+  backup.
 - Closing a terminal or pressing Ctrl+Z during a flash no longer interrupts the write; uncertain
   attempts stop safely instead of silently repeating, and completed stock flashes resume only their
   physical boot check.
-- Robot SSH no longer falls back to password or unrelated agent keys. Factory backups are validated
-  before publication, and key, device-ID, Wi-Fi, and implementation repairs verify the connected
-  robot before changing it.
-- Downloads and SSH transfers have timeouts, verified cached Valetudo remains usable on the offline
-  robot AP, and the libusb transport handles large recovery and flash files without loading them
-  wholly into memory.
+- Robot SSH no longer falls back to a password or to unrelated agent keys. Factory backups are
+  checked before they're published, and the key, device-ID, Wi-Fi, and implementation repairs all
+  confirm the connected robot before changing anything on it.
+- Downloads and SSH transfers now time out instead of hanging, a verified cached Valetudo stays
+  usable on the offline robot AP, and the libusb transport streams large recovery and flash files
+  instead of loading them into memory whole.
 - Robot identities, keys, recovery data, state, and bench records are kept private; shareable logs
   redact robot names, credentials, public keys, flash tokens, and other identifying values.
-- macOS packages now include all FEL runtime libraries, Linux browser steps use `xdg-open`, package
-  updates and removals give native commands, and release publication repairs missing or inconsistent
-  assets across the project mirrors.
+- macOS packages now bundle all the FEL runtime libraries, Linux browser steps use `xdg-open`,
+  package updates and removals print native commands, and cutting a release backfills any missing or
+  mismatched assets across the project mirrors.
 
 ## [0.2.1] - 2026-07-24
 

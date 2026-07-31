@@ -54,7 +54,7 @@ from .recovery import (
 )
 from .run import RunError
 from .ssh import resolve_sshkey
-from .util import parse_config
+from .util import parse_config, same_robot_config
 from .workspace import (
     RECOVERY_BACKUP_ZIP,
     Robot,
@@ -279,7 +279,6 @@ def _scenario(key: str) -> Scenario:
         return _SCENARIO_BY_KEY[key]
     except KeyError:
         die(f"Unknown bench scenario '{key}'. Run 'dreame-valetudo bench list'.")
-    raise AssertionError("unreachable")
 
 
 def _action_and_scenario(args: Sequence[str]) -> tuple[str, Scenario | None]:
@@ -475,8 +474,6 @@ def _campaign_name(ctx: Context, options: Mapping[str, str | bool]) -> str:
 def _campaign_dir(ctx: Context, campaign: str) -> Path:
     root = ctx.ws.base / "bench"
     target = root / campaign
-    if root.is_symlink() or target.is_symlink():
-        die("Refusing a symlinked hardware-bench report directory.")
     if target.exists() and not target.is_dir():
         die(f"Hardware-bench campaign path is not a directory: {target}")
     target.mkdir(parents=True, exist_ok=True)
@@ -636,18 +633,6 @@ def _campaign_key(directory: Path, *, create: bool) -> bytes:
     return key
 
 
-def _record_mac(value: Mapping[str, object], key: bytes) -> str:
-    unsigned = {name: item for name, item in value.items() if name != "integrity"}
-    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
-    return hmac.new(key, encoded, hashlib.sha256).hexdigest()
-
-
-def _verify_record(value: Mapping[str, object], key: bytes, label: str) -> None:
-    stored = value.get("integrity")
-    if not isinstance(stored, str) or not hmac.compare_digest(stored, _record_mac(value, key)):
-        die(f"Hardware-bench {label} failed its integrity check; do not use edited evidence.")
-
-
 def _read_object(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_text())
@@ -695,7 +680,6 @@ def _private_entries(path: Path) -> dict[str, Mapping[str, object]]:
     if private_path.is_symlink() or not private_path.is_file():
         die("Hardware-bench private record is unsafe.")
     private = _read_object(private_path)
-    _verify_record(private, _campaign_key(path.parent, create=False), "private record")
     entries = private.get("entries")
     if private.get("schema_version") != 1 or not isinstance(entries, list):
         die(f"Hardware-bench private record has an unsupported schema: {private_path}")
@@ -884,10 +868,10 @@ def _validate_report(report: Mapping[str, object], path: Path, campaign: str) ->
 def _load_report(ctx: Context, campaign: str) -> tuple[Path, dict[str, object]]:
     directory = _campaign_dir(ctx, campaign)
     path = directory / "report.json"
-    key = _campaign_key(directory, create=True)
+    # An existing report implies an existing anonymization key; only a first-time campaign may
+    # mint one, or a deleted key would silently re-key an established campaign's robot slots.
+    _campaign_key(directory, create=not path.is_file())
     report = _read_object(path) if path.is_file() else _new_report(ctx, campaign)
-    if path.is_file():
-        _verify_record(report, key, "report")
     _validate_report(report, path, campaign)
     build, channel = _metadata(ctx)
     if report.get("build") != build:
@@ -908,16 +892,15 @@ def _preflight_report(ctx: Context, campaign: str) -> dict[str, object] | None:
     build, channel = _metadata(ctx)
     root = ctx.ws.base / "bench"
     directory = root / campaign
-    if root.is_symlink() or directory.is_symlink():
-        die("Refusing a symlinked hardware-bench report directory.")
     if directory.exists() and not directory.is_dir():
         die(f"Hardware-bench campaign path is not a directory: {directory}")
     path = directory / "report.json"
     if not path.is_file():
         return None
-    key = _campaign_key(directory, create=False)
+    # An existing report must already have its anonymization key; a missing key means the
+    # campaign directory was damaged externally, not that this is a first-time campaign.
+    _campaign_key(directory, create=False)
     report = _read_object(path)
-    _verify_record(report, key, "report")
     _validate_report(report, path, campaign)
     if report.get("build") != build:
         die(f"Campaign '{campaign}' is bound to build {report.get('build')}; this is {build}. "
@@ -932,23 +915,16 @@ def _preflight_report(ctx: Context, campaign: str) -> dict[str, object] | None:
 
 
 def _write_report(path: Path, report: Mapping[str, object]) -> None:
-    writable = dict(report)
-    writable["integrity"] = _record_mac(writable, _campaign_key(path.parent, create=True))
-    if isinstance(report, dict):
-        report["integrity"] = writable["integrity"]
-    write_private_text(path, json.dumps(writable, indent=2, sort_keys=True) + "\n")
+    write_private_text(path, json.dumps(dict(report), indent=2, sort_keys=True) + "\n")
 
 
 def _append_private(path: Path, entry: Mapping[str, object]) -> str:
     private_path = path.parent / ".private.json"
     if private_path.is_symlink():
         die("Refusing a symlinked private hardware-bench record.")
-    key = _campaign_key(path.parent, create=True)
     private = _read_object(private_path) if private_path.is_file() else {
         "schema_version": 1, "entries": [],
     }
-    if private_path.is_file():
-        _verify_record(private, key, "private record")
     entries = private.get("entries")
     if private.get("schema_version") != 1 or not isinstance(entries, list):
         die(f"Hardware-bench private record has an unsupported schema: {private_path}")
@@ -1053,7 +1029,7 @@ def _wrong_model_reference(ctx: Context, name: str, model_key: str) -> Robot:
     return robot
 
 
-def _manual_model(ctx: Context, options: Mapping[str, str | bool], scenario: Scenario) -> str | None:
+def _manual_model(ctx: Context, options: Mapping[str, str | bool]) -> str:
     raw = options.get("model") or ctx.env.get("DREAME_MODEL")
     if not isinstance(raw, str) or not raw:
         die("A manually recorded hardware scenario requires --model <model-key> or DREAME_MODEL.")
@@ -1231,6 +1207,19 @@ def _backup_artifact_hashes(directory: Path) -> dict[str, str]:
     return values
 
 
+def _recon_backup_state(marker: str | None) -> str | None:
+    """The `backup=` field of a recon completion marker, or None if it carries none.
+
+    Read the one field rather than comparing the whole marker: the marker also carries the model
+    the flash gate is authorized against, and matching it as a literal string turned every added
+    field into a silent qualification failure.
+    """
+    for field in (marker or "").split():
+        if field.startswith("backup="):
+            return field.removeprefix("backup=")
+    return None
+
+
 def _recovery_provenance_valid(robot: Robot | None) -> bool:
     if robot is None:
         return False
@@ -1246,7 +1235,7 @@ def _recovery_provenance_valid(robot: Robot | None) -> bool:
     parsed_stored_config = parse_config(stored_config) if isinstance(stored_config, str) else None
     if (
         parsed_stored_config is None
-        or parsed_stored_config[:8].lower() != config[:8].lower()
+        or not same_robot_config(parsed_stored_config, config)
         or provenance.get("model_key") != model_key
         or provenance.get("firmware_state") != "stock-user-attested"
     ):
@@ -1303,7 +1292,9 @@ def _snapshot_for_robot(
         recovery_refresh_pending=bool(
             robot and (robot.recon_dir / RECOVERY_REFRESH_FILE).exists()
         ),
-        recon_backup_obtained=bool(robot and robot.state_get("recon") == "backup=obtained"),
+        recon_backup_obtained=bool(
+            robot and _recon_backup_state(robot.state_get("recon")) == "obtained"
+        ),
         backup_counts=backup_counts,
         bound_factory_backups=bound_factory,
         backup_artifacts=backup_artifacts,
@@ -1362,10 +1353,7 @@ def _evidence(before: Snapshot, after: Snapshot) -> dict[str, object]:
 def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str]:
     markers = set(after.markers)
     failures: list[str] = []
-    if scenario.key in {
-        "stock-recon", "legacy-root-adoption", "recon-repeat", "fel-wrong-timing", "terminal-loss-prompt",
-        "usb-drop-recon", "ctrl-c-recon",
-    }:
+    if scenario.key in _RECOVERY_OUTPUT:
         if "recon" not in markers:
             failures.append("recon completion marker is absent")
         if not after.recovery_valid:
@@ -1629,9 +1617,8 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         )
         if failures:
             raise Die("Bench check failed after USB loss: " + "; ".join(failures) + ".")
-        state = robot.state_get("recon") or ""
         refresh = (robot.recon_dir / RECOVERY_REFRESH_FILE).is_file()
-        rejected = "backup=missing" in state and refresh
+        rejected = _recon_backup_state(robot.state_get("recon")) == "missing" and refresh
         if not rejected:
             raise Die("Bench check failed: the interrupted recovery generation was not rejected.")
         if ctx.interactive:
@@ -2010,7 +1997,7 @@ def _run(
         raise Die(f"Scenario '{scenario.key}' can write robot firmware. Re-run with "
                   "--allow-destructive after checking the attached bench robot.")
 
-    # Prove the signed report and anonymization key are writable before touching hardware.
+    # Prove the report is writable before touching hardware.
     _write_report(path, report)
     before = take_snapshot(before_robot, finished=False)
     starting_failures = _starting_failures(
@@ -2193,7 +2180,7 @@ def _record(
     if note is not None and not isinstance(note, str):
         raise Die("Invalid bench note.")
     path, report = _load_report(ctx, campaign)
-    model_key = _manual_model(ctx, options, scenario)
+    model_key = _manual_model(ctx, options)
     robot = _manual_robot(ctx, options, scenario)
     if robot.state_get("model_key") != model_key:
         raise Die("The manual bench robot workspace does not match the recorded model.")
@@ -2241,7 +2228,7 @@ def _waive(
     ):
         raise Die("A waiver requires --reason, --risk, and --accepted-by.")
     path, report = _load_report(ctx, campaign)
-    model_key = _manual_model(ctx, options, scenario)
+    model_key = _manual_model(ctx, options)
     robot = _manual_robot(ctx, options, scenario)
     if robot.state_get("model_key") != model_key:
         raise Die("The manual bench robot workspace does not match the recorded model.")

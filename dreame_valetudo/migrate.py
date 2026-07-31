@@ -24,16 +24,12 @@ reverse-migrate.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import errno
-import fcntl
 import filecmp
 import gzip
 import json
-import os
 import re
 import shutil
-import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -46,8 +42,8 @@ from .workspace import (
     RECOVERY_BACKUP_ZIP,
     Robot,
     home_dir,
-    protect_recon_artifacts,
-    protect_state_artifacts,
+    protect_private_dir,
+    rename_no_replace,
     robot_dirs,
 )
 from .workspace import base_dir as workspace_base_dir
@@ -59,7 +55,6 @@ BeforePublish = Callable[[Path], None]
 class Layout:
     version: int
     since: str  # tool release that introduced this layout = the compatible-range LOWER bound
-    summary: str
     apply: Callable[[Mapping[str, str], Console, BeforePublish | None], bool]
 
 
@@ -76,22 +71,12 @@ def _marker(env: Mapping[str, str]) -> Path:
     return base_dir(env) / ".layout"
 
 
-def _uses_custom_work(env: Mapping[str, str]) -> bool:
-    configured = env.get("DREAME_WORK")
+def _uses_custom(env: Mapping[str, str], var: str, subdir: str) -> bool:
+    configured = env.get(var)
     if not configured:
         return False
     try:
-        return Path(configured).resolve() != (base_dir(env) / "work").resolve()
-    except (OSError, RuntimeError):
-        return True
-
-
-def _uses_custom_backups(env: Mapping[str, str]) -> bool:
-    configured = env.get("DREAME_BACKUPS")
-    if not configured:
-        return False
-    try:
-        return Path(configured).resolve() != (base_dir(env) / "backups").resolve()
+        return Path(configured).resolve() != (base_dir(env) / subdir).resolve()
     except (OSError, RuntimeError):
         return True
 
@@ -99,7 +84,7 @@ def _uses_custom_backups(env: Mapping[str, str]) -> bool:
 def pre_migration_lock_path(env: Mapping[str, str], work: Path) -> Path:
     """The lock path that remains stable while a legacy work symlink is relocated."""
     default = work / ".lock"
-    if _uses_custom_work(env) or work.exists() or work.is_symlink():
+    if _uses_custom(env, "DREAME_WORK", "work") or work.exists() or work.is_symlink():
         return default
     old = _home(env) / "dreame-valetudo-work"
     if old.is_symlink():
@@ -116,7 +101,7 @@ def pre_migration_lock_path(env: Mapping[str, str], work: Path) -> Path:
 
 def pre_migration_session_path(env: Mapping[str, str], work: Path) -> Path:
     """The workspace identity tmux will still derive after the structural move."""
-    if _uses_custom_work(env) or work.is_symlink():
+    if _uses_custom(env, "DREAME_WORK", "work") or work.is_symlink():
         return work
     old = _home(env) / "dreame-valetudo-work"
     if not old.is_symlink():
@@ -191,56 +176,15 @@ def _copied_tree_matches(src: Path, dst: Path) -> bool:
     return True
 
 
-def _rename_no_replace(src: Path, dst: Path) -> None:
-    """Atomically publish ``src`` only when ``dst`` is still absent (macOS + Linux)."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
-    if sys.platform == "darwin":
-        rename = libc.renamex_np
-        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(encoded_src, encoded_dst, 0x00000004)  # RENAME_EXCL
-    elif sys.platform.startswith("linux"):
-        try:
-            rename = libc.renameat2
-        except AttributeError:
-            raise OSError(
-                errno.ENOSYS,
-                "this Linux libc does not expose renameat2; cannot migrate without the "
-                "no-clobber guarantee",
-                dst,
-            ) from None
-        rename.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        rename.restype = ctypes.c_int
-        result = rename(-100, encoded_src, -100, encoded_dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
-    else:
-        raise OSError(errno.ENOTSUP, "exclusive rename is unsupported on this platform", dst)
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), dst)
-
-
 def _remove_abandoned_staging(dst: Path) -> None:
+    """Remove staging left by a dead prior run. Unconditional: the workspace lock (session.py)
+    serializes whole invocations, so no live run can own a hidden copy here."""
     for staging in dst.parent.glob(f".{dst.name}.migration-*.payload"):
-        owner = staging.with_suffix(".owner")
-        if not owner.is_file() or owner.is_symlink():
-            continue
-        try:
-            with owner.open("r+") as fh:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                if staging.is_dir() and not staging.is_symlink():
-                    shutil.rmtree(staging)
-                else:
-                    staging.unlink(missing_ok=True)
-                owner.unlink()
-        except OSError:
-            continue
+        with contextlib.suppress(OSError):
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging)
+            else:
+                staging.unlink(missing_ok=True)
 
 
 def _safe_move(
@@ -253,7 +197,7 @@ def _safe_move(
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _rename_no_replace(src, dst)
+        rename_no_replace(src, dst)
     except OSError as exc:
         if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
             console.warn(f"Left {src.name} in place — {dst} already exists.")
@@ -261,17 +205,10 @@ def _safe_move(
         if exc.errno != errno.EXDEV:
             raise
         _remove_abandoned_staging(dst)
-        # Kept open across copy, verification, and publication so cleanup cannot claim this payload.
-        owner = tempfile.NamedTemporaryFile(  # noqa: SIM115
-            mode="w+",
-            dir=dst.parent,
-            prefix=f".{dst.name}.migration-",
-            suffix=".owner",
-            delete=False,
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{dst.name}.migration-", suffix=".payload", dir=dst.parent)
         )
-        owner_path = Path(owner.name)
-        fcntl.flock(owner, fcntl.LOCK_EX)
-        temporary = owner_path.with_suffix(".payload")
+        temporary.rmdir()  # reserve a unique name; copytree/copy2 recreates it as dir/file/symlink
         published = False
         try:
             if src.is_dir() and not src.is_symlink():
@@ -288,7 +225,7 @@ def _safe_move(
             if before_publish is not None:
                 before_publish(temporary)
             try:
-                _rename_no_replace(temporary, dst)
+                rename_no_replace(temporary, dst)
             except OSError as publish_error:
                 if publish_error.errno in {errno.EEXIST, errno.ENOTEMPTY}:
                     console.warn(f"Left {src.name} in place — {dst} appeared during the copy.")
@@ -300,13 +237,11 @@ def _safe_move(
             else:
                 src.unlink()
         finally:
-            owner.close()
             if not published:
                 if temporary.is_dir() and not temporary.is_symlink():
                     shutil.rmtree(temporary, ignore_errors=True)
                 else:
                     temporary.unlink(missing_ok=True)
-            owner_path.unlink(missing_ok=True)
     return True
 
 
@@ -453,7 +388,7 @@ def _to_v1(
     complete = True
     moved: list[str] = []
     old, new = home / "dreame-valetudo-work", base / "work"
-    if _uses_custom_work(env):
+    if _uses_custom(env, "DREAME_WORK", "work"):
         if old.exists() or old.is_symlink():
             console.warn(f"Left legacy work data at {old} because DREAME_WORK is set; unset it and "
                          "re-run migration before removing the old path.")
@@ -490,7 +425,7 @@ def _to_v1(
             except OSError as exc:
                 console.warn(f"Could not inspect legacy backup candidate {d}; left it in place: {exc}")
                 complete = False
-    if _uses_custom_backups(env):
+    if _uses_custom(env, "DREAME_BACKUPS", "backups"):
         if legacy_backups:
             console.warn("Left legacy factory backups in place because DREAME_BACKUPS is set: "
                          + ", ".join(str(d) for d in legacy_backups))
@@ -517,13 +452,10 @@ LAYOUTS: list[Layout] = [
     Layout(
         version=1,
         since="0.2.0",
-        summary="Consolidate the legacy ~/dreame-valetudo-work and scattered ~/dreame-*-backup-* "
-        "dirs under one ~/dreame-valetudo/ umbrella (work/ + backups/) with a .layout marker.",
         apply=_to_v1,
     ),
 ]
 LAYOUT_VERSION = LAYOUTS[-1].version
-_BY_VERSION = {ly.version: ly for ly in LAYOUTS}
 
 
 def _stamp(env: Mapping[str, str]) -> None:
@@ -534,7 +466,7 @@ def _stamp(env: Mapping[str, str]) -> None:
             {
                 "layout_version": LAYOUT_VERSION,
                 "tool_version": __version__,
-                "min_tool_version": _BY_VERSION[LAYOUT_VERSION].since,
+                "min_tool_version": LAYOUTS[-1].since,
             },
             indent=2,
         )
@@ -557,7 +489,7 @@ def _heal_robot_state_privacy(env: Mapping[str, str]) -> None:
     """Restrict old markers and fill safe provenance gaps ignored by older releases."""
     for d in robot_dirs(env):
         robot = Robot(d)
-        protect_state_artifacts(robot.state_dir)
+        protect_private_dir(robot.state_dir)
         marker = robot.state_get("recon")
         if marker is not None:
             fields = [field for field in marker.split() if not field.startswith("config=")]
@@ -606,7 +538,7 @@ def decrypt_recovery_backup(
     Shared by the launch self-heal (old dumps) and recon (fresh dumps captured by a re-run), so
     calling either is safe and repeatable. Opt out entirely with ``DREAME_NO_DECRYPT=1``."""
     try:
-        protect_recon_artifacts(recon_dir)
+        protect_private_dir(recon_dir)
     except OSError as exc:
         console.warn(f"  could not restrict recovery-backup permissions in {recon_dir}: {exc}")
         return 0

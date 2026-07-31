@@ -46,8 +46,9 @@ before either release asset is published.
    x86_64**. A second matrix installs those same artifacts on macOS 26, then `publish` appends both
    to the **GitHub** and **public-Forgejo** releases.
 4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg`s on the public
-   Forgejo release, then walks **every** tag, hashes each recognized copy, and repairs a missing or
-   dissenting registry only when the other two have identical content. Without a two-registry
+   Forgejo release, then walks **every** tag, hashes each recognized copy, and fills a **missing**
+   copy only when the other two have identical content. A copy that is present but *dissents* is
+   reported for review, never overwritten — a published asset is immutable. Without a two-registry
    quorum it warns and changes nothing. The current tag does not pass publishing qualification
    unless both native GitHub macOS jobs have installed and exercised their signed package and
    published the resulting `.pkg`; historical repair still runs before that missing-artifact failure

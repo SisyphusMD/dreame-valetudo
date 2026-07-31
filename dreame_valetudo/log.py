@@ -346,14 +346,17 @@ class LoggingRunner(Runner):
         self._inner = inner
         self._log = log
 
-    def run(self, argv: Sequence[str], *, check: bool = True, stdin: str | None = None,
-            timeout: float | None = None) -> Result:
-        t = self._log.mono()
-        result = self._inner.run(argv, check=False, stdin=stdin, timeout=timeout)
+    def _finish(self, result: Result, t: float, check: bool) -> Result:
         self._log.command(result, self._log.mono() - t)
         if check and not result.ok:
             raise RunError(result)
         return result
+
+    def run(self, argv: Sequence[str], *, check: bool = True, stdin: str | None = None,
+            timeout: float | None = None) -> Result:
+        t = self._log.mono()
+        result = self._inner.run(argv, check=False, stdin=stdin, timeout=timeout)
+        return self._finish(result, t, check)
 
     def run_redirect(self, argv: Sequence[str], *, stdout_path: str | None = None,
                      stdin_path: str | None = None, check: bool = True,
@@ -361,10 +364,7 @@ class LoggingRunner(Runner):
         t = self._log.mono()
         result = self._inner.run_redirect(argv, stdout_path=stdout_path, stdin_path=stdin_path,
                                           check=False, timeout=timeout)
-        self._log.command(result, self._log.mono() - t)
-        if check and not result.ok:
-            raise RunError(result)
-        return result
+        return self._finish(result, t, check)
 
 
 class _RecordingProgress(Progress):

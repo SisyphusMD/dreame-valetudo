@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from dreame_valetudo.console import Console, Progress, reset_print_once
-from dreame_valetudo.constants import SUNXI_TOOLS_REF
+from dreame_valetudo.constants import STAGE1_SHA256, SUNXI_TOOLS_REF
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.profiles import load_profile
@@ -17,6 +17,9 @@ from dreame_valetudo.run import RecordingRunner, Result
 from dreame_valetudo.workspace import Robot, Workspace
 
 FB = ("python3", "/x/fastboot-libusb.py")
+
+# A 32-hex device config value, shared by every test that needs a plausible-looking one.
+CFG = "abcdef0123456789abcdef0123456789"
 
 
 class ScriptedConsole(Console):
@@ -40,6 +43,7 @@ class ScriptedConsole(Console):
         return Progress()  # inert: no thread, no output
 
     def confirm(self, prompt: str) -> bool:
+        self.lines.append(("confirm", prompt))
         return self._confirms.pop(0) if self._confirms else False
 
     def ask(self, prompt: str) -> str:
@@ -118,3 +122,39 @@ def make_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CtxFactory:
         return ctx
 
     return _make
+
+
+def config_responder(cfg: str = CFG) -> Callable[[tuple[str, ...]], Result]:
+    """A fastboot responder that answers `getvar config` and OKAYs everything else."""
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "getvar config" in " ".join(argv):
+            return Result(argv, 0, f"OKAY {cfg}", "")
+        return Result(argv, 0, "OKAY", "")
+
+    return responder
+
+
+def dreame_ap_prefix(argv: tuple[str, ...], *, is_dreame: bool = True) -> Result | None:
+    """Shared ssh-responder prefix: reachable, and reports whether it's a Dreame AP.
+
+    Returns None (no match) for anything past this prefix, so callers layer their own branches
+    on top.
+    """
+    cmd = argv[-1] if argv else ""
+    if cmd == "true":
+        return Result(argv, 0, "", "")
+    if cmd == "test -d /mnt/private/ULI/factory":
+        return Result(argv, 0 if is_dreame else 1, "", "")
+    return None
+
+
+def stage_dist(
+    ctx: Context, *, payload: str = "p", fsbl: str = "f", dram: str = "ddr4",
+    stage1_sha256: str | None = None,
+) -> None:
+    """Populate ctx.ws.dist with an already-extracted stage1 (payload/fsbl + pin marker)."""
+    ctx.ws.dist.mkdir(parents=True, exist_ok=True)
+    (ctx.ws.dist / "payload.bin").write_text(payload)
+    (ctx.ws.dist / f"fsbl_{dram}.bin").write_text(fsbl)
+    (ctx.ws.dist / ".stage1-sha256").write_text(f"{stage1_sha256 or STAGE1_SHA256}\n")

@@ -9,14 +9,20 @@ Storage model, all under the ~/dreame-valetudo/ umbrella:
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import re
+import shutil
+import sys
 import tempfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .console import die
 from .constants import (
     RECOVERY_DUMP_BYTES,
     RECOVERY_DUMP_NAMES,
@@ -31,6 +37,74 @@ WORKSPACE_SUBDIR = "dreame-valetudo"
 # `get_staged` image the builder's checker wants). A launch self-heal renames the pre-rename
 # `dreame_samples.zip` forward to this (see migrate.py), so readers only ever need this name.
 RECOVERY_BACKUP_ZIP = "dreame_recovery_backup.zip"
+
+# A replacement capture lands here first and is proven complete before it supersedes the
+# previous one; recon removes it on both success and failure.
+RECOVERY_STAGING_DIR = ".recovery-staging"
+
+
+def rename_no_replace(src: Path, dst: Path) -> None:
+    """Atomically publish ``src`` only while every kind of ``dst`` entry is still absent.
+
+    os.rename silently clobbers, and a check-then-rename has a window; publishing an irreplaceable
+    backup needs the kernel to enforce absence, so this drops to renamex_np/renameat2. There is no
+    stdlib equivalent, and no-clobber is the property that keeps a republish from destroying a
+    capture that can never be retaken."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(encoded_src, encoded_dst, 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError:
+            raise OSError(
+                errno.ENOSYS,
+                "this Linux libc does not expose renameat2; cannot publish without the "
+                "no-clobber guarantee",
+                dst,
+            ) from None
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(-100, encoded_src, -100, encoded_dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive rename is unsupported on this platform", dst)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), dst)
+
+
+@contextmanager
+def staged_publish(dest: Path, *, exists_message: str) -> Iterator[Path]:
+    """Build an irreplaceable backup into a sibling ``.partial`` staging dir, then publish it whole
+    to ``dest`` with one atomic rename — or discard it whole.
+
+    Yields the 0700 staging dir. On a clean exit it declines (dying with ``exists_message``) if
+    ``dest`` already exists, otherwise renames staging into place; on ANY exception — including
+    that refusal and a KeyboardInterrupt — it removes staging and re-raises. This defends the
+    accident model (a crash mid-build leaves only a ``.partial`` the manifest scanner ignores, never
+    a directory that looks like a complete legacy backup); the whole-invocation workspace lock, not
+    this check, is what serializes concurrent runs. ``dest.parent`` must already exist (the caller
+    owns creating the backups dir)."""
+    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".partial"))
+    staging.chmod(0o700)
+    try:
+        yield staging
+        if dest.exists():
+            die(exists_message)
+        staging.rename(dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def recovery_dump_valid(path: Path) -> bool:
@@ -91,24 +165,14 @@ def robot_dirs(env: Mapping[str, str]) -> list[Path]:
             if path.is_dir() and not path.name.startswith(".")]
 
 
-def protect_recon_artifacts(recon_dir: Path) -> None:
-    """Restrict an existing recon directory and every regular artifact directly inside it."""
-    if recon_dir.is_symlink() or not recon_dir.is_dir():
+def protect_private_dir(directory: Path) -> None:
+    """Restrict an existing recon/state directory and every regular file directly inside it."""
+    if directory.is_symlink() or not directory.is_dir():
         return
-    recon_dir.chmod(0o700)
-    for artifact in recon_dir.iterdir():
-        if artifact.is_file() and not artifact.is_symlink():
-            artifact.chmod(0o600)
-
-
-def protect_state_artifacts(state_dir: Path) -> None:
-    """Restrict an existing state directory and every regular marker directly inside it."""
-    if state_dir.is_symlink() or not state_dir.is_dir():
-        return
-    state_dir.chmod(0o700)
-    for marker in state_dir.iterdir():
-        if marker.is_file() and not marker.is_symlink():
-            marker.chmod(0o600)
+    directory.chmod(0o700)
+    for entry in directory.iterdir():
+        if entry.is_file() and not entry.is_symlink():
+            entry.chmod(0o600)
 
 
 def write_private_text(path: Path, value: str) -> None:

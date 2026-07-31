@@ -1,9 +1,15 @@
 name: Release
 
 # Cut a release from main: pick the bump in the Forgejo UI. Advances the CHANGELOG, bumps the
-# VERSION line in the script, runs the lint/smoke gate, then commits + tags. The tag triggers
+# project version records, runs the lint/smoke gate, then commits + tags. The tag triggers
 # publish.yml (the .deb + tarball + the forgejo/nas/github releases) and, on the GitHub mirror,
 # the signed macOS .pkg job.
+#
+# Split in two on purpose. `gate` decides what the release IS and proves the tree is green, holding
+# no credential at all. `tag` is the only job handed the write token: it re-derives the same edits
+# from a fresh checkout and refuses to push unless the resulting bytes hash to what the gate
+# qualified — so a compromised lint/test dependency can influence neither the release contents nor
+# the push.
 on:
   workflow_dispatch:
     inputs:
@@ -20,9 +26,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Cut release
+  gate:
+    name: Qualify release intent (secret-free)
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      release_date: ${{ steps.ver.outputs.release_date }}
+      intent_sha256: ${{ steps.intent.outputs.sha256 }}
     steps:
       - name: Refuse non-main dispatches
         run: |
@@ -35,24 +46,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          persist-credentials: false
 
       - name: Shellcheck every shipped and integration script
-        run: |
-          # renovate: datasource=docker depName=koalaman/shellcheck
-          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
-          cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
-          docker cp . "$cid":/work
-          check_rc=0
-          docker start -a "$cid" || check_rc=$?
-          docker rm "$cid" >/dev/null
-          exit "$check_rc"
-
-      - name: Configure git identity
-        run: |
-          git config user.name "forgejo-actions[bot]"
-          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+        run: bash packaging/shellcheck-all.sh
 
       - name: Compute next version
         id: ver
@@ -60,22 +57,16 @@ jobs:
           BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          # Exclude prerelease tags (v1.2.3-rc.N) — only a real, published stable version is the base.
-          PREV_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname | grep -vE -- '-' | head -n1 || true)
-          CURRENT="${PREV_TAG#v}"; CURRENT="${CURRENT:-0.0.0}"
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "$BUMP" in
-            patch) PATCH=$((PATCH + 1)) ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-          esac
-          NEXT="${MAJOR}.${MINOR}.${PATCH}"
-          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "previous=${PREV_TAG}" >> "$GITHUB_OUTPUT"   # range base for the dependency-bump notes
-          echo "Releasing ${NEXT} (bump=${BUMP}, previous=${PREV_TAG:-none})"
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP")
+          # The date is qualified here and replayed by the tag job: "today" must not differ between
+          # the two runners, or the reproduced CHANGELOG would not match the qualified bytes.
+          RELEASE_DATE=$(date -u +%Y-%m-%d)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "release_date=${RELEASE_DATE}" >> "$GITHUB_OUTPUT"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"   # range base for the dependency-bump notes
+          echo "Releasing ${version} (bump=${BUMP}, previous=${previous:-none})"
 
       - name: Sanity guards
         env:
@@ -87,26 +78,21 @@ jobs:
           ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md || { echo "::error::CHANGELOG already has [${VERSION}]"; exit 1; }
           ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || { echo "::error::Tag ${TAG} exists"; exit 1; }
 
+      - name: Enforce the pre-0.4 release boundary
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 packaging/check-release-boundary.py "$VERSION"
+
       - name: Detect dependency bumps since the previous release (latest per dep)
         id: deps
         env:
           PREV: ${{ steps.ver.outputs.previous }}
         run: |
           set -euo pipefail
-          # First release (no previous stable tag): the deps it ships ARE the initial set, not updates
-          # from a prior release, so emit no "### Dependencies" list — even if Renovate bumps landed
-          # before the first tag. Otherwise, collect Renovate's dep commits since the previous release,
-          # newest-first, and keep only the LATEST bump per dep: the dedup key is the subject minus its
-          # trailing " to <version>" (Renovate's format is "<type>(deps): update <dep> to <version>"),
-          # so repeated bumps of one image collapse to the most recent (git log is newest-first, so the
-          # first key seen is the latest).
+          DEPS=$(bash packaging/dependency-bumps.sh "$PREV")
           if [ -z "$PREV" ]; then
-            DEPS=""
             echo "first release — no dependency-update notes"
           else
-            DEPS=$(git log "${PREV}..HEAD" --pretty=format:'%s' \
-              | grep -E '^(chore|fix)\(deps\):' \
-              | awk '{ key=$0; sub(/ to [^ ]+$/, "", key); if (!seen[key]++) print }' || true)
             echo "dependency bumps to note:"; echo "${DEPS:-<none>}"
           fi
           {
@@ -119,47 +105,16 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           DEPS: ${{ steps.deps.outputs.deps }}
-        run: |
-          set -euo pipefail
-          DATE=$(date -u +%Y-%m-%d)
-          # ENVIRON["DEPS"] (not -v) so awk doesn't backslash-process the subjects. Appends a
-          # "### Dependencies" block to the just-promoted version's section: before the next existing
-          # ## [ ] section, or at end-of-file for the first release.
-          awk -v ver="$VERSION" -v date="$DATE" '
-            BEGIN { in_section=0; emitted=0; deps=ENVIRON["DEPS"] }
-            /^## \[Unreleased\]/ {
-              print "## [Unreleased]"; print ""; print "## [" ver "] - " date
-              in_section=1; next
-            }
-            in_section && /^## \[/ {
-              if (!emitted && deps != "") {
-                print "### Dependencies"; print ""
-                n=split(deps, lines, "\n")
-                for (i=1;i<=n;i++) if (lines[i] != "") print "- " lines[i]
-                print ""; emitted=1
-              }
-              in_section=0; print; next
-            }
-            { print }
-            END {
-              if (in_section && !emitted && deps != "") {
-                print ""; print "### Dependencies"; print ""
-                n=split(deps, lines, "\n")
-                for (i=1;i<=n;i++) if (lines[i] != "") print "- " lines[i]
-              }
-            }
-          ' CHANGELOG.md > CHANGELOG.md.new
-          mv CHANGELOG.md.new CHANGELOG.md
+          RELEASE_DATE: ${{ steps.ver.outputs.release_date }}
+        run: bash packaging/promote-changelog.sh "$VERSION" "$RELEASE_DATE"
 
-      - name: Bump the version (pyproject + package)
+      - name: Bump the version (pyproject + package + uv.lock)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          sed -i -E "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
-          sed -i -E "s/^__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" dreame_valetudo/__init__.py
-          grep -qE "^version = \"${VERSION}\"" pyproject.toml || { echo "::error::pyproject version bump did not apply"; exit 1; }
-          grep -qE "^__version__ = \"${VERSION}\"" dreame_valetudo/__init__.py || { echo "::error::__version__ bump did not apply"; exit 1; }
+          python3 packaging/stamp-version.py "$VERSION"
+          python3 packaging/stamp-version.py "$VERSION" --check
 
       - name: Point README download links at this release
         env:
@@ -176,6 +131,22 @@ jobs:
           # renovate: datasource=github-tags depName=python/cpython versioning=pep440
           python-version: "3.14.6"
 
+      - name: Snapshot the exact intended release diff
+        id: intent
+        run: |
+          set -euo pipefail
+          # The release is exactly these five files and nothing else. Hashing the patch here, before
+          # any third-party tool is installed, is what the tag job later reproduces byte-for-byte.
+          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+            | sort > "$RUNNER_TEMP/expected-release-paths"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --binary > "$RUNNER_TEMP/intended-release.patch"
+          sha256sum "$RUNNER_TEMP/intended-release.patch" \
+            | awk '{print "sha256=" $1}' >> "$GITHUB_OUTPUT"
+
       - name: Test gate (lint + typecheck + unit + integration)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -191,7 +162,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
           # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
-          ruff check dreame_valetudo libexec tests/python
+          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
           pytest -q tests/python
           python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
@@ -199,69 +170,80 @@ jobs:
           python -m dreame_valetudo help | grep -q "Supported models"
           for t in tests/integration/*.sh; do bash "$t"; done
 
-      - name: Sync uv.lock to the bumped version
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
+      - name: Prove the test toolchain changed no release byte
         run: |
           set -euo pipefail
-          # The bump moves pyproject's version; re-lock so uv.lock's own project entry matches, else
-          # the next local `uv` run dirties the tree. Plain `uv lock` preserves every existing
-          # dependency pin — only the project's own version field changes.
-          # renovate: datasource=pypi depName=uv
-          UV="0.12.0"
-          python -m pip install "uv==$UV"
-          cp uv.lock uv.lock.before
-          uv lock
-          python - "$VERSION" <<'PY'
-          import difflib
-          import re
-          import sys
-          from pathlib import Path
+          git diff --binary | cmp - "$RUNNER_TEMP/intended-release.patch"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
 
-          version = sys.argv[1]
-          before = Path("uv.lock.before").read_text()
-          after = Path("uv.lock").read_text()
-          pattern = re.compile(r'(\[\[package\]\]\nname = "dreame-valetudo"\nversion = ")[^"]+(\")')
-          expected, count = pattern.subn(lambda match: match.group(1) + version + match.group(2), before)
-          if count != 1 or after != expected:
-              print("::error::uv lock changed more than the project's own version")
-              print("".join(difflib.unified_diff(
-                  expected.splitlines(keepends=True), after.splitlines(keepends=True),
-                  fromfile="expected uv.lock", tofile="actual uv.lock",
-              )))
-              raise SystemExit(1)
-          PY
-          rm uv.lock.before
+  tag:
+    name: Authorize and push release tag
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse non-main dispatches
+        run: |
+          [ "${{ github.ref_name }}" = main ] \
+            || { echo "::error::Release must be dispatched from main"; exit 1; }
 
-      - name: Commit, tag, push
+      - name: Fresh checkout with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reproduce the qualified release intent
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          TAG: ${{ steps.ver.outputs.tag }}
-          TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          BUMP: ${{ inputs.bump }}
+          QUALIFIED_VERSION: ${{ needs.gate.outputs.version }}
+          QUALIFIED_TAG: ${{ needs.gate.outputs.tag }}
+          QUALIFIED_DATE: ${{ needs.gate.outputs.release_date }}
+          QUALIFIED_INTENT_SHA256: ${{ needs.gate.outputs.intent_sha256 }}
         run: |
           set -euo pipefail
-          # Stage the files the bump actually touched — the version of record lives in pyproject.toml
-          # and the package __init__, and uv.lock carries the project's own version too.
+          # Same derivation as the gate, on a tree no gate step ever touched. Nothing here trusts
+          # the gate beyond the version, the date, and the hash it has to match.
+          while IFS='=' read -r key value; do declare "$key=$value"; done \
+            < <(bash packaging/next-version.sh "$BUMP")
+          [ "$version" = "$QUALIFIED_VERSION" ] && [ "$tag" = "$QUALIFIED_TAG" ] \
+            || { echo "::error::qualified release intent changed between runners"; exit 1; }
+          ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null
+          python3 packaging/check-release-boundary.py "$version"
+
+          DEPS=$(bash packaging/dependency-bumps.sh "$previous")
+          export DEPS
+          bash packaging/promote-changelog.sh "$version" "$QUALIFIED_DATE"
+          python3 packaging/stamp-version.py "$version"
+          sed -i -E "s#(releases/download/)[^/]+/#\1${tag}/#g" README.md
+          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+            | sort > "$RUNNER_TEMP/expected-release-paths"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
+          diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git ls-files --others --exclude-standard)"
+          ACTUAL_INTENT_SHA256=$(git diff --binary | sha256sum | awk '{print $1}')
+          [ "$ACTUAL_INTENT_SHA256" = "$QUALIFIED_INTENT_SHA256" ] \
+            || { echo "::error::release bytes differ from the qualified intent"; exit 1; }
+
+      - name: Commit and tag the reproduced release
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
           git add CHANGELOG.md README.md pyproject.toml dreame_valetudo/__init__.py uv.lock
           git commit -m "release: ${VERSION}"
           # Fail closed: never tag a commit that doesn't actually carry the version bump.
-          git show "HEAD:pyproject.toml" | grep -qE "^version = \"${VERSION}\"" \
-            || { echo "::error::release commit is missing the pyproject version bump"; exit 1; }
-          git show "HEAD:dreame_valetudo/__init__.py" | grep -qE "^__version__ = \"${VERSION}\"" \
-            || { echo "::error::release commit is missing the __version__ bump"; exit 1; }
-          git tag "${TAG}"
-          AUTH_B64=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
-          git -c "http.extraheader=Authorization: Basic ${AUTH_B64}" push --atomic origin \
-            "HEAD:${{ github.ref_name }}" "${TAG}"
+          python3 packaging/stamp-version.py "$VERSION" --check
+          git tag -a -m "release: ${VERSION}" "$TAG"
 
-      - name: Force the push-mirrors to propagate the commit + tag now (GitHub + NAS)
+      - name: Push the commit and tag atomically
         env:
+          TAG: ${{ needs.gate.outputs.tag }}
           TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
-        run: |
-          set -euo pipefail
-          # Best-effort: sync-on-commit propagates the branch + tag pushes immediately in practice,
-          # and this endpoint needs more than the PAT's write:repository scope (403 otherwise).
-          # Warn-only so a scope refusal never fails a release whose refs already fanned out.
-          curl -fsS -X POST -H "Authorization: token ${TOKEN}" \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/push_mirrors-sync" \
-            || echo "::warning::push_mirrors-sync refused (PAT scope); relying on sync_on_commit"
+        run: bash packaging/push-tag.sh "$TAG" "$TOKEN" "${{ github.ref_name }}"

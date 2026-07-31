@@ -26,7 +26,7 @@ from ..platform_env import open_url
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, rename_no_replace
 from .recon import read_identity_from_robot
 
 
@@ -69,7 +69,7 @@ def _open_dustbuilder(ctx: Context) -> None:
     if not cfg:
         die("No config value yet — run recon first.")
     key = choose_sshkey(ctx)
-    pub = stage_pub_for_upload(ctx.ws.base, key)
+    pub = stage_pub_for_upload(ctx.runner, ctx.ws.base, key)
     _print_checklist(ctx, cfg, pub)
     # Copy the config to the clipboard — best-effort, and only when pbcopy exists (no shell, so the
     # config value is never interpolated into a command line).
@@ -217,7 +217,7 @@ def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str)
     this robot's — matched on digest as well as name, since a re-download is renamed but identical.
     """
     for d in sorted(ctx.ws.robots_dir.glob("*")):
-        if d == robot.work or not d.is_dir() or d.is_symlink():
+        if d == robot.work or not d.is_dir():
             continue
         recorded = "\n".join(Robot(d).image_provenance())
         if name in recorded or digest in recorded:
@@ -331,8 +331,16 @@ def image(ctx: Context, *, force: bool = False) -> None:
     if zp.parent == robot.fw_dir:  # a zip staged from the robot's own fw dir must survive the swap
         zp.rename(staging / zp.name)
         zip_path = str(robot.fw_dir / zp.name)
-    shutil.rmtree(robot.fw_dir, ignore_errors=True)
-    staging.rename(robot.fw_dir)
+    # Supersede the previous build; never delete it first. An rmtree-then-rename leaves an instant
+    # where fw_dir is gone with nothing in its place, so a crash there would strand recovery on the
+    # downloaded zip still existing. Set the old build aside, move the staged one into the freed
+    # slot, then drop the old copy — a complete build survives an interruption at any point.
+    superseded = robot.work / "fw.superseded"
+    shutil.rmtree(superseded, ignore_errors=True)
+    if robot.fw_dir.exists():
+        robot.fw_dir.rename(superseded)
+    rename_no_replace(staging, robot.fw_dir)
+    shutil.rmtree(superseded, ignore_errors=True)
     member_digests = {
         name: sha256_of(robot.fw_dir / name)
         for name in FEL_IMAGE_FILES

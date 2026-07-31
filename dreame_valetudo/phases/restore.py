@@ -22,7 +22,7 @@ from .. import manifest
 from ..console import abort, die, warn_if_low_disk
 from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING
 from ..context import Context
-from ..fel import print_fel_entry
+from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import model_hazard_check
 from ..migrate import decrypt_recovery_backup
 from ..recovery import (
@@ -32,8 +32,8 @@ from ..recovery import (
     write_recovery_provenance,
 )
 from ..session import records_step
-from ..util import parse_config, sha256_of
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot, robot_tag
+from ..util import parse_config, same_robot_config, sha256_of
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, robot_tag, staged_publish
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 from .root import _mask_interrupts
@@ -584,10 +584,10 @@ def _extract_partitions(
 
 
 def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
-    if path.is_symlink() or not path.is_dir():
+    if not path.is_dir():
         return False
     target = path / "manifest.json"
-    if target.is_symlink() or not target.is_file():
+    if not target.is_file():
         return False
     try:
         data = json.loads(target.read_text())
@@ -603,7 +603,7 @@ def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
             or version not in {2, 3}
             or not isinstance(stored_config, str)
             or parse_config(stored_config) != stored_config
-            or stored_config[:8].lower() != config[:8].lower()
+            or not same_robot_config(stored_config, config)
             or data.get("model_key") != model_key
             or data.get("source_binding") not in {
                 "captured-same-session", "legacy-user-confirmed",
@@ -632,7 +632,7 @@ def stock_restore_kit_valid(path: Path, config: str, model_key: str) -> bool:
     for name in _KIT_FILES:
         record = artifacts.get(name)
         artifact = path / name
-        if (not isinstance(record, dict) or artifact.is_symlink() or not artifact.is_file()
+        if (not isinstance(record, dict) or not artifact.is_file()
                 or record.get("bytes") != artifact.stat().st_size
                 or record.get("sha256") != sha256_of(artifact)):
             return False
@@ -649,22 +649,20 @@ def _matching_restore_kits(root: Path, model_code: str, config: str) -> list[Pat
             if not name.startswith(prefix) or not name.endswith(suffix):
                 continue
             saved_config = name[len(prefix):-len(suffix)]
-            if len(saved_config) == 32 and saved_config[:8].lower() == config[:8].lower():
+            if len(saved_config) == 32 and same_robot_config(saved_config, config):
                 matches.append(path)
     return sorted(matches)
 
 
 def _sealed_dump_valid(path: Path, expected_bytes: int) -> bool:
     try:
-        return not path.is_symlink() and path.is_file() and path.stat().st_size == expected_bytes
+        return path.is_file() and path.stat().st_size == expected_bytes
     except OSError:
         return False
 
 
 def _extract_recovery_archive(recon_dir: Path, expected_bytes: int) -> bool:
     archive_path = recon_dir / RECOVERY_BACKUP_ZIP
-    if archive_path.is_symlink():
-        die(f"Refusing symlinked portable recovery archive: {archive_path}")
     if not archive_path.is_file():
         return False
     expected_names = tuple(f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
@@ -695,7 +693,7 @@ def _extract_recovery_archive(recon_dir: Path, expected_bytes: int) -> bool:
         for name in expected_names:
             staged_slice = staging / name
             target = recon_dir / name
-            if target.exists() or target.is_symlink():
+            if target.exists():
                 if not _sealed_dump_valid(target, expected_bytes):
                     die(f"Existing sealed recovery slice is invalid; preserving it: {target}")
                 continue
@@ -720,7 +718,7 @@ def _verified_recovery_provenance(
         return None, None
     stored_config = provenance["config"]
     if (parse_config(stored_config) != stored_config
-            or stored_config[:8].lower() != config[:8].lower()
+            or not same_robot_config(stored_config, config)
             or provenance["model_key"] != ctx.profile.key):
         die("SAFETY STOP: the recovery capture provenance belongs to a different robot or model. "
             "Refusing to build a stock restore kit from it.")
@@ -734,7 +732,7 @@ def _verified_recovery_provenance(
 
     sealed_paths = [robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
     if "sealed" in expected and not all(
-        not path.is_symlink() and path.is_file() for path in sealed_paths
+        path.is_file() for path in sealed_paths
     ):
         _extract_recovery_archive(robot.recon_dir, expected_bytes)
     try:
@@ -744,7 +742,7 @@ def _verified_recovery_provenance(
     except ValueError as exc:
         die(f"A sealed recovery source is corrupt or unreadable: {exc}")
     if ("sealed" in expected
-            and any(path.exists() or path.is_symlink() for path in sealed_paths)
+            and any(path.exists() for path in sealed_paths)
             and sealed_current.get("sealed") != expected["sealed"]):
         die("The sealed recovery sources do not match their same-robot provenance. "
             "Preserve every file for inspection; refusing to restore.")
@@ -783,7 +781,7 @@ def _verified_recovery_provenance(
 
     decrypted_paths = [robot.recon_dir / f"{name}.dd.gz" for name in RECOVERY_DUMP_NAMES]
     if ("decrypted" in expected
-            and any(path.exists() or path.is_symlink() for path in decrypted_paths)
+            and any(path.exists() for path in decrypted_paths)
             and current.get("decrypted") != expected["decrypted"]):
         die("The decrypted recovery sources do not match their same-robot provenance. "
                 "Preserve every file for inspection; refusing to restore.")
@@ -874,8 +872,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "for inspection and remove the ambiguity before restoring.")
     final = (matches[0] if matches else
              ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, config)}-stock-recovery")
-    if final.is_symlink():
-        die(f"Refusing symlinked stock restore destination: {final}")
     if final.exists():
         if stock_restore_kit_valid(final, config, ctx.profile.key):
             return final
@@ -891,7 +887,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
     if any(not path.is_file() for path in decrypted):
         sealed = [robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES]
         invalid = [path for path in sealed
-                   if (path.exists() or path.is_symlink())
+                   if path.exists()
                    and not _sealed_dump_valid(path, chunk_bytes)]
         if invalid:
             die("Invalid sealed recovery slices were preserved for inspection: "
@@ -904,9 +900,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
         die("No complete decrypted pre-root recovery capture is available (missing: "
             + ", ".join(missing)
             + "). Re-run recon with recovery backup enabled before restoring.")
-    linked = [path.name for path in decrypted if path.is_symlink()]
-    if linked:
-        die("Refusing symlinked recovery sources: " + ", ".join(linked))
     source_binding, expected_decrypted = _verified_recovery_provenance(
         ctx, config, chunk_bytes,
     )
@@ -916,7 +909,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "(missing: " + ", ".join(missing) + ").")
     ctx.backups_dir.mkdir(parents=True, exist_ok=True)
     ctx.backups_dir.chmod(0o700)
-    warn_if_low_disk(ctx.console, ctx.backups_dir, 512 * (1 << 20))
     source_records: dict[str, dict[str, object]] = {}
     source_digests: dict[Path, str] = {}
     head = b""
@@ -936,6 +928,10 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             "build a restore kit.")
     partitions, disk_bytes = _parse_gpt(head)
     required = _required_partitions(partitions, len(decrypted) * chunk_bytes)
+    # Size the advisory to what extraction actually writes: every required partition in full,
+    # including both the A and B copies (~1.2 GB on hardware), so a near-full disk is caught up
+    # front rather than part way through the kit.
+    warn_if_low_disk(ctx.console, ctx.backups_dir, sum(part.size for part in required.values()))
     first_partition = min(part.start for part in partitions.values())
     if first_partition > len(head):
         die("The reserved stock-firmware region is larger than the supported 64 MiB safety bound.")
@@ -982,13 +978,9 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 "to build a restore kit.")
         source_binding = "legacy-user-confirmed"
 
-    staging = Path(tempfile.mkdtemp(
-        dir=ctx.backups_dir,
-        prefix=f".{final.name}.",
-        suffix=".partial",
-    ))
-    staging.chmod(0o700)
-    try:
+    with staged_publish(
+        final, exists_message=f"Restore-kit destination appeared while building: {final}.",
+    ) as staging:
         with ctx.console.progress("Extracting verified stock partitions into the durable kit"):
             extracted = _extract_partitions(
                 decrypted,
@@ -1054,12 +1046,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 "source_ab_pairs_equal": ab_pairs_equal,
             },
         )
-        if final.exists():
-            die(f"Restore-kit destination appeared while building: {final}.")
-        staging.rename(final)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
     manifest.protect_backups(ctx.env, ctx.console)
     ctx.console.info(f"Durable stock restore kit: {final}")
     return final
@@ -1124,8 +1110,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         fetch_stage1(ctx)
     check_fastboot_client(ctx)
     print_fel_entry(ctx.console, ctx.host)
-    ctx.console.ask("Ready to start watching for the robot? Press Enter when ready.")
-    if not ctx.fel.poll_fel():
+    if not wait_for_fel(ctx):
         die("No FEL device — aborting before any restore write.")
     ctx.fel.fel_boot_fastboot(
         ctx.ws.dist,
@@ -1139,7 +1124,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     if not ctx.fastboot.getvar_succeeded(result) or live_config is None:
         ctx.fastboot.report_failure(result)
         die("Couldn't read the connected robot's config identity — aborting before any write.")
-    if live_config[:8].lower() != config[:8].lower():
+    if not same_robot_config(live_config, config):
         die("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
             "— refusing to restore.")
     ctx.console.info("Robot and restore-kit identity confirmed.")
@@ -1147,6 +1132,8 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("The stock restore kit changed while hardware was being prepared. Refusing every write; "
             "preserve the kit for inspection and start again with verified artifacts.")
 
+    # Mirrors the dustbuilder fastboot `oem dust` unlock: the write-enable token is the config's
+    # 8-hex prefix XORed with the shared constant, not an independent secret.
     token = f"{int(config[:8], 16) ^ _DUST_XOR:08x}"
     marker_error: OSError | None = None
     ctx.console.say(">>> POWER-CYCLE CLOCK LIVE — restoring stock now <<<")

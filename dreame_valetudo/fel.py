@@ -13,11 +13,15 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .console import Console, die, next_idle_deadline
 from .fastboot import Fastboot
 from .run import Runner
 from .session import describe_run
+
+if TYPE_CHECKING:
+    from .context import Context
 
 # A dynamic-loader failure, from either platform's loader: macOS dyld ("Library not loaded", "no
 # such file"), Linux ld.so ("error while loading shared libraries").
@@ -51,6 +55,22 @@ def print_fel_entry(console: Console, host: str = "computer") -> None:
         console.action("Redo the PCB button sequence (steps above).")
 
 
+def wait_for_fel(ctx: Context) -> bool:
+    """Ask the operator once to start the FEL button sequence, then wait for the device.
+
+    Shared by recon, root and restore, which each handle a False return their own way (recon's
+    auxiliary read warns and skips; root and restore die before any write)."""
+    if ctx.interactive:
+        ctx.console.once(
+            "fel-readiness",
+            lambda: ctx.console.ask("Ready to start watching for the robot? Press Enter when ready."),
+        )
+    # Attachment — not an arbitrary USB allowance — decides how long this safe, read-only wait
+    # may remain alive. If the external rail-cycle clock expires, another button sequence can
+    # satisfy the same wait.
+    return ctx.fel.poll_fel()
+
+
 class Fel:
     def __init__(
         self,
@@ -74,6 +94,8 @@ class Fel:
             self.console.say("Waiting for the FEL device — do the button sequence now. Ctrl+C stops "
                              "waiting.")
             deadline: float | None = None
+            last_probe: float | None = None
+            attached: bool | None = None
             permission_warned = False
             with self.console.progress("Watching for the FEL device", timer=False) as p:
                 while True:
@@ -100,7 +122,9 @@ class Fel:
                         self.console.info(f"FEL up: {first}")
                         return True
                     now = time.monotonic()
-                    deadline = next_idle_deadline(deadline, now)
+                    deadline, last_probe, attached = next_idle_deadline(
+                        deadline, now, last_probe, attached
+                    )
                     if deadline is not None and now >= deadline:
                         p.close(done=False)
                         break

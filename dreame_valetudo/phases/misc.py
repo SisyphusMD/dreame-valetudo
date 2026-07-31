@@ -62,7 +62,7 @@ def ui(ctx: Context) -> bool:
 
 def sshkey(ctx: Context) -> None:
     key = choose_sshkey(ctx)
-    pub = stage_pub_for_upload(ctx.ws.base, key)
+    pub = stage_pub_for_upload(ctx.runner, ctx.ws.base, key)
     ctx.console.say("SSH public key for the dustbuilder 'Your SSH-Public key' field:")
     pubfile = Path(f"{key}.pub")
     if pubfile.is_file():

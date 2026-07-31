@@ -61,6 +61,9 @@ class Profile:
     arch: Arch = "aarch64"
     dram: Dram = "ddr4"           # only changes which FSBL is pushed
     secure_boot: YesNo = "yes"
+    # The miio cloudKey lives ONLY in secure storage on these units, so their factory key.txt is
+    # legitimately empty and a backup is incomplete until the key is read out and preserved.
+    key_in_secure_storage: YesNo = "no"
     baud: str = "115200"
     fsbl_addr: str = "0x28000"
     payload_addr: str = "0x4a000000"
@@ -72,6 +75,7 @@ class Profile:
             ("method", get_args(Method)),
             ("dram", get_args(Dram)),
             ("secure_boot", get_args(YesNo)),
+            ("key_in_secure_storage", get_args(YesNo)),
             ("autodetect_ok", get_args(Autodetect)),
             ("arch", get_args(Arch)),
         ):
@@ -116,7 +120,8 @@ _PROFILES: dict[str, Profile] = {
         Profile("d10s-plus", "Dreame D10s Plus", "r2240", "r2240",
                 "DreameD10SPlusValetudoRobot", "maybe", dram="ddr3"),
         Profile("w10-pro", "Dreame W10 Pro", "r2104", "r2104",
-                "DreameW10ProValetudoRobot", "maybe", dram="ddr3"),
+                "DreameW10ProValetudoRobot", "maybe", dram="ddr3",
+                key_in_secure_storage="yes"),
         # ---- Mova-branded (ddr4) ----
         Profile("mova-s20-ultra", "Mova S20 Ultra", "r2385", "r2385",
                 "DreameMovaS20UltraValetudoRobot", "maybe"),

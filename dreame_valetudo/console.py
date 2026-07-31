@@ -128,16 +128,32 @@ def next_deadline(
     return now + timeout if deadline is None else deadline
 
 
-def next_idle_deadline(deadline: float | None, now: float) -> float | None:
-    """Apply the configured attachment rule to a wait outside a prompt.
+# The attachment probe spawns a real `tmux display-message` subprocess, so it is throttled to at
+# most once per this interval (and once more at the deadline). A minute-long FEL wait polling every
+# ~1s must not spawn ~60 of them; the idle prompt has always throttled the same way.
+_IDLE_PROBE_INTERVAL = 15.0
 
-    Keeping this beside the prompt machinery is deliberate: FEL and questions must agree about
-    what "unwatched" means, including the safe unknown state.
+
+def next_idle_deadline(
+    deadline: float | None, now: float, last_probe: float | None, attached: bool | None,
+) -> tuple[float | None, float | None, bool | None]:
+    """Apply the configured attachment rule to a wait outside a prompt, throttling the probe.
+
+    Probes at most once per ``_IDLE_PROBE_INTERVAL``, and always once more at the deadline so a
+    reattach in the final seconds is honoured (an unwatched wait must never expire on a cached
+    detached state). Threads the ``(deadline, last_probe, attached)`` state through each call.
+    Keeping this beside the prompt machinery is deliberate: FEL and questions must agree about what
+    "unwatched" means — including the safe unknown state — and about how often the probe may run.
     """
     probe = _IDLE_PROBE[0] if _IDLE_PROBE else None
     timeout = _IDLE_TIMEOUT[0] if _IDLE_TIMEOUT else 0.0
-    attached = probe() if probe is not None else None
-    return next_deadline(attached, deadline, now, timeout)
+    if probe is not None and (
+        last_probe is None
+        or now - last_probe >= _IDLE_PROBE_INTERVAL
+        or (deadline is not None and now >= deadline)
+    ):
+        attached, last_probe = probe(), now
+    return next_deadline(attached, deadline, now, timeout), last_probe, attached
 
 
 class Console:
@@ -378,7 +394,7 @@ class Console:
             except EOFError:
                 print()  # no echoed Enter on EOF (piped stdin) — terminate the prompt line
                 return ""
-        return self._prompt_until_idle(rendered, probe, timeout)
+        return self._prompt_until_idle(rendered)
 
     def replay(self, data: bytes) -> None:
         """Write a previously captured terminal screen without re-rendering it."""
@@ -390,18 +406,18 @@ class Console:
             sys.stdout.write(data.decode(errors="replace"))
             sys.stdout.flush()
 
-    def _prompt_until_idle(
-        self, rendered: str, probe: Callable[[], bool | None], timeout: float
-    ) -> str:
-        """input(), but giving up once nobody has been watching for `timeout`.
+    def _prompt_until_idle(self, rendered: str) -> str:
+        """input(), but giving up once nobody has been watching for the idle timeout.
 
         Detached, the pty stays open, so a plain input() would block forever holding the workspace
         — the very thing surviving the terminal was supposed to buy. The question is already
-        bookmarked, so giving up here costs nothing but the wait.
+        bookmarked, so giving up here costs nothing but the wait. The attachment probe is throttled
+        by ``next_idle_deadline`` (shared with the FEL wait), which also re-probes at the deadline
+        so someone reattaching in the final seconds keeps the question.
         """
         print(rendered, end="", flush=True)
         deadline: float | None = None
-        last_probe = 0.0
+        last_probe: float | None = None
         attached: bool | None = None
         while True:
             if select.select([sys.stdin], [], [], 2.0)[0]:
@@ -411,12 +427,7 @@ class Console:
                     return ""
                 return line.rstrip("\n")
             now = time.monotonic()
-            # The normal cadence avoids spawning tmux on every input poll. At the deadline,
-            # however, re-probe before taking the question away: someone can reattach during the
-            # final 15 seconds, and an attached prompt must never expire on a cached False.
-            if now - last_probe >= 15.0 or (deadline is not None and now >= deadline):
-                attached, last_probe = probe(), now
-            deadline = next_deadline(attached, deadline, now, timeout)
+            deadline, last_probe, attached = next_idle_deadline(deadline, now, last_probe, attached)
             if deadline is not None and now >= deadline:
                 print()
                 raise Die("No answer, and this window has been closed for a while — stopping here. "
