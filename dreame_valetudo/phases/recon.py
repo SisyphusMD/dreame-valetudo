@@ -181,7 +181,9 @@ def _saved_backup_state(robot: Robot) -> str:
     if match:
         return match.group(1)
     archive = robot.recon_dir / RECOVERY_BACKUP_ZIP
-    dumps = tuple(robot.recon_dir / f"dustx10{i}.bin" for i in range(3))
+    dumps = tuple(robot.recon_dir / f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
+    # Deliberately weaker than recovery_backup_valid: this only labels the marker text, it never
+    # gates a flash, so a non-empty file is enough evidence a backup was taken.
     if ((archive.is_file() and archive.stat().st_size > 0)
             or all(path.is_file() and path.stat().st_size > 0 for path in dumps)):
         return "obtained"
@@ -223,8 +225,6 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         else:
             ctx.console.info(f"Recon already done — {prior}. Re-run with '--force' to repeat.")
             return
-    if not stage1_ready(ctx):
-        die(f"Missing stage1 files in {ctx.ws.dist}. Run 'fetch'.")
 
     check_fastboot_client(ctx)
     _print_intro(ctx)

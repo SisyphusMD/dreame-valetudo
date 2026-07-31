@@ -217,7 +217,7 @@ def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str)
     this robot's — matched on digest as well as name, since a re-download is renamed but identical.
     """
     for d in sorted(ctx.ws.robots_dir.glob("*")):
-        if d == robot.work or not d.is_dir() or d.is_symlink():
+        if d == robot.work or not d.is_dir():
             continue
         recorded = "\n".join(Robot(d).image_provenance())
         if name in recorded or digest in recorded:
