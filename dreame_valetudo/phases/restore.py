@@ -33,7 +33,7 @@ from ..recovery import (
 )
 from ..session import records_step
 from ..util import parse_config, same_robot_config, sha256_of
-from ..workspace import RECOVERY_BACKUP_ZIP, Robot, robot_tag
+from ..workspace import RECOVERY_BACKUP_ZIP, Robot, robot_tag, staged_publish
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 from .root import _mask_interrupts
@@ -978,13 +978,9 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 "to build a restore kit.")
         source_binding = "legacy-user-confirmed"
 
-    staging = Path(tempfile.mkdtemp(
-        dir=ctx.backups_dir,
-        prefix=f".{final.name}.",
-        suffix=".partial",
-    ))
-    staging.chmod(0o700)
-    try:
+    with staged_publish(
+        final, exists_message=f"Restore-kit destination appeared while building: {final}.",
+    ) as staging:
         with ctx.console.progress("Extracting verified stock partitions into the durable kit"):
             extracted = _extract_partitions(
                 decrypted,
@@ -1050,12 +1046,6 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
                 "source_ab_pairs_equal": ab_pairs_equal,
             },
         )
-        if final.exists():
-            die(f"Restore-kit destination appeared while building: {final}.")
-        staging.rename(final)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
     manifest.protect_backups(ctx.env, ctx.console)
     ctx.console.info(f"Durable stock restore kit: {final}")
     return final

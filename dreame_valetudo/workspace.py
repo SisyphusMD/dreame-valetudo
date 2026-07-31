@@ -13,13 +13,16 @@ import ctypes
 import errno
 import os
 import re
+import shutil
 import sys
 import tempfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .console import die
 from .constants import (
     RECOVERY_DUMP_BYTES,
     RECOVERY_DUMP_NAMES,
@@ -78,6 +81,30 @@ def rename_no_replace(src: Path, dst: Path) -> None:
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), dst)
+
+
+@contextmanager
+def staged_publish(dest: Path, *, exists_message: str) -> Iterator[Path]:
+    """Build an irreplaceable backup into a sibling ``.partial`` staging dir, then publish it whole
+    to ``dest`` with one atomic rename — or discard it whole.
+
+    Yields the 0700 staging dir. On a clean exit it declines (dying with ``exists_message``) if
+    ``dest`` already exists, otherwise renames staging into place; on ANY exception — including
+    that refusal and a KeyboardInterrupt — it removes staging and re-raises. This defends the
+    accident model (a crash mid-build leaves only a ``.partial`` the manifest scanner ignores, never
+    a directory that looks like a complete legacy backup); the whole-invocation workspace lock, not
+    this check, is what serializes concurrent runs. ``dest.parent`` must already exist (the caller
+    owns creating the backups dir)."""
+    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".partial"))
+    staging.chmod(0o700)
+    try:
+        yield staging
+        if dest.exists():
+            die(exists_message)
+        staging.rename(dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def recovery_dump_valid(path: Path) -> bool:

@@ -28,7 +28,7 @@ from ..profiles import known_model_key_for_code, load_profile
 from ..session import records_step
 from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
 from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
-from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag
+from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish
 from .doctor import check_external_tools
 from .fetch import fetch_valetudo
 
@@ -485,13 +485,9 @@ def _capture_factory_backup(
     final = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg)}-{ts}"
     ctx.backups_dir.mkdir(parents=True, exist_ok=True)
     ctx.backups_dir.chmod(0o700)
-    staging = Path(tempfile.mkdtemp(
-        dir=ctx.backups_dir,
-        prefix=f".{final.name}.",
-        suffix=".partial",
-    ))
-    staging.chmod(0o700)
-    try:
+    with staged_publish(
+        final, exists_message=f"Backup destination already exists: {final}. Re-run in a moment.",
+    ) as staging:
         warn_if_low_disk(ctx.console, staging, 2 * (1 << 30))
         ctx.console.say(f"Backing up the robot -> {final} (config + keys + raw partitions)...")
         files_gz = staging / "files.tar.gz"
@@ -576,14 +572,6 @@ def _capture_factory_backup(
                 "factory_archive_size": archive_size,
             },
         )
-        if final.exists():
-            die(f"Backup destination already exists: {final}. Re-run in a moment.")
-        staging.rename(final)
-    except BaseException:
-        # A directory without a published name must never look like a complete, legacy backup on
-        # the next launch. The manifest scanner also ignores .partial after an unclean power loss.
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
     return final
 
 
