@@ -123,7 +123,9 @@ jobs:
         run: |
           set -uo pipefail
           chmod +x packaging/forgejo-release.sh packaging/github-release.sh
-          ASSETS=(./*.deb ./*.rpm ./*.tar.gz)
+          # Match the built artifacts by their real names: a bare ./*.deb also globs the
+          # package-smoke.deb copy the smoke step leaves in the workspace, publishing it as a stray.
+          ASSETS=(./dreame-valetudo_*.deb ./dreame-valetudo.*.rpm ./dreame-valetudo-*.tar.gz)
           fail=0
           packaging/forgejo-release.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
