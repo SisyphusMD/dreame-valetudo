@@ -56,12 +56,8 @@ def test_readme_hardware_verified_models_are_deliberate() -> None:
 
 
 def test_load_profile_rejects_unknown_key() -> None:
-    try:
+    with pytest.raises(ValueError):
         P.load_profile("not-a-model")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("expected ValueError for an unknown model key")
 
 
 def test_impl_class_for_model_matches_golden() -> None:

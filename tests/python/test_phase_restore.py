@@ -161,6 +161,17 @@ def _partition_entry(name: str, first_lba: int, sectors: int) -> bytes:
     return bytes(entry)
 
 
+def _seal_provenance(recon: Path, *, config: str = _CONFIG) -> None:
+    write_recovery_provenance(
+        recon,
+        config=config,
+        model_key="x40-ultra",
+        binding="captured-same-session",
+        firmware_state="stock-user-attested",
+        expected_bytes=_CHUNK,
+    )
+
+
 def _recovery_capture(
     ctx: object,
     *,
@@ -314,14 +325,7 @@ def _recovery_capture(
             gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as stream,
         ):
             stream.write(disk[index * _CHUNK:(index + 1) * _CHUNK])
-    write_recovery_provenance(
-        robot.recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(robot.recon_dir)
 
 
 def _stage1(ctx: object) -> None:
@@ -491,14 +495,7 @@ def test_prepare_can_recover_loose_slices_from_the_portable_archive(
             sealed = bytes([index + 1]) * _CHUNK
             archive.writestr(f"{name}.bin", sealed)
             (recon / f"{name}.bin").write_bytes(sealed)
-    write_recovery_provenance(
-        recon,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(recon)
     for name in RECOVERY_DUMP_NAMES:
         (recon / f"{name}.dd.gz").unlink()
         (recon / f"{name}.bin").unlink()
@@ -541,14 +538,7 @@ def test_prepare_regenerates_a_damaged_cache_from_verified_sealed_sources(
     }
     for index, name in enumerate(RECOVERY_DUMP_NAMES):
         (recon / f"{name}.bin").write_bytes(bytes([index + 1]) * _CHUNK)
-    write_recovery_provenance(
-        recon,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(recon)
     (recon / "dustx101.dd.gz").write_bytes(b"damaged gzip cache")
     refreshes: list[bool] = []
 
@@ -725,14 +715,7 @@ def _damage_partition_pin(ctx: object, *partitions: str) -> None:
             gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as stream,
         ):
             stream.write(raw[index * _CHUNK:(index + 1) * _CHUNK])
-    write_recovery_provenance(
-        robot.recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(robot.recon_dir)
 
 
 def test_prepare_selects_authenticated_backup_when_the_main_pair_no_longer_matches(
@@ -881,14 +864,7 @@ def test_prepare_refuses_same_model_sources_bound_to_a_different_robot(
 ) -> None:
     ctx = make_ctx(robot_name="kitchen")
     _recovery_capture(ctx)
-    write_recovery_provenance(
-        ctx.need_robot().recon_dir,
-        config="0123456789abcdef0123456789abcdef",
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(ctx.need_robot().recon_dir, config="0123456789abcdef0123456789abcdef")
 
     with pytest.raises(Die, match="different robot or model"):
         prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
@@ -928,14 +904,7 @@ def test_prepare_refuses_a_bad_gpt_checksum(make_ctx: CtxFactory) -> None:
         gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as stream,
     ):
         stream.write(raw)
-    write_recovery_provenance(
-        ctx.need_robot().recon_dir,
-        config=_CONFIG,
-        model_key="x40-ultra",
-        binding="captured-same-session",
-        firmware_state="stock-user-attested",
-        expected_bytes=_CHUNK,
-    )
+    _seal_provenance(ctx.need_robot().recon_dir)
 
     with pytest.raises(Die, match="GPT header checksum"):
         prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
