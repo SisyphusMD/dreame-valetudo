@@ -267,7 +267,24 @@ for registry in forgejo.bryantserver.com github.com; do
   grep -Fq "$registry/SisyphusMD/dreame-valetudo/releases/download/v$version/" "$calls" \
     || fail "update-tap did not check the $registry copy the formula points at"
 done
+
+# A stable tag also RE-POINTS the rc formula at the same stable tarball (fall-through), so the rc
+# brew channel keeps resolving after this version's superseded rc releases are pruned.
+rc_fallthrough="$tap/Formula/dreame-valetudo-rc.rb"
+[ -f "$stable" ] && [ -f "$rc_fallthrough" ] \
+  || fail "a stable tag must write BOTH the stable and the rc fall-through formula"
+for formula in "$stable" "$rc_fallthrough"; do
+  grep -Fq "sha256 \"$digest\"" "$formula" \
+    || fail "$formula checksum does not match the stable build"
+  grep -Fq "url \"https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v$version/dreame-valetudo-$version.tar.gz\"" "$formula" \
+    || fail "$formula does not point its url at the stable release asset"
+  grep -Fq "mirror \"https://github.com/SisyphusMD/dreame-valetudo/releases/download/v$version/dreame-valetudo-$version.tar.gz\"" "$formula" \
+    || fail "$formula does not mirror the stable release asset on GitHub"
+  ! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$formula" \
+    || fail "$formula retained an unsubstituted placeholder"
+done
 echo "  Homebrew formula: checksum from the local rebuild, both published copies confirmed OK"
+echo "  Homebrew formula: a stable tag writes both formulas, rc falling through to the stable OK"
 
 # A registry that cannot serve the tag, or serves other bytes, must not yield a formula at all.
 : > "$calls"

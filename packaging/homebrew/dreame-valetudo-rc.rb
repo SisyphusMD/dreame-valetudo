@@ -1,9 +1,11 @@
 # Homebrew formula for the PRERELEASE (release-candidate) channel of the personal tap.
 #
-# This is a SEPARATE formula from the stable `dreame-valetudo`, so `brew install
-# sisyphusmd/tap/dreame-valetudo-rc` tracks the newest `-rc.N` while the stable formula stays on the
-# last real release. It exists so a release candidate can be validated on hardware through the same
-# Homebrew path real users will take, without ever pointing the stable formula at a candidate build.
+# This is a SEPARATE formula from the stable `dreame-valetudo`. Between stable releases `brew install
+# sisyphusmd/tap/dreame-valetudo-rc` tracks the newest `-rc.N`; when a stable ships, update-tap.sh
+# re-points this formula at that stable tarball (fall-through), so the rc channel keeps resolving
+# after the now-superseded rc releases are pruned. It exists so a release candidate can be validated
+# on hardware through the same Homebrew path real users take, without pointing the stable formula at
+# a candidate build.
 # Same source-venv install as the stable formula (see dreame-valetudo.rb for the design notes).
 # The prerelease workflow fills in url/sha per rc.
 #

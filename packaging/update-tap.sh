@@ -4,8 +4,10 @@
 # checksum is supposed to protect users from, so it is never the source of that checksum.
 #   update-tap.sh <tag> <tap-clone-dir>
 #
-# A prerelease tag (hyphenated, e.g. v0.1.0-rc.1) writes the SEPARATE `dreame-valetudo-rc` formula,
-# leaving the stable `dreame-valetudo` formula untouched; a stable tag writes the stable formula.
+# A prerelease tag (hyphenated, e.g. v0.1.0-rc.1) writes only the SEPARATE `dreame-valetudo-rc`
+# formula, leaving the stable `dreame-valetudo` formula untouched. A STABLE tag writes BOTH: the
+# stable formula, and the rc formula RE-POINTED at the same stable tarball (fall-through), so the rc
+# brew channel keeps resolving after that version's now-superseded rc releases are pruned.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
@@ -14,10 +16,6 @@ root="$(cd "$here/.." && pwd)"
 tag="$1"; tapdir="$2"
 rel_validate_tag "$tag"
 version="${tag#v}"
-case "$tag" in
-  *-*) formula="dreame-valetudo-rc" ;;   # prerelease channel
-  *)   formula="dreame-valetudo" ;;      # stable channel
-esac
 url="https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/${tag}/dreame-valetudo-${version}.tar.gz"
 mirror="https://github.com/SisyphusMD/dreame-valetudo/releases/download/${tag}/dreame-valetudo-${version}.tar.gz"
 
@@ -50,13 +48,27 @@ verify_remote() {
 verify_remote forgejo "$url"
 verify_remote github "$mirror"
 
-mkdir -p "$tapdir/Formula"
-out="$tapdir/Formula/${formula}.rb"
-sed -e "s|vREPLACE_VERSION|${tag}|g" -e "s|REPLACE_VERSION|${version}|g" \
-  -e "s|REPLACE_TARBALL_SHA256|${sha}|" "$here/homebrew/${formula}.rb" > "$out"
-grep -Fq "url \"$url\"" "$out" \
-  && grep -Fq "mirror \"$mirror\"" "$out" \
-  && grep -Fq "sha256 \"$sha\"" "$out" \
-  && ! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$out" \
-  || { echo "formula template substitution failed for $formula" >&2; exit 1; }
-echo "wrote $out (tag=$tag sha=$sha)"
+# Render one tap formula from its template at the verified tag/version/sha. Called once for a
+# prerelease (the rc formula tracks the candidate) and twice for a stable (the stable formula, plus
+# the rc formula re-pointed at the same stable tarball).
+render_formula() {
+  local formula="$1" out
+  mkdir -p "$tapdir/Formula"
+  out="$tapdir/Formula/${formula}.rb"
+  sed -e "s|vREPLACE_VERSION|${tag}|g" -e "s|REPLACE_VERSION|${version}|g" \
+    -e "s|REPLACE_TARBALL_SHA256|${sha}|" "$here/homebrew/${formula}.rb" > "$out"
+  grep -Fq "url \"$url\"" "$out" \
+    && grep -Fq "mirror \"$mirror\"" "$out" \
+    && grep -Fq "sha256 \"$sha\"" "$out" \
+    && ! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$out" \
+    || { echo "formula template substitution failed for $formula" >&2; exit 1; }
+  echo "wrote $out (tag=$tag sha=$sha)"
+}
+
+case "$tag" in
+  *-*)
+    render_formula dreame-valetudo-rc ;;   # prerelease: only the rc channel moves
+  *)
+    render_formula dreame-valetudo         # stable channel
+    render_formula dreame-valetudo-rc ;;   # fall-through: rc re-points at the stable tarball
+esac
