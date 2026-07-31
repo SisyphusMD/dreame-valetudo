@@ -378,12 +378,25 @@ write_list() {  # <file> then <tag> <id> pairs
   done
   printf '%s]\n' "$out" > "$f"
 }
-write_stable() {  # <file> <tag> <version> <id> — a published stable carrying all 7 canonical assets
+write_stable() {  # <file> <tag> <version> <id> — a published stable serving the current-era asset set
   local f=$1 tag=$2 ver=$3 id=$4
   jq -n --arg t "$tag" --argjson id "$id" --arg ver "$ver" '{
     id:$id, tag_name:$t, draft:false, prerelease:false, assets:[
       "dreame-valetudo_amd64.deb","dreame-valetudo_arm64.deb",
       "dreame-valetudo.x86_64.rpm","dreame-valetudo.aarch64.rpm",
+      ("dreame-valetudo-"+$ver+".tar.gz"),
+      "dreame-valetudo-macos-arm64.pkg","dreame-valetudo-macos-x86_64.pkg"
+    ] | map({name:.})
+  }' > "$f"
+}
+
+# The pre-multichannel era shipped no .rpm, so v0.1.0/v0.1.1 legitimately serve only five assets. The
+# guard checks cross-registry agreement, not a fixed count, so this uniform smaller set still prunes.
+write_stable5() {  # <file> <tag> <version> <id>
+  local f=$1 tag=$2 ver=$3 id=$4
+  jq -n --arg t "$tag" --argjson id "$id" --arg ver "$ver" '{
+    id:$id, tag_name:$t, draft:false, prerelease:false, assets:[
+      "dreame-valetudo_amd64.deb","dreame-valetudo_arm64.deb",
       ("dreame-valetudo-"+$ver+".tar.gz"),
       "dreame-valetudo-macos-arm64.pkg","dreame-valetudo-macos-x86_64.pkg"
     ] | map({name:.})
@@ -536,6 +549,49 @@ STUB_FIX="$fixG" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 
 ! grep -q -- '-X DELETE' "$calls" \
   || fail "prune deleted an rc while its stable was an unconsumable draft on a registry"
 echo "  prune: a draft/prerelease stable on any registry keeps the rc OK"
+
+# Scenario H — pre-.rpm era: v0.1.1 serves only the five-asset set, IDENTICAL on all three. There is
+# no fixed 7-asset requirement, so a uniform, non-empty set is a finished fan-out and its rc is pruned.
+fixH="$tmp/prune-fixH"; mkdir -p "$fixH"
+for r in cluster nas github; do
+  case $r in cluster) o=700 ;; nas) o=1700 ;; github) o=2700 ;; esac
+  write_list "$fixH/$r.list.json" v0.1.1 "$o" v0.1.1-rc.1 "$((o+1))"
+  write_stable5 "$fixH/$r.tag.v0.1.1.json" v0.1.1 0.1.1 "$o"
+done
+: > "$calls"
+out=$(STUB_FIX="$fixH" bash "$root/packaging/prune-superseded-rcs.sh" 2>&1) \
+  || fail "prune sweep exited nonzero for a uniform five-asset stable: $out"
+for r in cluster nas github; do
+  case $r in cluster) o=700 ;; nas) o=1700 ;; github) o=2700 ;; esac
+  hre=${phost[$r]//./\\.}
+  grep -Eq -- "DELETE .*$hre.*/releases/$((o+1))\$" "$calls" \
+    || fail "prune did not delete the v0.1.1-rc.1 release on $r for a uniform five-asset stable"
+  grep -Eq -- "DELETE .*$hre.*/tags/v0\.1\.1-rc\.1\$" "$calls" \
+    || fail "prune did not delete the v0.1.1-rc.1 git tag on $r for a uniform five-asset stable"
+  ! grep -Eq -- "DELETE .*$hre.*/releases/$o\$" "$calls" \
+    || fail "prune deleted the stable v0.1.1 release on $r"
+done
+echo "  prune: a uniform five-asset (pre-.rpm era) stable identical on all 3 prunes its rc OK"
+
+# Scenario I — a stable whose asset SETS DIFFER across registries (a partial fan-out still in flight):
+# cluster and nas serve the five-asset set, github is missing one of them. Without a fixed asset
+# count, only cross-registry agreement proves completion, so any disagreement keeps the rc — exactly
+# the partial fan-out the identical-set rule exists to catch.
+fixI="$tmp/prune-fixI"; mkdir -p "$fixI"
+for r in cluster nas github; do
+  case $r in cluster) o=800 ;; nas) o=1800 ;; github) o=2800 ;; esac
+  write_list "$fixI/$r.list.json" v0.2.1 "$((o+20))" v0.2.1-rc.1 "$((o+21))"
+  write_stable5 "$fixI/$r.tag.v0.2.1.json" v0.2.1 0.2.1 "$((o+20))"
+done
+jq '.assets |= map(select(.name != "dreame-valetudo-macos-x86_64.pkg"))' \
+  "$fixI/github.tag.v0.2.1.json" > "$fixI/github.tag.v0.2.1.diff" \
+  && mv "$fixI/github.tag.v0.2.1.diff" "$fixI/github.tag.v0.2.1.json"
+: > "$calls"
+STUB_FIX="$fixI" bash "$root/packaging/prune-superseded-rcs.sh" >/dev/null 2>&1 \
+  || fail "prune sweep exited nonzero when a stable's asset set differed across registries"
+! grep -q -- '-X DELETE' "$calls" \
+  || fail "prune deleted an rc while its stable served a different asset set on one registry"
+echo "  prune: a stable whose asset set differs across registries keeps the rc (partial fan-out) OK"
 
 echo "PASS: release publishers treat published assets as immutable, the tap formula is built from a"
 echo "      local rebuild both registries are proven to serve, and the rc sweep prunes only what a"

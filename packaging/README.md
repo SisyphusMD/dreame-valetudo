@@ -57,9 +57,12 @@ before either release asset is published.
 5. **Forgejo `publish.yml` `prune-rcs` job** (stable tags only): after the tap re-point and the
    reconcile fan-out, it sweeps the release candidates the shipped stable supersedes. It enumerates
    every `vX.Y.Z-rc.N` release across all three registries, groups them by stable stem, and for each
-   stem whose stable `vX.Y.Z` is verified present — published (non-draft, non-prerelease) with all
-   canonical assets — on **all three** registries, deletes that stem's rc releases and git tags,
-   all-three-or-none. An rc whose stable has not shipped yet is kept. It runs only when reconcile
+   stem whose stable `vX.Y.Z` is verified present — published (non-draft, non-prerelease) on **all
+   three** registries, each serving an **identical, non-empty asset-name set** (same names, each once)
+   — deletes that stem's rc releases and git tags, all-three-or-none. There is no fixed asset count,
+   so a pre-`.rpm`-era stable (v0.1.0/v0.1.1, five assets) still qualifies as long as all three agree;
+   any cross-registry disagreement is read as an unfinished fan-out and keeps the rc. An rc whose
+   stable has not shipped yet is kept. It runs only when reconcile
    succeeded (so an incompletely fanned-out stable never authorizes a prune), is warn-only and
    idempotent, and needs no tag argument, so the same job also backfills any historical rc left over
    from before the policy.

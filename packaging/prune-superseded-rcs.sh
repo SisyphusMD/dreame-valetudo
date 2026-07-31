@@ -12,10 +12,14 @@
 # stable has not shipped yet (e.g. v0.3.0-rc.2 with no v0.3.0) is kept: that is the point.
 #
 # Deletion is the one irreversible release operation, so it is gated hard:
-#   * Per stem, the stable vX.Y.Z release AND all of its canonical assets must be present on ALL
-#     THREE registries before any of that stem's rc is touched. A stable that is not fully fanned out
-#     (missing on even one registry, or missing an asset there) means the whole group is SKIPPED
-#     untouched — never delete on intent, and never delete the last safe copy of that content.
+#   * Per stem, the stable vX.Y.Z release must be PUBLISHED on ALL THREE registries and the three
+#     must serve an IDENTICAL, non-empty asset-name set (same names, each exactly once) before any
+#     of that stem's rc is touched. There is no fixed asset count to check against — pre-.rpm-era
+#     stables (v0.1.0, v0.1.1) legitimately serve fewer assets than a current one — so cross-registry
+#     AGREEMENT, not a hardcoded matrix, is what proves the fan-out finished. Any disagreement, a
+#     missing/duplicated asset, an empty set, or a draft/prerelease stable on even one registry SKIPS
+#     the whole group untouched — never delete on intent, never delete the last safe copy of that
+#     content.
 #   * All-3-or-none per group: a group is pruned only when its stable is confirmed everywhere, so a
 #     prune never manufactures the cross-registry dissent reconcile exists to flag. The rc's release
 #     and its git tag are removed on all three registries where they still exist.
@@ -42,20 +46,6 @@ case "${1-}" in
   "") ;;
   *) echo "usage: $0 [--dry-run]" >&2; exit 2 ;;
 esac
-
-# The canonical release asset matrix, mirroring reconcile-releases.sh. A stable counts as "fully
-# present" on a registry only when its release exists AND serves every one of these.
-canonical_assets() {
-  local version="$1"
-  printf '%s\n' \
-    dreame-valetudo_amd64.deb \
-    dreame-valetudo_arm64.deb \
-    dreame-valetudo.x86_64.rpm \
-    dreame-valetudo.aarch64.rpm \
-    "dreame-valetudo-$version.tar.gz" \
-    dreame-valetudo-macos-arm64.pkg \
-    dreame-valetudo-macos-x86_64.pkg
-}
 
 registry_releases_api() {
   case "$1" in
@@ -116,9 +106,12 @@ http_delete() {
   esac
 }
 
-# $1 stem tag (vX.Y.Z). 0 only if the stable release AND every canonical asset exist on all three.
+# $1 stem tag (vX.Y.Z). 0 only when the stable release is published on all three registries AND the
+# three serve an IDENTICAL, non-empty asset-name set (same names, each exactly once). No fixed count
+# is assumed, so a pre-.rpm-era stable with fewer assets still qualifies as long as every registry
+# agrees; cross-registry disagreement is treated as an unfinished fan-out and keeps the rc.
 stable_present_everywhere() {
-  local stem="$1" version="${1#v}" registry json asset count missing=0
+  local stem="$1" registry json names signature="" have_signature=0 ok=1
   for registry in "${REGISTRIES[@]}"; do
     json="$(http_get "$registry" "$(registry_releases_api "$registry")/tags/$stem")"
     # Present AND consumable: an interrupted publisher can leave the tag as a draft or misclassified
@@ -126,20 +119,31 @@ stable_present_everywhere() {
     # This mirrors rel_ensure_release_state's draft==false && prerelease==false gate.
     if ! jq -e '(.id != null) and (.draft == false) and (.prerelease == false)' <<<"$json" >/dev/null 2>&1; then
       echo "::warning::prune: stable $stem is not a published (non-draft, non-prerelease) release on $registry; keeping its rc" >&2
-      missing=1
+      ok=0
       continue
     fi
-    while IFS= read -r asset; do
-      # Exactly one same-named asset: 0 is missing, and >1 is the ambiguous duplicate reconcile
-      # refuses to treat as usable (its download URL is undefined). Either way the stable is not
-      # cleanly present here, so this stem's rc is kept.
-      count="$(jq -r --arg n "$asset" '[.assets[]? | select(.name==$n)] | length' <<<"$json" 2>/dev/null || echo 0)"
-      [ "$count" = 1 ] \
-        || { echo "::warning::prune: stable $stem lacks a single $asset on $registry ($count found); keeping its rc" >&2
-             missing=1; }
-    done < <(canonical_assets "$version")
+    # The asset-name set must be NON-EMPTY and duplicate-free: a repeated name is the ambiguous copy
+    # reconcile refuses to treat as usable (its download URL is undefined), and an empty release
+    # proves nothing. jq emits the sorted names only when the count is nonzero and equals the unique
+    # count; otherwise it errors, which keeps the rc.
+    names="$(jq -r '
+      [.assets[]?.name | select(. != null)] as $n
+      | if ($n | length) > 0 and ($n | length) == ($n | unique | length)
+        then $n | unique | join("\n")
+        else error("empty or duplicated asset set")
+        end' <<<"$json" 2>/dev/null)" \
+      || { echo "::warning::prune: stable $stem does not serve a clean, non-empty asset set on $registry; keeping its rc" >&2
+           ok=0; continue; }
+    # First qualifying registry sets the baseline; every other must match it byte for byte. A
+    # different set anywhere means the stable is not uniformly fanned out yet, so the rc is kept.
+    if [ "$have_signature" -eq 0 ]; then
+      signature="$names"; have_signature=1
+    elif [ "$names" != "$signature" ]; then
+      echo "::warning::prune: stable $stem serves a different asset set on $registry than another registry (partial fan-out); keeping its rc" >&2
+      ok=0
+    fi
   done
-  [ "$missing" -eq 0 ]
+  [ "$ok" -eq 1 ]
 }
 
 declare -A rc_id=()        # rc_id["<registry>|<tag>"] = that registry's release id for the rc
