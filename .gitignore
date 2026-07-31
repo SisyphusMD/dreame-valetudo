@@ -38,6 +38,7 @@ __pycache__/
 
 # Tool caches (each tool self-ignores these, but pin them explicitly).
 .venv/
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
 
