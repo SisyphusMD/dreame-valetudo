@@ -55,7 +55,6 @@ BeforePublish = Callable[[Path], None]
 class Layout:
     version: int
     since: str  # tool release that introduced this layout = the compatible-range LOWER bound
-    summary: str
     apply: Callable[[Mapping[str, str], Console, BeforePublish | None], bool]
 
 
@@ -72,22 +71,12 @@ def _marker(env: Mapping[str, str]) -> Path:
     return base_dir(env) / ".layout"
 
 
-def _uses_custom_work(env: Mapping[str, str]) -> bool:
-    configured = env.get("DREAME_WORK")
+def _uses_custom(env: Mapping[str, str], var: str, subdir: str) -> bool:
+    configured = env.get(var)
     if not configured:
         return False
     try:
-        return Path(configured).resolve() != (base_dir(env) / "work").resolve()
-    except (OSError, RuntimeError):
-        return True
-
-
-def _uses_custom_backups(env: Mapping[str, str]) -> bool:
-    configured = env.get("DREAME_BACKUPS")
-    if not configured:
-        return False
-    try:
-        return Path(configured).resolve() != (base_dir(env) / "backups").resolve()
+        return Path(configured).resolve() != (base_dir(env) / subdir).resolve()
     except (OSError, RuntimeError):
         return True
 
@@ -95,7 +84,7 @@ def _uses_custom_backups(env: Mapping[str, str]) -> bool:
 def pre_migration_lock_path(env: Mapping[str, str], work: Path) -> Path:
     """The lock path that remains stable while a legacy work symlink is relocated."""
     default = work / ".lock"
-    if _uses_custom_work(env) or work.exists() or work.is_symlink():
+    if _uses_custom(env, "DREAME_WORK", "work") or work.exists() or work.is_symlink():
         return default
     old = _home(env) / "dreame-valetudo-work"
     if old.is_symlink():
@@ -112,7 +101,7 @@ def pre_migration_lock_path(env: Mapping[str, str], work: Path) -> Path:
 
 def pre_migration_session_path(env: Mapping[str, str], work: Path) -> Path:
     """The workspace identity tmux will still derive after the structural move."""
-    if _uses_custom_work(env) or work.is_symlink():
+    if _uses_custom(env, "DREAME_WORK", "work") or work.is_symlink():
         return work
     old = _home(env) / "dreame-valetudo-work"
     if not old.is_symlink():
@@ -399,7 +388,7 @@ def _to_v1(
     complete = True
     moved: list[str] = []
     old, new = home / "dreame-valetudo-work", base / "work"
-    if _uses_custom_work(env):
+    if _uses_custom(env, "DREAME_WORK", "work"):
         if old.exists() or old.is_symlink():
             console.warn(f"Left legacy work data at {old} because DREAME_WORK is set; unset it and "
                          "re-run migration before removing the old path.")
@@ -436,7 +425,7 @@ def _to_v1(
             except OSError as exc:
                 console.warn(f"Could not inspect legacy backup candidate {d}; left it in place: {exc}")
                 complete = False
-    if _uses_custom_backups(env):
+    if _uses_custom(env, "DREAME_BACKUPS", "backups"):
         if legacy_backups:
             console.warn("Left legacy factory backups in place because DREAME_BACKUPS is set: "
                          + ", ".join(str(d) for d in legacy_backups))
@@ -463,13 +452,10 @@ LAYOUTS: list[Layout] = [
     Layout(
         version=1,
         since="0.2.0",
-        summary="Consolidate the legacy ~/dreame-valetudo-work and scattered ~/dreame-*-backup-* "
-        "dirs under one ~/dreame-valetudo/ umbrella (work/ + backups/) with a .layout marker.",
         apply=_to_v1,
     ),
 ]
 LAYOUT_VERSION = LAYOUTS[-1].version
-_BY_VERSION = {ly.version: ly for ly in LAYOUTS}
 
 
 def _stamp(env: Mapping[str, str]) -> None:
@@ -480,7 +466,7 @@ def _stamp(env: Mapping[str, str]) -> None:
             {
                 "layout_version": LAYOUT_VERSION,
                 "tool_version": __version__,
-                "min_tool_version": _BY_VERSION[LAYOUT_VERSION].since,
+                "min_tool_version": LAYOUTS[-1].since,
             },
             indent=2,
         )
