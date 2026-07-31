@@ -62,21 +62,25 @@ def test_run_redirect_missing_tool_is_rc_127(tmp_path: Path) -> None:
 
 
 def test_subprocess_timeout_is_a_clean_rc_124_with_partial_diagnostics() -> None:
+    # The partial output only exists if the child finished printing before the deadline, and
+    # interpreter startup alone can exceed a tens-of-milliseconds deadline on a busy runner.
+    # Whole seconds of margin, with the sleep far beyond it, keeps this a test of diagnostic
+    # capture rather than a race against process startup.
     command = [
         sys.executable,
         "-c",
         (
             "import sys,time; print('partial-out', flush=True); "
-            "print('partial-err', file=sys.stderr, flush=True); time.sleep(10)"
+            "print('partial-err', file=sys.stderr, flush=True); time.sleep(30)"
         ),
     ]
 
-    result = SubprocessRunner().run(command, check=False, timeout=0.05)
+    result = SubprocessRunner().run(command, check=False, timeout=2.5)
 
     assert result.returncode == 124
     assert "partial-out" in result.stdout
     assert "partial-err" in result.stderr
-    assert "timed out after 0.05s" in result.stderr
+    assert "timed out after 2.5s" in result.stderr
     with pytest.raises(RunError, match="timed out"):
         SubprocessRunner().run(command, timeout=0.05)
 
