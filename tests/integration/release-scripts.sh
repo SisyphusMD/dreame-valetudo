@@ -349,7 +349,22 @@ for a in "$@"; do
   case "$a" in http*://*) url="$a" ;; esac
   prev="$a"
 done
-if [ "$method" = DELETE ]; then printf '204'; exit 0; fi   # emulate curl -o /dev/null -w '%{http_code}'
+if [ "$method" = DELETE ]; then
+  # Model the real forge behavior that a naive stub hid: Forgejo returns 409 when asked to delete a
+  # tag that still has an attached release, so the release must be deleted first. GitHub tolerates
+  # either order. The current call is already the last line of STUB_CALLS, so the previous line shows
+  # what the script did immediately before this tag delete on the same registry.
+  case "$url" in
+    *api.github.com*) printf '204'; exit 0 ;;
+    */releases/*)     printf '204'; exit 0 ;;
+    */tags/*)
+      case "$(tail -2 "$STUB_CALLS" | head -1)" in
+        *"-X DELETE"*/releases/*) printf '204'; exit 0 ;;   # release just deleted -> tag now removable
+        *)                        printf '409'; exit 0 ;;   # release still attached -> Forgejo 409
+      esac ;;
+    *) printf '204'; exit 0 ;;
+  esac
+fi
 registry=""
 case "$url" in
   *forgejo.nas.bryantserver.com*) registry=nas ;;
@@ -445,12 +460,11 @@ for r in cluster nas github; do
   ! grep -Eq -- "DELETE .*$hre.*/tags/v0\.1\.0\$" "$calls" \
     || fail "prune deleted the stable v0.1.0 tag on $r"
 done
-# Tag-before-release ordering keeps a partial failure retryable: the release stays as the anchor the
-# next sweep enumerates from, so it is only removed after its tag is gone.
+# Release-before-tag ordering is mandatory: Forgejo 409s on deleting a tag that still has a release.
 tag_line=$(grep -nE -- 'DELETE .*forgejo\.bryantserver\.com.*/tags/v0\.1\.0-rc\.1$' "$calls" | head -1 | cut -d: -f1)
 rel_line=$(grep -nE -- 'DELETE .*forgejo\.bryantserver\.com.*/releases/101$' "$calls" | head -1 | cut -d: -f1)
-[ -n "$tag_line" ] && [ -n "$rel_line" ] && [ "$tag_line" -lt "$rel_line" ] \
-  || fail "prune must delete the git tag before the release object (retryable partial failures)"
+[ -n "$tag_line" ] && [ -n "$rel_line" ] && [ "$rel_line" -lt "$tag_line" ] \
+  || fail "prune must delete the release object before its git tag (Forgejo 409s otherwise)"
 echo "  prune: superseded rc pruned on all 3, stable-less rc kept, stables never deleted OK"
 
 # Scenario B — all-3-or-none: v0.2.0 stable present on cluster+nas but ABSENT on github. The whole

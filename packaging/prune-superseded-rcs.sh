@@ -192,14 +192,17 @@ while IFS= read -r stem; do
     tag_fail=0
     for registry in "${REGISTRIES[@]}"; do
       id="${rc_id[$registry|$tag]-}"
-      # Delete the git tag FIRST (404 counts as done). The release object is the anchor the next
-      # sweep enumerates from, so it is removed only once its tag is gone — a tag-delete failure
-      # therefore leaves the release listed and the whole rc retryable, never a dangling tag.
-      if http_delete "$registry" "$(registry_tag_delete_url "$registry" "$tag")"; then
-        [ -n "$id" ] && { http_delete "$registry" "$(registry_releases_api "$registry")/$id" || tag_fail=1; }
-      else
+      # Delete the RELEASE first, then its tag. Forgejo refuses to delete a tag that still has an
+      # attached release (HTTP 409), so tag-first can never succeed there; release-first works on
+      # all three. If the release delete fails, the tag still references it and a tag delete would
+      # 409, so skip it and leave the whole rc for the next sweep to retry. A release-delete success
+      # followed by a tag-delete failure can leave a release-less tag the release-based enumeration
+      # will not revisit — a rare, harmless remnant, since the assets are already reclaimed.
+      if [ -n "$id" ] && ! http_delete "$registry" "$(registry_releases_api "$registry")/$id"; then
         tag_fail=1
+        continue
       fi
+      http_delete "$registry" "$(registry_tag_delete_url "$registry" "$tag")" || tag_fail=1
     done
     if [ "$tag_fail" -eq 0 ]; then
       pruned=$((pruned + 1))
@@ -215,6 +218,6 @@ if [ "$dry_run" = true ]; then
 elif [ "$fail" -eq 0 ]; then
   echo "prune: $pruned superseded rc tag(s) removed cleanly across all three registries"
 else
-  echo "::warning::prune finished with $fail rc tag(s) not fully removed; a later sweep retries" >&2
+  echo "::warning::prune finished with $fail rc tag(s) not fully removed; a later sweep retries any whose release still exists, but a release-less tag left by a failed tag delete needs manual cleanup" >&2
 fi
 exit 0
