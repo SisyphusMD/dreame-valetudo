@@ -5,7 +5,7 @@ Six distribution channels, one release flow:
 | Channel | Artifact | Built by | Signing |
 |---|---|---|---|
 | Homebrew stable (macOS **and** Linux) | `dreame-valetudo` formula in `SisyphusMD/homebrew-tap` | `publish.yml` → `update-tap.sh` (stable tags) | none (source build) |
-| Homebrew prerelease | `dreame-valetudo-rc` formula (separate, tracks the newest `-rc.N`) | `publish.yml` → `update-tap.sh` (rc tags) | none (source build) |
+| Homebrew prerelease | `dreame-valetudo-rc` formula (tracks the newest `-rc.N`, then falls through to the stable once it ships) | `publish.yml` → `update-tap.sh` | none (source build) |
 | Debian/Ubuntu/Pi | `dreame-valetudo_{amd64,arm64}.deb` (version-less name, bundles sunxi-fel) | `publish.yml` (buildx `deb.Dockerfile` + nfpm) | none (unsigned .deb) |
 | Fedora/RHEL/SUSE | `dreame-valetudo.{x86_64,aarch64}.rpm` (version-less name, bundles sunxi-fel) | `publish.yml` (same buildx binaries, `nfpm -p rpm`) | none (unsigned .rpm) |
 | Plain tarball | `dreame-valetudo-<v>.tar.gz` | `publish.yml` (`build-tarball.sh`) | none |
@@ -39,8 +39,9 @@ before either release asset is published.
    tags, and pushes. The push-mirror fans the commit + tag out to GitHub and the NAS Forgejo.
 2. **Forgejo `publish.yml`** (tag-triggered): builds **both `.deb`s** (buildx) and the **tarball**,
    **creates the release on all three** forges (Forgejo, NAS, GitHub) with the CHANGELOG section as
-   the notes + those assets, and **updates the Homebrew tap** — the stable formula for a plain tag,
-   the separate `dreame-valetudo-rc` formula for a prerelease tag.
+   the notes + those assets, and **updates the Homebrew tap** — a stable tag writes the stable formula
+   AND re-points the `dreame-valetudo-rc` formula at the same stable tarball (fall-through); a
+   prerelease tag writes only the `dreame-valetudo-rc` formula.
 3. **GitHub `release-macos.yml`** (mirrored tag, GitHub's macOS runners; the one job that needs a
    Mac): a 2-leg macOS 15 matrix builds and tests the **signed + notarized `.pkg` for arm64 AND
    x86_64**. A second matrix installs those same artifacts on macOS 26, then `publish` appends both
@@ -53,12 +54,25 @@ before either release asset is published.
    unless both native GitHub macOS jobs have installed and exercised their signed package and
    published the resulting `.pkg`; historical repair still runs before that missing-artifact failure
    is reported.
+5. **Forgejo `publish.yml` `prune-rcs` job** (stable tags only): after the tap re-point and the
+   reconcile fan-out, it sweeps the release candidates the shipped stable supersedes. It enumerates
+   every `vX.Y.Z-rc.N` release across all three registries, groups them by stable stem, and for each
+   stem whose stable `vX.Y.Z` is verified present — published (non-draft, non-prerelease) with all
+   canonical assets — on **all three** registries, deletes that stem's rc releases and git tags,
+   all-three-or-none. An rc whose stable has not shipped yet is kept. It runs only when reconcile
+   succeeded (so an incompletely fanned-out stable never authorizes a prune), is warn-only and
+   idempotent, and needs no tag argument, so the same job also backfills any historical rc left over
+   from before the policy.
 
 The release helpers are idempotent (create-or-reuse + replace assets), so the forges can write the
-same release in any order, and the reconcile job can safely re-run them. Every release and its assets
-are kept indefinitely on all three registries — nothing is pruned, including superseded prereleases
-(reconcile deliberately walks *every* tag). If disk ever forces GC, teach `reconcile` a keep-set
-first, or a pruned rc would just be resurrected on the next run.
+same release in any order, and the reconcile job can safely re-run them. **Stable** releases and
+their assets are kept indefinitely on all three registries and re-reconciled every release.
+**Release candidates** are the one thing pruned: once a stable `vX.Y.Z` is fully published on all
+three registries, the `prune-rcs` job removes every `vX.Y.Z-rc.N` release and tag — and because the
+`dreame-valetudo-rc` formula has already fallen through to that stable, the rc brew channel keeps
+resolving with no surviving-rc to keep. The prune is gated on the stable being present everywhere and
+is warn-only, so it can never make a valid stable disappear; reconcile still walks every *surviving*
+tag.
 
 Before merge, GitHub's native arm64 and Intel runners execute the Python, Ruff, mypy, ShellCheck,
 research self-test, and integration suites for every mirrored branch commit. Forgejo's `macos` job
@@ -74,7 +88,9 @@ bump. It stamps a `-rc.N` version onto a **tag only** (the branch, CHANGELOG, an
 untouched), then the same `publish.yml` + `release-macos.yml` build the `.deb` / `.pkg` / tarball
 and publish them as a GitHub + Forgejo **prerelease** — never marked "latest", and the Homebrew tap
 stays on the last stable. When an rc checks out on hardware, cut the matching stable release the
-normal way; no dev branch is required (though you can dispatch from one).
+normal way — that publishes the stable, re-points the `dreame-valetudo-rc` formula at it, and prunes
+the version's now-superseded rc releases and tags; no dev branch is required (though you can dispatch
+from one).
 
 ## One-time setup
 

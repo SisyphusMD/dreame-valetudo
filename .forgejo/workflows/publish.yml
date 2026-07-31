@@ -3,7 +3,8 @@ name: Publish
 # Tag-triggered (from release.yml / prerelease.yml): build both .debs + the tarball and create the
 # release on each forge. The GitHub mirror's release-macos.yml appends the signed .pkgs; the
 # reconcile job here fans every asset out to all three registries (and backfills any historical gap).
-# See packaging/README.md for the secrets.
+# On a STABLE tag a final prune-rcs job (after tap + reconcile) sweeps the rc releases/tags that the
+# now fully fanned-out stable supersedes. See packaging/README.md for the secrets.
 on:
   push:
     # Stable (v1.2.3) and prerelease (v1.2.3-rc.N) tags both build here; the release helpers mark
@@ -152,8 +153,10 @@ jobs:
           set -euo pipefail
           # The tap is Forgejo-primary: write the formula here, and the tap's own sync_on_commit
           # push-mirror fans this commit out to GitHub (where `brew` fetches it) + NAS. A stable tag
-          # writes Formula/dreame-valetudo.rb; a prerelease tag writes the separate
-          # Formula/dreame-valetudo-rc.rb, so the stable formula never points at a candidate build.
+          # writes BOTH Formula/dreame-valetudo.rb and the rc formula re-pointed at the same stable
+          # tarball (fall-through, so the rc channel keeps resolving once its rc releases are pruned);
+          # a prerelease tag writes only Formula/dreame-valetudo-rc.rb, so the stable formula never
+          # points at a candidate build.
           AUTH="http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
           git -c "$AUTH" clone "${GITHUB_SERVER_URL}/SisyphusMD/homebrew-tap.git" tap
           chmod +x packaging/update-tap.sh
@@ -203,3 +206,29 @@ jobs:
           chmod +x packaging/reconcile-releases.sh packaging/forgejo-release.sh packaging/github-release.sh
           bash packaging/reconcile-releases.sh || fail=1
           exit "$fail"
+
+  prune-rcs:
+    name: Prune the rc releases/tags a shipped stable supersedes (stable tags only)
+    # STABLE tags only: an rc tag (hyphenated) never prunes. Runs AFTER homebrew-tap has re-pointed
+    # the rc formula at the stable AND after reconcile has confirmed the stable is fanned out to all
+    # three registries — the default needs-success gate means a failed reconcile (stable not fully
+    # published) skips the prune, so the rc formula is never left pointing at a deleted rc.
+    needs: [homebrew-tap, reconcile]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Sweep every rc a fully fanned-out stable now supersedes
+        env:
+          CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
+          GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
+        run: |
+          set -uo pipefail
+          chmod +x packaging/prune-superseded-rcs.sh
+          # Warn-only: a prune problem must never fail the release or make a valid stable disappear.
+          # The sweep enumerates from the registries and self-verifies each stable, so it needs no tag
+          # argument; it exits 0 on every recoverable path, and this guard keeps the job green even if
+          # it ever returns nonzero.
+          bash packaging/prune-superseded-rcs.sh \
+            || echo "::warning::prune-superseded-rcs exited nonzero; the stable release is unaffected"
