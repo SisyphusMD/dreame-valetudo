@@ -531,6 +531,18 @@ for r in cluster nas github; do
       || fail "prune did not delete the $rtag release on $r"
     grep -Eq -- "DELETE .*$hre.*/git/refs/tags/$tre\$" "$calls" \
       || fail "prune did not delete the $rtag git tag via the git-refs endpoint on $r"
+    # Forgejo strands a tag DB row a git-refs delete can't clear; the plain /tags/<name> route must
+    # also be issued on the two Forgejo registries (invisible to the read APIs, so proven by the call,
+    # not by state). GitHub has no such row and must NOT be hit on that route.
+    # The DB-row route is <repo>/tags/<tag>; anchor on the repo name so it never matches the
+    # <repo>/git/refs/tags/<tag> ref route (which also contains "/tags/").
+    if [ "$r" = github ]; then
+      ! grep -Eq -- "DELETE .*$hre.*/dreame-valetudo/tags/$tre\$" "$calls" \
+        || fail "prune hit the /tags DB-row route on github, which has no such row"
+    else
+      grep -Eq -- "DELETE .*$hre.*/dreame-valetudo/tags/$tre\$" "$calls" \
+        || fail "prune did not clear the $rtag Forgejo tag DB row via /tags/<name> on $r"
+    fi
     ! release_in_state "$stateA" "$r" "$rid" \
       || fail "prune left the $rtag release in $r's live list (removal not verified)"
     ! tagref_in_state "$stateA" "$r" "$rtag" \

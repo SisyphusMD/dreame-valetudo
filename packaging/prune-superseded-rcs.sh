@@ -38,9 +38,12 @@
 #   * The release must be deleted BEFORE its tag: Forgejo 409s on deleting a tag that still has an
 #     attached release, and a tag-first delete would strand the untagged draft the list enumeration
 #     never revisits.
-#   * The tag is deleted through the git-refs endpoint (Forgejo/GitHub both:
-#     DELETE .../git/refs/tags/<tag>), not the plain .../tags/<name> route, which on Forgejo can
-#     return 404 while the git ref survives.
+#   * The tag ref is deleted (and VERIFIED) through the git-refs endpoint (Forgejo/GitHub both:
+#     DELETE .../git/refs/tags/<tag>). On Forgejo that leaves a stale tag DB row the Releases UI still
+#     shows though every read API reports the tag gone; the plain .../tags/<name> route (what the UI
+#     "Delete tag" button calls) clears that row once no release is attached, so it is also issued on
+#     the Forgejo registries, best-effort, in the same pass — the row is invisible to the read APIs and
+#     cannot be verified, so it is fire-and-clean, never a gate.
 #   * An HTTP 204 or 404 is NOT proof the object is gone. Removal is confirmed only by RE-READING the
 #     release LIST (release absent) and the git refs (tag ref absent), retried a few times to ride out
 #     eventual consistency. If residue survives every try the registry+rc is named and the sweep moves
@@ -81,13 +84,24 @@ registry_releases_api() {
 }
 
 # The git tag (ref) endpoint, used for BOTH the DELETE and the verifying GET. Forgejo and GitHub agree
-# on the git-refs shape .../git/refs/tags/<tag>; the plain .../tags/<name> route is deliberately not
-# used (on Forgejo it can 404 while the ref survives).
+# on the git-refs shape .../git/refs/tags/<tag>; the git ref is the source of truth for verification.
 registry_tag_ref_url() {
   case "$1" in
     cluster) printf 'https://%s/api/v1/repos/%s/git/refs/tags/%s' "$CLUSTER_HOST" "$REPO" "$2" ;;
     nas)     printf 'https://%s/api/v1/repos/%s/git/refs/tags/%s' "$NAS_HOST" "$REPO" "$2" ;;
     github)  printf 'https://api.github.com/repos/%s/git/refs/tags/%s' "$REPO" "$2" ;;
+  esac
+}
+
+# Forgejo only: the plain .../tags/<name> route. A git-refs delete removes the ref but STRANDS
+# Forgejo's own tag DB row — the Releases UI keeps showing the tag though git, the git-refs API, the
+# /tags list API, and /releases all report it gone. That row is invisible to every read API, so it
+# cannot be verified; this endpoint (what the UI "Delete tag" button uses) clears it once no release
+# is attached, and is issued best-effort after the ref delete. GitHub has no such split.
+registry_tag_db_url() {
+  case "$1" in
+    cluster) printf 'https://%s/api/v1/repos/%s/tags/%s' "$CLUSTER_HOST" "$REPO" "$2" ;;
+    nas)     printf 'https://%s/api/v1/repos/%s/tags/%s' "$NAS_HOST" "$REPO" "$2" ;;
   esac
 }
 
@@ -227,6 +241,7 @@ remove_rc_on_registry() {
   if [ "$dry_run" = true ]; then
     [ -n "$id" ] && http_delete "$registry" "$(registry_releases_api "$registry")/$id"
     http_delete "$registry" "$(registry_tag_ref_url "$registry" "$tag")"
+    [ "$registry" != github ] && http_delete "$registry" "$(registry_tag_db_url "$registry" "$tag")"
     return 0
   fi
   for ((attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++)); do
@@ -238,11 +253,17 @@ remove_rc_on_registry() {
     #    delete has not taken yet, the tag is deliberately left alone this pass and retried, so a
     #    still-attached release is never turned into a stranded untagged draft.
     if release_absent "$registry" "$id"; then
+      if ! tag_ref_absent "$registry" "$tag"; then
+        http_delete "$registry" "$(registry_tag_ref_url "$registry" "$tag")"
+      fi
       if tag_ref_absent "$registry" "$tag"; then
+        # 3. Ref gone: clear Forgejo's stale tag DB row (invisible to the read APIs, see
+        #    registry_tag_db_url). The /tags/<name> route is reliable only once no ref/release is
+        #    attached, so it runs here, after the ref is verified gone. Best-effort — the row cannot
+        #    be re-read to confirm, and github has no such row.
+        [ "$registry" != github ] && http_delete "$registry" "$(registry_tag_db_url "$registry" "$tag")"
         return 0
       fi
-      http_delete "$registry" "$(registry_tag_ref_url "$registry" "$tag")"
-      tag_ref_absent "$registry" "$tag" && return 0
     fi
     [ "$attempt" -lt "$RETRY_ATTEMPTS" ] && sleep "$RETRY_SLEEP"
   done
