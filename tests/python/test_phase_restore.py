@@ -1196,7 +1196,7 @@ def test_restore_rechecks_the_kit_after_hardware_preparation_before_any_write(
             return Result(argv, 0, f"OKAY {_CONFIG}\n", "")
         return Result(argv, 0, "OKAY\n", "")
 
-    ctx.runner._responder = mutate_on_identity_check  # type: ignore[attr-defined]
+    ctx.runner.responder = mutate_on_identity_check  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match="changed while hardware was being prepared"):
         restore(ctx)

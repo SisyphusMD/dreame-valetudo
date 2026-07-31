@@ -43,7 +43,7 @@ def test_fetch_refuses_stage1_on_checksum_mismatch(make_ctx: CtxFactory) -> None
             _write_curl_target(argv, b"tampered stage1")  # won't match the pinned sha
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="checksum mismatch"):
         fetch(ctx)
     assert not ctx.stage1_tgz.exists()  # refused + removed
@@ -66,7 +66,7 @@ def test_fetch_verifies_and_reaches_cache_ready(
             _write_curl_target(argv, b"s1")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch(ctx)
     kinds = ctx.console.text()  # type: ignore[attr-defined]
     assert "Cache ready." in kinds
@@ -91,7 +91,7 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
             _write_curl_target(argv, data)
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="digest mismatch"):
         fetch(ctx)
     assert not ctx.valetudo_bin.exists()  # refused + removed
@@ -115,7 +115,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
             (target / "nested" / "fsbl_ddr4.bin").write_text("new fsbl")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_mod.fetch_stage1(ctx)
 
     assert ctx.payload_bin.read_text() == "new payload"
@@ -138,7 +138,7 @@ def test_failed_stage1_reextraction_cannot_leave_old_payloads_usable(
             return Result(argv, 2, "", "corrupt archive")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     with pytest.raises(Die, match="extract failed"):
         fetch_mod.fetch_stage1(ctx)
 
@@ -162,7 +162,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
             _write_curl_target(argv, b"valetudo")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
 
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
@@ -217,6 +217,6 @@ def test_fetch_valetudo_can_explicitly_accept_an_unverified_override(
             _write_curl_target(argv, b"custom valetudo")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
     assert ctx.valetudo_bin.read_bytes() == b"custom valetudo"

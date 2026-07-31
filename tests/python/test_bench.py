@@ -27,7 +27,7 @@ def _prepare_host_smoke(ctx: object, monkeypatch: pytest.MonkeyPatch) -> None:
     entrypoint = "/test/bin/dreame-valetudo"
     monkeypatch.setattr(B.sys, "argv", [entrypoint])
     monkeypatch.setattr(B.shutil, "which", lambda name: entrypoint if name == "dreame-valetudo" else None)
-    previous = ctx.runner._responder  # type: ignore[attr-defined]
+    previous = ctx.runner.responder  # type: ignore[attr-defined]
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv == (entrypoint, "version"):
@@ -36,7 +36,7 @@ def _prepare_host_smoke(ctx: object, monkeypatch: pytest.MonkeyPatch) -> None:
             return Result(argv, 0, "Supported models\n", "")
         return previous(argv) if previous is not None else Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
 
 
 def _arm_h3(ctx: object) -> None:

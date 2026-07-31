@@ -179,12 +179,12 @@ class RecordingRunner(Runner):
     def __init__(
         self,
         responder: Callable[[tuple[str, ...]], Result] | None = None,
-        redirect_responder: Callable[[tuple[str, ...], str | None, str | None], Result] | None
-        = None,
     ) -> None:
         self.calls: list[tuple[str, ...]] = []
-        self._responder = responder
-        self._redirect_responder = redirect_responder
+        self.responder = responder
+        self.redirect_responder: (
+            Callable[[tuple[str, ...], str | None, str | None], Result] | None
+        ) = None
 
     def run(
         self,
@@ -196,7 +196,7 @@ class RecordingRunner(Runner):
     ) -> Result:
         av = tuple(str(a) for a in argv)
         self.calls.append(av)
-        result = self._responder(av) if self._responder else Result(av, 0, "", "")
+        result = self.responder(av) if self.responder else Result(av, 0, "", "")
         if check and not result.ok:
             raise RunError(result)
         return result
@@ -212,8 +212,8 @@ class RecordingRunner(Runner):
     ) -> Result:
         av = tuple(str(a) for a in argv)
         self.calls.append(av)
-        if self._redirect_responder:
-            result = self._redirect_responder(av, stdout_path, stdin_path)
+        if self.redirect_responder:
+            result = self.redirect_responder(av, stdout_path, stdin_path)
         else:
             result = Result(av, 0, "", "")
         if check and not result.ok:

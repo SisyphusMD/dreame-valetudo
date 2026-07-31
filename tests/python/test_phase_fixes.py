@@ -262,7 +262,7 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         streamed_modes.append(stat.S_IMODE(Path(stdin_path).stat().st_mode))
         return Result(argv, 0, "", "")
 
-    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = redirect
     fix_impl(ctx)
     remotes = [_remote(c) for c in ctx.runner.calls]  # type: ignore[attr-defined]
     # Staged, then published atomically: the config streams to a temp path and only supersedes the
@@ -409,13 +409,13 @@ def test_fix_key_retries_an_interrupted_two_file_repair(make_ctx: CtxFactory) ->
         return Result(argv, 0, "", "")
 
     first = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
-    first.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    first.runner.redirect_responder = redirect
     with pytest.raises(Die, match="Failed to apply"):
         fix_key(first)
     assert state["factory"] == "A1b2C3d4E5f6G7h8" and state["configured"] == ""
 
     retry = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
-    retry.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    retry.runner.redirect_responder = redirect
     assert fix_key(retry) is True
     assert state["configured"] == state["factory"]
 
@@ -440,7 +440,7 @@ def test_fix_key_streams_the_secret_from_an_owner_only_tempfile(
         seen.append((path.read_text(), stat.S_IMODE(path.stat().st_mode)))
         return Result(argv, 0, "", "")
 
-    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = redirect
     assert fix_key(ctx) is True
     assert seen == [("A1b2C3d4E5f6G7h8", 0o600)]
     assert not list(ctx.ws.base.glob(".mikey.*"))
@@ -547,7 +547,7 @@ def test_fix_impl_rejects_another_selected_robot_before_any_write(
     ctx = make_ctx(model="x40-ultra", responder=responder)
     _bind_recon_robot(ctx)
     redirects: list[tuple[str, ...]] = []
-    ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = (
         lambda argv, _stdout, _stdin: redirects.append(argv) or Result(argv, 0, "", "")
     )
 
@@ -602,7 +602,7 @@ def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(
     )
     ctx = make_ctx(model="x40-ultra", responder=r)
     _bind_recon_robot(ctx)
-    ctx.runner._redirect_responder = (  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = (
         lambda argv, _stdout, _stdin: Result(argv, 1, "", "connection lost")
     )
 

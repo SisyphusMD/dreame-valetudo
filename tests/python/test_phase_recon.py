@@ -982,7 +982,7 @@ def test_a_failed_repull_leaves_the_previous_recovery_capture_intact(
             return Result(argv, 0, f"OKAY {CFG}", "")
         return Result(argv, 0, "OKAY", "")
 
-    ctx.runner._responder = failing  # type: ignore[attr-defined]
+    ctx.runner.responder = failing  # type: ignore[attr-defined]
     assert recon_module._pull_recovery_backup(ctx, robot) is False
 
     for name, blob in good.items():
@@ -1015,7 +1015,7 @@ def test_a_failed_repull_leaves_the_surviving_capture_usable_by_the_restore_gate
             return Result(argv, 0, f"OKAY {CFG}", "")
         return Result(argv, 0, "OKAY", "")
 
-    ctx.runner._responder = failing  # type: ignore[attr-defined]
+    ctx.runner.responder = failing  # type: ignore[attr-defined]
     recon(ctx, recovery_backup=True, force=True)
 
     assert recovery_backup_valid(robot.recon_dir)

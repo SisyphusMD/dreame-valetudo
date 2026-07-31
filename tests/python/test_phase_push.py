@@ -198,8 +198,8 @@ def _update_ctx(
             )
         return base(argv)  # type: ignore[operator]
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
     return ctx
 
 
@@ -265,7 +265,7 @@ def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_i
 ) -> None:
     ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, False])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
-    base = ctx.runner._responder  # type: ignore[attr-defined]
+    base = ctx.runner.responder  # type: ignore[attr-defined]
 
     def unreadable(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl":
@@ -273,7 +273,7 @@ def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_i
         assert base is not None
         return base(argv)
 
-    ctx.runner._responder = unreadable  # type: ignore[attr-defined]
+    ctx.runner.responder = unreadable  # type: ignore[attr-defined]
 
     with pytest.raises(UserAbort, match="left unchanged"):
         update_valetudo(ctx)
@@ -289,7 +289,7 @@ def test_update_valetudo_can_replace_an_unreadable_adopted_installation_delibera
 ) -> None:
     ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, True])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
-    base = ctx.runner._responder  # type: ignore[attr-defined]
+    base = ctx.runner.responder  # type: ignore[attr-defined]
 
     def unreadable(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl":
@@ -297,7 +297,7 @@ def test_update_valetudo_can_replace_an_unreadable_adopted_installation_delibera
         assert base is not None
         return base(argv)
 
-    ctx.runner._responder = unreadable  # type: ignore[attr-defined]
+    ctx.runner.responder = unreadable  # type: ignore[attr-defined]
 
     assert update_valetudo(ctx) is True
     assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
@@ -327,7 +327,7 @@ def test_update_valetudo_preserves_live_binary_when_transfer_fails(make_ctx: Ctx
     ) -> Result:
         return Result(argv, 255, "", "connection lost")
 
-    ctx.runner._redirect_responder = fail_transfer  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = fail_transfer
 
     with pytest.raises(Die, match="installed binary was left untouched"):
         update_valetudo(ctx)
@@ -341,7 +341,7 @@ def test_update_valetudo_does_not_publish_a_robot_side_digest_failure(
     make_ctx: CtxFactory,
 ) -> None:
     ctx = _update_ctx(make_ctx, installed="2026.06.0")
-    previous = ctx.runner._responder  # type: ignore[attr-defined]
+    previous = ctx.runner.responder  # type: ignore[attr-defined]
 
     def fail_digest(argv: tuple[str, ...]) -> Result:
         if "sha256sum /data/.valetudo.update" in argv[-1]:
@@ -349,7 +349,7 @@ def test_update_valetudo_does_not_publish_a_robot_side_digest_failure(
         assert previous is not None
         return previous(argv)
 
-    ctx.runner._responder = fail_digest  # type: ignore[attr-defined]
+    ctx.runner.responder = fail_digest  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match="robot-side digest/install check"):
         update_valetudo(ctx)
@@ -391,7 +391,7 @@ def test_update_valetudo_refuses_a_live_robot_with_the_wrong_identity(
 ) -> None:
     ctx = _update_ctx(make_ctx, installed="2026.06.0")
     base = _text(model="dreame.vacuum.r2338", did="12345")
-    ctx.runner._responder = base  # type: ignore[attr-defined]
+    ctx.runner.responder = base  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match="selected robot"):
         update_valetudo(ctx)
@@ -407,7 +407,7 @@ def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None
     def responder(argv: tuple[str, ...]) -> Result:
         return Result(argv, 255, "", "ssh: connect timed out")  # `true` fails
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     assert push(ctx) is False
     assert "Join the ROBOT's own Wi-Fi AP" in ctx.console.text()  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("valetudo")
@@ -429,7 +429,7 @@ def test_push_uses_the_selected_robots_key_not_the_later_workspace_choice(
     def unreachable(argv: tuple[str, ...]) -> Result:
         return Result(argv, 255, "", "ssh: connect timed out")
 
-    ctx.runner._responder = unreachable  # type: ignore[attr-defined]
+    ctx.runner.responder = unreachable  # type: ignore[attr-defined]
     assert push(ctx) is False
     probe = next(c for c in ctx.runner.calls if c[-1] == "true")  # type: ignore[attr-defined]
     assert str(first) in probe
@@ -452,7 +452,7 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
             return Result(argv, 0, "", "")
         return Result(argv, 255, "", "ssh: connect timed out")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
     assert push(ctx) is False
 
     calls = ctx.runner.calls  # type: ignore[attr-defined]
@@ -465,7 +465,7 @@ def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
     make_ctx: CtxFactory,
 ) -> None:
     ctx = _ctx(make_ctx)
-    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
         argv, 7, "", "Could not resolve host"
     )
 
@@ -507,7 +507,7 @@ def test_push_warns_when_a_cached_binary_cannot_be_reverified_without_curl(
         "dreame_valetudo.phases.doctor.shutil.which",
         lambda tool: None if tool == "curl" else f"/usr/bin/{tool}",
     )
-    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
         argv, 255, "", "ssh: connect timed out"
     )
 
@@ -545,7 +545,7 @@ def test_push_reports_auth_failure_with_the_offered_key(
     key.write_text("PRIVATE")
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = lambda argv: Result(  # type: ignore[attr-defined]
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
         argv, 255, "", "Permission denied (publickey)."
     )
 
@@ -559,7 +559,7 @@ def test_push_reports_auth_failure_with_the_offered_key(
 def test_push_refuses_the_router(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(is_dreame=False)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(is_dreame=False)  # type: ignore[attr-defined]
     with pytest.raises(Die, match="NOT a Dreame"):
         push(ctx)
 
@@ -569,14 +569,14 @@ def test_push_refuses_a_different_live_robot_before_starting_a_backup(
 ) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="dreame.vacuum.r9316")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="dreame.vacuum.r9316")  # type: ignore[attr-defined]
     redirects: list[tuple[str, ...]] = []
 
     def redirect(argv: tuple[str, ...], _out: str | None, _in: str | None) -> Result:
         redirects.append(argv)
         return Result(argv, 0, "", "")
 
-    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = redirect
 
     with pytest.raises(Die, match=r"selected robot is Dreame X40 Ultra.*reports.*r9316"):
         push(ctx)
@@ -596,7 +596,7 @@ def test_push_distinguishes_the_r2338h_revision_even_though_its_impl_class_is_sh
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="dreame.vacuum.r2338h")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="dreame.vacuum.r2338h")  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match=r"selected robot is Dreame L10s Pro Ultra Heat.*r2338h"):
         push(ctx)
@@ -611,8 +611,8 @@ def test_push_requires_physical_confirmation_when_the_live_model_is_missing(
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert push(ctx) is True
     backup = next(ctx.backups_dir.iterdir())
@@ -629,7 +629,7 @@ def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_decline
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
 
     with pytest.raises(UserAbort, match=r"not physically confirmed.*No backup or install"):
         push(ctx)
@@ -644,7 +644,7 @@ def test_push_refuses_a_missing_live_model_noninteractively(make_ctx: CtxFactory
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match=r"physical model check is required.*no backup or install"):
         push(ctx)
@@ -658,7 +658,7 @@ def test_push_refuses_an_unrecognized_live_model_identifier(
 ) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model=reported)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model=reported)  # type: ignore[attr-defined]
 
     with pytest.raises(Die, match=r"SAFETY STOP.*connected robot reports"):
         push(ctx)
@@ -669,8 +669,8 @@ def test_push_refuses_an_unrecognized_live_model_identifier(
 def test_push_accepts_a_known_model_alias_for_the_selected_profile(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="dreame.vacuum.r2449")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="dreame.vacuum.r2449")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert push(ctx) is True
     backup = next(ctx.backups_dir.iterdir())
@@ -682,8 +682,8 @@ def test_push_accepts_a_known_model_alias_for_the_selected_profile(make_ctx: Ctx
 def test_push_dies_on_empty_backup(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(files_size=10)  # too small  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(files_size=10)  # too small
     with pytest.raises(Die, match="backup came back empty"):
         push(ctx)
 
@@ -704,8 +704,8 @@ def test_push_discards_an_unverifiable_backup_before_manifesting_it(
 ) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(files_size=32 * 1024, failure=failure)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(files_size=32 * 1024, failure=failure)
 
     with pytest.raises(Die, match=message):
         push(ctx)
@@ -719,7 +719,7 @@ def test_push_discards_an_interrupted_backup_instead_of_leaving_a_decoy(
 ) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
     normal = _redirect()
 
     def interrupt(argv: tuple[str, ...], stdout_path: str | None, stdin_path: str | None) -> Result:
@@ -728,7 +728,7 @@ def test_push_discards_an_interrupted_backup_instead_of_leaving_a_decoy(
             raise KeyboardInterrupt
         return normal(argv, stdout_path, stdin_path)
 
-    ctx.runner._redirect_responder = interrupt  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = interrupt
 
     with pytest.raises(KeyboardInterrupt):
         push(ctx)
@@ -745,8 +745,8 @@ def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
     # unmatched /etc/*.pem glob. The members, not the status, decide whether the backup is good.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure=failure)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure=failure)
     assert push(ctx) is True
     assert list(ctx.backups_dir.glob("*/manifest.json"))
 
@@ -762,8 +762,8 @@ def test_push_accepts_a_robot_that_carries_no_recovery_pems(
     # not a defect: validate the PEMs when the robot has them, never demand them.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure=failure)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure=failure)
 
     assert push(ctx) is True
 
@@ -774,8 +774,8 @@ def test_push_accepts_a_robot_that_carries_no_recovery_pems(
 def test_push_refuses_a_valid_archive_without_both_factory_trees(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-missing-misc")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-missing-misc")
     with pytest.raises(Die, match="missing the factory members"):
         push(ctx)
     assert not list(ctx.backups_dir.glob("*/manifest.json"))
@@ -785,8 +785,8 @@ def test_push_refuses_a_valid_archive_without_both_factory_trees(make_ctx: CtxFa
 def test_push_refuses_factory_directories_that_contain_no_files(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(
         files_size=32 * 1024, failure="files-directories-only",
     )
 
@@ -809,8 +809,8 @@ def test_push_refuses_an_archive_missing_an_unambiguous_factory_identity(
 ) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(
         files_size=32 * 1024, failure=failure,
     )
 
@@ -824,8 +824,8 @@ def test_push_refuses_an_archive_missing_an_unambiguous_factory_identity(
 def test_push_refuses_an_archive_recorded_against_another_robot(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-wrong-config")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-wrong-config")
 
     with pytest.raises(Die, match="carries a different robot's factory config"):
         push(ctx)
@@ -837,8 +837,8 @@ def test_push_refuses_an_archive_recorded_against_another_robot(make_ctx: CtxFac
 def test_push_tolerates_a_blank_factory_did_in_the_archive(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-empty-did")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-did")
 
     assert push(ctx) is True
 
@@ -847,8 +847,8 @@ def test_published_manifest_binds_the_exact_validated_archive(make_ctx: CtxFacto
     ctx = _ctx(make_ctx)
     robot = ctx.need_robot()
     robot.state_set("rooted", "adopted-existing")
-    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(files_size=4096)  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(files_size=4096)
 
     assert backup(ctx) is True
 
@@ -872,8 +872,8 @@ def test_legacy_backups_without_a_recorded_digest_stay_valid(make_ctx: CtxFactor
     ctx = _ctx(make_ctx)
     robot = ctx.need_robot()
     robot.state_set("rooted", "adopted-existing")
-    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert backup(ctx) is True
 
@@ -899,8 +899,8 @@ def test_empty_factory_key_preserves_the_secure_storage_copy_beside_the_backup(
             return Result(argv, 0, "MI_DID = 5\nMI_KEY = A1b2C3d4E5f6G7h8\n", "")
         return normal(argv)  # type: ignore[operator]
 
-    ctx.runner._responder = secure_storage  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+    ctx.runner.responder = secure_storage  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
 
     assert push(ctx) is True
 
@@ -923,8 +923,8 @@ def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
     # can behave that way, so an unexpected empty key is reported rather than treated as fatal.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(key="")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(key="")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
 
     assert ctx.profile.key_in_secure_storage == "no"
     assert push(ctx) is True
@@ -938,8 +938,8 @@ def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
 def test_push_refuses_a_different_same_model_robot_by_factory_config(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    normal = ctx.runner._responder  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    normal = ctx.runner.responder  # type: ignore[attr-defined]
 
     def wrong_robot(argv: tuple[str, ...]) -> Result:
         if "grep -E '^(model|did)='" in argv[-1]:
@@ -949,7 +949,7 @@ def test_push_refuses_a_different_same_model_robot_by_factory_config(make_ctx: C
             )
         return normal(argv)
 
-    ctx.runner._responder = wrong_robot  # type: ignore[attr-defined]
+    ctx.runner.responder = wrong_robot  # type: ignore[attr-defined]
     with pytest.raises(Die, match="factory config does not match"):
         push(ctx)
     assert not any("tar czf" in call[-1] or call[-1] == "cat > /data/valetudo"
@@ -970,7 +970,7 @@ def test_live_identity_accepts_same_robot_with_changed_session_config_suffix(
             )
         return normal(argv)  # type: ignore[operator]
 
-    ctx.runner._responder = changed_session  # type: ignore[attr-defined]
+    ctx.runner.responder = changed_session  # type: ignore[attr-defined]
 
     identity = _live_robot_identity(ctx, None, CFG)
 
@@ -980,8 +980,8 @@ def test_live_identity_accepts_same_robot_with_changed_session_config_suffix(
 def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(did="-117604433")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="-117604433")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
     assert push(ctx) is True
     assert ctx.backups_dir.stat().st_mode & 0o777 == 0o700
     assert ctx.need_robot().state_get("valetudo") == ctx.valetudo_version
@@ -1007,8 +1007,8 @@ def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
     robot = ctx.need_robot()
     robot.state_set("rooted", "adopted-existing")
     robot.state_set("valetudo", "adopted-existing")
-    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert backup(ctx) is True
 
@@ -1031,8 +1031,8 @@ def test_capture_issues_exactly_the_pinned_remote_commands(make_ctx: CtxFactory)
     # PEMs optional, so it must not turn into a shell program that demands them.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert push(ctx) is True
 
@@ -1066,8 +1066,8 @@ def test_standalone_backup_and_push_have_the_same_capture_transcript(
 
     standalone = _ctx(make_ctx)
     standalone.need_robot().state_set("rooted", "adopted-existing")
-    standalone.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
-    standalone.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    standalone.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    standalone.runner.redirect_responder = _redirect()
     assert backup(standalone)
     standalone_calls = capture_calls(standalone)
 
@@ -1090,7 +1090,7 @@ def test_standalone_backup_preserves_a_prior_generation_when_refresh_is_interrup
     prior = ctx.backups_dir / "prior-good"
     prior.mkdir(parents=True)
     (prior / "sentinel").write_text("preserve")
-    ctx.runner._responder = _text(did="12345")  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
     normal = _redirect()
 
     def interrupt(
@@ -1101,7 +1101,7 @@ def test_standalone_backup_preserves_a_prior_generation_when_refresh_is_interrup
             raise KeyboardInterrupt
         return normal(argv, stdout_path, stdin_path)
 
-    ctx.runner._redirect_responder = interrupt  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = interrupt
 
     with pytest.raises(KeyboardInterrupt):
         backup(ctx)
@@ -1145,8 +1145,8 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
             streamed.append(Path(stdin_path).read_text())
         return backup_redirect(argv, stdout_path, stdin_path)
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = redirect  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = redirect
     assert push(ctx) is True
     remotes = [c[-1] for c in ctx.runner.calls]  # type: ignore[attr-defined]
     assert any("key_orig.txt" in r for r in remotes)          # the key-restore write ran
@@ -1163,8 +1163,8 @@ def test_heat_model_prints_the_official_mcu_resync_guidance(make_ctx: CtxFactory
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(model="dreame.vacuum.r2338")  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(model="dreame.vacuum.r2338")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert push(ctx) is True
     output = ctx.console.text()  # type: ignore[attr-defined]
@@ -1190,8 +1190,8 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
             return Result(argv, 0, "12345\n", "")
         return Result(argv, 0, "", "")  # dreame_release.na -c 7 -> no MI_KEY
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
     assert push(ctx) is True  # completes; nothing to restore, so it just informs
     assert not any("key_orig.txt" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
@@ -1208,8 +1208,8 @@ def test_push_does_not_repair_identity_after_device_conf_read_failure(
             return Result(argv, 255, "", "SSH read failed")
         return normal(argv)  # type: ignore[operator]
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
     assert push(ctx) is True
     remotes = [call[-1] for call in ctx.runner.calls]  # type: ignore[attr-defined]
     assert not any("did_orig.txt" in remote or "key_orig.txt" in remote for remote in remotes)
@@ -1230,8 +1230,8 @@ def test_device_conf_read_preserves_the_file_read_exit_status(make_ctx: CtxFacto
 def test_push_warns_on_out_of_range_negative_did(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner._responder = _text(did="-5000000000")  # 64-bit negative, no uint32 repair  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text(did="-5000000000")  # 64-bit negative, no uint32 repair  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
     assert push(ctx) is True  # push still finishes; the un-repairable did is only warned about
     assert any(k == "warn" and "out of uint32 range" in m
                for k, m in ctx.console.lines)  # type: ignore[attr-defined]
@@ -1256,8 +1256,8 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
             return Result(argv, 0, "12345\n", "")
         return Result(argv, 0, "", "")
 
-    ctx.runner._responder = responder  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect(failure="files-empty-key")  # type: ignore[attr-defined]
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
     assert push(ctx) is True  # push still completes; the malformed key is skipped, not fatal
     assert not any("key_orig.txt" in c[-1] for c in ctx.runner.calls)  # type: ignore[attr-defined]
     assert not (next(ctx.backups_dir.iterdir()) / "secure-storage-mi-key.txt").exists()
@@ -1273,8 +1273,8 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     ctx.ws.base.mkdir(parents=True, exist_ok=True)
     (ctx.ws.base / "id_dreame").write_text("PRIV")
     (ctx.ws.base / "id_dreame.pub").write_text("PUB")
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
     assert push(ctx) is True
     backups = list((home / "dreame-valetudo" / "backups").glob("*"))
     assert backups, "no factory backup dir created"
@@ -1309,8 +1309,8 @@ def test_push_warns_and_omits_a_dedicated_key_copy_that_failed(
         return str(real_copy(src, dst))
 
     monkeypatch.setattr("dreame_valetudo.phases.push.shutil.copyfile", fail_private)
-    ctx.runner._responder = _text()  # type: ignore[attr-defined]
-    ctx.runner._redirect_responder = _redirect()  # type: ignore[attr-defined]
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
 
     assert push(ctx) is True
 
