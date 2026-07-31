@@ -741,6 +741,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     elif cmd == "auto":
         auto(ctx, rest)
     else:
+        # Only reachable if a robot command is ever added to _ROBOT_COMMANDS without a matching
+        # branch here — must error visibly rather than fall through to a silent success return.
         ctx.console.err(f"Unknown command: {cmd}")
         usage(ctx.console)
         return 1
