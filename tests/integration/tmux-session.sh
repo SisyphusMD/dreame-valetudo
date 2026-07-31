@@ -3,9 +3,8 @@
 #
 # The python suite drives a FAKE tmux, which cannot model the things this feature actually gets
 # wrong: the alternate screen (a client restores the terminal on exit, erasing everything the run
-# printed), the server's environment snapshot, or whether a wrapped run executes at all. 473 unit
-# tests once passed while the wrapper destroyed every run it started — these cases are the ones
-# that would have caught it.
+# printed), the server's environment snapshot, or whether a wrapped run executes at all — exactly
+# the failure modes a fake-tmux suite cannot observe.
 #
 # Each case runs the real binary under a real pty, in an isolated HOME and on a private tmux
 # server. No hardware: only commands that stop before touching a robot.
@@ -248,7 +247,7 @@ elif command -v dreame-valetudo >/dev/null 2>&1; then
   TOOL=(dreame-valetudo)
 else
   # Deliberately a failure, not a skip: skipping here would hide a broken wrapper behind a missing
-  # toolchain, which is exactly how this feature stayed broken through 473 green tests.
+  # toolchain instead of surfacing it, defeating the whole point of this suite.
   fail "neither an installed dreame-valetudo nor uv is available to run the tool"
 fi
 

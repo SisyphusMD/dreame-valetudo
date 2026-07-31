@@ -66,6 +66,7 @@ RB
 test_home="$tmp/home"
 mkdir -p "$test_home/dreame-valetudo/backups"
 printf 'keep\n' > "$test_home/dreame-valetudo/backups/uninstall-must-preserve"
+# GitHub's macOS runners pre-tap aws/tap; Homebrew 6.0+ warns on it as untrusted, so drop it first.
 brew untap aws/tap 2>/dev/null || true
 brew tap-new --no-git "$tap"
 tap_created=true
