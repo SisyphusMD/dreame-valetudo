@@ -241,8 +241,11 @@ cp "$source" "$out"
 STUB
 chmod +x "$tmp/curl"
 
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/pyproject.toml" | head -1)"
-[ -n "$version" ] || fail "could not read the project version"
+# A fixed stable fixture version, stamped like the rc case below: the ambient checkout's version
+# may be rc-shaped (the release gate qualifies the STAMPED tree), which would route update-tap.sh
+# to the rc formula while the stable assertions below read the stable one.
+version="9.7.0"
+stamp_version "$version"
 tap="$tmp/tap"
 build_expected "$version"
 export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
