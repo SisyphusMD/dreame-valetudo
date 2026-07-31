@@ -1,0 +1,51 @@
+name: Prune superseded RCs (manual)
+
+# On-demand rc sweep, run by a maintainer between releases. publish.yml already prunes automatically
+# on every STABLE tag (after tap + reconcile); this workflow exposes the SAME script by hand so a
+# backlog can be cleared without waiting for the next stable — e.g. before 0.3.0 ships. It runs with
+# the workflow's own write tokens, so no local credentials are needed. The script is self-verifying:
+# it enumerates every vX.Y.Z-rc.N across all three registries and deletes a group only once its stable
+# is published everywhere with an identical, non-empty asset set (all-three-or-none, idempotent), so
+# it needs no tag argument. Preview with dry_run (the default) before running for real. Intended for
+# backlog whose stable long since re-pointed the `dreame-valetudo-rc` tap formula at itself; run a
+# real sweep only once the superseding stable's tap update has succeeded, so the rc brew channel keeps
+# resolving through the stable after its rc releases are gone.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only: report what would be pruned, issue zero deletes"
+        type: boolean
+        default: true
+
+jobs:
+  prune-rcs:
+    name: Sweep every rc a fully fanned-out stable now supersedes
+    runs-on: ubuntu-latest
+    steps:
+      # A registry-wide destructive sweep must run the REVIEWED main-branch script, never a dispatched
+      # branch's copy: the prune is global (branch content is irrelevant to what it deletes) and the
+      # automatic path runs the tagged, main-derived script. Pinning to main keeps the CURRENT deletion
+      # guards in force even when the dispatch was triggered from a stale or feature branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Run the rc prune sweep (dry-run unless dry_run is false)
+        env:
+          CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
+          GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+          chmod +x packaging/prune-superseded-rcs.sh
+          # Fail closed: default to --dry-run and drop it ONLY on an explicit "false". An absent or
+          # malformed dry_run (e.g. an API dispatch that omits the input) then stays a preview and never
+          # authorizes a real deletion. The input's own default is true, so the UI preselects preview.
+          args=(--dry-run)
+          [ "$DRY_RUN" = "false" ] && args=()
+          # Warn-only: a prune problem must never fail this run or make a valid stable disappear. The
+          # sweep self-verifies each stable and exits 0 on every recoverable path; this guard keeps the
+          # job green even if it ever returns nonzero.
+          bash packaging/prune-superseded-rcs.sh "${args[@]}" \
+            || echo "::warning::prune-superseded-rcs exited nonzero; no stable release is affected"
