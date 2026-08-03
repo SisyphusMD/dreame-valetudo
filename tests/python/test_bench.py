@@ -687,6 +687,39 @@ def test_legacy_root_adoption_scenario_requires_the_durable_no_flash_state(
     assert not ctx.need_robot().state_has("flash-attempt")
 
 
+def test_legacy_root_adoption_passes_with_a_real_unverified_provenance(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The sibling adoption tests stub _recovery_provenance_valid, so nothing exercised the real
+    # predicate against the record recon actually writes for an already-rooted robot. On hardware
+    # that combination failed the scenario with "recovery provenance is absent" even though the
+    # adoption itself completed correctly.
+    ctx = make_ctx(robot_name="bench")
+    _write_trusted_recovery_generation(ctx, monkeypatch)
+    robot = ctx.need_robot()
+    path = robot.recon_dir / B.PROVENANCE_FILE
+    provenance = json.loads(path.read_text())
+    provenance["firmware_state"] = "unverified"  # what recon writes when stock is NOT attested
+    path.write_text(json.dumps(provenance))
+
+    def adopt(inner: object, **_kwargs: object) -> None:
+        inner_robot = inner.need_robot()  # type: ignore[attr-defined]
+        inner_robot.state_set("root-origin", "adopted-existing")
+        inner_robot.state_set("rooted", "adopted-existing")
+        inner_robot.state_set("valetudo", "adopted-existing")
+
+    monkeypatch.setattr(B, "recon", adopt)
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+
+    assert B.bench(
+        ctx, ["run", "legacy-root-adoption", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["result"] == "passed"
+    assert result["evidence"]["recovery_provenance_present"] is True
+
+
 def test_legacy_root_adoption_scenario_rejects_a_plain_recon(
     make_ctx: CtxFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -1247,9 +1280,14 @@ def test_recovery_provenance_is_verified_against_identity_and_source_hashes(
     assert not B._recovery_provenance_valid(robot)
 
 
-def test_recovery_provenance_requires_stock_firmware_attestation(
+def test_recovery_provenance_accepts_an_adopted_robots_unverified_capture(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A robot rooted before this tool existed can never have a stock-attested capture, so gating
+    # provenance validity on the attestation left legacy-root-adoption and already-rooted-recon
+    # impossible to pass except by falsely attesting stock — which would also wrongly authorize
+    # restore to flash a rooted capture back as factory firmware. Whether the capture is a legal
+    # restore source stays gated in restore.py, on this same firmware_state.
     ctx = make_ctx(robot_name="bench")
     _write_trusted_recovery_generation(ctx, monkeypatch)
     robot = ctx.need_robot()
@@ -1258,7 +1296,7 @@ def test_recovery_provenance_requires_stock_firmware_attestation(
     provenance["firmware_state"] = "unverified"
     path.write_text(json.dumps(provenance))
 
-    assert not B._recovery_provenance_valid(robot)
+    assert B._recovery_provenance_valid(robot)
 
 
 def test_recovery_provenance_requires_every_recorded_generation_to_match(

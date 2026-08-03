@@ -1233,11 +1233,15 @@ def _recovery_provenance_valid(robot: Robot | None) -> bool:
         return False
     stored_config = provenance.get("config")
     parsed_stored_config = parse_config(stored_config) if isinstance(stored_config, str) else None
+    # Deliberately NOT gated on firmware_state. This answers "is there intact, identity-bound
+    # recovery evidence for this robot", not "may it be flashed back as stock" — the latter is
+    # gated in restore.py. An adopted robot's capture is legitimately "unverified" and still
+    # perfectly good un-brick evidence, so requiring stock attestation here made every
+    # already-rooted lifecycle unpassable unless the operator falsely attested stock.
     if (
         parsed_stored_config is None
         or not same_robot_config(parsed_stored_config, config)
         or provenance.get("model_key") != model_key
-        or provenance.get("firmware_state") != "stock-user-attested"
     ):
         return False
     expected = provenance.get("sources")
