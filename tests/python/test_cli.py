@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory, ScriptedConsole
+from conftest import VALETUDO_OLDER, VALETUDO_TARGET, CtxFactory, ScriptedConsole
 
 from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
@@ -751,14 +751,14 @@ def test_auto_offers_a_newer_verified_valetudo_for_an_adopted_robot(
     ctx = make_ctx(robot_name="bench", confirms=[True])
     robot = ctx.need_robot()
     robot.state_set("rooted")
-    robot.state_set("valetudo", "2026.06.0")
+    robot.state_set("valetudo", VALETUDO_OLDER)
     called: list[bool] = []
     monkeypatch.setattr(cli, "update_valetudo", lambda _ctx: called.append(True) or True)
 
     cli.auto(ctx, [])
 
     assert called == [True]
-    assert _has(ctx.console, "2026.06.0 -> 2026.07.0")  # type: ignore[arg-type]
+    assert _has(ctx.console, f"{VALETUDO_OLDER} -> {VALETUDO_TARGET}")  # type: ignore[arg-type]
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
 
 
@@ -766,7 +766,7 @@ def test_auto_can_leave_an_available_valetudo_update_for_later(make_ctx: CtxFact
     ctx = make_ctx(robot_name="bench", confirms=[False])
     robot = ctx.need_robot()
     robot.state_set("rooted")
-    robot.state_set("valetudo", "2026.06.0")
+    robot.state_set("valetudo", VALETUDO_OLDER)
 
     cli.auto(ctx, [])
 
@@ -781,7 +781,7 @@ def test_auto_does_not_offer_an_unproven_or_non_newer_valetudo_target(
     ctx = make_ctx(robot_name="bench")
     robot = ctx.need_robot()
     robot.state_set("rooted")
-    robot.state_set("valetudo", "2026.07.0")
+    robot.state_set("valetudo", VALETUDO_TARGET)
 
     cli.auto(ctx, [])
 

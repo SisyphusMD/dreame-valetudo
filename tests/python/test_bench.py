@@ -10,7 +10,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from conftest import CtxFactory
+from conftest import VALETUDO_NEWER, VALETUDO_OLDER, VALETUDO_TARGET, CtxFactory
 
 import dreame_valetudo.bench as B
 from dreame_valetudo.console import Die, UserAbort
@@ -574,7 +574,7 @@ def test_valetudo_update_scenario_runs_the_production_updater_and_records_observ
 ) -> None:
     ctx = make_ctx(robot_name="bench", confirms=[True])
     _prepare_valetudo_state(ctx)
-    ctx.need_robot().state_set("valetudo", "2026.06.0")
+    ctx.need_robot().state_set("valetudo", VALETUDO_OLDER)
 
     def complete(inner: object) -> bool:
         inner.need_robot().state_set("valetudo", inner.valetudo_version)  # type: ignore[attr-defined]
@@ -598,7 +598,7 @@ def test_valetudo_update_scenario_rejects_success_without_the_expected_version_m
 ) -> None:
     ctx = make_ctx(robot_name="bench")
     _prepare_valetudo_state(ctx)
-    ctx.need_robot().state_set("valetudo", "2026.06.0")
+    ctx.need_robot().state_set("valetudo", VALETUDO_OLDER)
     monkeypatch.setattr(B, "update_valetudo", lambda _ctx: True)
 
     with pytest.raises(Die, match="did not record the expected Valetudo version"):
@@ -612,8 +612,8 @@ def test_valetudo_update_scenario_rejects_success_without_the_expected_version_m
 @pytest.mark.parametrize(
     ("recorded", "target_recorded", "newer_preserved"),
     [
-        ("2026.07.0", True, False),
-        ("2026.08.0", False, True),
+        (VALETUDO_TARGET, True, False),
+        (VALETUDO_NEWER, False, True),
     ],
 )
 def test_valetudo_update_scenario_uses_live_truth_for_an_adopted_marker(
