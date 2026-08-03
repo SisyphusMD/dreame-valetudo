@@ -8,8 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from dreame_valetudo import fastboot
 from dreame_valetudo.console import Console, Progress, reset_print_once
-from dreame_valetudo.constants import STAGE1_SHA256, SUNXI_TOOLS_REF
+from dreame_valetudo.constants import (
+    STAGE1_SHA256,
+    SUNXI_TOOLS_REF,
+    VALETUDO_VERSION_DEFAULT,
+)
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.profiles import load_profile
@@ -20,6 +25,20 @@ FB = ("python3", "/x/fastboot-libusb.py")
 
 # A 32-hex device config value, shared by every test that needs a plausible-looking one.
 CFG = "abcdef0123456789abcdef0123456789"
+
+
+def _shift_year(version: str, delta: int) -> str:
+    year, _, rest = version.partition(".")
+    return f"{int(year) + delta:04d}.{rest}"
+
+
+# Tests that care about a version only relative to the pinned target derive it from the pin rather
+# than hardcoding it, so bumping VALETUDO_VERSION_DEFAULT doesn't turn every such test red. Shifting
+# the year preserves the 4-digit-year/2-digit-month shape the version parser requires, and keeps the
+# ordering unambiguous without month-wraparound arithmetic.
+VALETUDO_TARGET = VALETUDO_VERSION_DEFAULT
+VALETUDO_OLDER = _shift_year(VALETUDO_TARGET, -1)
+VALETUDO_NEWER = _shift_year(VALETUDO_TARGET, 1)
 
 
 class ScriptedConsole(Console):
@@ -59,6 +78,18 @@ CtxFactory = Callable[..., Context]
 @pytest.fixture(autouse=True)
 def _isolated_print_once_state() -> None:
     reset_print_once()
+
+
+@pytest.fixture(autouse=True)
+def _ignore_installed_system_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep helper lookups inside the injected environment, not the developer's installed copy.
+
+    _libexec_candidates always searches the installed prefixes, so on a machine with the .pkg or
+    brew build installed, find_helper answers with the REAL tmux/dreame-fastboot and a test asserting
+    "nothing is available" sees the host instead of the environment it passed in. That divergence is
+    invisible in CI, where nothing is installed. Tests that need the fallback set it themselves.
+    """
+    monkeypatch.setattr(fastboot, "_SYSTEM_LIBEXEC", ())
 
 
 @pytest.fixture

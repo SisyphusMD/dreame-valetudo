@@ -13,7 +13,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CFG, CtxFactory, dreame_ap_prefix
+from conftest import (
+    CFG,
+    VALETUDO_NEWER,
+    VALETUDO_OLDER,
+    VALETUDO_TARGET,
+    CtxFactory,
+    dreame_ap_prefix,
+)
 
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import ADOPTED_ROOT
@@ -226,7 +233,7 @@ def test_saved_valetudo_versions_only_offer_proven_upgrades(
 
 
 def test_update_valetudo_noops_when_live_robot_already_has_target(make_ctx: CtxFactory) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.07.0", confirms=[True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[True])
 
     assert update_valetudo(ctx) is True
 
@@ -237,9 +244,9 @@ def test_update_valetudo_noops_when_live_robot_already_has_target(make_ctx: CtxF
 @pytest.mark.parametrize(
     ("live", "confirms", "recorded", "transferred"),
     [
-        ("2026.06.0", [True, True], "2026.07.0", True),
-        ("2026.07.0", [True], "2026.07.0", False),
-        ("2026.08.0", [True], "2026.08.0", False),
+        (VALETUDO_OLDER, [True, True], VALETUDO_TARGET, True),
+        (VALETUDO_TARGET, [True], VALETUDO_TARGET, False),
+        (VALETUDO_NEWER, [True], VALETUDO_NEWER, False),
     ],
 )
 def test_update_valetudo_resolves_an_adopted_marker_from_the_live_version(
@@ -263,7 +270,7 @@ def test_update_valetudo_resolves_an_adopted_marker_from_the_live_version(
 def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_is_declined(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, False])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[True, False])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
     base = ctx.runner.responder  # type: ignore[attr-defined]
 
@@ -287,7 +294,7 @@ def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_i
 def test_update_valetudo_can_replace_an_unreadable_adopted_installation_deliberately(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0", confirms=[True, True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[True, True])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
     base = ctx.runner.responder  # type: ignore[attr-defined]
 
@@ -306,7 +313,7 @@ def test_update_valetudo_can_replace_an_unreadable_adopted_installation_delibera
 def test_update_valetudo_verifies_then_atomically_replaces_the_live_binary(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0")
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
 
     assert update_valetudo(ctx) is True
 
@@ -316,11 +323,11 @@ def test_update_valetudo_verifies_then_atomically_replaces_the_live_binary(
     assert install.index("sha256sum") < install.index("mv -f /data/.valetudo.update")
     assert "_root_postboot" not in install
     assert not any(call[-1] == "cat > /data/valetudo" for call in calls)
-    assert ctx.need_robot().state_get("valetudo") == "2026.07.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_TARGET
 
 
 def test_update_valetudo_preserves_live_binary_when_transfer_fails(make_ctx: CtxFactory) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0")
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
 
     def fail_transfer(
         argv: tuple[str, ...], _stdout_path: str | None, _stdin_path: str | None,
@@ -334,13 +341,13 @@ def test_update_valetudo_preserves_live_binary_when_transfer_fails(make_ctx: Ctx
 
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert not any("mv -f /data/.valetudo.update" in call[-1] for call in calls)
-    assert ctx.need_robot().state_get("valetudo") == "2026.06.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_OLDER
 
 
 def test_update_valetudo_does_not_publish_a_robot_side_digest_failure(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0")
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
     previous = ctx.runner.responder  # type: ignore[attr-defined]
 
     def fail_digest(argv: tuple[str, ...]) -> Result:
@@ -356,26 +363,26 @@ def test_update_valetudo_does_not_publish_a_robot_side_digest_failure(
 
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert sum(call[-1] == "rm -f /data/.valetudo.update" for call in calls) == 2
-    assert ctx.need_robot().state_get("valetudo") == "2026.06.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_OLDER
 
 
 def test_update_valetudo_refuses_to_downgrade_a_newer_live_version(make_ctx: CtxFactory) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.08.0", confirms=[True])
-    ctx.need_robot().state_set("valetudo", "2026.06.0")
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_NEWER, confirms=[True])
+    ctx.need_robot().state_set("valetudo", VALETUDO_OLDER)
 
     assert update_valetudo(ctx) is True
 
     assert "Refusing to downgrade" in ctx.console.text()  # type: ignore[attr-defined]
     assert not any("cat > /data/.valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
-    assert ctx.need_robot().state_get("valetudo") == "2026.08.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_NEWER
 
 
 def test_update_valetudo_refuses_stable_to_same_release_candidate_downgrade(
     make_ctx: CtxFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.07.0", confirms=[True])
-    ctx.env["VALETUDO_VERSION"] = "2026.07.0-rc.1"
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[True])
+    ctx.env["VALETUDO_VERSION"] = f"{VALETUDO_TARGET}-rc.1"
     _valetudo_bin(ctx)
     monkeypatch.setattr("dreame_valetudo.phases.push.fetch_valetudo", lambda _ctx: None)
 
@@ -383,13 +390,13 @@ def test_update_valetudo_refuses_stable_to_same_release_candidate_downgrade(
 
     assert "Refusing to downgrade" in ctx.console.text()  # type: ignore[attr-defined]
     assert not any("cat > /data/.valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
-    assert ctx.need_robot().state_get("valetudo") == "2026.07.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_TARGET
 
 
 def test_update_valetudo_refuses_a_live_robot_with_the_wrong_identity(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed="2026.06.0")
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
     base = _text(model="dreame.vacuum.r2338", did="12345")
     ctx.runner.responder = base  # type: ignore[attr-defined]
 
@@ -397,7 +404,7 @@ def test_update_valetudo_refuses_a_live_robot_with_the_wrong_identity(
         update_valetudo(ctx)
 
     assert not any("cat > /data/.valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
-    assert ctx.need_robot().state_get("valetudo") == "2026.06.0"
+    assert ctx.need_robot().state_get("valetudo") == VALETUDO_OLDER
 
 
 def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None:

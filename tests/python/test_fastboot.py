@@ -176,6 +176,22 @@ def test_find_helper_searches_dreame_libexec(tmp_path: Path) -> None:
     assert find_helper("does-not-exist", {"DREAME_LIBEXEC": str(tmp_path)}) is None
 
 
+def test_find_helper_falls_back_to_an_installed_system_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An installed .pkg/brew prefix answers when nothing nearer does — how a /usr/bin bundle finds
+    # its native helpers with no wrapper and no DREAME_LIBEXEC. The suite blanks the real prefixes
+    # so a developer's own install can't answer, which left this path asserted by nothing.
+    prefix = tmp_path / "libexec" / "dreame-valetudo"
+    prefix.mkdir(parents=True)
+    tmux = prefix / "tmux"  # not present in the source checkout's libexec, unlike sunxi-fel
+    tmux.write_text("#!/bin/sh\n")
+    tmux.chmod(tmux.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr("dreame_valetudo.fastboot._SYSTEM_LIBEXEC", (str(prefix),))
+
+    assert find_helper("tmux", {}) == tmux
+
+
 def test_transport_uses_dreame_python(tmp_path: Path) -> None:
     (tmp_path / "fastboot-libusb.py").write_text("# client")
     t = resolve_transport(

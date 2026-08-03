@@ -22,6 +22,19 @@
     },
     {
       "customType": "regex",
+      "description": "The Valetudo release-asset digests pinned beside the version. `github-release-attachments` resolves each arch's sha256 from the release itself, so a version bump carries its three digests in the same PR instead of leaving them describing the previous release. Recursive: the outer match scopes to the version + the digest map, the inner match isolates ONE digest so each replacement region is disjoint (overlapping regions break auto-replace).",
+      "managerFilePatterns": ["/dreame_valetudo/constants\\.py$/"],
+      "matchStringsStrategy": "recursive",
+      "matchStrings": [
+        "VALETUDO_VERSION_DEFAULT = \"(?<currentValue>[^\"]+)\"[\\s\\S]*?VALETUDO_SHA256 = \\{[\\s\\S]*?\\n\\}",
+        "\"(?<currentDigest>[0-9a-f]{64})\""
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "depNameTemplate": "Hypfer/Valetudo",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
       "description": "sunxi-tools commit pins (Python constants, legacy script, both build workflows), tracked on the master branch.",
       "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
