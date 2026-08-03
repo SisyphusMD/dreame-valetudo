@@ -7,10 +7,15 @@ from __future__ import annotations
 # API outage can never turn a first download into an unchecked executable.
 # renovate: datasource=github-releases depName=Hypfer/Valetudo versioning=loose
 VALETUDO_VERSION_DEFAULT = "2026.07.0"
+# Each digest carries the release it was taken from, and that annotation is load-bearing twice
+# over. Renovate's regex manager can only rewrite a value it finds inside that dependency's own
+# replaced text, so without a version beside each digest it cannot update these in the same PR as
+# the version above — it fails the whole branch instead. And it makes a half-applied bump a test
+# failure (test_constants.py) rather than a pin that silently describes the previous release.
 VALETUDO_SHA256 = {
-    "aarch64": "e5e4487643dab04bc5ea6b1b6992a20588b7a7fa0c48907fd336fb7bbf746018",
-    "armv7": "e0d984de88669b7fc24abc5b54a681f8471ecfede8cc4ee47c734846d038016e",
-    "armv7-lowmem": "b5ae76123ee33bfa03173452fff583cd087c76b320d7970d7b6198f3759367f9",
+    "aarch64": "e5e4487643dab04bc5ea6b1b6992a20588b7a7fa0c48907fd336fb7bbf746018",  # 2026.07.0
+    "armv7": "e0d984de88669b7fc24abc5b54a681f8471ecfede8cc4ee47c734846d038016e",  # 2026.07.0
+    "armv7-lowmem": "b5ae76123ee33bfa03173452fff583cd087c76b320d7970d7b6198f3759367f9",  # 2026.07.0
 }
 
 # The stage1 FEL tarball runs on the SoC before rooting starts, so it is pinned + verified before
