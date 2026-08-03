@@ -98,6 +98,8 @@ def test_subprocess_timeout_before_output_is_a_clean_rc_124() -> None:
 
 
 def test_redirect_timeout_retains_partial_file_and_normalizes_the_error(tmp_path: Path) -> None:
+    # Same startup race as the captured-output sibling above: the partial file is only non-empty if
+    # the child reached its first write before the deadline, so the deadline is whole seconds.
     output = tmp_path / "partial.bin"
     command = [
         sys.executable,
@@ -105,17 +107,17 @@ def test_redirect_timeout_retains_partial_file_and_normalizes_the_error(tmp_path
         (
             "import sys,time; sys.stdout.buffer.write(b'partial-private-output'); "
             "sys.stdout.buffer.flush(); print('safe diagnostic', file=sys.stderr, flush=True); "
-            "time.sleep(10)"
+            "time.sleep(30)"
         ),
     ]
 
     result = SubprocessRunner().run_redirect(
-        command, stdout_path=str(output), check=False, timeout=0.05
+        command, stdout_path=str(output), check=False, timeout=2.5
     )
 
     assert result.returncode == 124
     assert output.read_bytes() == b"partial-private-output"
-    assert "safe diagnostic" in result.stderr and "timed out after 0.05s" in result.stderr
+    assert "safe diagnostic" in result.stderr and "timed out after 2.5s" in result.stderr
 
 
 def test_run_redirect_streams_stdin_file_to_stdout_file(tmp_path: Path) -> None:
