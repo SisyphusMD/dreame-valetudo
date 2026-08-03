@@ -320,15 +320,29 @@ def test_root_does_not_repeat_the_backup_confirmation_after_an_explicit_opt_out(
 
 def test_size_floors_accept_a_real_dustbuilder_build_for_a_small_model() -> None:
     # rc.2 refused to flash a genuine, complete r2240 image because the rootfs floor was 100 MiB
-    # against a real 60 MiB build, leaving the D10s Plus unrootable. The staged bytes are already
-    # guaranteed by the per-file sha256 re-verified before the write; these floors exist only to
-    # catch an empty or truncated artifact, so they must never encode one model's image shape.
+    # against a real 60 MiB build, leaving the D10s Plus unrootable. The floors must clear the
+    # smallest real build on the roster; the sha256 re-verified before the write does not cover
+    # this, since a truncated upstream artifact is hashed as-staged and passes.
     rejected = {
         name: (size, _FEL_IMAGE_MIN_BYTES[name])
         for name, size in _REAL_SMALL_MODEL_BUILD_BYTES.items()
         if size < _FEL_IMAGE_MIN_BYTES[name]
     }
     assert not rejected, f"floors reject a genuine build (actual, floor): {rejected}"
+
+
+def test_size_floors_stay_meaningfully_below_the_smallest_real_build() -> None:
+    # The counterpart to the check above: floors that clear a real build by too WIDE a margin stop
+    # catching the truncation they exist for. Pinned so a future "just lower it until the flash
+    # proceeds" edit fails here instead of silently letting a hollow rootfs reach the device.
+    too_permissive = {
+        name: (size, _FEL_IMAGE_MIN_BYTES[name])
+        for name, size in _REAL_SMALL_MODEL_BUILD_BYTES.items()
+        if name != "check.txt" and size / _FEL_IMAGE_MIN_BYTES[name] > 4
+    }
+    assert not too_permissive, (
+        f"floor is >4x under the smallest real build (actual, floor): {too_permissive}"
+    )
 
 
 @pytest.mark.parametrize("name", list(_MIN_IMAGE_BYTES))
