@@ -275,3 +275,143 @@ def test_devices_reports_a_libusb_loader_error_without_a_traceback(
         assert fbl.main(["devices"]) == 1
     assert "FAILED libusb could not load" in err.getvalue()
     assert "Traceback" not in err.getvalue()
+
+
+class _FakeEndpoint:
+    def __init__(self, address: int) -> None:
+        self.bEndpointAddress = address
+        self.bmAttributes = 0x02  # bulk
+
+
+class _FakeInterface:
+    bInterfaceClass = 0xFF
+    bInterfaceSubClass = 0x42
+    bInterfaceProtocol = 0x03
+    bInterfaceNumber = 0
+
+    def __iter__(self) -> Any:
+        return iter([_FakeEndpoint(0x02), _FakeEndpoint(0x81)])
+
+
+class _FakeConfig:
+    def __init__(self, interface: _FakeInterface) -> None:
+        self._interface = interface
+
+    def __iter__(self) -> Any:
+        return iter([self._interface])
+
+    def __getitem__(self, _key: object) -> _FakeInterface:
+        return self._interface
+
+
+class _SettlingDevice:
+    """The real gadget: descriptors readable immediately, but set_configuration fails with
+    ENODEV until enumeration finishes."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.set_configuration_calls = 0
+        self.claims = 0
+        self.disposals = 0
+        self._configured = False
+        self._config = _FakeConfig(_FakeInterface())
+
+    def __iter__(self) -> Any:
+        return iter([self._config])
+
+    def get_active_configuration(self) -> _FakeConfig:
+        if not self._configured:
+            raise fbl.usb.core.USBError("Configuration not set")
+        return self._config
+
+    def set_configuration(self) -> None:
+        self.set_configuration_calls += 1
+        if self.set_configuration_calls <= self.failures:
+            raise fbl.usb.core.USBError("[Errno 19] No such device (it may have been disconnected)")
+        self._configured = True
+
+
+def _install_usb_util(monkeypatch: pytest.MonkeyPatch, device: _SettlingDevice) -> None:
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kw: [device], raising=False)
+    monkeypatch.setattr(fbl.usb.util, "ENDPOINT_OUT", 0x00, raising=False)
+    monkeypatch.setattr(fbl.usb.util, "ENDPOINT_IN", 0x80, raising=False)
+    monkeypatch.setattr(fbl.usb.util, "ENDPOINT_TYPE_BULK", 0x02, raising=False)
+    monkeypatch.setattr(
+        fbl.usb.util, "endpoint_direction", lambda addr: addr & 0x80, raising=False
+    )
+    monkeypatch.setattr(
+        fbl.usb.util, "endpoint_type", lambda attrs: attrs & 0x03, raising=False
+    )
+    monkeypatch.setattr(
+        fbl.usb.util,
+        "find_descriptor",
+        lambda intf, custom_match: next((e for e in intf if custom_match(e)), None),
+        raising=False,
+    )
+
+    def claim(dev: _SettlingDevice, _number: int) -> None:
+        dev.claims += 1
+
+    def dispose(dev: _SettlingDevice) -> None:
+        dev.disposals += 1
+
+    monkeypatch.setattr(fbl.usb.util, "claim_interface", claim, raising=False)
+    monkeypatch.setattr(fbl.usb.util, "dispose_resources", dispose, raising=False)
+
+
+def test_acquisition_retries_a_gadget_still_settling_out_of_fel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `wait` only proves the descriptors are readable, so the next process can reach
+    # set_configuration while the gadget is still enumerating and get ENODEV. That aborted a real
+    # recon on hardware between `wait` succeeding and the first getvar one second later.
+    device = _SettlingDevice(failures=3)
+    _install_usb_util(monkeypatch, device)
+    monkeypatch.setattr(fbl, "ACQUIRE_DELAY", 0.0)
+    fb = fbl.Fastboot()
+    assert device.set_configuration_calls == 4  # 3 ENODEV attempts, then success
+    assert device.claims == 1
+    assert device.disposals == 3  # every failed attempt released its half-open handle
+    assert fb.ep_out.bEndpointAddress == 0x02
+    assert fb.ep_in.bEndpointAddress == 0x81
+
+
+def test_acquisition_gives_up_and_reports_the_underlying_usb_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = _SettlingDevice(failures=10**9)  # never settles within the budget
+    _install_usb_util(monkeypatch, device)
+    monkeypatch.setattr(fbl, "ACQUIRE_DELAY", 0.0)
+    monkeypatch.setattr(fbl, "ACQUIRE_TIMEOUT", 0.05)
+    with pytest.raises(fbl.FastbootError, match="No such device"):
+        fbl.Fastboot()
+
+
+def test_a_missing_device_still_reports_the_original_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kw: [])
+    monkeypatch.setattr(fbl, "ACQUIRE_DELAY", 0.0)
+    monkeypatch.setattr(fbl, "ACQUIRE_TIMEOUT", 0.05)
+    with pytest.raises(fbl.FastbootError, match="no fastboot device found"):
+        fbl.Fastboot()
+
+
+def test_an_ambiguous_target_is_never_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two robots on the bus is an operator error, not a settling gadget: it must fail at once
+    # rather than spending the acquisition budget re-confirming it.
+    calls = {"n": 0}
+
+    class Interface:
+        bInterfaceClass = 0xFF
+        bInterfaceSubClass = 0x42
+        bInterfaceProtocol = 0x03
+
+    def find(**_kwargs: object) -> list[object]:
+        calls["n"] += 1
+        return [[[Interface()]], [[Interface()]]]
+
+    monkeypatch.setattr(fbl.usb.core, "find", find)
+    with pytest.raises(fbl.FastbootError, match="2 fastboot devices found"):
+        fbl.Fastboot()
+    assert calls["n"] == 1

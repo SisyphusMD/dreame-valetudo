@@ -42,10 +42,16 @@ import usb.util
 CHUNK = 1 << 16          # 64 KiB; larger libusb transfers EIO on the Dreame gadget on macOS
 CMD_TIMEOUT = 30000      # ms; individual ops must stay well under the external rail-cycle window
 DATA_TIMEOUT = 120000    # ms; large flash/upload transfers
+ACQUIRE_TIMEOUT = 8.0    # s; bounded well under the external rail-cycle window
+ACQUIRE_DELAY = 0.25     # s between acquisition attempts
 
 
 class FastbootError(RuntimeError):
     pass
+
+
+class _NotAcquired(FastbootError):
+    """The gadget is not usable *yet* — safe to retry, because no command has been sent."""
 
 
 # --- Android sparse image format --------------------------------------------------------
@@ -160,26 +166,49 @@ def find_device() -> tuple[Any, Any, Any]:
 
 class Fastboot:
     def __init__(self) -> None:
+        # A gadget that has just re-enumerated out of FEL answers descriptor reads a beat before it
+        # will accept set_configuration/claim, so `wait` returns (descriptors are all it proves)
+        # while the very next process still fails acquisition with ENODEV. Retry ACQUISITION only:
+        # no protocol command has been sent yet, so a retry can never re-issue a write. Structural
+        # faults (ambiguous target, no libusb backend) are not _NotAcquired and fail immediately.
+        deadline = time.time() + ACQUIRE_TIMEOUT
+        while True:
+            try:
+                self._acquire()
+                return
+            except (_NotAcquired, usb.core.USBError) as exc:
+                if time.time() >= deadline:
+                    raise FastbootError(str(exc)) from exc
+                time.sleep(ACQUIRE_DELAY)
+
+    def _acquire(self) -> None:
         dev, cfg, intf = find_device()
         if dev is None:
-            raise FastbootError("no fastboot device found (is the payload booted?)")
-        self.dev = dev
+            raise _NotAcquired("no fastboot device found (is the payload booted?)")
         try:
-            dev.get_active_configuration()
-        except usb.core.USBError:
-            dev.set_configuration()
-            cfg = dev.get_active_configuration()
-            intf = cfg[(intf.bInterfaceNumber, 0)]
-        ep_out = usb.util.find_descriptor(intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        ep_in = usb.util.find_descriptor(intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        if ep_out is None or ep_in is None:
-            raise FastbootError("fastboot interface has no bulk endpoint pair")
-        self.ep_out, self.ep_in = ep_out, ep_in
-        usb.util.claim_interface(dev, intf.bInterfaceNumber)
+            try:
+                dev.get_active_configuration()
+            except usb.core.USBError:
+                dev.set_configuration()
+                cfg = dev.get_active_configuration()
+                intf = cfg[(intf.bInterfaceNumber, 0)]
+            ep_out = usb.util.find_descriptor(intf, custom_match=lambda e:
+                usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+            ep_in = usb.util.find_descriptor(intf, custom_match=lambda e:
+                usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+            if ep_out is None or ep_in is None:
+                # Mid-enumeration descriptors can still be incomplete, so this is a retryable
+                # symptom rather than a permanent property of the interface.
+                raise _NotAcquired("fastboot interface has no bulk endpoint pair")
+            usb.util.claim_interface(dev, intf.bInterfaceNumber)
+        except BaseException:
+            # A half-open handle would make the next attempt race this one.
+            with contextlib.suppress(Exception):
+                usb.util.dispose_resources(dev)
+            raise
+        self.dev, self.ep_out, self.ep_in = dev, ep_out, ep_in
 
     def _read(self, timeout: int = CMD_TIMEOUT) -> tuple[str, bytes]:
         """Read one response, surfacing INFO/TEXT lines, until a terminal tag."""
