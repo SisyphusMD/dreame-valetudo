@@ -415,3 +415,35 @@ def test_an_ambiguous_target_is_never_retried(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(fbl.FastbootError, match="2 fastboot devices found"):
         fbl.Fastboot()
     assert calls["n"] == 1
+
+
+def test_the_deadline_trips_when_the_wall_clock_jumps_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A suspended host freezes CLOCK_MONOTONIC while the robot's MCU rail timer keeps running, so a
+    # monotonic-only bound resumes believing it still holds a window it has already lost. Wall time
+    # is what moves across a suspend, so the deadline must trip on it even with monotonic frozen.
+    monkeypatch.setattr(fbl.time, "monotonic", lambda: 1000.0)
+    wall = {"now": 5000.0}
+    monkeypatch.setattr(fbl.time, "time", lambda: wall["now"])
+
+    expired = fbl.expires_after(8.0)
+    assert expired() is False
+    wall["now"] += 9.0  # host was asleep for 9s; monotonic never moved
+    assert expired() is True
+
+
+def test_the_deadline_trips_when_the_wall_clock_steps_backwards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The mirror image: an NTP step backwards pushes the wall deadline out of reach, so a
+    # wall-only bound would keep retrying past the rail-cycle window. Monotonic still ends it.
+    mono = {"now": 1000.0}
+    monkeypatch.setattr(fbl.time, "monotonic", lambda: mono["now"])
+    monkeypatch.setattr(fbl.time, "time", lambda: 5000.0)
+
+    expired = fbl.expires_after(8.0)
+    assert expired() is False
+    monkeypatch.setattr(fbl.time, "time", lambda: 1000.0)  # stepped back an hour mid-wait
+    mono["now"] += 9.0
+    assert expired() is True

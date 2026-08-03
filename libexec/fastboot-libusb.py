@@ -32,7 +32,7 @@ import struct
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,23 @@ CMD_TIMEOUT = 30000      # ms; individual ops must stay well under the external 
 DATA_TIMEOUT = 120000    # ms; large flash/upload transfers
 ACQUIRE_TIMEOUT = 8.0    # s; bounded well under the external rail-cycle window
 ACQUIRE_DELAY = 0.25     # s between acquisition attempts
+
+
+def expires_after(seconds: float) -> Callable[[], bool]:
+    """A deadline that trips once `seconds` elapse on EITHER the monotonic or the wall clock.
+
+    Neither clock bounds this safely alone, and both failures end at the same place — writing to a
+    robot whose power rail is about to cycle. Monotonic does not advance while the host is
+    suspended (Linux CLOCK_MONOTONIC), yet the robot's MCU rail timer keeps running, so a laptop
+    that sleeps mid-wait resumes believing it still has a window it has already lost. Wall clock
+    advances across suspend but can be stepped backwards by NTP, which stretches the bound.
+
+    Tripping on whichever expires FIRST fails closed both ways: a forward step or a suspend ends
+    the wait early, which costs the operator a retry, never a flash into a dead window.
+    """
+    monotonic_deadline = time.monotonic() + seconds
+    wall_deadline = time.time() + seconds
+    return lambda: time.monotonic() >= monotonic_deadline or time.time() >= wall_deadline
 
 
 class FastbootError(RuntimeError):
@@ -171,13 +188,13 @@ class Fastboot:
         # while the very next process still fails acquisition with ENODEV. Retry ACQUISITION only:
         # no protocol command has been sent yet, so a retry can never re-issue a write. Structural
         # faults (ambiguous target, no libusb backend) are not _NotAcquired and fail immediately.
-        deadline = time.time() + ACQUIRE_TIMEOUT
+        expired = expires_after(ACQUIRE_TIMEOUT)
         while True:
             try:
                 self._acquire()
                 return
             except (_NotAcquired, usb.core.USBError) as exc:
-                if time.time() >= deadline:
+                if expired():
                     raise FastbootError(str(exc)) from exc
                 time.sleep(ACQUIRE_DELAY)
 
@@ -354,8 +371,8 @@ def main(argv: list[str]) -> int:
 
     try:
         if cmd == "wait":
-            deadline = time.time() + (int(rest[0]) if rest else 180)
-            while time.time() < deadline:
+            expired = expires_after(int(rest[0]) if rest else 180)
+            while not expired():
                 dev, _, _ = find_device()
                 if dev is not None:
                     print("OKAY fastboot device present")
