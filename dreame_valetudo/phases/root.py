@@ -40,12 +40,17 @@ _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 # These are deliberately well below the current builder artifacts, but high enough that a hollow
 # or grossly truncated member cannot reach either rootfs slot with an OKAY response. All supported
 # models share this MR813 FEL image layout; a future smaller layout must be reviewed explicitly.
+# Floors that catch an empty or obviously-truncated artifact, NOT a model's expected image shape.
+# Real builds vary widely across the roster: the r2240 rootfs is ~60 MiB where a flagship's is
+# several times that, so anything fitted to one model's output rejects genuine builds for the rest.
+# What actually guarantees the staged bytes is the per-file sha256 recorded at stage time and
+# re-verified below before any write; these only stop a zero-length or absurdly short file.
 _FEL_IMAGE_MIN_BYTES = {
-    "fsbl.bin": 32 * 1024,
-    "payload.bin": 4 * 1024 * 1024,
-    "toc1.img": 1 * 1024 * 1024,
-    "boot.img": 8 * 1024 * 1024,
-    "rootfs.img": 100 * 1024 * 1024,
+    "fsbl.bin": 8 * 1024,
+    "payload.bin": 512 * 1024,
+    "toc1.img": 128 * 1024,
+    "boot.img": 1024 * 1024,
+    "rootfs.img": 8 * 1024 * 1024,
     "check.txt": 1,
 }
 
