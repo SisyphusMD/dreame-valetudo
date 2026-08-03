@@ -171,9 +171,10 @@
       "prBodyNotes": ["Update `BUNDLE_PYTHON_SHA256` from the matching python.org source tarball. A CPython minor bump must also update `depends_on \"python@3.x\"` in `packaging/homebrew/*.rb` by hand."]
     },
     {
-      "description": "The manylinux builders define the shipped glibc ABI; every digest change requires the source-version and embedded-ELF audits.",
+      "description": "The manylinux builders define the shipped glibc ABI; every change requires the source-version and embedded-ELF audits, so these stay hand-reviewed whatever the update type. Pinned to upstream's dated tags rather than `latest`: the digest alone already froze the build, so `latest` bought nothing and cost the reviewer everything — every bump arrived as an opaque hex diff with no version to compare or order. The regex versioning also confines candidates to dated tags, so `latest` itself is never offered as an update.",
       "matchDatasources": ["docker"],
       "matchDepNames": ["quay.io/pypa/manylinux_2_28_x86_64", "quay.io/pypa/manylinux_2_28_aarch64"],
+      "versioning": "regex:^(?<major>\\d{4})\\.(?<minor>\\d{2})\\.(?<patch>\\d{2})-(?<build>\\d+)$",
       "automerge": false
     }
   ]

@@ -337,6 +337,31 @@ def test_bundled_python_updates_require_a_matching_source_checksum() -> None:
     assert "BUNDLE_PYTHON_SHA256" in rules[0]["prBodyNotes"][0]
 
 
+def test_manylinux_builders_are_pinned_to_dated_tags_and_stay_hand_reviewed() -> None:
+    # The digest already freezes the build, so `latest` bought nothing and cost the reviewer
+    # everything: a bump arrived as a bare hex diff with no version to order or compare, which is
+    # not a reviewable artifact for the images that define the shipped glibc ABI. The dated tag
+    # makes each bump self-describing, and the regex versioning keeps `latest` out of the
+    # candidates entirely. Automerge stays off whatever bucket the dated tag lands in.
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    rules = [
+        rule for rule in config["packageRules"]
+        if rule.get("matchDepNames") == [
+            "quay.io/pypa/manylinux_2_28_x86_64", "quay.io/pypa/manylinux_2_28_aarch64",
+        ]
+    ]
+
+    assert len(rules) == 1
+    assert rules[0]["automerge"] is False
+    assert rules[0]["versioning"].startswith("regex:")
+
+    for workflow in (_CI, _PUBLISH):
+        for line in workflow.read_text().splitlines():
+            if "quay.io/pypa/manylinux_2_28_" in line and "sha256:" in line:
+                assert ":latest@" not in line, f"manylinux pin regressed to latest: {line.strip()}"
+                assert re.search(r":\d{4}\.\d{2}\.\d{2}-\d+@sha256:", line), line.strip()
+
+
 def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
     workflow = _CI.read_text()
     smoke = _LINUX_PACKAGES.read_text()
