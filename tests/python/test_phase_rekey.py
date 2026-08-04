@@ -1,7 +1,9 @@
-"""Phase: rekey — the destructive read-modify-write of the robot's authorized_keys, over USB.
+"""Phase: rekey — the read-modify-write of the robot's authorized_keys, over USB and over SSH.
 
 `rekey` REPLACES the robot's authorized keys by default (it is the only supported way to REVOKE a
-lost or compromised one) and only appends alongside the existing ones with `--keep-existing`.
+lost or compromised one) and only appends alongside the existing ones with `--keep-existing`. Both
+routes must reach that same decision and write the same bytes; the `--over-ssh` block near the
+bottom of this file covers the no-flash one.
 
 `fixtures/ext4-misc-1mib.img.gz` is a real ext4 `misc` partition holding one existing key
 (comment `existing@fixture`, see test_ext4.py). A synthetic protective-MBR + one-entry GPT disk
@@ -12,26 +14,41 @@ mirrors, and phases/restore.py's `_parse_gpt` for what the GPT bytes must satisf
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
+import os
+import re
 import struct
+import subprocess
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
-from conftest import CFG, FB, CtxFactory, stage_dist
+from conftest import CFG, FB, CtxFactory, dreame_ap_prefix, stage_dist
 
 from dreame_valetudo import dust_decrypt
 from dreame_valetudo import workspace as workspace_module
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.context import Context
 from dreame_valetudo.dust_decrypt import PERIOD, xor_stream
 from dreame_valetudo.ext4 import find_root_file, replace_root_file
 from dreame_valetudo.phases import rekey as rekey_module
-from dreame_valetudo.phases.rekey import _AUTHORIZED_KEYS, rekey
+from dreame_valetudo.phases.rekey import (
+    _AUTHORIZED_KEYS,
+    _DROPBEAR_KEYS,
+    _DROPBEAR_STAGED,
+    _FACTORY_DIR,
+    _MISC_KEYS,
+    _MISC_STAGED,
+    _password_askpass,
+    _password_candidates,
+    _verify_over_ap,
+    rekey,
+)
 from dreame_valetudo.phases.restore import _DUST_XOR
 from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
@@ -530,3 +547,652 @@ def test_console_names_each_removed_key_before_the_write(
     assert "SHA256:" in lines[removed_index][1]
     confirm_index = next(i for i, (kind, _msg) in enumerate(lines) if kind == "confirm")
     assert removed_index < confirm_index
+
+
+# --- the no-flash route: rekey --over-ssh -------------------------------------------------------
+#
+# The rooted image's /etc/rc.d/adbd.sh sets root's password from the serial on every boot and starts
+# dropbear without -s, so the whole route hangs on reproducing that derivation exactly. The scripted
+# robot below therefore reads the password the way ssh does — out of the SSH_ASKPASS helper — which
+# is also what proves the secret never travels in argv.
+
+_SERIAL = "TESTSERIAL0001"
+_ASKPASS_BODY = re.compile(r"printf '%s\\n' '([^']*)'")
+
+
+def _offered_password() -> str | None:
+    """The password ssh would have been handed at this moment, read the way ssh reads it."""
+    helper = os.environ.get("SSH_ASKPASS")
+    if helper is None or not Path(helper).is_file():
+        return None
+    found = _ASKPASS_BODY.search(Path(helper).read_text())
+    return found.group(1) if found else None
+
+
+_DENIED = "root@192.168.5.1: Permission denied (publickey,password)."
+
+
+class _FakeRobot:
+    """A rooted robot on its own AP whose files really change.
+
+    Faithful rather than permissive on purpose: a responder that OKAYs every write would make a
+    publish that committed nothing look identical to one that committed everything, and the phase's
+    own closing verification — the whole point of it — would have nothing to be right or wrong
+    about. It accepts exactly one password (read the way ssh reads it, out of the askpass helper),
+    serves and mutates real file contents, and decides separately whether the chosen KEY works.
+    """
+
+    def __init__(self, *, password: str, existing: str = _EXISTING_LINE,
+                 key_authorized: bool = True, break_publish: bool = False) -> None:
+        self.password = password
+        self.key_authorized = key_authorized
+        # Models the one interruption that cannot be rolled back: the live copy renamed into place
+        # and the permanent one not.
+        self.break_publish = break_publish
+        self.files = {_MISC_KEYS: existing + "\n"}
+        self._stdin: str | None = None
+
+    def install(self, ctx: Context) -> _FakeRobot:
+        """Serve this robot's answers, and see what each command was fed on stdin — RecordingRunner
+        keeps argv only, and the content deliberately travels on stdin."""
+        inner = ctx.runner.run  # type: ignore[attr-defined]
+
+        def run(argv: Sequence[str], *, check: bool = True, stdin: str | None = None,
+                timeout: float | None = None) -> Result:
+            self._stdin = stdin
+            return inner(argv, check=check, stdin=stdin, timeout=timeout)
+
+        ctx.runner.run = run  # type: ignore[attr-defined, method-assign]
+        ctx.runner.responder = self.respond  # type: ignore[attr-defined]
+        return self
+
+    def respond(self, argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("ssh-keygen", "-y"):
+            algo, blob = Path(f"{argv[-1]}.pub").read_text().split()[:2]
+            return Result(argv, 0, f"{algo} {blob}\n", "")
+        if argv[0] != "ssh":
+            return Result(argv, 0, "OKAY", "")
+        if "PubkeyAuthentication=no" in argv:
+            if _offered_password() != self.password:
+                return Result(argv, 255, "", _DENIED)
+        elif not self.key_authorized:
+            return Result(argv, 255, "", _DENIED)
+        return self._shell(argv, str(argv[-1]))
+
+    def _shell(self, argv: tuple[str, ...], remote: str) -> Result:
+        if remote in (f"test -d {_FACTORY_DIR}", "true"):
+            return Result(argv, 0, "", "")
+        if remote.startswith("cat > "):
+            self.files[remote[len("cat > "):]] = self._stdin or ""
+            return Result(argv, 0, "", "")
+        if remote.startswith("cat "):
+            path = remote[len("cat "):]
+            if path not in self.files:
+                return Result(argv, 1, "", f"cat: can't open '{path}'")
+            return Result(argv, 0, self.files[path], "")
+        return self._script(argv, remote)
+
+    def _script(self, argv: tuple[str, ...], remote: str) -> Result:
+        """Run a `set -e` script line by line, stopping at the first failure the way the shell does."""
+        for line in remote.splitlines():
+            fields = line.split()
+            if not fields or fields[0] in ("set", "mkdir", "chmod", "sync"):
+                continue
+            if fields[0] == "rm":
+                for path in fields[2:]:
+                    self.files.pop(path, None)
+                continue
+            if fields[0] in ("cp", "mv") and len(fields) == 4:
+                source, dest = fields[2], fields[3]
+                if source not in self.files:
+                    return Result(argv, 1, "", f"{fields[0]}: {source}: No such file")
+                if self.break_publish and fields[0] == "mv" and dest == _MISC_KEYS:
+                    return Result(argv, 1, "", "mv: cannot rename: I/O error")
+                self.files[dest] = (
+                    self.files[source] if fields[0] == "cp" else self.files.pop(source)
+                )
+                continue
+            return Result(argv, 127, "", f"{fields[0]}: not found")
+        return Result(argv, 0, "", "")
+
+
+def _remote_commands(ctx: Context) -> list[str]:
+    """The remote command of every ssh call, in order — what the robot was actually asked to do."""
+    return [call[-1] for call in ctx.runner.calls if call[0] == "ssh"]  # type: ignore[attr-defined]
+
+
+def test_the_two_password_candidates_are_what_adbd_sh_computes() -> None:
+    """`cat sn.txt | md5sum | base64`: md5sum reading a pipe prints '<digest><two spaces>-', and
+    base64 encodes that whole LINE, trailing newline included — not the bare digest."""
+    without_newline, with_newline = _password_candidates(_SERIAL)
+
+    assert without_newline == base64.b64encode(
+        (hashlib.md5(_SERIAL.encode(), usedforsecurity=False).hexdigest() + "  -\n").encode()
+    ).decode()
+    assert with_newline == base64.b64encode(
+        (hashlib.md5((_SERIAL + "\n").encode(), usedforsecurity=False).hexdigest() + "  -\n").encode()
+    ).decode()
+    # Pinned outright as well: a refactor that "simplified" the two spaces or the newline away would
+    # still satisfy a check written the same way as the code it checks.
+    assert without_newline == "NjE2ZWY2MjU0N2E2OTY3MDg3MmNmNDZmNjg2Y2ZjNjQgIC0K"
+    assert with_newline == "M2VkMTdlMDI2NzRhOWY1MTdiNzg1MWY3ODEzZTkzODMgIC0K"
+    # 36 fixed bytes in, so every derived password is 48 base64 chars ending in the encoding of
+    # " -\n" — the shape the run log's backstop rule matches on.
+    assert all(len(c) == 48 and c.endswith("IC0K") for c in (without_newline, with_newline))
+
+
+def test_the_askpass_helper_is_private_prints_the_password_and_is_always_removed(
+    tmp_path: Path,
+) -> None:
+    password = _password_candidates(_SERIAL)[0]
+
+    with pytest.raises(RuntimeError), _password_askpass(tmp_path, password):
+        helper = Path(os.environ["SSH_ASKPASS"])
+        assert helper.stat().st_mode & 0o777 == 0o700
+        assert os.environ["SSH_ASKPASS_REQUIRE"] == "force"
+        assert os.environ["DISPLAY"]
+        # Executed rather than parsed: the quoting is what stands between a shell metacharacter and
+        # an injection, and only running it proves ssh gets the password back intact.
+        printed = subprocess.run([str(helper)], capture_output=True, text=True, check=True)
+        assert printed.stdout == password + "\n"
+        raise RuntimeError("an exception must not leave the password on disk")
+
+    assert not helper.exists()
+    assert "SSH_ASKPASS" not in os.environ
+    assert "SSH_ASKPASS_REQUIRE" not in os.environ
+
+
+def test_the_askpass_helper_refuses_a_password_that_is_not_base64(tmp_path: Path) -> None:
+    with pytest.raises(Die, match="not the base64 value"), _password_askpass(
+        tmp_path, "'; rm -rf / #",
+    ):
+        pass
+
+    assert not (tmp_path / "askpass").exists()
+
+
+def test_over_ssh_tries_the_second_password_when_the_first_is_rejected(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Whether sn.txt ends in a newline cannot be known off-hardware, so the robot decides."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[1]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    logins = [cmd for cmd in _remote_commands(ctx) if cmd == f"test -d {_FACTORY_DIR}"]
+    assert len(logins) == 3  # two password candidates, then the closing key-only login
+    assert robot.files[_MISC_KEYS] == "ssh-ed25519 BBBB new@laptop\n"
+    assert _fb(ctx) == []  # nothing on this route touches fastboot
+
+
+def test_over_ssh_stops_after_the_first_password_the_robot_accepts(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    logins = [cmd for cmd in _remote_commands(ctx) if cmd == f"test -d {_FACTORY_DIR}"]
+    assert len(logins) == 2  # the accepted password, then the key-only verification
+
+
+def test_over_ssh_keeps_the_serial_and_password_out_of_the_console_and_the_transcript(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The serial is typed once and the passwords derived from it never leave this process except
+    through a 0700 file. Neither may appear in anything the operator can be asked to share."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[1]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    console = ctx.console.text()  # type: ignore[attr-defined]
+    transcript = "\n".join(ctx.runner.transcript())  # type: ignore[attr-defined]
+    staging = _staging(ctx)
+    for secret in (_SERIAL, *_password_candidates(_SERIAL)):
+        assert secret not in console
+        assert secret not in transcript
+        # Not on the wire to the robot either, and not left behind in the workspace.
+        assert not any(secret in text for text in robot.files.values())
+        assert not any(secret in p.read_text() for p in staging.rglob("*") if p.is_file())
+    assert not (staging / "askpass").exists()
+
+
+def test_over_ssh_writes_exactly_the_bytes_the_usb_route_would_have_flashed(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Same robot state, same key, same flags — so the two routes must authorize the same file."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+
+    usb = make_ctx(robot_name="usb", env={"DREAME_SSHKEY": str(key)},
+                   responder=_responder(sealed=_sealed_flash_slice()))
+    _prepare_rooted_robot(usb)
+    rekey(usb, dry_run=True)
+    patched = (_staging(usb) / "misc.img").read_bytes()
+    slot = find_root_file(patched, _AUTHORIZED_KEYS)
+    over_usb = patched[slot.data_offset:slot.data_offset + slot.size]
+
+    ssh = make_ctx(robot_name="ap", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ssh)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ssh)
+    rekey(ssh, over_ssh=True)
+
+    assert robot.files[_MISC_KEYS].encode() == over_usb
+    assert robot.files[_MISC_KEYS] == "ssh-ed25519 BBBB new@laptop\n"
+
+
+def test_over_ssh_publishes_by_renames_alone_and_refreshes_what_dropbear_reads(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Two files on two filesystems have to change and nothing covers both, so everything that can
+    fail happens against staged paths first and the committing step is only the two same-filesystem
+    renames — each atomic, with nothing between them that can leave a truncated live file."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    commands = _remote_commands(ctx)
+    prepare, publish = [cmd for cmd in commands if cmd.startswith("set -e")][:2]
+    assert "mv" not in prepare  # preparation changes nothing the robot is serving
+    assert f"cp -f {_MISC_STAGED} {_DROPBEAR_STAGED}" in prepare
+    assert publish.splitlines()[1:] == [
+        f"mv -f {_DROPBEAR_STAGED} {_DROPBEAR_KEYS}",
+        f"mv -f {_MISC_STAGED} {_MISC_KEYS}",
+        "sync",
+    ]
+    assert commands.index(f"cat > {_MISC_STAGED}") < commands.index(prepare) < commands.index(publish)
+    # Both copies end up with the new key, and no staging file is left behind on the robot.
+    assert robot.files[_MISC_KEYS] == robot.files[_DROPBEAR_KEYS] == "ssh-ed25519 BBBB new@laptop\n"
+    assert _MISC_STAGED not in robot.files and _DROPBEAR_STAGED not in robot.files
+
+
+def test_over_ssh_refuses_to_record_a_key_that_only_the_volatile_copy_accepts(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The one interruption that cannot be rolled back: the /tmp copy renamed into place and the
+    permanent one not. dropbear takes the key right now and forgets it at the next boot, so
+    recording it would point every later phase at a key the robot is about to lose."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0], break_publish=True).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    assert robot.files[_DROPBEAR_KEYS] == "ssh-ed25519 BBBB new@laptop\n"  # live copy did change
+    assert robot.files[_MISC_KEYS] == _EXISTING_LINE + "\n"                # permanent copy did not
+    console = ctx.console.text()  # type: ignore[attr-defined]
+    assert "would be lost at the next reboot" in console
+    assert "CONFIRMED" not in console
+    assert ctx.need_robot().state_get("sshkey") is None
+    assert ctx.need_robot().state_get("sshkey-authorized") is None
+
+
+def test_over_ssh_re_seeds_the_live_copy_when_the_permanent_one_already_holds_the_key(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """rc.d copies misc's file into /tmp at boot, so the file can already list a key the running
+    dropbear has never seen. Only probing and warning would make every re-run report the same
+    refusal forever; re-seeding that copy is the repair a re-run exists to apply."""
+    key = _sshkey(tmp_path, "id_same", algo=_EXISTING_ALGO, blob=_EXISTING_BLOB, comment="mine")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+    robot.files[_DROPBEAR_KEYS] = "ssh-ed25519 STALE someone@else\n"
+
+    rekey(ctx, over_ssh=True)
+
+    assert "ALREADY in the robot's authorized_keys" in ctx.console.text()  # type: ignore[attr-defined]
+    assert robot.files[_DROPBEAR_KEYS] == robot.files[_MISC_KEYS]
+    assert ctx.need_robot().state_get("sshkey") == str(key)
+
+
+def test_over_ssh_dry_run_does_not_re_seed_the_live_copy_either(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Re-seeding is still a write, and one that can revoke a key the robot is serving right now.
+    --dry-run promises the robot is not touched, and that promise has no exceptions."""
+    key = _sshkey(tmp_path, "id_same", algo=_EXISTING_ALGO, blob=_EXISTING_BLOB, comment="mine")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+    robot.files[_DROPBEAR_KEYS] = "ssh-ed25519 STALE someone@else\n"
+
+    rekey(ctx, over_ssh=True, dry_run=True)
+
+    assert robot.files[_DROPBEAR_KEYS] == "ssh-ed25519 STALE someone@else\n"
+    assert _remote_commands(ctx) == [f"test -d {_FACTORY_DIR}", f"cat {_MISC_KEYS}"]
+    assert ctx.need_robot().state_get("sshkey") is None
+
+
+def test_over_ssh_names_each_removed_key_before_the_write(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The replace-by-default semantics are the USB route's, unchanged: nothing is dropped without
+    being named first, with its fingerprint and comment."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    removed_index = next(
+        i for i, (kind, msg) in enumerate(lines) if kind == "warn" and "existing@fixture" in msg
+    )
+    assert "SHA256:" in lines[removed_index][1]
+    write_index = next(
+        i for i, (kind, msg) in enumerate(lines)
+        if kind == "confirm" and msg.startswith("Write the updated authorized_keys")
+    )
+    assert removed_index < write_index
+
+
+def test_over_ssh_keep_existing_appends_rather_than_replacing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True, keep_existing=True)
+
+    assert robot.files[_MISC_KEYS] == f"{_EXISTING_LINE}\nssh-ed25519 BBBB new@laptop\n"
+
+
+def test_over_ssh_dry_run_reads_the_robot_and_writes_nothing_to_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True, dry_run=True)
+
+    assert _remote_commands(ctx) == [f"test -d {_FACTORY_DIR}", f"cat {_MISC_KEYS}"]
+    assert robot.files == {_MISC_KEYS: _EXISTING_LINE + "\n"}
+    assert ctx.need_robot().state_get("sshkey") is None
+    assert ctx.need_robot().state_get("sshkey-authorized") is None
+    assert not any(kind == "confirm" and msg.startswith("Write the updated")
+                   for kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_over_ssh_never_records_a_key_the_robot_did_not_answer_to(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A write that reported success is not the same as a robot that answers to the key, and only
+    the second one is worth recording — every later phase authenticates with what it finds here."""
+    old = _sshkey(tmp_path, "id_old", blob="CCCC", comment="old@laptop")
+    new = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(new)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0], key_authorized=False).install(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("sshkey", str(old))
+
+    rekey(ctx, over_ssh=True, keep_existing=True)
+
+    # --keep-existing removed nothing, so the key the workspace named still works and still stands.
+    assert robot.state_get("sshkey") == str(old)
+    assert robot.state_get("sshkey-authorized") is None
+    assert "does NOT accept" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_over_ssh_forgets_the_old_key_when_a_completed_replace_revoked_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A replace that went through leaves ONLY the new key on the robot. If the robot then does not
+    answer to it, keeping the old one recorded would claim access that this very run destroyed."""
+    old = _sshkey(tmp_path, "id_old", blob="CCCC", comment="old@laptop")
+    new = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(new)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    robot_ap = _FakeRobot(
+        password=_password_candidates(_SERIAL)[0], key_authorized=False,
+    ).install(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("sshkey", str(old))
+
+    rekey(ctx, over_ssh=True)
+
+    assert robot_ap.files[_MISC_KEYS] == "ssh-ed25519 BBBB new@laptop\n"  # old@laptop really is gone
+    assert robot.state_get("sshkey") is None
+    assert robot.state_get("sshkey-authorized") is None
+    assert "no SSH key here reaches it" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_over_ssh_records_the_key_after_a_successful_key_only_login(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    old = _sshkey(tmp_path, "id_old", blob="CCCC", comment="old@laptop")
+    new = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(new)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("sshkey", str(old))
+
+    rekey(ctx, over_ssh=True)
+
+    assert robot.state_get("sshkey") == str(new)
+    assert robot.state_get("sshkey-authorized") == f"{new} over-ssh"
+    assert f"CONFIRMED: the robot accepts {new}" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_over_ssh_refuses_a_host_that_takes_the_password_but_is_not_a_dreame(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """On a home network this address is usually the operator's router. The identity check IS the
+    login's remote command, so the first thing proven about whatever answered is what it is."""
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("ssh-keygen", "-y"):
+            algo, blob = Path(f"{argv[-1]}.pub").read_text().split()[:2]
+            return Result(argv, 0, f"{algo} {blob}\n", "")
+        return Result(argv, 1, "", "")  # authenticated, but no factory dir
+
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   responder=responder, confirms=[True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+
+    with pytest.raises(Die, match="it is not the robot"):
+        rekey(ctx, over_ssh=True)
+
+    assert f"cat > {_MISC_STAGED}" not in _remote_commands(ctx)
+
+
+def test_over_ssh_gives_up_when_neither_password_is_accepted(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password="never-offered").install(ctx)
+
+    with pytest.raises(Die, match="did not accept either password"):
+        rekey(ctx, over_ssh=True)
+
+    assert f"cat {_MISC_KEYS}" not in _remote_commands(ctx)
+
+
+def test_over_ssh_stops_when_a_previous_usb_flash_may_have_left_misc_half_written(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Writing a file into a possibly damaged filesystem neither repairs it nor puts the pristine
+    partition back — only the USB route's recovery can, so it must not be bypassed."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+    ctx.need_robot().state_set("rekey-attempt", json.dumps(
+        {"rollback": "misc-before-rekey-1.img", "config": CFG, "previous_sshkey": ""}))
+
+    with pytest.raises(Die, match="WITHOUT --over-ssh"):
+        rekey(ctx, over_ssh=True)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_over_ssh_sends_nothing_when_the_operator_is_not_on_the_robot_ap(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[False], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    with pytest.raises(UserAbort):
+        rekey(ctx, over_ssh=True)
+
+    assert _remote_commands(ctx) == []
+    assert not any(kind == "secret" for kind, _msg in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_over_ssh_password_login_drops_batchmode_without_weakening_any_other_ssh(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """BatchMode=yes is what stops every other robot SSH falling back to a password prompt. This one
+    call is deliberately about a password; ssh keeps the FIRST value it is given for an option, so
+    the shared BatchMode=yes has to be absent rather than overridden after it."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], secrets=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    calls = [c for c in ctx.runner.calls if c[0] == "ssh"]  # type: ignore[attr-defined]
+    password_calls = [c for c in calls if "PubkeyAuthentication=no" in c]
+    key_calls = [c for c in calls if "PubkeyAuthentication=no" not in c]
+    assert password_calls and key_calls
+    for call in password_calls:
+        assert "BatchMode=yes" not in call
+        assert "BatchMode=no" in call
+        assert "PasswordAuthentication=yes" in call
+        assert "NumberOfPasswordPrompts=1" in call
+        # A `Host *` in the operator's ssh config must not get to rewrite the one call that hands
+        # over a password, exactly as it cannot for the key-based ones.
+        assert "-F" in call and call[call.index("-F") + 1] == "/dev/null"
+        assert call[-2] == "root@192.168.5.1"
+    for call in key_calls:
+        assert "BatchMode=yes" in call
+        assert "PasswordAuthentication=yes" not in call
+
+
+# --- the USB route's closing check --------------------------------------------------------------
+
+
+def test_verify_over_ap_reports_success_when_the_robot_answers(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new")
+    ctx = make_ctx(
+        robot_name="bench",
+        responder=lambda argv: dreame_ap_prefix(argv) or Result(argv, 0, "", ""),
+        confirms=[True],
+    )
+
+    assert _verify_over_ap(ctx, key) == "confirmed"
+
+    # root@, not the bare address: the robot has no other account, so logging in as whatever the
+    # operator is called on their own machine could only ever be refused.
+    assert all(call[-2] == "root@192.168.5.1"
+               for call in ctx.runner.calls if call[0] == "ssh")  # type: ignore[attr-defined]
+
+
+def test_verify_over_ap_does_not_claim_success_when_the_robot_refuses(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A rekey nobody checked is a rekey nobody knows worked — and a refusal must read as one."""
+    denied = "root@192.168.5.1: Permission denied (publickey)."
+    ctx = make_ctx(
+        robot_name="bench",
+        responder=lambda argv: Result(argv, 255, "", denied),
+        confirms=[True],
+    )
+    key = _sshkey(tmp_path, "id_new")
+
+    assert _verify_over_ap(ctx, key) == "rejected"
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert any(kind == "err" and "SSH authentication failed" in msg for kind, msg in lines)
+    assert not any("CONFIRMED" in msg for _kind, msg in lines)
+
+
+def test_declining_the_ap_check_is_not_reported_as_the_robot_refusing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """"Declined to look" and "the robot refused" are different facts about the world.
+
+    Conflating them sends the operator hunting a fault that may not exist — which is exactly how the
+    first bench session was spent on the wrong question.
+    """
+    ctx = make_ctx(
+        robot_name="bench",
+        responder=lambda argv: Result(argv, 0, "", ""),
+        confirms=[False],
+    )
+    key = _sshkey(tmp_path, "id_new")
+
+    assert _verify_over_ap(ctx, key) == "unproven"
+
+    # Nothing was asked of the robot, so nothing may be asserted about it either way.
+    assert not [call for call in ctx.runner.calls if call[0] == "ssh"]  # type: ignore[attr-defined]
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert not any("did NOT accept" in msg for _kind, msg in lines)
+    assert not any("CONFIRMED" in msg for _kind, msg in lines)
+
+
+def test_an_unreachable_ap_is_not_reported_as_the_robot_refusing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A connection that never reached authentication proves nothing about the key.
+
+    `ssh_failure_guidance` returns None for exactly these failures — no route, refused, timed out —
+    and treating that as a refusal is the same false signal as treating a declined check as one.
+    """
+    unreachable = "ssh: connect to host 192.168.5.1 port 22: No route to host"
+    ctx = make_ctx(
+        robot_name="bench",
+        responder=lambda argv: Result(argv, 255, "", unreachable),
+        confirms=[True],
+    )
+    key = _sshkey(tmp_path, "id_new")
+
+    assert _verify_over_ap(ctx, key) == "unproven"
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert any("NOT a refusal" in msg for _kind, msg in lines)
+    assert not any("CONFIRMED" in msg for _kind, msg in lines)
