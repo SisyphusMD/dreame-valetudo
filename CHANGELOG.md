@@ -4,6 +4,19 @@
 
 ### Added
 
+- `dreame-valetudo rekey` authorizes your SSH key on a robot that is already rooted, over the USB
+  cable, without reflashing it. Rooting installs a key only the first time: the built image writes
+  its key to the robot's `misc` partition only when no key is there yet, and `misc` survives a root
+  flash — so a robot whose key was lost could not be reached again, and re-rooting it did not help.
+  `rekey` reads that partition off the robot, makes your key the one it accepts, and writes it back,
+  leaving the firmware, Secure Boot, and the robot's calibration untouched. Any key it is about to
+  stop accepting is named first — this is also the only way to revoke a key you have lost.
+  `--keep-existing` keeps the current keys authorized as well, and `--dry-run` prepares and checks
+  the change without writing to the robot. It asks for the USB button sequence twice, once to read
+  and once to write, so that deciding what to change never runs down the robot's power window. If a
+  write is ever interrupted, the next run offers to put back the copy it saved beforehand rather
+  than reading a half-written partition.
+
 - `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
   one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
   data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up
@@ -27,6 +40,9 @@
 
 ### Changed
 
+- Adopting a robot that was already rooted, and building an image for one, now say up front that the
+  key you upload will not take effect on it and point at `rekey`. Choosing to re-root in the hope of
+  regaining SSH access cost a destructive flash for nothing.
 - All persistent files now live under `~/dreame-valetudo/`, keeping disposable work apart from the
   irreplaceable backups. Existing layouts migrate forward automatically, and the migration never
   overwrites anything.

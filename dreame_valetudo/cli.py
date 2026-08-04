@@ -32,6 +32,7 @@ from .phases.manage import clean, forget, rename, uninstall
 from .phases.misc import _summary, sshkey, status, ui, valetudo
 from .phases.push import backup, push, update_valetudo, valetudo_update_available
 from .phases.recon import recon
+from .phases.rekey import rekey
 from .phases.restore import restore
 from .phases.root import root
 from .platform_env import apply_library_path
@@ -78,12 +79,13 @@ from .workspace import Robot, Workspace, slugify
 # commands (valetudo, update-valetudo, fix-did, fix-impl, fix-key): none of them touch fastboot or
 # FEL, and a UART-method robot rooted through the guided manual walkthrough still needs them.
 _FASTBOOT_ONLY = frozenset(
-    {"backup", "doctor", "fetch", "recon", "image", "root", "push", "restore", "verify-form"}
+    {"backup", "doctor", "fetch", "recon", "image", "root", "push", "rekey", "restore",
+     "verify-form"}
 )
 
 _ROBOT_COMMANDS = frozenset({
     "auto", "backup", "diagnose", "doctor", "fetch", "fix-did", "fix-impl", "fix-key", "image",
-    "model", "push", "recon", "restore", "root", "sshkey", "update-valetudo", "valetudo",
+    "model", "push", "recon", "rekey", "restore", "root", "sshkey", "update-valetudo", "valetudo",
     "verify-form",
 })
 
@@ -128,6 +130,8 @@ def _validate_command_args(cmd: str, rest: Sequence[str]) -> None:
         _only_options(cmd, rest, frozenset({"--all"}))
     elif cmd in {"image", "root", "restore"}:
         _only_options(cmd, rest, frozenset({"--force"}))
+    elif cmd == "rekey":
+        _only_options(cmd, rest, frozenset({"--keep-existing", "--dry-run"}))
     elif cmd in {"recon", "auto"}:
         _only_options(cmd, rest, frozenset({"--force", "--no-recovery-backup"}))
     elif cmd in {"push", "backup", "update-valetudo", "forget"}:
@@ -584,6 +588,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo recon      Phase 1 NON-DESTRUCTIVE — validate USB + record config\n"
         "  dreame-valetudo image      open the dustbuilder, auto-unpack the built zip\n"
         "  dreame-valetudo root       Phase 2 DESTRUCTIVE — flash the rooted image (OKAY-checked)\n"
+        "  dreame-valetudo rekey      authorize your SSH key on an ALREADY-rooted robot, over USB\n"
         "  dreame-valetudo restore    DESTRUCTIVE — return this robot to captured stock firmware\n"
         "  dreame-valetudo valetudo   Phase 3 — how to push the Valetudo binary onto the robot\n"
         "  dreame-valetudo push [key] Phase 3 — do it: SSH-pipe backup + binary + reboot\n"
@@ -720,6 +725,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
         image(ctx, force="--force" in rest)
     elif cmd == "root":
         root(ctx, force="--force" in rest)
+    elif cmd == "rekey":
+        rekey(ctx, keep_existing="--keep-existing" in rest, dry_run="--dry-run" in rest)
     elif cmd == "restore":
         restore(ctx, force="--force" in rest)
     elif cmd == "valetudo":

@@ -23,11 +23,20 @@ to the robot's dropbear: one command does backup + copy + reboot, no bridge.
 At image-build time the tool asks which SSH key should reach the robot: pick an existing one or
 have it generate a **dedicated** key (recommended — nothing personal is uploaded to the
 third-party builder). Its **public** half is what you upload to the dustbuilder's "Your SSH-Public
-key" field, so it lands in the robot's `authorized_keys`; a copy is staged to a plain,
+key" field, so it lands in the robot's `authorized_keys` **the first time the robot is rooted**; a
+copy is staged to a plain,
 **non-hidden** path because browser file dialogs hide `~/.ssh`. The **private** half never leaves
 your machine and is what `push` logs in with; the choice is remembered (override with
 `DREAME_SSHKEY`), and a tool-generated key is copied into the factory backup so you keep SSH access
 even if the work dir is lost.
+
+The image's dropbear init copies its baked-in `/authorized_keys` to `/mnt/misc/authorized_keys` only
+when that file is absent, and `misc` is not one of the five partitions `root` writes. So **re-rooting
+an already-rooted robot does not change which key it accepts** — `rekey` exists for that: it reads
+the live `misc` partition over USB, rewrites that one file, and writes the partition back. It
+authorizes with `oem dust` but never `oem prep`, so Secure Boot stays on, and it read-modify-writes
+the live partition rather than replaying a capture, because `misc` also carries the unit's camera and
+lidar calibration.
 
 There is no config or secrets file; device profiles live in the tool, and everything else has a
 sensible default. Everything the tool creates lives under `~/dreame-valetudo/`: `work/` holds the

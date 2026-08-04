@@ -4,6 +4,22 @@ Known issues after rooting, and the fix for each. Most fixes are baked into the 
 subcommands; run them on the **robot's own Wi-Fi AP** (hold the two OUTER buttons until it starts).
 Back to the [README](../README.md).
 
+- **A rooted robot rejects your SSH key** (`Permission denied (publickey,password)`), and
+  **re-rooting it does not help** → the robot is still authorizing the key it was rooted with, most
+  often one lost with an old machine. The image's dropbear init copies its baked-in
+  `/authorized_keys` to `/mnt/misc/authorized_keys` **only when that file is absent**, and `misc`
+  is not one of the five partitions a root flash writes — so the key uploaded to the builder takes
+  effect only on a robot that has never been rooted. Nothing about a failed flash is involved: the
+  DustBuilder host key is a constant across builds, and Valetudo keeps serving from persistent
+  storage, so neither one tells you which firmware booted. Run **`dreame-valetudo rekey`** on the
+  robot over USB: it reads the live `misc` partition, makes your key the one in `authorized_keys`,
+  and writes the partition back, leaving firmware and Secure Boot alone. It asks for the **FEL
+  button sequence twice** — once to read and once to write — because the robot's power MCU cuts the
+  SoC rail about 210 s after each sequence, and reading the partition and then waiting for you to
+  approve the change would leave the write starting at an unknown point on that clock. It names
+  every key it is about to stop accepting first — and since it needs no SSH, it is also the only way to **revoke** a
+  key you have lost. Add `--dry-run` to build and verify the patched partition without writing
+  anything, or `--keep-existing` to leave the current keys authorized too.
 - **Valetudo starts then exits** with `Couldn't find a suitable ValetudoRobot implementation`
   → Valetudo's `auto` detector doesn't match that model's code
   ([#2308](https://github.com/Hypfer/Valetudo/discussions/2308)). Run (on the robot's AP)

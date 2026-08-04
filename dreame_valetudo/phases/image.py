@@ -71,6 +71,13 @@ def _open_dustbuilder(ctx: Context) -> None:
     key = choose_sshkey(ctx)
     pub = stage_pub_for_upload(ctx.runner, ctx.ws.base, key)
     _print_checklist(ctx, cfg, pub)
+    # Deliberately outside the checklist, which is per-model and static: this depends on the robot,
+    # not on the form. The image installs its key only when /mnt/misc/authorized_keys is absent, and
+    # that partition survives a root flash, so silence here reads as a promise the build can't keep.
+    if robot.state_has("rooted"):
+        ctx.console.warn("This robot is ALREADY ROOTED, so the key uploaded above will NOT take "
+                         "effect — a built image installs its key only on a robot that has never "
+                         "been rooted. Run 'dreame-valetudo rekey' to authorize a key on it.")
     # Copy the config to the clipboard — best-effort, and only when pbcopy exists (no shell, so the
     # config value is never interpolated into a command line).
     if shutil.which("pbcopy") and ctx.runner.run(["pbcopy"], stdin=cfg, check=False).ok:
