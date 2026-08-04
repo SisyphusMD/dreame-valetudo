@@ -26,7 +26,14 @@ from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..profiles import known_model_key_for_code, load_profile
 from ..session import records_step
-from ..ssh import is_dreame_ap, resolve_sshkey, robot_ssh, ssh_base, ssh_failure_guidance
+from ..ssh import (
+    AP_VPN_HINT,
+    is_dreame_ap,
+    resolve_sshkey,
+    robot_ssh,
+    ssh_base,
+    ssh_failure_guidance,
+)
 from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish
 from .doctor import check_external_tools
@@ -706,6 +713,7 @@ def _capture_live_factory_backup(
             die(guidance)
         ctx.console.warn(f"Can't reach {_TARGET}. Join the ROBOT's own Wi-Fi AP (hold the two "
                          "OUTER buttons), then re-run.")
+        ctx.console.info(AP_VPN_HINT)
         return None
 
     # CRITICAL: on a home LAN, ROBOT_AP_IP reached via the router is the ROUTER, not the robot.
@@ -850,6 +858,7 @@ def update_valetudo(ctx: Context, key: str | Path | None = None) -> bool:
         if guidance is not None:
             die(guidance)
         ctx.console.warn(f"Can't reach {_TARGET}. Join the selected robot's AP and re-run.")
+        ctx.console.info(AP_VPN_HINT)
         return False
     if not is_dreame_ap(ctx.runner, _TARGET, key):
         die(f"The host at {_TARGET} is not a Dreame robot. On a home network it is usually your "

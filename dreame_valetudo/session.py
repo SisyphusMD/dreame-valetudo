@@ -437,12 +437,14 @@ def tmux_plan(
     # that true independently of it, and the line above already reads a bare invocation as `auto`.
     argv = list(self_cmd) if len(self_cmd) > 1 else [*self_cmd, "auto"]
     create = [[*t, "new-session", "-A", "-d", "-s", session, "--", *env_prefix(env), *argv]]
-    create += [[*t, *opt] for opt in session_options(session, colour=colour)]
+    create += [[*t, *opt] for opt in session_options(session, colour=colour, env=env)]
     create.append([*t, "attach-session", "-t", session])
     return create
 
 
-def session_options(session: str, *, colour: bool) -> list[list[str]]:
+def session_options(
+    session: str, *, colour: bool, env: Mapping[str, str] | None = None,
+) -> list[list[str]]:
     """How the session is dressed, and how it is allowed to end.
 
     The status line replaces tmux's default green strip carrying a session name and window list the
@@ -457,6 +459,7 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
     Everything here reads "is the session alive?" as "is a run in progress", so that has to be true.
     """
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
+    mouse = "off" if (env or {}).get("DREAME_TMUX_MOUSE", "").strip().lower() == "off" else "on"
     if sys.platform == "darwin":
         clipboard = ["copy-pipe-no-clear", "pbcopy"]
     elif command := shutil.which("wl-copy"):
@@ -475,7 +478,12 @@ def session_options(session: str, *, colour: bool) -> list[list[str]]:
         # Mouse mode restores the wheel. Since it also captures drag selection, ending a drag
         # copies directly to the host clipboard; without a clipboard helper, keeping the selection
         # visible at least leaves tmux's own copy buffer usable.
-        ["set-option", "-t", session, "mouse", "on"],
+        #
+        # Capturing the mouse also takes over double-click selection and clicking to place the
+        # cursor in a prompt, which some terminals do better natively. DREAME_TMUX_MOUSE=off hands
+        # all of it back — at the cost of the scrollback above, so it is opt-in rather than the
+        # default.
+        ["set-option", "-t", session, "mouse", mouse],
         ["bind-key", "-T", "copy-mode", "MouseDragEnd1Pane",
          "send-keys", "-X", *clipboard],
         ["bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",

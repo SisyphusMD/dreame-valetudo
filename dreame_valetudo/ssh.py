@@ -19,13 +19,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .console import Console, Die, die
-from .constants import ROBOT_SSH_OPTS
+from .constants import ROBOT_AP_IP, ROBOT_SSH_OPTS
 from .log import scrub
 from .run import Result, Runner
 
 if TYPE_CHECKING:
     from .context import Context
     from .workspace import Robot
+
+
+# A VPN carrying a default route, or a split tunnel covering RFC1918, swallows the robot's fixed AP
+# address. ssh then fails with a bare "no route to host" while Wi-Fi looks perfectly connected, and
+# every instruction about joining the AP sends the operator to re-check something already correct.
+# The address belongs to this tool, so explaining what else claims it does too.
+AP_VPN_HINT = (
+    f"If you ARE on the robot's Wi-Fi, check for a VPN: one routing {ROBOT_AP_IP} takes this "
+    "address before the robot ever sees it, and nothing else about the connection looks wrong. "
+    "Disconnect it and re-run."
+)
 
 
 def ssh_base(target: str, key: str | Path | None) -> list[str]:

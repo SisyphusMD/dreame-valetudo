@@ -12,8 +12,10 @@ from conftest import CtxFactory
 
 from dreame_valetudo import ssh as ssh_mod
 from dreame_valetudo.console import Console, Die
+from dreame_valetudo.constants import ROBOT_AP_IP
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.ssh import (
+    AP_VPN_HINT,
     choose_sshkey,
     discover_keys,
     ensure_sshkey,
@@ -582,3 +584,10 @@ def test_ensure_sshkey_treats_a_dangling_symlinked_half_as_missing(tmp_path: Pat
     with pytest.raises(Die, match=r"public half is missing"):
         ensure_sshkey(rr, Console(color=False), key)
     assert rr.calls == []
+
+
+def test_the_ap_hint_names_the_vpn_that_takes_the_robots_address() -> None:
+    """A VPN routing 192.168.5.1 makes the robot unreachable while Wi-Fi looks perfectly fine, so
+    every "join the AP" instruction sends the operator to re-check something already correct."""
+    assert "VPN" in AP_VPN_HINT
+    assert ROBOT_AP_IP in AP_VPN_HINT

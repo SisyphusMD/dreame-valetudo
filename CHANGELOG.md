@@ -71,6 +71,14 @@
 
 ### Fixed
 
+- When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot
+  see: a VPN routing the robot's fixed address takes it before the robot ever does, and nothing
+  else about the connection looks wrong.
+- After a run pinned to one robot with `DREAME_ROBOT`, the follow-up question no longer offers to
+  set up another robot the environment has already ruled out.
+- `DREAME_TMUX_MOUSE=off` hands mouse selection back to your terminal, for terminals whose own
+  double-click and click-to-place-cursor behave better than the capture that keeps long waits
+  scrollable.
 - Destructive work now binds the selected model, staged image, saved config, live robot, and backup
   together before writing. R2338/R2338H and L20 hardware look-alikes are matched exactly, ambiguous
   USB setups stop, and every flash response must be `OKAY`.

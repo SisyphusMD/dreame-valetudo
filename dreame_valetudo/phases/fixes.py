@@ -17,6 +17,7 @@ from ..log import scrub
 from ..platform_env import open_url
 from ..profiles import impl_class_for_model
 from ..ssh import (
+    AP_VPN_HINT,
     is_dreame_ap,
     resolve_sshkey,
     robot_ssh,
@@ -61,7 +62,7 @@ def _require_robot_ap(ctx: Context, key: Path | None) -> None:
         if guidance is not None:
             die(guidance)
         die(f"Can't reach {_TARGET} — join the robot's Wi-Fi AP (hold the two OUTER buttons), "
-            "then re-run.")
+            f"then re-run. {AP_VPN_HINT}")
     if not is_dreame_ap(ctx.runner, _TARGET, key):
         die(f"Host at {_TARGET} is NOT a Dreame robot — on a home network {ROBOT_AP_IP} is usually "
             "your ROUTER. Join the ROBOT's own AP and re-run.")
@@ -386,8 +387,12 @@ def diagnose(ctx: Context) -> None:
         f"### target={_TARGET}  key={key}  local-binary={binsize} bytes",
     ]
     if not robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False).ok:
+        # This is the command `ui` sends people to when it times out, so it is the last place that
+        # can name a cause the operator cannot see. Omitting it here recreates the loop: told to
+        # diagnose, told again to join an AP they are already on.
         lines.append(">>> UNREACHABLE — are you on the ROBOT's Wi-Fi AP? Hold the two OUTER "
                      "buttons to bring it up.")
+        lines.append(f">>> {AP_VPN_HINT}")
     elif not is_dreame_ap(ctx.runner, _TARGET, key):
         lines.append(f">>> Host at {_TARGET} is NOT a Dreame robot (probably your router). Join the "
                      "ROBOT's Wi-Fi AP.")

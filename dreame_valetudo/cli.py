@@ -1046,7 +1046,12 @@ def main(
             again = False
             if command != "bench" and engaged and not user_aborted and sys.stdout.isatty():
                 with contextlib.suppress(Die):
-                    if rc == 0:
+                    if rc == 0 and resolved.get("DREAME_ROBOT"):
+                        # DREAME_ROBOT pins this run to one robot, so the picker a "yes" leads to
+                        # can only land back on the same one. Asking about "another robot" reads as
+                        # an offer the environment has already ruled out.
+                        question = f"Run something else for '{robot_label}'?"
+                    elif rc == 0:
                         question = "Set up another robot?"
                     elif step == "waiting for the robot to enter FEL mode":
                         question = "Watch for the robot again?"
