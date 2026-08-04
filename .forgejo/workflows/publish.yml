@@ -57,7 +57,7 @@ jobs:
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
-          MANYLINUX_AMD64="quay.io/pypa/manylinux_2_28_x86_64:2026.07.25-1@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8"
+          MANYLINUX_AMD64="quay.io/pypa/manylinux_2_28_x86_64:2026.08.02-2@sha256:622a0041b2daf9865d38d7a14ae913a66d103db7b15fdedbcf513353d106183e"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_aarch64
           MANYLINUX_ARM64="quay.io/pypa/manylinux_2_28_aarch64:2026.08.02-2@sha256:5bf033a700fd265da5cca83c0fa379810b8a4b516a2ec432f1a2b51dca4346cf"
           # nfpm packages the .debs. Pinned image; its digest IS the integrity check (Renovate-kept).

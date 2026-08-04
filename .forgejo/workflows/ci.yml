@@ -133,7 +133,7 @@ jobs:
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
-          PYTHON_BUILD_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:2026.07.25-1@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8"
+          PYTHON_BUILD_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:2026.08.02-2@sha256:622a0041b2daf9865d38d7a14ae913a66d103db7b15fdedbcf513353d106183e"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
           # renovate: datasource=docker depName=goreleaser/nfpm
