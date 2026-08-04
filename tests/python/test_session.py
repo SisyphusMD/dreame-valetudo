@@ -324,6 +324,23 @@ def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
     assert not any("colour244" in o for o in plain)
 
 
+def test_mouse_capture_stays_on_by_default() -> None:
+    """It is what makes a long FEL wait scrollable at all, so it is not given up lightly."""
+    opts = [" ".join(o) for o in session_options(_SESSION, colour=True)]
+    assert any(o.endswith("mouse on") for o in opts)
+
+
+def test_mouse_capture_can_be_handed_back_to_the_terminal() -> None:
+    """Capturing the mouse also takes over double-click selection and click-to-place-cursor, which
+    some terminals do better natively — so the operator can have those back."""
+    opts = [
+        " ".join(o) for o in
+        session_options(_SESSION, colour=True, env={"DREAME_TMUX_MOUSE": "off"})
+    ]
+    assert any(o.endswith("mouse off") for o in opts)
+    assert not any(o.endswith("mouse on") for o in opts)
+
+
 def test_mouse_selection_copies_to_the_macos_clipboard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
