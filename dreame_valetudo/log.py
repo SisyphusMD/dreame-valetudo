@@ -33,6 +33,12 @@ _SSH_PUB = re.compile(
     r"(?:[ \t]+[^\r\n]*)?"
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# The rooted image's root password: base64 of md5sum's stdin line, `"<32 hex>  -\n"`. That fixed
+# 36-byte shape makes it always 48 base64 chars whose last group is the base64 of " -\n" ("IC0K"),
+# which is specific enough to redact without catching anything else. Nothing hands this value to the
+# runner or the console — rekey --over-ssh keeps it in an askpass file — so this is a backstop for a
+# future call site, and it runs before the generic rules so they cannot chew it up first.
+_ROBOT_PASSWORD = re.compile(r"\b[A-Za-z0-9+/]{44}IC0K\b")
 _DUST_COMMAND = re.compile(r"(\boem\s+dust\s+)[0-9a-fA-F]{8}\b", re.IGNORECASE)
 _HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")             # config/identity value, robot-tag hex, SHAs
 # Device IDs are 9-10 digit ints; ≥9 catches them (and, harmlessly, big byte counts) while sparing
@@ -83,6 +89,7 @@ def scrub(text: str, home: Path | None = None) -> str:
         return f"{marker} <redacted-public-key>"
 
     text = _SSH_PUB.sub(mask_public_key, text)
+    text = _ROBOT_PASSWORD.sub("<redacted-password>", text)
     text = _EMAIL.sub("<redacted-email>", text)
     text = _DUST_COMMAND.sub(r"\1<redacted-id>", text)
     text = _MIKEY_ASSIGNMENT.sub(r"\1<redacted-id>", text)
@@ -327,6 +334,17 @@ class LoggingConsole(Console):
         self._log.line(self._PREFIX["answer"], "yes" if answer else "no")
         return answer
 
+    def ask_secret(self, prompt: str) -> str:
+        """Overridden so the answer can never be logged the way ``ask`` logs its own.
+
+        The question is worth keeping — it is what makes the surrounding lines readable — but this
+        must stay beside ``ask`` so nobody later gives secret answers the same treatment.
+        """
+        self._log.line(self._PREFIX["prompt"], prompt)
+        answer = super().ask_secret(prompt)
+        self._log.line(self._PREFIX["answer"], "<not recorded>")
+        return answer
+
     def ask(self, prompt: str) -> str:
         self._log.line(self._PREFIX["prompt"], prompt)
         answer = super().ask(prompt)
@@ -432,6 +450,12 @@ class BufferingConsole(Console):
         self._pending.append(("??", prompt))
         answer = self._inner.ask(prompt)
         self._pending.append(("->", answer))
+        return answer
+
+    def ask_secret(self, prompt: str) -> str:
+        self._pending.append(("??", prompt))
+        answer = self._inner.ask_secret(prompt)
+        self._pending.append(("->", "<not recorded>"))
         return answer
 
     def progress(self, label: str, *, timer: bool = True) -> Progress:

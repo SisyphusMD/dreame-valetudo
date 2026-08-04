@@ -11,6 +11,7 @@ message, and wording assertions never couple to presentation.
 
 from __future__ import annotations
 
+import getpass
 import os
 import select
 import shutil
@@ -18,6 +19,7 @@ import sys
 import textwrap
 import threading
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
@@ -292,6 +294,31 @@ class Console:
         self._suspend_progress()
         _bookmark(prompt)
         answer = self._prompt(self._c("1;35", f"?? {prompt} "))
+        _bookmark(None)  # see confirm(): deliberately not a finally
+        return answer
+
+    def ask_secret(self, prompt: str) -> str:
+        """Read an answer that must never be echoed, kept, or logged.
+
+        Deliberately NOT routed through ``_prompt``: the idle-timeout path reads sys.stdin itself
+        and would echo every character. Giving up the unattended-run timeout is the right trade —
+        a value only a person holding the robot can supply is one nobody can answer remotely
+        anyway. The question is still bookmarked (the QUESTION is not the secret).
+        """
+        self._suspend_progress()
+        _bookmark(prompt)
+        try:
+            with warnings.catch_warnings():
+                # Without a controllable terminal getpass falls back to an ECHOING read and only
+                # warns about it. Promoted to an error so there is no path where the answer appears
+                # on screen.
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                answer = getpass.getpass(self._c("1;35", f"?? {prompt} "))
+        except (getpass.GetPassWarning, EOFError, OSError) as exc:
+            raise Die(
+                f"Cannot ask for {prompt!r} without echoing it back to the terminal, so it was not "
+                "asked at all. Run this from a real terminal."
+            ) from exc
         _bookmark(None)  # see confirm(): deliberately not a finally
         return answer
 

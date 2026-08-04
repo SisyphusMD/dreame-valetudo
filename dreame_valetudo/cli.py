@@ -131,7 +131,7 @@ def _validate_command_args(cmd: str, rest: Sequence[str]) -> None:
     elif cmd in {"image", "root", "restore"}:
         _only_options(cmd, rest, frozenset({"--force"}))
     elif cmd == "rekey":
-        _only_options(cmd, rest, frozenset({"--keep-existing", "--dry-run"}))
+        _only_options(cmd, rest, frozenset({"--keep-existing", "--dry-run", "--over-ssh"}))
     elif cmd in {"recon", "auto"}:
         _only_options(cmd, rest, frozenset({"--force", "--no-recovery-backup"}))
     elif cmd in {"push", "backup", "update-valetudo", "forget"}:
@@ -726,7 +726,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     elif cmd == "root":
         root(ctx, force="--force" in rest)
     elif cmd == "rekey":
-        rekey(ctx, keep_existing="--keep-existing" in rest, dry_run="--dry-run" in rest)
+        rekey(ctx, keep_existing="--keep-existing" in rest, dry_run="--dry-run" in rest,
+              over_ssh="--over-ssh" in rest)
     elif cmd == "restore":
         restore(ctx, force="--force" in rest)
     elif cmd == "valetudo":
@@ -1200,6 +1201,11 @@ def _run(
         guard_cmd = cmd
         if cmd == "bench" and not bench_drives_hardware(args[1:]):
             guard_cmd = "help"  # list/report/record are host-only; a hardware run stays gated
+        elif cmd == "rekey" and "--over-ssh" in args[1:]:
+            # That route reaches the robot over its Wi-Fi AP and never opens the USB device, so a
+            # missing udev rule has nothing to do with it — and refusing there would gate the one
+            # command someone locked out of their robot came for.
+            guard_cmd = "help"
         if production and guard_blocks(ctx.system, guard_cmd, resolved_env):
             con.err("USB access isn't set up on this Linux machine yet, so rooting can't reach "
                     "the robot.")

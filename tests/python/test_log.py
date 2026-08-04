@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import ScriptedConsole
 
+from dreame_valetudo import console as console_module
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.log import (
     BufferingConsole,
@@ -18,6 +19,7 @@ from dreame_valetudo.log import (
     scrub,
     tail_transcript,
 )
+from dreame_valetudo.phases.rekey import _password_candidates
 from dreame_valetudo.profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import RecordingRunner, Result
 
@@ -89,6 +91,19 @@ def test_scrub_redacts_a_miio_key_shaped_token() -> None:
     # But ordinary all-alpha words in the shareable log stay readable (no digit -> not key-shaped).
     assert "valetudo" in scrub("== valetudo running? == RUNNING")
     assert "RUNNING" in scrub("== valetudo running? == RUNNING")
+
+
+def test_scrub_redacts_the_robot_root_password_shape() -> None:
+    """`rekey --over-ssh` keeps the derived password in an askpass file and out of every seam, so
+    this is a backstop — but the value it protects is the whole of a robot's shell access."""
+    password = _password_candidates("TESTSERIAL0001")[0]
+
+    assert password not in scrub(f"offered {password} to the robot")
+    assert "<redacted-password>" in scrub(f"offered {password} to the robot")
+    # An ssh public key is also base64 and is redacted whole by its own rule first, so the password
+    # rule cannot chew a hole in the middle of one.
+    key_line = "ssh-ed25519 AAAA" + "B" * 40 + " me@laptop"
+    assert "<redacted-public-key>" in scrub(key_line)
 
 
 @pytest.mark.parametrize("assignment", [
@@ -327,6 +342,24 @@ def test_logging_console_mirrors_the_new_output_kinds(tmp_path: Path) -> None:
     assert "1. press the button" in text
     assert " | remote output" in text and " | line one" in text
     assert "-> Pulling — done (" in text  # exactly the one summary line, no frames/heartbeats
+
+
+def test_logging_console_logs_a_secret_question_but_never_its_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ask` logs its answer, and this sits right beside it — so it has to say out loud that the
+    answer is the one thing that must not be written down."""
+    monkeypatch.setattr(console_module.getpass, "getpass", lambda _p: "TESTSERIAL0001")
+    log = _open(tmp_path, tmp_path / "home")
+    con = LoggingConsole(log)
+
+    assert con.ask_secret("Robot serial number?") == "TESTSERIAL0001"
+
+    log.close()
+    text = log.path.read_text()
+    assert "?? Robot serial number?" in text
+    assert "-> <not recorded>" in text
+    assert "TESTSERIAL0001" not in text
 
 
 def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:

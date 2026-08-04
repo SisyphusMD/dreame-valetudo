@@ -978,6 +978,33 @@ def test_host_only_bench_actions_do_not_require_linux_usb_setup(
     assert checked == ["help"]
 
 
+def test_rekey_over_ssh_does_not_require_linux_usb_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """That route reaches the robot over its Wi-Fi AP and never opens the USB device. Gating it on
+    a udev rule would refuse the one command someone locked out of their robot came for."""
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: None)
+    monkeypatch.setattr(cli, "rekey", lambda *_args, **_kwargs: None)
+    checked: list[str] = []
+    monkeypatch.setattr(
+        cli, "guard_blocks", lambda _system, cmd, _env: checked.append(cmd) or False,
+    )
+    env = {
+        "HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1",
+    }
+
+    main(["rekey", "--over-ssh"], env=env, console=ScriptedConsole(), runner=SubprocessRunner())
+    assert checked == ["help"]
+
+    checked.clear()
+    fresh = {**env, "HOME": str(tmp_path / "second")}
+    main(["rekey"], env=fresh, console=ScriptedConsole(), runner=SubprocessRunner())
+    assert checked == ["rekey"]  # the USB route stays gated
+
+
 def test_hardware_bench_run_retains_the_linux_usb_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

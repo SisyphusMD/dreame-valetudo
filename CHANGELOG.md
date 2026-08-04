@@ -17,6 +17,15 @@
   write is ever interrupted, the next run offers to put back the copy it saved beforehand rather
   than reading a half-written partition.
 
+- `dreame-valetudo rekey --over-ssh` does the same thing without the USB cable, the Breakout PCB, or
+  flashing anything. A rooted robot sets its own root password from the serial printed on the label
+  under the dustbin, so joining the robot's own Wi-Fi and typing that serial is enough to authorize
+  your key. It replaces, keeps, names every key it is about to stop accepting, and honours
+  `--dry-run` exactly as the USB route does, then proves the robot accepts the new key before the
+  tool records it. The serial is never shown as you type it, never written to the run log, and never
+  kept once the run ends. Use the USB route instead when the robot will not boot far enough to bring
+  its Wi-Fi up, or when a previous `rekey` write was interrupted.
+
 - `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
   one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
   data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up

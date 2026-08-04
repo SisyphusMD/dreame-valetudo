@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import itertools
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,37 @@ def test_ask_returns_input_and_empty_on_eof(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr("builtins.input", _raise)
     assert _console().ask("name?") == ""
+
+
+def test_ask_secret_reads_without_echoing(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def _getpass(prompt: str) -> str:
+        seen.append(prompt)
+        return "SERIAL0001"
+
+    monkeypatch.setattr(console.getpass, "getpass", _getpass)
+    # input() would echo; reaching it at all is the failure this asserts against.
+    monkeypatch.setattr("builtins.input", lambda _p: pytest.fail("a secret was read with echo on"))
+
+    assert _console().ask_secret("serial?") == "SERIAL0001"
+    assert seen == ["?? serial? "]
+
+
+def test_ask_secret_refuses_rather_than_falling_back_to_an_echoing_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """getpass only WARNS when it cannot silence the terminal and then reads with echo on. A secret
+    typed in clear is worse than a run that stops, so the warning has to be fatal."""
+    def _getpass(_prompt: str) -> str:
+        warnings.warn("Can not control echo on the terminal.", console.getpass.GetPassWarning,
+                      stacklevel=1)
+        return "echoed"
+
+    monkeypatch.setattr(console.getpass, "getpass", _getpass)
+
+    with pytest.raises(Die, match="without echoing it back"):
+        _console().ask_secret("serial?")
 
 
 def test_eof_prompt_terminates_its_line(
