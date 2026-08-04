@@ -460,14 +460,19 @@ def session_options(
     """
     style = "fg=colour244,bg=default" if colour else "fg=default,bg=default"
     mouse = "off" if (env or {}).get("DREAME_TMUX_MOUSE", "").strip().lower() == "off" else "on"
+    # `-and-cancel` wherever the text reaches the SYSTEM clipboard: the copy has already landed
+    # somewhere the user can paste from, so holding the selection open buys nothing and costs the
+    # thing they actually wanted next — copy mode swallows typing, so selecting a line at a prompt
+    # left them unable to answer it. Only the no-helper fallback keeps the selection, because there
+    # tmux's own buffer IS the copy and losing the highlight would lose it.
     if sys.platform == "darwin":
-        clipboard = ["copy-pipe-no-clear", "pbcopy"]
+        clipboard = ["copy-pipe-and-cancel", "pbcopy"]
     elif command := shutil.which("wl-copy"):
-        clipboard = ["copy-pipe-no-clear", command]
+        clipboard = ["copy-pipe-and-cancel", command]
     elif command := shutil.which("xclip"):
         # One argument, not three: copy-pipe takes the whole shell command as a single word, so
         # split flags would reach send-keys as literal keystrokes to type into the pane.
-        clipboard = ["copy-pipe-no-clear", f"{command} -selection clipboard"]
+        clipboard = ["copy-pipe-and-cancel", f"{command} -selection clipboard"]
     else:
         clipboard = ["copy-selection-no-clear"]
     return [
@@ -479,10 +484,11 @@ def session_options(
         # copies directly to the host clipboard; without a clipboard helper, keeping the selection
         # visible at least leaves tmux's own copy buffer usable.
         #
-        # Capturing the mouse also takes over double-click selection and clicking to place the
-        # cursor in a prompt, which some terminals do better natively. DREAME_TMUX_MOUSE=off hands
-        # all of it back — at the cost of the scrollback above, so it is opt-in rather than the
-        # default.
+        # Capturing the mouse also takes over selection. Most terminals still hand it back for one
+        # drag when a modifier is held (Shift, or Option/Fn on the macOS terminals), which is the
+        # escape hatch for anything tmux's own copy cannot express — a column out of a table, or
+        # text spanning the status line. DREAME_TMUX_MOUSE=off gives it back permanently, at the
+        # cost of the scrollback above, so it stays opt-in rather than the default.
         ["set-option", "-t", session, "mouse", mouse],
         ["bind-key", "-T", "copy-mode", "MouseDragEnd1Pane",
          "send-keys", "-X", *clipboard],

@@ -324,6 +324,31 @@ def test_the_bar_drops_colour_when_NO_COLOR_is_set() -> None:
     assert not any("colour244" in o for o in plain)
 
 
+def test_selecting_text_returns_the_pane_to_the_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Copy mode swallows typing, so a selection that stayed open left the operator unable to
+    answer the prompt they had just selected a line from. Where the text reaches the SYSTEM
+    clipboard the copy has already landed, so holding the selection buys nothing."""
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "darwin")
+    binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
+    drags = [o for o in binds if "MouseDragEnd1Pane" in o]
+    assert drags, "nothing binds the end of a drag"
+    assert all("copy-pipe-and-cancel" in o for o in drags)
+    assert not any("no-clear" in item for o in drags for item in o)
+
+
+def test_the_no_clipboard_fallback_still_keeps_the_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no helper, tmux's own buffer IS the copy — cancelling would discard it."""
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "linux")
+    monkeypatch.setattr("dreame_valetudo.session.shutil.which", lambda *_a, **_k: None)
+    binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
+    drags = [o for o in binds if "MouseDragEnd1Pane" in o]
+    assert all("copy-selection-no-clear" in o for o in drags)
+
+
 def test_mouse_capture_stays_on_by_default() -> None:
     """It is what makes a long FEL wait scrollable at all, so it is not given up lightly."""
     opts = [" ".join(o) for o in session_options(_SESSION, colour=True)]
@@ -348,7 +373,7 @@ def test_mouse_selection_copies_to_the_macos_clipboard(
     binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
     assert binds == [
         ["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X",
-         "copy-pipe-no-clear", "pbcopy"]
+         "copy-pipe-and-cancel", "pbcopy"]
         for table in ("copy-mode", "copy-mode-vi")
     ] + [
         ["bind-key", "-T", table, "MouseDown1Pane", "send-keys", "-X",
@@ -365,12 +390,12 @@ def test_mouse_selection_prefers_wayland_then_xclip(
     monkeypatch.setattr("dreame_valetudo.session.shutil.which", found.get)
     binds = [o for o in session_options(_SESSION, colour=True)
              if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
-    assert all(o[-2:] == ["copy-pipe-no-clear", "/bin/wl-copy"] for o in binds)
+    assert all(o[-2:] == ["copy-pipe-and-cancel", "/bin/wl-copy"] for o in binds)
 
     found.pop("wl-copy")
     binds = [o for o in session_options(_SESSION, colour=True)
              if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
-    assert all(o[-2:] == ["copy-pipe-no-clear", "/bin/xclip -selection clipboard"]
+    assert all(o[-2:] == ["copy-pipe-and-cancel", "/bin/xclip -selection clipboard"]
                for o in binds)
 
 
