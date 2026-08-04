@@ -32,7 +32,7 @@ import struct
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +42,33 @@ import usb.util
 CHUNK = 1 << 16          # 64 KiB; larger libusb transfers EIO on the Dreame gadget on macOS
 CMD_TIMEOUT = 30000      # ms; individual ops must stay well under the external rail-cycle window
 DATA_TIMEOUT = 120000    # ms; large flash/upload transfers
+ACQUIRE_TIMEOUT = 8.0    # s; bounded well under the external rail-cycle window
+ACQUIRE_DELAY = 0.25     # s between acquisition attempts
+
+
+def expires_after(seconds: float) -> Callable[[], bool]:
+    """A deadline that trips once `seconds` elapse on EITHER the monotonic or the wall clock.
+
+    Neither clock bounds this safely alone, and both failures end at the same place — writing to a
+    robot whose power rail is about to cycle. Monotonic does not advance while the host is
+    suspended (Linux CLOCK_MONOTONIC), yet the robot's MCU rail timer keeps running, so a laptop
+    that sleeps mid-wait resumes believing it still has a window it has already lost. Wall clock
+    advances across suspend but can be stepped backwards by NTP, which stretches the bound.
+
+    Tripping on whichever expires FIRST fails closed both ways: a forward step or a suspend ends
+    the wait early, which costs the operator a retry, never a flash into a dead window.
+    """
+    monotonic_deadline = time.monotonic() + seconds
+    wall_deadline = time.time() + seconds
+    return lambda: time.monotonic() >= monotonic_deadline or time.time() >= wall_deadline
 
 
 class FastbootError(RuntimeError):
     pass
+
+
+class _NotAcquired(FastbootError):
+    """The gadget is not usable *yet* — safe to retry, because no command has been sent."""
 
 
 # --- Android sparse image format --------------------------------------------------------
@@ -160,26 +183,49 @@ def find_device() -> tuple[Any, Any, Any]:
 
 class Fastboot:
     def __init__(self) -> None:
+        # A gadget that has just re-enumerated out of FEL answers descriptor reads a beat before it
+        # will accept set_configuration/claim, so `wait` returns (descriptors are all it proves)
+        # while the very next process still fails acquisition with ENODEV. Retry ACQUISITION only:
+        # no protocol command has been sent yet, so a retry can never re-issue a write. Structural
+        # faults (ambiguous target, no libusb backend) are not _NotAcquired and fail immediately.
+        expired = expires_after(ACQUIRE_TIMEOUT)
+        while True:
+            try:
+                self._acquire()
+                return
+            except (_NotAcquired, usb.core.USBError) as exc:
+                if expired():
+                    raise FastbootError(str(exc)) from exc
+                time.sleep(ACQUIRE_DELAY)
+
+    def _acquire(self) -> None:
         dev, cfg, intf = find_device()
         if dev is None:
-            raise FastbootError("no fastboot device found (is the payload booted?)")
-        self.dev = dev
+            raise _NotAcquired("no fastboot device found (is the payload booted?)")
         try:
-            dev.get_active_configuration()
-        except usb.core.USBError:
-            dev.set_configuration()
-            cfg = dev.get_active_configuration()
-            intf = cfg[(intf.bInterfaceNumber, 0)]
-        ep_out = usb.util.find_descriptor(intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        ep_in = usb.util.find_descriptor(intf, custom_match=lambda e:
-            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        if ep_out is None or ep_in is None:
-            raise FastbootError("fastboot interface has no bulk endpoint pair")
-        self.ep_out, self.ep_in = ep_out, ep_in
-        usb.util.claim_interface(dev, intf.bInterfaceNumber)
+            try:
+                dev.get_active_configuration()
+            except usb.core.USBError:
+                dev.set_configuration()
+                cfg = dev.get_active_configuration()
+                intf = cfg[(intf.bInterfaceNumber, 0)]
+            ep_out = usb.util.find_descriptor(intf, custom_match=lambda e:
+                usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+            ep_in = usb.util.find_descriptor(intf, custom_match=lambda e:
+                usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+                and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+            if ep_out is None or ep_in is None:
+                # Mid-enumeration descriptors can still be incomplete, so this is a retryable
+                # symptom rather than a permanent property of the interface.
+                raise _NotAcquired("fastboot interface has no bulk endpoint pair")
+            usb.util.claim_interface(dev, intf.bInterfaceNumber)
+        except BaseException:
+            # A half-open handle would make the next attempt race this one.
+            with contextlib.suppress(Exception):
+                usb.util.dispose_resources(dev)
+            raise
+        self.dev, self.ep_out, self.ep_in = dev, ep_out, ep_in
 
     def _read(self, timeout: int = CMD_TIMEOUT) -> tuple[str, bytes]:
         """Read one response, surfacing INFO/TEXT lines, until a terminal tag."""
@@ -325,8 +371,8 @@ def main(argv: list[str]) -> int:
 
     try:
         if cmd == "wait":
-            deadline = time.time() + (int(rest[0]) if rest else 180)
-            while time.time() < deadline:
+            expired = expires_after(int(rest[0]) if rest else 180)
+            while not expired():
                 dev, _, _ = find_device()
                 if dev is not None:
                     print("OKAY fastboot device present")

@@ -16,6 +16,7 @@ import dreame_valetudo.bench as B
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
+from dreame_valetudo.phases.root import root as production_root
 from dreame_valetudo.run import Result
 
 
@@ -687,6 +688,39 @@ def test_legacy_root_adoption_scenario_requires_the_durable_no_flash_state(
     assert not ctx.need_robot().state_has("flash-attempt")
 
 
+def test_legacy_root_adoption_passes_with_a_real_unverified_provenance(
+    make_ctx: CtxFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The sibling adoption tests stub _recovery_provenance_valid, so nothing exercised the real
+    # predicate against the record recon actually writes for an already-rooted robot. On hardware
+    # that combination failed the scenario with "recovery provenance is absent" even though the
+    # adoption itself completed correctly.
+    ctx = make_ctx(robot_name="bench")
+    _write_trusted_recovery_generation(ctx, monkeypatch)
+    robot = ctx.need_robot()
+    path = robot.recon_dir / B.PROVENANCE_FILE
+    provenance = json.loads(path.read_text())
+    provenance["firmware_state"] = "unverified"  # what recon writes when stock is NOT attested
+    path.write_text(json.dumps(provenance))
+
+    def adopt(inner: object, **_kwargs: object) -> None:
+        inner_robot = inner.need_robot()  # type: ignore[attr-defined]
+        inner_robot.state_set("root-origin", "adopted-existing")
+        inner_robot.state_set("rooted", "adopted-existing")
+        inner_robot.state_set("valetudo", "adopted-existing")
+
+    monkeypatch.setattr(B, "recon", adopt)
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+
+    assert B.bench(
+        ctx, ["run", "legacy-root-adoption", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["result"] == "passed"
+    assert result["evidence"]["recovery_provenance_present"] is True
+
+
 def test_legacy_root_adoption_scenario_rejects_a_plain_recon(
     make_ctx: CtxFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -1247,9 +1281,14 @@ def test_recovery_provenance_is_verified_against_identity_and_source_hashes(
     assert not B._recovery_provenance_valid(robot)
 
 
-def test_recovery_provenance_requires_stock_firmware_attestation(
+def test_recovery_provenance_accepts_an_adopted_robots_unverified_capture(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A robot rooted before this tool existed can never have a stock-attested capture, so gating
+    # provenance validity on the attestation left legacy-root-adoption and already-rooted-recon
+    # impossible to pass except by falsely attesting stock — which would also wrongly authorize
+    # restore to flash a rooted capture back as factory firmware. Whether the capture is a legal
+    # restore source stays gated in restore.py, on this same firmware_state.
     ctx = make_ctx(robot_name="bench")
     _write_trusted_recovery_generation(ctx, monkeypatch)
     robot = ctx.need_robot()
@@ -1258,7 +1297,7 @@ def test_recovery_provenance_requires_stock_firmware_attestation(
     provenance["firmware_state"] = "unverified"
     path.write_text(json.dumps(provenance))
 
-    assert not B._recovery_provenance_valid(robot)
+    assert B._recovery_provenance_valid(robot)
 
 
 def test_recovery_provenance_requires_every_recorded_generation_to_match(
@@ -2523,119 +2562,6 @@ def test_campaign_cannot_mix_two_physical_robots_of_the_same_model(
         )
 
 
-def test_wrong_model_probe_preserves_the_campaigns_correct_model_binding(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx(robot_name="wrong-model-workspace")
-    actual = B.Robot(ctx.ws.robots_dir / "x40")
-    actual.state_set("model_key", "x40-ultra")
-    actual.state_set("recon", "backup=obtained")
-    actual.recon_dir.mkdir(parents=True, exist_ok=True)
-    (actual.recon_dir / "config.txt").write_text(
-        "config: abcdef0123456789abcdef0123456789\n"
-    )
-    assert B.bench(
-        ctx,
-        [
-            "record", "upgrade-resume", "pass", "--campaign", "rc",
-            "--model", "x40-ultra", "--robot", "x40",
-        ],
-        auto_fn=_noop_auto,
-    ) == 0
-    ctx.profile = B.load_profile("x30-ultra")
-
-    def adopt_then_reject(inner: object, **_kwargs: object) -> None:
-        inner.robot = actual  # type: ignore[attr-defined]
-        raise Die("SAFETY STOP: chosen model differs; bootloader reports X40 Ultra")
-
-    monkeypatch.setattr(B, "recon", adopt_then_reject)
-
-    assert B.bench(
-        ctx,
-        [
-            "run", "wrong-model-recon", "--campaign", "rc", "--actual-robot", "x40",
-        ],
-        auto_fn=_noop_auto,
-    ) == 0
-    assert _report(ctx)["model_key"] == "x40-ultra"
-
-
-def test_wrong_model_probe_requires_an_existing_correct_model_binding(
-    make_ctx: CtxFactory,
-) -> None:
-    ctx = make_ctx(model="x30-ultra", robot_name="wrong-model-workspace")
-    with pytest.raises(Die, match="Run stock-recon with the correct model"):
-        B.bench(
-            ctx,
-            [
-                "run", "wrong-model-recon", "--campaign", "rc",
-                "--actual-robot", "x40",
-            ],
-            auto_fn=_noop_auto,
-        )
-
-
-def test_wrong_model_probe_requires_same_dram_stack_before_hardware(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx(robot_name="wrong-model-workspace")
-    actual = B.Robot(ctx.ws.robots_dir / "x40")
-    actual.state_set("model_key", "x40-ultra")
-    actual.recon_dir.mkdir(parents=True, exist_ok=True)
-    (actual.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
-    assert B.bench(
-        ctx,
-        [
-            "record", "upgrade-resume", "pass", "--campaign", "rc",
-            "--model", "x40-ultra", "--robot", "x40",
-        ],
-        auto_fn=_noop_auto,
-    ) == 0
-    ctx.profile = B.load_profile("d10s-plus")
-    called: list[bool] = []
-    monkeypatch.setattr(B, "recon", lambda *_args, **_kwargs: called.append(True))
-
-    with pytest.raises(Die, match="same DRAM type"):
-        B.bench(
-            ctx,
-            ["run", "wrong-model-recon", "--campaign", "rc", "--actual-robot", "x40"],
-            auto_fn=_noop_auto,
-        )
-
-    assert called == []
-
-
-def test_wrong_model_reference_errors_do_not_echo_the_private_workspace_name(
-    make_ctx: CtxFactory,
-) -> None:
-    private_name = "Kitchen-private-workspace"
-    ctx = make_ctx(model="x30-ultra", robot_name="wrong-model-workspace")
-    actual = B.Robot(ctx.ws.robots_dir / "x40")
-    actual.state_set("model_key", "x40-ultra")
-    actual.recon_dir.mkdir(parents=True, exist_ok=True)
-    (actual.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
-    assert B.bench(
-        ctx,
-        [
-            "record", "upgrade-resume", "pass", "--campaign", "rc",
-            "--model", "x40-ultra", "--robot", "x40",
-        ],
-        auto_fn=_noop_auto,
-    ) == 0
-
-    with pytest.raises(Die) as stopped:
-        B.bench(
-            ctx,
-            [
-                "run", "wrong-model-recon", "--campaign", "rc",
-                "--actual-robot", private_name,
-            ],
-            auto_fn=_noop_auto,
-        )
-
-    assert private_name not in str(stopped.value)
-
-
 def test_failed_operator_record_returns_nonzero(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(robot_name="bench")
     _set_robot_identity(ctx)
@@ -2834,3 +2760,145 @@ def test_manual_only_scenario_cannot_be_misrepresented_as_automated(make_ctx: Ct
         B.bench(
             ctx, ["run", "rename-resume", "--campaign", "rc"], auto_fn=_noop_auto,
         )
+
+
+def _bound_campaign_robot(ctx: object, monkeypatch: pytest.MonkeyPatch) -> object:
+    """A robot whose COMPLETED recon is bound to x40-ultra, with the campaign bound to match."""
+    robot = ctx.need_robot()  # type: ignore[attr-defined]
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("recon", "model=x40-ultra backup=obtained")
+    robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
+    assert B.bench(
+        ctx,
+        ["record", "upgrade-resume", "pass", "--campaign", "rc",
+         "--model", "x40-ultra", "--robot", "x40"],
+        auto_fn=_noop_auto,
+    ) == 0
+    return robot
+
+
+def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate under test is root's, not recon's: the bootloader cannot name the model on any
+    # fastboot robot, so the only thing that can refuse a model swap is the recon binding.
+    ctx = make_ctx(robot_name="x40")
+    _bound_campaign_robot(ctx, monkeypatch)
+    selected: list[str] = []
+
+    def refuse(inner: object, **_kwargs: object) -> None:
+        selected.append(inner.profile.key)  # type: ignore[attr-defined]
+        raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
+                  "model. A legacy, missing, duplicate, or mismatched model authorization "
+                  "cannot permit a hardware write; run 'dreame-valetudo recon --force' for "
+                  "this model first.")
+
+    monkeypatch.setattr(B, "root", refuse)
+
+    assert B.bench(
+        ctx, ["run", "wrong-model-root", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["result"] == "passed"
+    # The harness made the wrong selection itself; the operator cannot (selection loads the saved
+    # model_key), and the robot's own binding on disk must survive the probe untouched.
+    assert len(selected) == 1
+    assert selected[0] != "x40-ultra"
+    assert B.load_profile(selected[0]).dram == B.load_profile("x40-ultra").dram
+    assert ctx.need_robot().state_get("model_key") == "x40-ultra"
+    # The refused probe must not rebind the campaign to the deliberately wrong model.
+    assert _report(ctx)["model_key"] == "x40-ultra"
+
+
+def test_wrong_model_probe_requires_an_existing_correct_model_binding(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="x30-ultra", robot_name="wrong-model-workspace")
+    with pytest.raises(Die, match="Run stock-recon with the correct model"):
+        B.bench(ctx, ["run", "wrong-model-root", "--campaign", "rc"], auto_fn=_noop_auto)
+
+
+def test_the_probe_model_is_a_same_dram_fastboot_model(make_ctx: CtxFactory) -> None:
+    # Same DRAM is the realistic mis-selection: a different-DRAM choice is caught earlier and by
+    # other means, so probing with one would prove a weaker gate than this scenario exists for.
+    for bound in ("x40-ultra", "d10s-plus"):
+        probe = B._confusable_model(bound)
+        assert probe != bound
+        assert B.load_profile(probe).method == "fastboot"
+        assert B.load_profile(probe).dram == B.load_profile(bound).dram
+
+
+def test_wrong_model_probe_refuses_a_robot_whose_recon_is_not_bound_at_all(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A disposable workspace would stop at "no completed reconnaissance record" — one check
+    # EARLIER than the gate this scenario exists to prove, so the harness refuses to run there.
+    ctx = make_ctx(robot_name="x40")
+    _bound_campaign_robot(ctx, monkeypatch)
+    ctx.need_robot().state_set("recon", "backup=obtained")  # completed, but bound to nothing
+    ctx.profile = B.load_profile("x30-ultra")
+    called: list[bool] = []
+    monkeypatch.setattr(B, "root", lambda *_a, **_k: called.append(True))
+
+    with pytest.raises(Die, match="completed recon bound to"):
+        B.bench(ctx, ["run", "wrong-model-root", "--campaign", "rc"], auto_fn=_noop_auto)
+
+    assert called == []
+
+
+def test_the_wrong_model_scenario_matches_what_root_actually_says(
+    make_ctx: CtxFactory,
+) -> None:
+    # The defect this scenario replaced was a stop_contains that no code path could ever emit:
+    # wrong-model-recon waited for the bootloader to name the model, which no fastboot robot does.
+    # Pin the scenario's expected text to the REAL production message so that class of drift fails
+    # here, in CI, instead of during a bench session on hardware.
+    scenario = next(s for s in B.SCENARIOS if s.key == "wrong-model-root")
+    ctx = make_ctx(robot_name="x40")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "model=x40-ultra backup=obtained")
+    robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
+    ctx.profile = B.load_profile("x30-ultra")
+
+    with pytest.raises(Die) as raised:
+        production_root(ctx)
+
+    message = str(raised.value)
+    missing = [text for text in scenario.stop_contains if text not in message]
+    assert not missing, f"scenario expects text root never emits: {missing} (root said: {message})"
+    # And it must refuse before touching the robot at all.
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_the_probe_never_lands_on_the_recon_authorized_model(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `model` can change a workspace's saved model after recon. Deriving the probe from the current
+    # SELECTION could then hand back the recon-bound model, root's authorization would match, and an
+    # H1 scenario needing no --allow-destructive would carry on toward a flash. The probe must come
+    # from the recon binding, which is the value root actually compares against.
+    ctx = make_ctx(robot_name="x40")
+    _bound_campaign_robot(ctx, monkeypatch)
+    robot = ctx.need_robot()
+    bound = B._recon_bound_model(robot)
+    assert bound == "x40-ultra"
+    # Simulate `model` having changed the saved model AFTER recon: selection would then load this
+    # profile while the recon marker still authorizes `bound`.
+    diverged = B._confusable_model(bound)
+    robot.state_set("model_key", diverged)
+    ctx.profile = B.load_profile(diverged)
+    seen: list[str] = []
+
+    def refuse(inner: object, **_kwargs: object) -> None:
+        seen.append(inner.profile.key)  # type: ignore[attr-defined]
+        raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
+                  "model; run 'dreame-valetudo recon --force' for this model first.")
+
+    monkeypatch.setattr(B, "root", refuse)
+    assert B.bench(
+        ctx, ["run", "wrong-model-root", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+
+    assert seen and seen[0] != bound, "probed with the model recon already authorized"

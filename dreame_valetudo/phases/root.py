@@ -37,15 +37,26 @@ _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
 _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
-# These are deliberately well below the current builder artifacts, but high enough that a hollow
-# or grossly truncated member cannot reach either rootfs slot with an OKAY response. All supported
-# models share this MR813 FEL image layout; a future smaller layout must be reviewed explicitly.
+# Floors that catch a hollow or grossly truncated member before it can reach either rootfs slot
+# with an OKAY response, calibrated against the SMALLEST real build measured (r2240: 60 MiB rootfs,
+# 10 MiB boot) with roughly 2x headroom, not against one model's expected image shape.
+#
+# The per-file sha256 re-verified below does NOT make these redundant. It is recorded at stage time
+# from whatever was staged, so a truncated UPSTREAM artifact is faithfully hashed and passes
+# re-verification; for that case the floor is the only guard. It covers corruption between stage
+# and flash, which is a different failure.
+#
+# Only rootfs.img varies enough across the roster to matter (60 MiB on r2240 against 126 MiB on
+# r2416); fsbl/payload/toc1 are the generic MR813 bits and measured byte-identical on both. Erring
+# high is deliberate: too high refuses a genuine build, which is loud and patchable, while too low
+# lets a truncated rootfs reach flash and brick the robot. A model that legitimately trips one of
+# these must be measured and the floor re-derived, never just lowered to make a flash proceed.
 _FEL_IMAGE_MIN_BYTES = {
     "fsbl.bin": 32 * 1024,
-    "payload.bin": 4 * 1024 * 1024,
+    "payload.bin": 3 * 1024 * 1024,
     "toc1.img": 1 * 1024 * 1024,
     "boot.img": 8 * 1024 * 1024,
-    "rootfs.img": 100 * 1024 * 1024,
+    "rootfs.img": 32 * 1024 * 1024,
     "check.txt": 1,
 }
 
