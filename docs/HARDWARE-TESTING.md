@@ -202,7 +202,7 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 | `usb-drop-recon` | H1 | Unplug during the recovery *read*, never during a write | incomplete capture is rejected behind the refresh marker; any older good generation stays preserved; retry replaces it atomically |
 | `ctrl-c-recon` | H1 | Press Ctrl+C while waiting or reading | clean interruption; rerun resumes without false completion |
 | `terminal-loss-prompt` | H1 | Close the terminal at an ordinary question | tmux run survives, pending question is shown on rejoin |
-| `wrong-model-recon` | H1 | After `stock-recon` binds the campaign correctly, use a temporary fresh robot workspace and deliberately select a different supported model | safety stop names the reported model; no completed recon; campaign remains bound to the real model |
+| `wrong-model-root` | H1 | After `stock-recon` binds the campaign correctly, invoke `root` on that same robot with a different supported model selected | safety stop says the completed recon is not bound to the selected model, before any runner call; recon state and recovery artifacts unchanged |
 | `wrong-robot-root` | H3 | Stage for robot A, attach robot B, stop before any write | live config mismatch stops before `oem dust` |
 | `decline-flash` | H3 | Decline the final flash confirmation | successful cancellation and zero writes |
 | `terminal-loss-root` | H3 | Close only the terminal client after the destructive sequence has visibly begun | tmux and signal masking carry the flash to completion; rejoin shows outcome |
@@ -223,14 +223,29 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 | `upgrade-resume` | H2 | Start on the prior stable, stop at a prompt, resume and finish that process, then upgrade and launch a fresh RC process | the RC migration is atomic and the existing data remain intelligible |
 | `downgrade-readonly` | H0 | Open an RC-migrated workspace with the older stable | older release refuses the newer layout without modifying it |
 
-The wrong-model probe uses two workspace names so the harness can compare the known real robot
-before and after recon adopts it. Keep `--actual-robot` on the correctly reconned workspace and use
-a disposable `DREAME_ROBOT` name for the deliberate wrong selection:
+The wrong-model probe runs against the campaign's OWN robot, and the harness makes the wrong
+selection itself. You cannot make it by hand: selection loads the workspace's saved `model_key` and
+ignores `DREAME_MODEL`, so a probe that asked you to choose the wrong model could never start. The
+harness swaps to a confusable model (same DRAM, different model) for that one call, leaving the
+workspace's binding on disk untouched.
+
+It must not use a disposable workspace either: the gate being proven is `root` refusing a completed
+recon bound to another model, and a fresh workspace has no completed recon at all, so it would stop
+one check earlier and prove nothing about this one. The stop happens before the first runner call,
+so the robot is never touched and no state is written.
 
 ```bash
-DREAME_ROBOT=wrong-model-probe DREAME_MODEL=x30-ultra \
-  dreame-valetudo bench run wrong-model-recon --actual-robot x40
+DREAME_ROBOT=x40 dreame-valetudo bench run wrong-model-root
 ```
+
+**What this scenario does not cover.** It proves the model binding cannot be *changed* between recon
+and root. It cannot prove the tool detects a model chosen wrongly and then used consistently: first
+hardware contact established that the FEL stage1 payload is a generic Allwinner U-Boot gadget
+reporting `model: not supported`, so the bootloader cross-check finds nothing on any fastboot model
+and cannot contradict the operator. The compensating controls for that threat are the physical-label
+confirmation in `hazards.py` for the brick-risk look-alikes (R2338/R2338H, L20) and, for those
+models, a hard stop when a non-interactive run cannot get a positive hardware-revision match. Record
+that residual risk in the campaign rather than treating this scenario as covering it.
 
 ## Platform and package matrix
 

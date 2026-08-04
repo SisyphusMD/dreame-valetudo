@@ -667,11 +667,7 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
             except (Die, ValueError, OSError):
                 _discard_uncommitted_bench_robot(ctx, created)
                 raise
-        try:
-            return bench(ctx, rest, auto_fn=auto)
-        finally:
-            if len(rest) >= 2 and rest[0] == "run" and rest[1] == "wrong-model-recon":
-                _discard_uncommitted_bench_robot(ctx, created)
+        return bench(ctx, rest, auto_fn=auto)
 
     # Reject typos before selecting or naming a robot. Selection is persistent: on a first run it
     # can create state/name, so letting an unknown command reach it leaves an orphan robot behind.

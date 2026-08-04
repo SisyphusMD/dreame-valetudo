@@ -45,7 +45,7 @@ from .phases.push import (
 from .phases.recon import recon
 from .phases.restore import restore, stock_restore_kit_valid
 from .phases.root import root
-from .profiles import load_profile
+from .profiles import SUPPORTED_MODELS, load_profile
 from .recovery import (
     PROVENANCE_FILE,
     RECOVERY_REFRESH_FILE,
@@ -144,9 +144,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         "terminal-loss-prompt", "H1", "rejoin a question after terminal loss", True,
         "Did you close the terminal at the question, rejoin it, answer it, and finish the run?",
     ),
+    # Was wrong-model-recon, which required the bootloader to name the robot's model. First
+    # hardware contact disproved that premise: the FEL stage1 payload is a generic Allwinner
+    # U-Boot gadget reporting `model: not supported`, so _verify_reported_model finds nothing on
+    # ANY fastboot model and returns without stopping. That scenario could never pass. The gate
+    # that does fire is root's: a completed recon bound to a different model cannot authorize a
+    # write, checked before the first runner call. See docs/HARDWARE-TESTING.md for the threat
+    # this does NOT cover — a model chosen wrongly and used consistently is invisible to the tool.
     Scenario(
-        "wrong-model-recon", "H1", "reject a reported-model mismatch before writes", True,
-        expected="safe-stop", stop_contains=("chosen model", "bootloader reports"),
+        "wrong-model-root", "H1", "refuse a model the completed recon is not bound to", True,
+        expected="safe-stop",
+        stop_contains=("completed recon is not bound", "recon --force"),
     ),
     Scenario(
         "wrong-robot-root", "H3", "reject another robot before rooting writes", True,
@@ -237,7 +245,7 @@ _PRE_IDENTITY_RECON = frozenset({
     "usb-drop-recon", "ctrl-c-recon",
 })
 _RECOVERY_IMMUTABILITY = frozenset({
-    "fel-not-entered", "wrong-model-recon", "already-rooted-recon",
+    "fel-not-entered", "already-rooted-recon", "wrong-model-root",
 })
 _FACTORY_BACKUP_EVIDENCE = frozenset({
     "adopted-root-backup", "post-root-install", "offline-cached-binary", "wifi-drop-backup",
@@ -246,7 +254,7 @@ _RESTORE_KIT_EVIDENCE = frozenset({"stock-restore", "terminal-loss-restore"})
 _USB_STACK_SCENARIOS = frozenset({
     "stock-recon", "legacy-root-adoption", "recon-repeat", "first-root", "stock-restore", "reroot-after-restore",
     "fel-not-entered", "fel-wrong-timing", "usb-drop-recon", "ctrl-c-recon",
-    "terminal-loss-prompt", "wrong-model-recon", "wrong-robot-root", "decline-flash",
+    "terminal-loss-prompt", "wrong-model-root", "wrong-robot-root", "decline-flash",
     "terminal-loss-root", "wrong-robot-restore", "decline-restore", "terminal-loss-restore",
     "already-rooted-recon", "already-rooted-root",
 })
@@ -303,7 +311,7 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
     start = 2 if scenario is not None else 1
     allowed = {
         "plan": {"campaign"},
-        "run": {"campaign", "allow-destructive", "actual-robot"},
+        "run": {"campaign", "allow-destructive"},
         "record": {"campaign", "model", "robot", "note"},
         "waive": {"campaign", "model", "robot", "reason", "risk", "accepted-by"},
         "report": {"campaign"},
@@ -324,12 +332,6 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
                 f"Scenario '{scenario.key}' requires operator-controlled timing or another "
                 f"installed version. Follow {HARDWARE_GUIDE_URL}, then use 'bench record'."
             )
-        actual_robot = options.get("actual-robot")
-        if scenario.key == "wrong-model-recon":
-            if not isinstance(actual_robot, str) or not actual_robot:
-                raise Die("wrong-model-recon requires --actual-robot <known-workspace-name>.")
-        elif actual_robot is not None:
-            raise Die("--actual-robot is only valid for wrong-model-recon.")
         if scenario.key == "ssh-wrong-key":
             override = ctx.env.get("DREAME_SSHKEY")
             if not override:
@@ -344,22 +346,10 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
         ):
             if report is None:
                 report = {}
-            if scenario.key == "wrong-model-recon":
+            if scenario.key == "wrong-model-root":
                 recorded = report.get("model_key")
                 if not isinstance(recorded, str):
                     raise Die("Run stock-recon with the correct model before the wrong-model probe.")
-                if recorded == ctx.profile.key:
-                    raise Die(
-                        "wrong-model-recon requires deliberately selecting a model different "
-                        f"from the campaign's bound model ({recorded})."
-                    )
-                if load_profile(recorded).dram != ctx.profile.dram:
-                    raise Die(
-                        "wrong-model-recon requires a deliberately incorrect model with the "
-                        "same DRAM type as the campaign robot."
-                    )
-                assert isinstance(actual_robot, str)
-                _wrong_model_reference(ctx, actual_robot, recorded)
             else:
                 _bind_report_model(report, ctx.profile.key)
         return scenario.key != "host-smoke"
@@ -1022,12 +1012,6 @@ def _robot_workspace(ctx: Context, name: object, message: str) -> Robot:
     return Robot(path)
 
 
-def _wrong_model_reference(ctx: Context, name: str, model_key: str) -> Robot:
-    robot = _robot_workspace(ctx, name, "The --actual-robot workspace does not exist.")
-    if robot.state_get("model_key") != model_key or robot.config() is None:
-        die(f"The --actual-robot workspace is not a completed {model_key} recon.")
-    return robot
-
 
 def _manual_model(ctx: Context, options: Mapping[str, str | bool]) -> str:
     raw = options.get("model") or ctx.env.get("DREAME_MODEL")
@@ -1436,7 +1420,7 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
     if scenario.key == "reroot-after-restore" and "restored-stock" in markers:
         failures.append("restored-stock marker remains after reroot")
     if scenario.key in {
-        "fel-not-entered", "wrong-model-recon",
+        "fel-not-entered", "wrong-model-root",
     }:
         if before.markers.get("recon") != after.markers.get("recon"):
             failures.append("recon completion state changed during the rejected/interrupted run")
@@ -1597,6 +1581,30 @@ def _recon_interruption_failures(
     return failures
 
 
+def _recon_bound_model(robot: Robot) -> str:
+    """The model the COMPLETED recon authorized — the value root actually compares against."""
+    marker = robot.state_get("recon") or ""
+    bound = [f.removeprefix("model=") for f in marker.split() if f.startswith("model=")]
+    if len(bound) != 1:
+        raise Die("This robot's completed recon is not bound to exactly one model; run "
+                  "stock-recon for the correct model before the wrong-model probe.")
+    return bound[0]
+
+
+def _confusable_model(bound: str) -> str:
+    """A different fastboot model with the SAME DRAM type — the realistic mis-selection.
+
+    Same DRAM matters: a different-DRAM choice is caught earlier and by other means, so it would
+    prove a weaker gate than the one this scenario exists for.
+    """
+    want = load_profile(bound).dram
+    for key in SUPPORTED_MODELS:
+        profile = load_profile(key)
+        if key != bound and profile.method == "fastboot" and profile.dram == want:
+            return key
+    raise Die(f"No other fastboot model shares {bound}'s DRAM type to probe with.")
+
+
 def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, object]:
     if scenario.key == "host-smoke":
         entrypoint = _invoking_entrypoint()
@@ -1669,13 +1677,29 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         if not backup(ctx):
             raise Die("Factory backup did not complete.")
         return {"adopted_robot_backed_up_without_reinstall": True}
-    elif scenario.key in {"fel-not-entered", "wrong-model-recon"}:
+    elif scenario.key == "fel-not-entered":
         recon(ctx, force=False, recovery_backup=True, offer_update=True)
     elif scenario.key in {"recon-repeat", "already-rooted-recon"}:
         recon(ctx, force=True, recovery_backup=True, offer_update=True)
+    elif scenario.key == "wrong-model-root":
+        # The operator cannot make this mistake on demand: selection loads the workspace's saved
+        # model_key and ignores DREAME_MODEL, so a probe that asked them to pick the wrong model
+        # could never start. Swap to a confusable model here, after selection, touching only this
+        # process's profile — the workspace's own binding on disk is left exactly as it was.
+        # Derive the probe from the model the completed RECON is bound to, never from the current
+        # selection. `model` can change a workspace's saved model after recon, and a probe derived
+        # from that could land back on the recon-bound model — root's authorization would match and
+        # it would carry on toward flashing, under an H1 scenario that needs no --allow-destructive.
+        bound = _recon_bound_model(ctx.need_robot())
+        probe = _confusable_model(bound)
+        if probe == bound:
+            raise Die("Refusing to probe with the recon-authorized model; that cannot stop.")
+        ctx.console.info(f"Probing with the deliberately wrong model: {load_profile(probe).model}.")
+        ctx.profile = load_profile(probe)
+        root(ctx)
     elif scenario.key in {
-        "first-root", "wrong-robot-root", "decline-flash", "terminal-loss-root",
-        "already-rooted-root",
+        "first-root", "wrong-robot-root", "decline-flash",
+        "terminal-loss-root", "already-rooted-root",
     }:
         root(ctx)
     elif scenario.key == "post-root-install":
@@ -1940,7 +1964,6 @@ def _run(
     campaign: str,
     *,
     allow_destructive: bool,
-    actual_robot_name: str | None,
     auto_fn: AutoFn,
 ) -> int:
     if not scenario.automated:
@@ -1956,16 +1979,17 @@ def _run(
     elif scenario.key != "host-smoke" and report.get("hardware_fingerprint") is not None:
         _bind_hardware_fingerprint(report, ctx)
     comparison_robot: Robot | None = None
-    if scenario.key == "wrong-model-recon":
+    if scenario.key == "wrong-model-root":
+        # Deliberately the campaign's OWN robot, not a disposable workspace: the gate under test is
+        # root refusing a completed recon bound to another model, and a fresh workspace has no
+        # completed recon at all — it would stop one check earlier and prove nothing about this one.
         recorded = report.get("model_key")
         if not isinstance(recorded, str):
             raise Die("Run stock-recon with the correct model before the wrong-model probe.")
-        if recorded == ctx.profile.key:
-            raise Die("wrong-model-recon requires deliberately selecting a model different from "
-                      f"the campaign's bound model ({recorded}).")
-        if actual_robot_name is None:
-            raise Die("wrong-model-recon requires --actual-robot <known-workspace-name>.")
-        comparison_robot = _wrong_model_reference(ctx, actual_robot_name, recorded)
+        recon_marker = ctx.need_robot().state_get("recon") or ""
+        if f"model={recorded}" not in recon_marker.split():
+            raise Die("wrong-model-root needs this robot's completed recon bound to "
+                      f"{recorded}; run stock-recon for the correct model first.")
     else:
         _bind_report_model(report, ctx.profile.key if scenario.key != "host-smoke" else None)
 
@@ -2349,7 +2373,7 @@ def _plan(ctx: Context, campaign: str) -> int:
         elif not scenario.automated:
             label = "RECORD"
             reason = "follow the hardware guide, then record pass or fail"
-        elif scenario.key in {"wrong-model-recon", "wrong-robot-root", "wrong-robot-restore",
+        elif scenario.key in {"wrong-model-root", "wrong-robot-root", "wrong-robot-restore",
                               "multi-robot-selection"}:
             label = "SPECIAL"
             reason = "requires a second model, robot, or workspace; follow the hardware guide"
@@ -2398,7 +2422,7 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
         return _plan(ctx, _campaign_name(ctx, options))
     if action == "run":
         positional, options = _options(
-            args[start:], {"campaign", "allow-destructive", "actual-robot"},
+            args[start:], {"campaign", "allow-destructive"},
         )
         if positional:
             raise Die("Unexpected positional arguments after the bench scenario.")
@@ -2412,9 +2436,6 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
             scenario,
             _campaign_name(ctx, options),
             allow_destructive=bool(options.get("allow-destructive")),
-            actual_robot_name=(
-                str(options["actual-robot"]) if "actual-robot" in options else None
-            ),
             auto_fn=auto_fn,
         )
     if action == "record":

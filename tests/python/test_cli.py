@@ -234,41 +234,6 @@ def test_post_selection_campaign_conflict_removes_only_the_fresh_robot(
     assert not (ctx.ws.robots_dir / "fresh-x30").exists()
 
 
-def test_wrong_model_probe_removes_its_disposable_workspace_after_adoption(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx(
-        model="x30-ultra",
-        env={"DREAME_MODEL": "x30-ultra", "DREAME_ROBOT": "disposable"},
-    )
-    actual = _manual_robot(ctx.ws.base, "actual-x40", "x40-ultra")
-    assert cli.bench(
-        ctx,
-        [
-            "record", "upgrade-resume", "pass", "--campaign", "rc",
-            "--model", "x40-ultra", "--robot", "actual-x40",
-        ],
-        auto_fn=lambda _ctx, _args: None,
-    ) == 0
-    monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
-
-    def adopt_then_stop(inner: object, **_kwargs: object) -> None:
-        inner.robot = actual  # type: ignore[attr-defined]
-        raise Die("SAFETY STOP: chosen model differs; bootloader reports X40 Ultra")
-
-    monkeypatch.setattr("dreame_valetudo.bench.recon", adopt_then_stop)
-    assert cli._dispatch(
-        "bench",
-        [
-            "run", "wrong-model-recon", "--campaign", "rc",
-            "--actual-robot", "actual-x40",
-        ],
-        ctx,
-    ) == 0
-    assert not (ctx.ws.robots_dir / "disposable").exists()
-    assert actual.work.is_dir()
-
-
 @pytest.mark.parametrize("link_state", [False, True])
 def test_disposable_robot_cleanup_never_follows_symlinks(
     make_ctx: CtxFactory, tmp_path: Path, link_state: bool,
