@@ -188,6 +188,16 @@ def _offer_existing_root_adoption(ctx: Context) -> bool:
         "You can preserve that existing root or deliberately replace it with the current rooting "
         "method. Neither choice changes any recovery evidence already saved."
     )
+    # Re-rooting to regain SSH access is the obvious reading of the choice below, and it does not
+    # work: the image installs its key only when /mnt/misc/authorized_keys is ABSENT, and that
+    # partition is not one of the five a root flash writes. Saying so here is what stops someone
+    # buying a destructive flash for an outcome decided before it starts.
+    ctx.console.warn(
+        "Re-rooting will NOT change which SSH key the robot accepts. The key you upload to the "
+        "builder is installed only on a robot that has never been rooted; an already-rooted robot "
+        "keeps the key it has. If you have lost that key, adopt the robot here and then run "
+        "'dreame-valetudo rekey', which authorizes your key over USB without reflashing."
+    )
     return ctx.console.confirm(
         "Leave its existing rooted firmware untouched and adopt it as-is? Answer No to continue "
         "with a current re-root."

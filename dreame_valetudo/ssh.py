@@ -248,35 +248,60 @@ def ensure_sshkey(runner: Runner, console: Console, key: Path) -> None:
     _keygen(runner, console, key, "valetudo-dreame")
 
 
-def choose_sshkey(ctx: Context) -> Path:
+def remember_sshkey(ctx: Context, key: Path) -> None:
+    """Record ``key`` as the one that reaches this robot, once that is actually true."""
+    _remember_choice(ctx, key)
+
+
+def choose_sshkey(ctx: Context, *, remember: bool = True, ignore_recorded: bool = False) -> Path:
     """Pick the SSH key that reaches the robot: its PUBLIC half is uploaded to the dustbuilder build
     (-> the robot's authorized_keys) and its PRIVATE half is what 'push' logs in with. Interactive
     the first time; the choice is remembered (a workspace pointer) so every later phase agrees.
-    Non-interactive runs get a dedicated key so nothing hangs and nothing personal is shared."""
+    Non-interactive runs get a dedicated key so nothing hangs and nothing personal is shared.
+
+    Pass ``remember=False`` when the choice only becomes true if a later step succeeds, and call
+    ``remember_sshkey`` once it has. Recording a key the robot does not accept yet is worse than
+    recording nothing: every later phase then authenticates with the wrong key, and the robot is
+    still reachable only with the one that was overwritten.
+
+    Pass ``ignore_recorded=True`` to always ask, even once a choice exists. Every other caller wants
+    the phases to agree on one key, but a caller whose whole purpose is CHANGING which key the robot
+    accepts would otherwise be handed back the current one and could never rotate or revoke it.
+    """
     ptr = _pointer(ctx.ws.base)
+
+    def record(key: Path, *, pointer_only: bool = False) -> None:
+        if not remember:
+            return
+        if pointer_only:
+            _record(ptr, key)
+        else:
+            _remember_choice(ctx, key)
+
     override = ctx.env.get("DREAME_SSHKEY")
     if override:
         key = Path(override)
         ensure_sshkey(ctx.runner, ctx.console, key)
-        _remember_choice(ctx, key)
+        record(key)
         return key
-    if ctx.robot is not None:
-        recorded = ctx.robot.state_get("sshkey")
-        if recorded:
-            key = Path(recorded)
+    if not ignore_recorded:
+        if ctx.robot is not None:
+            recorded = ctx.robot.state_get("sshkey")
+            if recorded:
+                key = Path(recorded)
+                ensure_sshkey(ctx.runner, ctx.console, key)
+                record(key, pointer_only=True)
+                return key
+        if ptr.is_file() and ptr.read_text().strip():
+            key = Path(ptr.read_text().strip())
             ensure_sshkey(ctx.runner, ctx.console, key)
-            _record(ptr, key)
+            record(key)
             return key
-    if ptr.is_file() and ptr.read_text().strip():
-        key = Path(ptr.read_text().strip())
-        ensure_sshkey(ctx.runner, ctx.console, key)
-        _remember_choice(ctx, key)
-        return key
 
     dedicated = ctx.ws.base / "id_dreame"
     if not ctx.interactive:
         ensure_sshkey(ctx.runner, ctx.console, dedicated)
-        _remember_choice(ctx, dedicated)
+        record(dedicated)
         return dedicated
 
     c = ctx.console
@@ -317,7 +342,7 @@ def choose_sshkey(ctx: Context) -> Path:
         _keygen(ctx.runner, ctx.console, chosen, "valetudo-dreame")
     else:
         ensure_sshkey(ctx.runner, ctx.console, chosen)
-    _remember_choice(ctx, chosen)
+    record(chosen)
     c.info(f"Using SSH key: {chosen}")
     if chosen == dedicated:
         c.warn("This dedicated key is your ONLY SSH access to the rooted robot; 'push' copies it "

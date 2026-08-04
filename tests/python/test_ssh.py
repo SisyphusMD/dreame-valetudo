@@ -373,6 +373,44 @@ def test_choose_sshkey_interactive_use_existing_key(make_ctx: CtxFactory, tmp_pa
     assert "DREAME_SSHKEY" in ctx.console.text()  # type: ignore[attr-defined]
 
 
+def test_choose_sshkey_ignore_recorded_still_asks_so_a_key_can_be_rotated(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """`rekey` exists to CHANGE which key the robot accepts. Handing it back the key already
+    recorded would make rotating or revoking one impossible: it would find that key already
+    authorized and exit having written nothing, with no way to choose another."""
+    home = tmp_path / "home"
+    _keypair(home / ".ssh", "id_ed25519")
+    ctx = make_ctx(
+        env={"HOME": str(home)}, robot_name="r2416-test", asks=["1"],
+        responder=_sshkey_responder,
+    )
+    recorded = _keypair(tmp_path, "already-recorded")
+    ctx.need_robot().state_set("sshkey", str(recorded))
+
+    chosen = choose_sshkey(ctx, ignore_recorded=True)
+
+    assert chosen == home / ".ssh" / "id_ed25519" != recorded
+
+
+def test_choose_sshkey_without_remember_persists_nothing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A key the robot does not accept yet must not become the one every later phase resolves to."""
+    home = tmp_path / "home"
+    _keypair(home / ".ssh", "id_ed25519")
+    ctx = make_ctx(
+        env={"HOME": str(home)}, robot_name="r2416-test", asks=["1"],
+        responder=_sshkey_responder,
+    )
+
+    key = choose_sshkey(ctx, remember=False)
+
+    assert key == home / ".ssh" / "id_ed25519"
+    assert ctx.need_robot().state_get("sshkey") is None
+    assert not (ctx.ws.base / "sshkey.path").exists()
+
+
 def test_choose_sshkey_interactive_generate_dedicated(make_ctx: CtxFactory, tmp_path: Path) -> None:
     home = tmp_path / "home"
     _keypair(home / ".ssh", "id_ed25519")
