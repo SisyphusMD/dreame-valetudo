@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import os
 import re
@@ -37,6 +38,149 @@ AP_VPN_HINT = (
     "address before the robot ever sees it, and nothing else about the connection looks wrong. "
     "Disconnect it and re-run."
 )
+
+
+# Joining a Wi-Fi network by hand takes a while, and the robot's AP is not up the moment the buttons
+# are held, so a round of polling runs before the operator is asked anything. Counted in probes, not
+# elapsed seconds, because the clock is not a seam the tests can move: with sleep stubbed out, a
+# deadline loop would spin against the real clock. The cost of a probe is not constant — an
+# unreachable route fails immediately, while a VPN black-holing the address burns ssh's full 8s
+# ConnectTimeout — so ten probes is roughly 30s of ordinary waiting and about 110s at worst.
+_AP_WAIT_POLLS = 10
+_AP_WAIT_SECONDS = 3.0
+
+
+def ap_not_your_router(ctx: Context) -> None:
+    """The one warning every AP route must not paraphrase differently: the address it is about to
+    talk to is the operator's router on any normal home network."""
+    ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
+                     f"{ROBOT_AP_IP}), NOT your home network — where {ROBOT_AP_IP} is usually "
+                     "your ROUTER. So:")
+
+
+def ap_reachable(ctx: Context) -> bool:
+    """True once an SSH server is answering at the robot's AP address.
+
+    Deliberately unauthenticated: a *refusal* proves a server is there, which is the entire question
+    at this stage. It is NOT proof the robot is what answered — a home gateway at this address that
+    exposes SSH satisfies this too — so nothing downstream may treat it as identity. Every caller
+    still has to reach its own is_dreame_ap guard, which is the only check that distinguishes the
+    robot from the router. BatchMode in ROBOT_SSH_OPTS is what keeps a keyless probe off ssh's own
+    password prompt.
+    """
+    probe = robot_ssh(ctx.runner, f"root@{ROBOT_AP_IP}", "true", key=None, check=False)
+    if probe.ok:
+        return True
+    return "permission denied" in " ".join(probe.stderr.split()).lower()
+
+
+def offer_ap_wait(ctx: Context, *, announce: bool = True) -> bool:
+    """Poll until the robot's AP answers, asking only before each FURTHER round of waiting.
+
+    A person cannot see what this process can: a VPN that already owns the address, a laptop that
+    silently re-joined home Wi-Fi, an AP that simply is not up yet. Asking them to confirm they are
+    connected turns all three into a wrong answer given in good faith, and the run then fails
+    further on, where the cause is much harder to read.
+
+    Naming the SSID for them is deliberately NOT attempted: macOS gates that behind Location
+    Services and reports "not associated with an AirPort network" even while associated, so a tool
+    that claimed to know the name would be wrong exactly when it mattered. The instructions describe
+    the network; the probe proves it.
+
+    This answers "is there anything to talk to", never "is it the robot" — a home router at this
+    address that exposes ssh satisfies it. That is deliberate: every caller reaches an is_dreame_ap
+    guard immediately afterwards which names the router explicitly, and moving that check in here
+    would trade an instant, precise error for a silent multi-minute poll. The one route whose
+    guard cannot run early is the password one, so ITS refusal message names both causes.
+
+    Returns whether the AP came up. Callers decide what giving up costs.
+    """
+    if announce:
+        ap_not_your_router(ctx)
+        ctx.console.steps([
+            "Let the robot finish booting.",
+            "On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.",
+            (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...'). You'll "
+             "leave home Wi-Fi and lose internet briefly — normal."),
+        ])
+    while True:
+        with ctx.console.progress("Waiting for the robot's Wi-Fi AP") as waiting:
+            for _ in range(_AP_WAIT_POLLS):
+                if ap_reachable(ctx):
+                    # Not "connected to the robot": nothing here has identified what answered, and
+                    # claiming the robot would be a confident lie on the one network where this
+                    # address belongs to the router instead.
+                    ctx.console.say(f"Something is answering at {ROBOT_AP_IP}.")
+                    return True
+                ctx.sleep(_AP_WAIT_SECONDS)
+            waiting.close(done=False)
+        ctx.console.warn(f"Nothing is answering at {ROBOT_AP_IP} yet.")
+        ctx.console.info(AP_VPN_HINT)
+        if not ctx.console.confirm("Keep waiting for the robot's AP?"):
+            return False
+
+
+def offer_leave_ap_for_internet(ctx: Context) -> bool:
+    """When a download failed because this host is sitting on the robot's AP, wait for it to leave.
+
+    The robot's AP has no internet, so anything still needing a download fails there — and telling
+    the operator to start the whole command over costs every answer they have already given. They
+    are about to be sent back to this AP regardless, so the round trip is part of the run, not a
+    reason to end it.
+
+    Returns whether the host actually left the AP; False also covers a failure the AP does not
+    explain, which must stay fatal rather than looping on an unrelated fault.
+    """
+    if not ap_reachable(ctx):
+        return False
+    ctx.console.warn(f"This {ctx.host} is on the robot's Wi-Fi AP, which has no internet — that is "
+                     "why the download failed. Nothing is wrong with the robot.")
+    ctx.console.steps([
+        f"On the {ctx.host}: rejoin your normal Wi-Fi.",
+        "Leave the robot as it is — you'll be asked to join its AP again once the download is done.",
+    ])
+    # Asked once and believed, deliberately. Re-probing to verify they left would loop forever on a
+    # home gateway that answers SSH at this address, and the retried download is the only thing that
+    # actually tests for internet — so let it be the test.
+    return ctx.console.confirm("Back on your normal Wi-Fi?")
+
+
+def key_fingerprint(blob_b64: str) -> str:
+    """The SHA-256 fingerprint OpenSSH prints for a public key blob.
+
+    Computed here rather than shelled out to ssh-keygen: it is pure text munging over a file this
+    process can already read, and every external command has to be a transcript-pinned Runner call.
+    """
+    try:
+        blob = base64.b64decode(blob_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return "unreadable"
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+
+
+def describe_key_line(line: str) -> str:
+    """One authorized-keys/`.pub` line as type, fingerprint, and comment.
+
+    Two keys are told apart by their fingerprint, never by the path they happen to sit at, so every
+    place that offers a choice between keys or names one it is about to revoke prints this.
+    """
+    fields = line.split()
+    if len(fields) < 2:
+        return f"  {line[:40]} (unrecognized)"
+    comment = fields[2] if len(fields) > 2 else "(no comment)"
+    return f"  {fields[0]:<20} {key_fingerprint(fields[1]):<55} {comment}"
+
+
+def describe_pubkey_file(pub: Path) -> str | None:
+    """``describe_key_line`` for the first key in ``pub``, or None if it cannot be read."""
+    try:
+        text = pub.read_text(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.strip() and not line.strip().startswith("#"):
+            return describe_key_line(line.strip())
+    return None
 
 
 def ssh_base(target: str, key: str | Path | None) -> list[str]:
@@ -343,8 +487,15 @@ def choose_sshkey(ctx: Context, *, remember: bool = True, ignore_recorded: bool 
             f"{', '.join(present)}. Restore a matching private/public pair at one location, or set "
             "DREAME_SSHKEY to another complete key."
         )
-    for i, (label, _kind, _p) in enumerate(options, 1):
+    for i, (label, kind, path) in enumerate(options, 1):
         c.info(f"   {i}) {label}")
+        # A path is not an identity: two of these can be the same key or entirely different ones,
+        # and picking the wrong one puts a key on the robot that the operator did not mean to trust.
+        # Only "use" options have a key to describe — "gen" ones do not exist yet.
+        if kind == "use":
+            described = describe_pubkey_file(Path(f"{path}.pub"))
+            if described is not None:
+                c.info(f"    {described}")
     choice = c.ask(f"Key [1-{len(options)}]?").strip()
     if not re.fullmatch(r"[0-9]+", choice) or not (1 <= int(choice) <= len(options)):
         die(f"Invalid choice: {choice}")

@@ -22,9 +22,12 @@
   under the dustbin, so joining the robot's own Wi-Fi and typing that serial is enough to authorize
   your key. It replaces, keeps, names every key it is about to stop accepting, and honours
   `--dry-run` exactly as the USB route does, then proves the robot accepts the new key before the
-  tool records it. The serial is never shown as you type it, never written to the run log, and never
-  kept once the run ends. Use the USB route instead when the robot will not boot far enough to bring
-  its Wi-Fi up, or when a previous `rekey` write was interrupted.
+  tool records it. If recon already read a serial off this robot, it is offered so you need not fetch
+  the robot and read the label again, and a serial the robot refuses simply asks for another rather
+  than ending the run. The serial is shown as you type it — a value copied off a label has to be
+  checkable — but it is never written to the run log and never kept once the run ends. Use the USB
+  route instead when the robot will not boot far enough to bring its Wi-Fi up, or when a previous
+  `rekey` write was interrupted.
 
 - `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
   one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
@@ -49,6 +52,14 @@
 
 ### Changed
 
+- Choosing which SSH key reaches the robot now shows each one's type, fingerprint, and comment,
+  in the same form as the keys the robot is reported to authorize. Two paths are not two identities:
+  offered as bare filenames, there was no way to tell which key you were about to put on a robot, or
+  whether one of them was already the key it accepts.
+- Every step that needs the robot's own Wi-Fi AP now waits for it and detects it, instead of asking
+  whether you have joined it. A VPN holding the robot's address, or a laptop that quietly re-joined
+  home Wi-Fi, are invisible from where the question was answered, so the answer could be honest and
+  wrong — and the run then failed somewhere further on where the cause was much harder to read.
 - Adopting a robot that was already rooted, and building an image for one, now say up front that the
   key you upload will not take effect on it and point at `rekey`. Choosing to re-root in the hope of
   regaining SSH access cost a destructive flash for nothing.
@@ -71,6 +82,9 @@
 
 ### Fixed
 
+- A download that fails because you are already on the robot's Wi-Fi AP, which has no internet, now
+  waits for you to rejoin your normal network and carries on. It used to end the run, costing every
+  answer already given — and it sent you back to that same AP immediately afterwards.
 - When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot
   see: a VPN routing the robot's fixed address takes it before the robot ever does, and nothing
   else about the connection looks wrong.

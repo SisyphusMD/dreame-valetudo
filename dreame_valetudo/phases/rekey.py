@@ -24,7 +24,6 @@ does not.
 from __future__ import annotations
 
 import base64
-import binascii
 import contextlib
 import hashlib
 import json
@@ -50,8 +49,11 @@ from ..run import Result
 from ..session import records_step
 from ..ssh import (
     _validated_ssh_keypair,
+    ap_not_your_router,
     choose_sshkey,
+    describe_key_line,
     is_dreame_ap,
+    offer_ap_wait,
     remember_sshkey,
     robot_ssh,
     ssh_failure_guidance,
@@ -95,22 +97,6 @@ _DROPBEAR_STAGED = "/tmp/.ssh/.authorized_keys.rekey"
 _SSH_TRANSPORT_RC = 255
 
 _ASKPASS_NAME = "askpass"
-
-
-def _fingerprint(blob_b64: str) -> str:
-    try:
-        blob = base64.b64decode(blob_b64, validate=True)
-    except (binascii.Error, ValueError):
-        return "unreadable"
-    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
-
-
-def _describe(line: str) -> str:
-    fields = line.split()
-    if len(fields) < 2:
-        return f"  {line[:40]} (unrecognized)"
-    comment = fields[2] if len(fields) > 2 else "(no comment)"
-    return f"  {fields[0]:<20} {_fingerprint(fields[1]):<55} {comment}"
 
 
 def _key_lines(content: bytes) -> list[str]:
@@ -188,12 +174,10 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _ap_not_your_router(ctx: Context) -> None:
-    """The one warning both AP routes must not paraphrase differently: the address they are about
-    to talk to is the operator's router on any normal home network."""
-    ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
-                     f"{ROBOT_AP_IP}), NOT your home network — where {ROBOT_AP_IP} is usually "
-                     "your ROUTER. So:")
+def _wait_for_robot_ap(ctx: Context) -> None:
+    """``offer_ap_wait`` for the routes where giving up means the run cannot continue."""
+    if not offer_ap_wait(ctx):
+        abort("Aborted — nothing was sent to the robot.")
 
 
 def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
@@ -207,7 +191,7 @@ def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
     how a bench session gets spent on the wrong question.
     """
     ctx.console.phase("Check the robot now accepts the key")
-    _ap_not_your_router(ctx)
+    ap_not_your_router(ctx)
     ctx.console.action("Hands on the robot: unplug the USB cable + remove the Breakout PCB (done "
                        "with them), then hold the two OUTER buttons until it starts its Wi-Fi AP.")
     ctx.console.steps([
@@ -217,7 +201,11 @@ def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
         (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...'). You'll leave "
          "home Wi-Fi and lose internet briefly — normal."),
     ])
-    if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
+    # Detected, not asked — but unlike the routes that are about to CHANGE something, giving up here
+    # is not fatal. The write already happened; an operator who cannot bring the AP up right now
+    # loses only the confirmation, and must not be told the robot refused a key it was never asked
+    # about.
+    if not offer_ap_wait(ctx, announce=False):
         ctx.console.warn("Not checked. The write already happened; re-run 'rekey' when you can "
                          "reach the robot and it will confirm the key without writing again.")
         return "unproven"
@@ -380,17 +368,17 @@ def _announce(
     """
     ctx.console.say(f"The robot currently authorizes {len(existing)} key(s):")
     for line in existing:
-        ctx.console.info(_describe(line))
+        ctx.console.info(describe_key_line(line))
     composed, removed, outcome = _compose(existing, ours, keep_existing=keep_existing)
     if outcome == "already-authorized":
         return composed, outcome
     if removed:
         ctx.console.warn(f"These {len(removed)} key(s) will STOP working on this robot:")
         for line in removed:
-            ctx.console.warn(_describe(line))
+            ctx.console.warn(describe_key_line(line))
         ctx.console.info("Pass --keep-existing to keep them authorized instead.")
     ctx.console.say(f"Your key will become {outcome}:")
-    ctx.console.info(_describe(ours))
+    ctx.console.info(describe_key_line(ours))
     return composed, outcome
 
 
@@ -489,6 +477,66 @@ def _password_run(ctx: Context, remote_cmd: str, *, stdin: str = "") -> Result:
     return ctx.runner.run(_password_ssh_argv(remote_cmd), check=False, stdin=stdin)
 
 
+def _stored_serial(robot: Robot) -> str | None:
+    """The serial recon already read off this robot's bootloader, if it recorded a usable one.
+
+    Recon captures `serialno` into identity.txt, so asking the operator to fetch a robot from a
+    shelf and read a label is redundant whenever that capture exists. Offered rather than assumed:
+    it comes from the bootloader, and nothing yet proves it is the same string as the printed label.
+    """
+    value = robot.identity().get("serialno", "").strip()
+    # A bootloader that does not expose the var answers the getvar with a refusal rather than
+    # failing it, so the recorded value can be prose rather than a serial.
+    if not value or "not supported" in value.lower():
+        return None
+    return value
+
+
+def _ask_serial(ctx: Context, default: str | None) -> str:
+    ctx.console.info("The serial is on the label under the dustbin. It is shown as you type — a "
+                     "value copied off a label has to be checkable — but it is not written to the "
+                     "run log and is not kept after this run.")
+    if default is not None:
+        ctx.console.info("Recon already read a serial from this robot's bootloader; press Enter to "
+                         "use it, or type the one on the label if they differ.")
+    # Trailing whitespace is a typing artefact, never part of a serial, and would silently derive
+    # two passwords the robot cannot accept.
+    serial = ctx.console.ask("Robot serial number?", default=default, sensitive=True).strip()
+    if not serial:
+        abort("No serial entered — nothing was sent to the robot.")
+    return serial
+
+
+def _login_with_serial(ctx: Context, robot: Robot, staging: Path) -> str:
+    """Ask for the serial until one authenticates, or the operator gives up.
+
+    A refused serial is overwhelmingly a mistyped or mismatched label, not a defect: dying on the
+    first one cost the operator the whole run — and every answer before it — to fix one character.
+    Only a REFUSAL loops. Anything that failed to reach the robot still raises, because retyping a
+    serial cannot fix a robot that was never contacted.
+    """
+    default = _stored_serial(robot)
+    while True:
+        serial = _ask_serial(ctx, default)
+        try:
+            return _authenticate_with_serial(ctx, staging, serial)
+        except _WrongSerial as exc:
+            ctx.console.warn(str(exc))
+            if not ctx.console.confirm("Try another serial?"):
+                abort("Aborted — nothing was changed on the robot.")
+            # Never re-offered: this is the value that was just refused, and pressing Enter past it
+            # would loop on the same failure.
+            default = None
+
+
+class _WrongSerial(Exception):
+    """The robot was reached and refused both passwords derived from the serial.
+
+    Distinct from every other failure precisely so the caller can re-ask. An unreachable AP, a
+    missing ssh, or a non-Dreame answering all stay fatal — retyping cannot fix any of them.
+    """
+
+
 def _authenticate_with_serial(ctx: Context, staging: Path, serial: str) -> str:
     """The password this robot actually accepts, proving on the same call that it IS a Dreame.
 
@@ -523,11 +571,16 @@ def _authenticate_with_serial(ctx: Context, staging: Path, serial: str) -> str:
             "was changed — this is NOT a wrong serial. Join the ROBOT's own Wi-Fi AP (SSID like "
             "'dreame-vacuum-...'), give it time to finish booting, and re-run."
         )
-    raise Die(
-        "The robot did not accept either password derived from that serial, and nothing was "
-        "changed. Check the serial on the label under the dustbin (it is case-sensitive), that the "
-        "robot is rooted and fully booted, and that ssh is OpenSSH 8.4 or newer — older versions "
-        "insist on asking for the password at the terminal instead of taking it from this tool."
+    # A refusal cannot tell a mistyped serial from a host that was never the robot: this route has
+    # no credential to identify the far end with until a password is accepted, so both causes have
+    # to be named rather than one of them guessed at.
+    raise _WrongSerial(
+        f"The host at {ROBOT_AP_IP} did not accept either password derived from that serial, and "
+        "nothing was changed. Either the serial is wrong — check the label under the dustbin, it is "
+        f"case-sensitive — or that host is not the robot, which is normal on a home network, where "
+        f"{ROBOT_AP_IP} is usually your ROUTER. Also check the robot is rooted and fully booted, "
+        "and that ssh is OpenSSH 8.4 or newer: older versions insist on asking for the password at "
+        "the terminal instead of taking it from this tool."
     )
 
 
@@ -610,23 +663,14 @@ def _rekey_over_ssh(ctx: Context, robot: Robot, *, keep_existing: bool, dry_run:
     ctx.console.info("Nothing is flashed on this route. The rooted image sets root's password from "
                      "the robot's serial on every boot, so holding the robot is what authorizes "
                      f"the change; it rewrites {_MISC_KEYS} in place.")
-    _ap_not_your_router(ctx)
+    ap_not_your_router(ctx)
     ctx.console.steps([
         "Let the robot finish booting.",
         "On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.",
         (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...'). You'll leave "
          "home Wi-Fi and lose internet briefly — normal."),
     ])
-    if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
-        abort("Aborted — nothing was sent to the robot.")
-
-    ctx.console.info("The serial is on the label under the dustbin. It is not shown as you type, "
-                     "is not written to the run log, and is not kept after this run.")
-    # Trailing whitespace is a typing artefact, never part of a serial, and would silently derive
-    # two passwords the robot cannot accept.
-    serial = ctx.console.ask_secret("Robot serial number?").strip()
-    if not serial:
-        abort("No serial entered — nothing was sent to the robot.")
+    _wait_for_robot_ap(ctx)
 
     staging = robot.work / "rekey"
     staging.mkdir(parents=True, exist_ok=True)
@@ -634,7 +678,7 @@ def _rekey_over_ssh(ctx: Context, robot: Robot, *, keep_existing: bool, dry_run:
     # The askpass helper is removed in a finally, which a SIGKILL or a power cut does not run. Swept
     # here as well so a leftover from such an exit cannot outlive the next run that could clear it.
     (staging / _ASKPASS_NAME).unlink(missing_ok=True)
-    password = _authenticate_with_serial(ctx, staging, serial)
+    password = _login_with_serial(ctx, robot, staging)
     ctx.console.say("Logged in, and the robot confirmed itself as a Dreame.")
 
     with _password_askpass(staging, password):
@@ -667,7 +711,7 @@ def _rekey_over_ssh(ctx: Context, robot: Robot, *, keep_existing: bool, dry_run:
     if dry_run:
         ctx.console.say("Dry run: NOTHING was written to the robot. It would authorize:")
         for line in composed:
-            ctx.console.info(_describe(line))
+            ctx.console.info(describe_key_line(line))
         return
 
     if not ctx.console.confirm("Write the updated authorized_keys to the robot now?"):
