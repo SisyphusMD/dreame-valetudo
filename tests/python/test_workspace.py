@@ -22,8 +22,67 @@ from dreame_valetudo.workspace import (
     robot_dirs,
     robot_tag,
     slugify,
+    valid_serial,
     work_dir,
 )
+
+
+# --- Robot serial ----------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "text",
+    ["P3020000AA1234567890", "  P3020000AA1234567890  ", "abc-123.45", "A12345"],
+)
+def test_valid_serial_accepts_a_serial(text: str) -> None:
+    assert valid_serial(text) == text.strip()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "   ", "not supported", "unknown", "NONE", "A1234", "P30 20000", "x" * 65],
+)
+def test_valid_serial_rejects_prose_and_sentinels(text: str) -> None:
+    assert valid_serial(text) is None
+
+
+def test_serial_round_trips_with_its_verified_flag(tmp_path: Path) -> None:
+    robot = Robot(tmp_path / "r2416-abc")
+    assert robot.serial() is None
+
+    assert robot.remember_serial("P3020000AA1234567890", verified=False) is True
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+    assert saved.verified is False
+
+    assert robot.remember_serial("P3020000AA1234567890", verified=True) is True
+    confirmed = robot.serial()
+    assert confirmed is not None and confirmed.verified is True
+
+
+def test_a_serial_is_never_written_where_the_shareable_report_digests_it(tmp_path: Path) -> None:
+    """bench digests every file under state/ into report.json, and a serial's digest is guessable."""
+    robot = Robot(tmp_path / "r2416-abc")
+    robot.state_set("recon", "model=x40-ultra")
+    robot.remember_serial("P3020000AA1234567890", verified=True)
+
+    assert [entry.name for entry in robot.state_dir.iterdir()] == ["recon"]
+    stored = robot.work / "serial.json"
+    assert stored.is_file()
+    assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+    assert "P3020000AA1234567890" in stored.read_text()
+
+
+def test_a_serial_that_is_not_one_is_refused_rather_than_stored(tmp_path: Path) -> None:
+    robot = Robot(tmp_path / "r2416-abc")
+    assert robot.remember_serial("not supported", verified=True) is False
+    assert robot.serial() is None
+    assert not (robot.work / "serial.json").exists()
+
+
+def test_an_unreadable_serial_file_reads_as_absent(tmp_path: Path) -> None:
+    robot = Robot(tmp_path / "r2416-abc")
+    robot.remember_serial("P3020000AA1234567890", verified=True)
+    (robot.work / "serial.json").write_text("{ not json")
+    assert robot.serial() is None
 
 
 # --- Workspace paths -------------------------------------------------------------------------

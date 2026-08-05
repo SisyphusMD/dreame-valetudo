@@ -32,6 +32,11 @@
   a config isn't recognized yet, the tool walks you through uploading it, with the current privacy
   and follow-up warnings.
 
+### Added
+
+- Setup now asks for the serial from the label under the dustbin and saves it, so a lost SSH key
+  never means fetching the robot and turning it over. `rekey` offers it instead of asking again.
+
 ### Changed
 
 - `bench` now covers `rekey`: the preview, the no-flash Wi-Fi route, the USB `misc` rewrite, and a

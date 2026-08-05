@@ -294,9 +294,12 @@ def test_recon_waits_for_interactive_readiness_before_polling(make_ctx: CtxFacto
     ctx = make_ctx(responder=config_responder())
     stage_dist(ctx)
     prompts: list[str] = []
-    ctx.console.ask = lambda prompt: prompts.append(prompt) or ""
+    ctx.console.ask = lambda prompt, **_: prompts.append(prompt) or ""
     recon(ctx, recovery_backup=False)
-    assert prompts == ["Ready to start watching for the robot? Press Enter when ready."]
+    assert prompts == [
+        "Ready to start watching for the robot? Press Enter when ready.",
+        "Robot serial number? (Enter to skip)",
+    ]
     assert any(call.endswith("sunxi-fel ver") for call in ctx.runner.transcript())
 
 
@@ -1094,3 +1097,144 @@ def test_publish_declines_without_touching_the_prior_capture_when_a_flush_fails(
     assert recon_module._publish_recovery_capture(staging, recon_dir) is False
     assert renamed == []
     assert all((recon_dir / name).read_bytes() == b"intact prior copy" for name in artifacts)
+
+
+def test_a_non_interactive_recon_never_asks_for_the_serial(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=config_responder(), interactive=False)
+    stage_dist(ctx)
+    recon(ctx, recovery_backup=False)
+    robot = ctx.need_robot()
+    assert robot.serial() is None
+
+
+def test_recon_does_not_ask_again_once_a_serial_is_recorded(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=config_responder(), asks=["", "SHOULD-NOT-BE-USED"])
+    stage_dist(ctx)
+    recon(ctx, recovery_backup=False)
+    robot = ctx.need_robot()
+    robot.remember_serial("P3020000AA1234567890", verified=True)
+
+    prompts: list[str] = []
+    ctx.console.ask = lambda prompt, **_: prompts.append(prompt) or ""  # type: ignore[assignment]
+    recon(ctx, force=True, recovery_backup=False)
+
+    assert not any("serial" in prompt.lower() for prompt in prompts)
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+
+
+def test_a_serial_that_is_not_one_is_refused_at_setup(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=config_responder(), asks=["", "not supported"])
+    stage_dist(ctx)
+    recon(ctx, recovery_backup=False)
+    assert ctx.need_robot().serial() is None
+    assert "does not look like a serial" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_the_serial_is_asked_as_sensitive_so_the_log_never_records_it(
+    make_ctx: CtxFactory,
+) -> None:
+    """test_log pins that a sensitive answer logs `<not recorded>`; this pins recon asking that way,
+    rather than leaving the label to scrub() recognising its shape."""
+    serial = "P3020000AA1234567890"
+    ctx = make_ctx(responder=config_responder())
+    stage_dist(ctx)
+    asked: list[tuple[str, bool]] = []
+
+    def record(prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
+        asked.append((prompt, sensitive))
+        return serial if "serial" in prompt.lower() else ""
+
+    ctx.console.ask = record  # type: ignore[assignment]
+    recon(ctx, recovery_backup=False)
+
+    assert ("Robot serial number? (Enter to skip)", True) in asked
+    saved = ctx.need_robot().serial()
+    assert saved is not None and saved.value == serial
+
+
+def test_a_recon_interrupted_at_the_serial_prompt_asks_again_next_run(
+    make_ctx: CtxFactory,
+) -> None:
+    """The prompt follows recon's completion marker, so a skipped rerun must still reach it.
+
+    A real interruption raises rather than answering, which is what distinguishes it from the
+    deliberate Enter-to-skip that is deliberately never asked about again.
+    """
+    ctx = make_ctx(responder=config_responder(), asks=[""])
+    stage_dist(ctx)
+    plain = ctx.console.ask
+
+    def interrupt(prompt: str, **kwargs: object) -> str:
+        if "serial" in prompt.lower():
+            raise KeyboardInterrupt
+        return plain(prompt, **kwargs)  # type: ignore[arg-type]
+
+    ctx.console.ask = interrupt  # type: ignore[assignment]
+    with pytest.raises(KeyboardInterrupt):
+        recon(ctx, recovery_backup=False)
+
+    robot = ctx.need_robot()
+    assert robot.state_has("recon")
+    assert robot.serial() is None
+    assert not robot.state_has("serial-declined")
+
+    prompts: list[str] = []
+
+    def record(prompt: str, **kwargs: object) -> str:
+        prompts.append(prompt)
+        return "P3020000AA1234567890"
+
+    ctx.console.ask = record  # type: ignore[assignment]
+    recon(ctx, recovery_backup=False)
+
+    assert any("serial" in prompt.lower() for prompt in prompts)
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+
+
+def test_a_deliberate_serial_skip_is_not_asked_again(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=config_responder(), asks=["", ""])
+    stage_dist(ctx)
+    recon(ctx, recovery_backup=False)
+    robot = ctx.need_robot()
+    assert robot.serial() is None
+
+    prompts: list[str] = []
+
+    def record(prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
+        prompts.append(prompt)
+        return ""
+
+    ctx.console.ask = record  # type: ignore[assignment]
+    recon(ctx, recovery_backup=False)
+    assert not any("serial" in prompt.lower() for prompt in prompts)
+
+
+def test_adoption_is_fully_recorded_before_the_optional_serial_prompt(
+    make_ctx: CtxFactory,
+) -> None:
+    """An interrupt at the prompt must not leave a half-adopted robot every later command rejects."""
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=_sampling_responder(blob=b"\x00" * 1024),
+        confirms=[False, True, True],
+        asks=[""],
+    )
+    stage_dist(ctx)
+    seen: dict[str, str | None] = {}
+    plain = ctx.console.ask
+
+    def record(prompt: str, **kwargs: object) -> str:
+        if "serial" not in prompt.lower():
+            return plain(prompt, **kwargs)  # type: ignore[arg-type]
+        robot = ctx.need_robot()
+        seen.update({name: robot.state_get(name) for name in ("rooted", "valetudo", "root-origin")})
+        return ""
+
+    ctx.console.ask = record  # type: ignore[assignment]
+    recon(ctx, recovery_backup=True)
+
+    assert seen["root-origin"] == ADOPTED_ROOT
+    assert seen["rooted"] == ADOPTED_ROOT
+    assert seen["valetudo"] == ADOPTED_ROOT

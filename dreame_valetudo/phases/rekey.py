@@ -59,7 +59,7 @@ from ..ssh import (
     ssh_failure_guidance,
 )
 from ..util import parse_config, same_robot_config
-from ..workspace import Robot, protect_private_dir, recovery_dump_valid
+from ..workspace import Robot, protect_private_dir, recovery_dump_valid, valid_serial
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 from .restore import _DUST_XOR, _parse_gpt
@@ -477,28 +477,29 @@ def _password_run(ctx: Context, remote_cmd: str, *, stdin: str = "") -> Result:
     return ctx.runner.run(_password_ssh_argv(remote_cmd), check=False, stdin=stdin)
 
 
-def _stored_serial(robot: Robot) -> str | None:
-    """The serial recon already read off this robot's bootloader, if it recorded a usable one.
+def _stored_serial(robot: Robot) -> tuple[str | None, bool]:
+    """This robot's recorded serial and whether the robot itself confirmed it.
 
-    Recon captures `serialno` into identity.txt, so asking the operator to fetch a robot from a
-    shelf and read a label is redundant whenever that capture exists. Offered rather than assumed:
-    it comes from the bootloader, and nothing yet proves it is the same string as the printed label.
+    Falls back to recon's bootloader capture, which is `not supported` on every fastboot model but
+    costs nothing to honour on a model that does answer. Offered rather than assumed: an unverified
+    value was typed off a label, and nothing has yet proved it is what the robot derives from.
     """
-    value = robot.identity().get("serialno", "").strip()
-    # A bootloader that does not expose the var answers the getvar with a refusal rather than
-    # failing it, so the recorded value can be prose rather than a serial.
-    if not value or "not supported" in value.lower():
-        return None
-    return value
+    known = robot.serial()
+    if known is not None:
+        return known.value, known.verified
+    return valid_serial(robot.identity().get("serialno", "")), False
 
 
-def _ask_serial(ctx: Context, default: str | None) -> str:
+def _ask_serial(ctx: Context, default: str | None, *, confirmed: bool = False) -> str:
     ctx.console.info("The serial is on the label under the dustbin. It is shown as you type — a "
                      "value copied off a label has to be checkable — but it is not written to the "
-                     "run log and is not kept after this run.")
-    if default is not None:
-        ctx.console.info("Recon already read a serial from this robot's bootloader; press Enter to "
-                         "use it, or type the one on the label if they differ.")
+                     "run log.")
+    if default is not None and confirmed:
+        ctx.console.info("This robot reported this serial itself the last time the tool reached it "
+                         "over Wi-Fi; press Enter to use it.")
+    elif default is not None:
+        ctx.console.info("This serial was saved for this robot but never confirmed against it; "
+                         "press Enter to try it, or type the one on the label if they differ.")
     # Trailing whitespace is a typing artefact, never part of a serial, and would silently derive
     # two passwords the robot cannot accept.
     serial = ctx.console.ask("Robot serial number?", default=default, sensitive=True).strip()
@@ -515,18 +516,23 @@ def _login_with_serial(ctx: Context, robot: Robot, staging: Path) -> str:
     Only a REFUSAL loops. Anything that failed to reach the robot still raises, because retyping a
     serial cannot fix a robot that was never contacted.
     """
-    default = _stored_serial(robot)
+    default, confirmed = _stored_serial(robot)
     while True:
-        serial = _ask_serial(ctx, default)
+        serial = _ask_serial(ctx, default, confirmed=confirmed)
         try:
-            return _authenticate_with_serial(ctx, staging, serial)
+            password = _authenticate_with_serial(ctx, staging, serial)
         except _WrongSerial as exc:
             ctx.console.warn(str(exc))
             if not ctx.console.confirm("Try another serial?"):
                 abort("Aborted — nothing was changed on the robot.")
             # Never re-offered: this is the value that was just refused, and pressing Enter past it
             # would loop on the same failure.
-            default = None
+            default, confirmed = None, False
+            continue
+        # The robot accepted a password derived from it, which is the robot confirming the value —
+        # so a later rescue never has to ask for this label again.
+        robot.remember_serial(serial, verified=True)
+        return password
 
 
 class _WrongSerial(Exception):

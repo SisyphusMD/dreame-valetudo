@@ -1260,3 +1260,50 @@ def test_an_unreachable_ap_is_not_reported_as_the_robot_refusing(
     lines = ctx.console.lines  # type: ignore[attr-defined]
     assert any("NOT a refusal" in msg for _kind, msg in lines)
     assert not any("CONFIRMED" in msg for _kind, msg in lines)
+
+
+def test_a_serial_the_robot_accepted_is_recorded_and_offered_next_time(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """A password derived from it worked, which is the robot itself confirming the value."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], asks=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    saved = ctx.need_robot().serial()
+    assert saved is not None and saved.value == _SERIAL
+    assert saved.verified is True
+
+
+def test_a_serial_the_robot_refused_is_never_recorded(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], asks=["MISTYPED0001", _SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    saved = ctx.need_robot().serial()
+    assert saved is not None and saved.value == _SERIAL
+
+
+def test_a_recorded_serial_is_offered_as_the_default(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], asks=[""])
+    _prepare_rooted_robot(ctx)
+    ctx.need_robot().remember_serial(_SERIAL, verified=True)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    assert "reported this serial itself" in ctx.console.text()  # type: ignore[attr-defined]

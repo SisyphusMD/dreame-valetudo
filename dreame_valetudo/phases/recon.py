@@ -204,6 +204,42 @@ def _offer_existing_root_adoption(ctx: Context) -> bool:
     )
 
 
+_SERIAL_DECLINED = "serial-declined"
+
+
+def _offer_serial(ctx: Context, robot: Robot) -> None:
+    """Record the serial off the label, once, while the robot is in front of the operator.
+
+    It seeds the root password `/etc/rc.d/adbd.sh` sets every boot, which is the only way back into
+    a robot whose authorized key was lost. Asking for it during a rescue means fetching the robot
+    and turning it over at the worst possible moment; asking now costs one prompt.
+
+    The bootloader cannot confirm it — it answers `not supported` for serialno on every fastboot
+    model — so what is typed here is stored UNVERIFIED, and the first phase that reaches the robot
+    over its own AP reads the real one and settles it.
+    """
+    if not ctx.interactive or robot.serial() is not None or robot.state_has(_SERIAL_DECLINED):
+        return
+    ctx.console.info("The serial is on the label under the dustbin. It unlocks a rescue login if "
+                     "this robot's SSH key is ever lost, and is kept out of shared logs.")
+    # Shown as typed — a value copied off a label has to be checkable — but kept out of the
+    # shareable run log outright, rather than trusting scrub() to recognise its shape.
+    answer = ctx.console.ask("Robot serial number? (Enter to skip)", sensitive=True).strip()
+    if not answer:
+        # Recorded so the offer is not repeated on every later recon. A real interruption raises
+        # before this point and leaves no marker, so it still gets another chance. Safe as a state
+        # marker where the serial itself is not: this says only that the operator declined.
+        robot.state_set(_SERIAL_DECLINED)
+        ctx.console.info("Skipped. 'rekey' will ask for it if the key is ever lost.")
+        return
+    if not robot.remember_serial(answer, verified=False):
+        ctx.console.warn("That does not look like a serial, so nothing was saved. Re-run recon, or "
+                         "let 'rekey' ask for it later.")
+        return
+    ctx.console.info("Saved. It will be checked against the robot the first time this tool "
+                     "reaches it over Wi-Fi.")
+
+
 @records_step("reconnaissance")
 def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
           offer_update: bool = False) -> None:
@@ -219,10 +255,15 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         if offer_update and ctx.interactive:
             ctx.console.info(f"Recon already done — {prior}.")
             if not ctx.console.confirm("Re-run recon to update the saved recon for this robot?"):
+                # Offered here too, not only on the path that completes recon: the serial prompt
+                # follows that completion marker, so a run interrupted at it would otherwise skip
+                # ahead forever and never ask this robot again.
+                _offer_serial(ctx, ctx.robot)
                 return
             ctx.console.say("Updating recon — re-reading the device...")
         else:
             ctx.console.info(f"Recon already done — {prior}. Re-run with '--force' to repeat.")
+            _offer_serial(ctx, ctx.robot)
             return
 
     check_fastboot_client(ctx)
@@ -407,6 +448,9 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                          "running, use: dreame-valetudo update-valetudo")
         ctx.console.info("To replace the boot firmware later, stage a current image and run "
                          "'dreame-valetudo root --force' deliberately.")
+    # Dead last, after every marker this phase owes. It is optional and interruptible, and an
+    # adoption left half-recorded behind it would keep refusing the robot it just adopted.
+    _offer_serial(ctx, robot)
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")

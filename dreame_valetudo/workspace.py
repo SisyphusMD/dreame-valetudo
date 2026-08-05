@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import json
 import os
 import re
 import shutil
@@ -175,6 +176,18 @@ def protect_private_dir(directory: Path) -> None:
             entry.chmod(0o600)
 
 
+_SERIAL_FILE = "serial.json"
+_SERIAL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{5,63}")
+_SERIAL_SENTINELS = frozenset({"unknown", "none", "unsupported", "notsupported"})
+
+
+@dataclass(frozen=True, slots=True)
+class Serial:
+    """A robot's serial, and whether the robot itself confirmed it rather than a person typing it."""
+    value: str
+    verified: bool
+
+
 def write_private_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o700)
@@ -335,6 +348,34 @@ class Robot:
             return config_env
         return None
 
+    def serial(self) -> Serial | None:
+        """This robot's recorded serial, or None if none was ever established.
+
+        Stored as its own private file rather than a state marker on purpose: the bench conductor
+        digests every file under state/ into a report meant to be shared, and a serial is short and
+        highly structured, so that digest is brute-forceable back to the root password it seeds.
+        """
+        path = self.work / _SERIAL_FILE
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        value = valid_serial(str(data.get("serial", ""))) if isinstance(data, dict) else None
+        return Serial(value, bool(data.get("verified"))) if value else None
+
+    def remember_serial(self, serial: str, *, verified: bool) -> bool:
+        """Record this robot's serial. False when it was not a serial and nothing was written."""
+        value = valid_serial(serial)
+        if value is None:
+            return False
+        write_private_text(
+            self.work / _SERIAL_FILE,
+            json.dumps({"serial": value, "verified": verified}, sort_keys=True) + "\n",
+        )
+        return True
+
     def identity(self) -> dict[str, str]:
         """The extra fastboot getvar values recon captured (serialno/toc0hash/toc1hash), for the
         dustbuilder's manual checker. Empty if none were recorded (an older recon, or a bootloader
@@ -347,6 +388,18 @@ class Robot:
                 if sep and key.strip() and val.strip():
                     out[key.strip()] = val.strip()
         return out
+
+
+def valid_serial(text: str) -> str | None:
+    """``text`` as a storable serial, or None when it is prose rather than one.
+
+    Every fastboot bootloader answers `not supported` for serialno, and recon records that verbatim.
+    Storing it would offer "not supported" back to the operator as a default serial.
+    """
+    candidate = text.strip()
+    if not _SERIAL_RE.fullmatch(candidate) or candidate.lower() in _SERIAL_SENTINELS:
+        return None
+    return candidate
 
 
 def robot_tag(model_code: str, config: str | None, robot_name: str | None = None) -> str:

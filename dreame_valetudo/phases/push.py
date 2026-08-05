@@ -38,7 +38,7 @@ from ..ssh import (
     ssh_failure_guidance,
 )
 from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
-from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish
+from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish, valid_serial
 from .doctor import check_external_tools
 from .fetch import fetch_valetudo
 
@@ -423,6 +423,26 @@ def _backup_dedicated_key(ctx: Context, key: str | Path | None, backup: Path) ->
         ctx.console.info(f"  {', '.join(copied)} — your SSH access to this robot")
 
 
+def _settle_serial(ctx: Context, identity: dict[str, str]) -> None:
+    """Settle the recorded serial against the robot's own copy, now that its identity is proven.
+
+    Only reached once the live factory config matched the selected robot, so this can never file one
+    robot's serial under another's workspace. A label typed at recon cannot be checked at the time —
+    the bootloader answers `not supported` — so this is where an unverified value becomes trusted.
+    """
+    robot = ctx.robot
+    live = valid_serial(identity.get("factory_serial", ""))
+    if robot is None or live is None:
+        return
+    known = robot.serial()
+    if known is not None and known.value != live:
+        ctx.console.warn("The serial saved for this robot is not the one the robot reports. The "
+                         "robot's own value wins. If you typed it off a label, check that label "
+                         "belongs to this robot.")
+    if known is None or not known.verified or known.value != live:
+        robot.remember_serial(live, verified=True)
+
+
 def _live_robot_identity(
     ctx: Context, key: str | Path | None, expected_config: str | None,
 ) -> dict[str, str]:
@@ -431,6 +451,9 @@ def _live_robot_identity(
         ctx.runner,
         _TARGET,
         "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
+        # Terminated explicitly: sn.txt need not end in a newline, and an unterminated value would
+        # run the next field onto the same line. factory_config stays last, exactly as it was.
+        "printf 'factory_serial='; cat /mnt/private/ULI/factory/sn.txt 2>/dev/null; printf '\\n'; "
         "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null",
         key=key,
         check=False,
@@ -440,7 +463,11 @@ def _live_robot_identity(
     identity = {}
     for line in result.stdout.splitlines():
         field, separator, value = line.partition("=")
-        if separator and field in {"model", "did", "factory_config"} and value.strip():
+        if (
+            separator
+            and field in {"model", "did", "factory_config", "factory_serial"}
+            and value.strip()
+        ):
             identity[field] = value.strip()
     live_config = parse_config(identity.get("factory_config", ""))
     if expected_config is not None and live_config is None:
@@ -454,6 +481,7 @@ def _live_robot_identity(
         die("SAFETY STOP: the connected robot's factory config does not match the selected "
             "robot. Join the selected robot's Wi-Fi AP and re-run; no backup or install was "
             "attempted.")
+    _settle_serial(ctx, identity)
     reported = identity.get("model")
     if not reported:
         if not ctx.interactive:
