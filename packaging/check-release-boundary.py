@@ -50,8 +50,13 @@ _FORBIDDEN_TEXT: dict[str, tuple[str, ...]] = {
     ),
     "dreame_valetudo/constants.py": ("PYSERIAL_VERSION",),
     "dreame_valetudo/context.py": ("from .uart import", "def uart("),
-    "dreame_valetudo/console.py": ("def ask_secret(",),
-    "dreame_valetudo/log.py": ("def ask_secret(",),
+    # NOT `def ask_secret(`: that seam is a hidden prompt, and 0.3's `rekey --over-ssh` needs one
+    # for the under-dustbin serial exactly as the collector does. Naming it caught the collector by
+    # coincidence rather than by evidence, and it refused a release containing no collector at all.
+    # These two are the collector's own: the raw-terminal helper behind its prompt, and the
+    # streaming command surface its serial transport is built on.
+    "dreame_valetudo/console.py": ("def _secret_prompt(",),
+    "dreame_valetudo/log.py": ("RunningCommand",),
     "pyproject.toml": ("libexec/uart-console.py", "pyserial"),
     "uv.lock": ('name = "pyserial"',),
 }
