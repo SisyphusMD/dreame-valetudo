@@ -442,6 +442,16 @@ def tmux_plan(
     return create
 
 
+def _tmux_word(word: str) -> str:
+    """One word for tmux's OWN command parser — not the shell.
+
+    Needed because the copy binding has to be handed over as a single string, so a clipboard helper
+    found at a path with a space in it would otherwise arrive as two arguments and bind something
+    else entirely.
+    """
+    return '"' + word.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def session_options(
     session: str, *, colour: bool, env: Mapping[str, str] | None = None,
 ) -> list[list[str]]:
@@ -465,6 +475,12 @@ def session_options(
     # thing they actually wanted next — copy mode swallows typing, so selecting a line at a prompt
     # left them unable to answer it. Only the no-helper fallback keeps the selection, because there
     # tmux's own buffer IS the copy and losing the highlight would lose it.
+    #
+    # Leaving the text highlighted AND letting them type is not a trade this can win: the highlight
+    # exists only inside copy mode, copy mode owns the keyboard, and a binding cannot replay the key
+    # that dismissed it (there is no format carrying it). So the copy announces itself instead — the
+    # vanishing highlight is otherwise the only signal, and its absence looks exactly like a drag
+    # that missed.
     if sys.platform == "darwin":
         clipboard = ["copy-pipe-and-cancel", "pbcopy"]
     elif command := shutil.which("wl-copy"):
@@ -475,6 +491,17 @@ def session_options(
         clipboard = ["copy-pipe-and-cancel", f"{command} -selection clipboard"]
     else:
         clipboard = ["copy-selection-no-clear"]
+    # ONE argv word holding the whole sequence. Passing `;` as its own word instead splits it into a
+    # second TOP-LEVEL command that runs once at bind time and never reaches the binding — silently,
+    # with no error and a key bound to the copy alone.
+    copy_and_announce = (
+        f"send-keys -X {' '.join(_tmux_word(part) for part in clipboard)} ; "
+        # Says "copied", never "copied to the clipboard": the helper's exit status does not reach
+        # this sequence, so an xclip installed without a DISPLAY fails while the message still
+        # fires. What IS always true is tmux's own buffer — copy-pipe fills it whether the helper
+        # works or not (verified against the shipped tmux by piping to `false`).
+        f"display-message {_tmux_word('copied')}"
+    )
     return [
         ["set-option", "-t", session, "remain-on-exit", "off"],
         # Inside a pane the terminal's own scrollback is gone, and tmux's replacement is reached by
@@ -490,10 +517,8 @@ def session_options(
         # text spanning the status line. DREAME_TMUX_MOUSE=off gives it back permanently, at the
         # cost of the scrollback above, so it stays opt-in rather than the default.
         ["set-option", "-t", session, "mouse", mouse],
-        ["bind-key", "-T", "copy-mode", "MouseDragEnd1Pane",
-         "send-keys", "-X", *clipboard],
-        ["bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
-         "send-keys", "-X", *clipboard],
+        ["bind-key", "-T", "copy-mode", "MouseDragEnd1Pane", copy_and_announce],
+        ["bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane", copy_and_announce],
         # Keeping the selection is what lets the copy land, but nothing then took it away: the
         # highlight sat there through every later click. A plain click clears it and stays put —
         # `cancel` would also leave copy mode and snap the view back to the bottom, throwing away

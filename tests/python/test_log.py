@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from conftest import ScriptedConsole
 
-from dreame_valetudo import console as console_module
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.log import (
     BufferingConsole,
@@ -344,22 +343,48 @@ def test_logging_console_mirrors_the_new_output_kinds(tmp_path: Path) -> None:
     assert "-> Pulling — done (" in text  # exactly the one summary line, no frames/heartbeats
 
 
-def test_logging_console_logs_a_secret_question_but_never_its_answer(
+def test_logging_console_logs_a_sensitive_question_but_never_its_answer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`ask` logs its answer, and this sits right beside it — so it has to say out loud that the
-    answer is the one thing that must not be written down."""
-    monkeypatch.setattr(console_module.getpass, "getpass", lambda _p: "TESTSERIAL0001")
+    """Showing the operator what they typed must not also show it to everyone they send the log to.
+
+    The serial is echoed now — a value copied off a label has to be checkable, and hiding it made a
+    typo indistinguishable from the robot refusing it — so the two concerns came apart. This pins
+    that only the first one changed.
+    """
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "TESTSERIAL0001")
     log = _open(tmp_path, tmp_path / "home")
     con = LoggingConsole(log)
 
-    assert con.ask_secret("Robot serial number?") == "TESTSERIAL0001"
+    assert con.ask("Robot serial number?", sensitive=True) == "TESTSERIAL0001"
 
     log.close()
     text = log.path.read_text()
     assert "?? Robot serial number?" in text
     assert "-> <not recorded>" in text
     assert "TESTSERIAL0001" not in text
+
+
+def test_logging_console_never_writes_an_offered_default_to_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offering a remembered serial back must not be what writes it to disk.
+
+    The default is rendered to the terminal but never folded into the prompt string, which the log
+    records verbatim — otherwise re-using a captured value would leak it every single run.
+    """
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")  # accept the default
+    log = _open(tmp_path, tmp_path / "home")
+    con = LoggingConsole(log)
+
+    assert con.ask("Robot serial number?", default="STOREDSERIAL9", sensitive=True) == (
+        "STOREDSERIAL9"
+    )
+
+    log.close()
+    text = log.path.read_text()
+    assert "?? Robot serial number?" in text
+    assert "STOREDSERIAL9" not in text
 
 
 def test_logging_console_mirrors_and_scrubs(tmp_path: Path) -> None:

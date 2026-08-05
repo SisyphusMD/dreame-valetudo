@@ -334,25 +334,17 @@ class LoggingConsole(Console):
         self._log.line(self._PREFIX["answer"], "yes" if answer else "no")
         return answer
 
-    def ask_secret(self, prompt: str) -> str:
-        """Overridden so the answer can never be logged the way ``ask`` logs its own.
-
-        The question is worth keeping — it is what makes the surrounding lines readable — but this
-        must stay beside ``ask`` so nobody later gives secret answers the same treatment.
-        """
+    def ask(self, prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
         self._log.line(self._PREFIX["prompt"], prompt)
-        answer = super().ask_secret(prompt)
-        self._log.line(self._PREFIX["answer"], "<not recorded>")
-        return answer
-
-    def ask(self, prompt: str) -> str:
-        self._log.line(self._PREFIX["prompt"], prompt)
-        answer = super().ask(prompt)
+        answer = super().ask(prompt, default=default, sensitive=sensitive)
         if self._protect_robot_names and prompt.startswith("Name for this robot "):
             private_name = answer.strip()
             private_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", private_name).strip("-.")
             self._log.protect(private_name, private_slug)
-        self._log.line(self._PREFIX["answer"], answer)
+        # Same contract ask_secret has always had, reached by a different route: what changed for a
+        # sensitive answer is that the operator can now SEE what they typed, not that the shareable
+        # log may keep it.
+        self._log.line(self._PREFIX["answer"], "<not recorded>" if sensitive else answer)
         return answer
 
 
@@ -446,16 +438,10 @@ class BufferingConsole(Console):
         self._pending.append(("->", "yes" if answer else "no"))
         return answer
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
         self._pending.append(("??", prompt))
-        answer = self._inner.ask(prompt)
-        self._pending.append(("->", answer))
-        return answer
-
-    def ask_secret(self, prompt: str) -> str:
-        self._pending.append(("??", prompt))
-        answer = self._inner.ask_secret(prompt)
-        self._pending.append(("->", "<not recorded>"))
+        answer = self._inner.ask(prompt, default=default, sensitive=sensitive)
+        self._pending.append(("->", "<not recorded>" if sensitive else answer))
         return answer
 
     def progress(self, label: str, *, timer: bool = True) -> Progress:

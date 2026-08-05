@@ -21,14 +21,17 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import manifest
-from ..console import Die, abort, die, warn_if_low_disk
+from ..console import Die, UserAbort, abort, die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..profiles import known_model_key_for_code, load_profile
 from ..session import records_step
 from ..ssh import (
     AP_VPN_HINT,
+    ap_not_your_router,
     is_dreame_ap,
+    offer_ap_wait,
+    offer_leave_ap_for_internet,
     resolve_sshkey,
     robot_ssh,
     ssh_base,
@@ -602,13 +605,25 @@ def _prepare_valetudo_binary(ctx: Context, *, retry_command: str) -> None:
     binary_missing = not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0
     check_external_tools(ctx, ("ssh",), required=True)
     check_external_tools(ctx, ("curl",), required=binary_missing)
-    try:
-        # A moving `latest` release retains its filename, so even cached bytes need their current
-        # published digest checked before they can replace the robot's executable.
-        fetch_valetudo(ctx)
-    except Die as exc:
-        die(f"{exc}\nRejoin your normal Wi-Fi and run '{retry_command}' again. It will download "
-            "only Valetudo, then prompt you to join the robot's Wi-Fi AP.")
+    for attempt in range(2):
+        try:
+            # A moving `latest` release retains its filename, so even cached bytes need their
+            # current published digest checked before they can replace the robot's executable.
+            fetch_valetudo(ctx)
+            break
+        except UserAbort:
+            # A deliberate, successful cancellation — declining to install an unverifiable binary
+            # raises this, and UserAbort subclasses Die. Swallowing it here would turn a choice the
+            # operator made into a "download failed" and send them to change networks over it.
+            raise
+        except Die as exc:
+            # Already being on the robot's AP is the ordinary way this fails, and giving up costs
+            # the operator the whole run. Offered once: a second failure after they left the AP is
+            # a real download problem, not a network they are standing on.
+            if attempt == 0 and offer_leave_ap_for_internet(ctx):
+                continue
+            die(f"{exc}\nRejoin your normal Wi-Fi and run '{retry_command}' again. It will "
+                "download only Valetudo, then prompt you to join the robot's Wi-Fi AP.")
     if not ctx.valetudo_bin.is_file() or ctx.valetudo_bin.stat().st_size == 0:
         die("Valetudo binary missing — run 'fetch'.")
 
@@ -692,9 +707,7 @@ def _capture_live_factory_backup(
         index=phase_index,
         total=3 if phase_index is not None else None,
     )
-    ctx.console.info(f"This talks to the robot over ITS OWN Wi-Fi AP (a direct link at "
-                     f"{ROBOT_AP_IP}), NOT your home network — where {ROBOT_AP_IP} is usually "
-                     "your ROUTER. So:")
+    ap_not_your_router(ctx)
     ctx.console.action("Hands on the robot: unplug the USB cable + remove the Breakout PCB (done "
                        "with them), then hold the two OUTER buttons until it starts its Wi-Fi AP.")
     ctx.console.steps([
@@ -703,7 +716,12 @@ def _capture_live_factory_backup(
         (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...' / "
          "'roborock-...'). You'll leave home Wi-Fi and lose internet briefly — normal."),
     ])
-    if not ctx.console.confirm("Are you connected to the robot's own Wi-Fi AP now?"):
+    # Detected rather than asked: an operator cannot see a VPN holding the address or a laptop that
+    # quietly re-joined home Wi-Fi, so a confirmation here is answered honestly and wrongly. The wait
+    # settles for "something answers", NOT for "the robot answers": the is_dreame_ap guard below is
+    # what tells the robot from a router, and it says so outright. Folding that into the wait would
+    # replace an immediate, explicit "this is your ROUTER" with a silent minutes-long poll.
+    if not offer_ap_wait(ctx, announce=False):
         abort("No problem — do steps 1-3 above, then re-run.")
 
     probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)
@@ -849,7 +867,7 @@ def update_valetudo(ctx: Context, key: str | Path | None = None) -> bool:
                      f"Wi-Fi AP at {ROBOT_AP_IP}.")
     ctx.console.action("Hold the two OUTER buttons until the robot starts its Wi-Fi AP, then join "
                        "that network from this computer.")
-    if not ctx.console.confirm("Are you connected to the selected robot's Wi-Fi AP now?"):
+    if not offer_ap_wait(ctx, announce=False):
         abort("No problem — join the robot AP, then re-run 'dreame-valetudo update-valetudo'.")
 
     probe = robot_ssh(ctx.runner, _TARGET, "true", key=key, check=False)

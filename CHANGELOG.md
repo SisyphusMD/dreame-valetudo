@@ -4,28 +4,13 @@
 
 ### Added
 
-- `dreame-valetudo rekey` authorizes your SSH key on a robot that is already rooted, over the USB
-  cable, without reflashing it. Rooting installs a key only the first time: the built image writes
-  its key to the robot's `misc` partition only when no key is there yet, and `misc` survives a root
-  flash — so a robot whose key was lost could not be reached again, and re-rooting it did not help.
-  `rekey` reads that partition off the robot, makes your key the one it accepts, and writes it back,
-  leaving the firmware, Secure Boot, and the robot's calibration untouched. Any key it is about to
-  stop accepting is named first — this is also the only way to revoke a key you have lost.
-  `--keep-existing` keeps the current keys authorized as well, and `--dry-run` prepares and checks
-  the change without writing to the robot. It asks for the USB button sequence twice, once to read
-  and once to write, so that deciding what to change never runs down the robot's power window. If a
-  write is ever interrupted, the next run offers to put back the copy it saved beforehand rather
-  than reading a half-written partition.
-
-- `dreame-valetudo rekey --over-ssh` does the same thing without the USB cable, the Breakout PCB, or
-  flashing anything. A rooted robot sets its own root password from the serial printed on the label
-  under the dustbin, so joining the robot's own Wi-Fi and typing that serial is enough to authorize
-  your key. It replaces, keeps, names every key it is about to stop accepting, and honours
-  `--dry-run` exactly as the USB route does, then proves the robot accepts the new key before the
-  tool records it. The serial is never shown as you type it, never written to the run log, and never
-  kept once the run ends. Use the USB route instead when the robot will not boot far enough to bring
-  its Wi-Fi up, or when a previous `rekey` write was interrupted.
-
+- `dreame-valetudo rekey` authorizes your SSH key on an already-rooted robot over USB, without
+  reflashing it — the only way back in when a robot's key is lost, and the only way to revoke one.
+  Firmware, Secure Boot, and calibration are untouched; `--keep-existing` keeps the current keys
+  too, and `--dry-run` prepares and checks the change without writing.
+- `dreame-valetudo rekey --over-ssh` does the same over the robot's own Wi-Fi, with no cable and
+  nothing flashed, using the serial from the label under the dustbin. Use the USB route when the
+  robot won't boot far enough for Wi-Fi, or after an interrupted `rekey` write.
 - `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
   one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
   data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up
@@ -49,6 +34,10 @@
 
 ### Changed
 
+- Choosing which SSH key reaches the robot now shows each key's type, fingerprint, and comment,
+  not just its path.
+- Steps needing the robot's Wi-Fi AP now wait for it and detect it, rather than asking whether you
+  have joined — a question that cannot see a VPN holding the robot's address.
 - Adopting a robot that was already rooted, and building an image for one, now say up front that the
   key you upload will not take effect on it and point at `rekey`. Choosing to re-root in the hope of
   regaining SSH access cost a destructive flash for nothing.
@@ -71,15 +60,16 @@
 
 ### Fixed
 
+- A download that fails because you are on the robot's AP now waits for you to rejoin your normal
+  Wi-Fi and carries on, instead of ending the run.
 - When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot
   see: a VPN routing the robot's fixed address takes it before the robot ever does, and nothing
   else about the connection looks wrong.
 - After a run pinned to one robot with `DREAME_ROBOT`, the follow-up question no longer offers to
   set up another robot the environment has already ruled out.
-- Selecting text with the mouse now returns the pane to the prompt instead of leaving it in a
-  copy mode that swallows typing — so selecting a line from a question no longer stops you
-  answering it. The text is already on the system clipboard, so nothing is lost. Wheel
-  scrolling is unaffected, and `DREAME_TMUX_MOUSE=off` still hands the mouse back entirely.
+- Selecting text with the mouse now says "copied" and returns the pane to the prompt, instead of
+  leaving it in a copy mode that swallowed your answer to the question you just selected from.
+  Wheel scrolling is unaffected, and `DREAME_TMUX_MOUSE=off` still hands the mouse back entirely.
 - Destructive work now binds the selected model, staged image, saved config, live robot, and backup
   together before writing. R2338/R2338H and L20 hardware look-alikes are matched exactly, ambiguous
   USB setups stop, and every flash response must be `OKAY`.

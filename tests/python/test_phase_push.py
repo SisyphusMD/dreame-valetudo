@@ -169,6 +169,26 @@ def _redirect(
     return rr
 
 
+def _ap_up_robot_silent() -> Callable[[tuple[str, ...]], Result]:
+    """The AP answers once, and nothing after it does.
+
+    Before the AP was detected rather than asked about, this state was reached by answering "yes,
+    I'm connected" and being wrong. It is still a real state — an AP up before the robot has
+    finished booting — so the unreachable-robot paths are still exercised. The two probes cannot be
+    told apart by argv when no key is configured (both are a bare `true`), so the FIRST one is the
+    reachability probe by construction: it is the only thing that runs before the keyed one.
+    """
+    answered: list[int] = []
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "true" and not answered:
+            answered.append(1)
+            return Result(argv, 0, "", "")
+        return Result(argv, 255, "", "ssh: connect timed out")
+
+    return responder
+
+
 def _ctx(make_ctx: CtxFactory) -> Context:
     ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
@@ -185,7 +205,7 @@ def _update_ctx(
 ) -> Context:
     ctx = make_ctx(
         robot_name=f"r2416-{CFG[:12]}",
-        confirms=confirms if confirms is not None else [True, True],
+        confirms=confirms if confirms is not None else [True],
     )
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True)
@@ -233,7 +253,7 @@ def test_saved_valetudo_versions_only_offer_proven_upgrades(
 
 
 def test_update_valetudo_noops_when_live_robot_already_has_target(make_ctx: CtxFactory) -> None:
-    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[])
 
     assert update_valetudo(ctx) is True
 
@@ -244,9 +264,9 @@ def test_update_valetudo_noops_when_live_robot_already_has_target(make_ctx: CtxF
 @pytest.mark.parametrize(
     ("live", "confirms", "recorded", "transferred"),
     [
-        (VALETUDO_OLDER, [True, True], VALETUDO_TARGET, True),
-        (VALETUDO_TARGET, [True], VALETUDO_TARGET, False),
-        (VALETUDO_NEWER, [True], VALETUDO_NEWER, False),
+        (VALETUDO_OLDER, [True], VALETUDO_TARGET, True),
+        (VALETUDO_TARGET, [], VALETUDO_TARGET, False),
+        (VALETUDO_NEWER, [], VALETUDO_NEWER, False),
     ],
 )
 def test_update_valetudo_resolves_an_adopted_marker_from_the_live_version(
@@ -270,7 +290,7 @@ def test_update_valetudo_resolves_an_adopted_marker_from_the_live_version(
 def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_is_declined(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[True, False])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[False])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
     base = ctx.runner.responder  # type: ignore[attr-defined]
 
@@ -294,7 +314,7 @@ def test_update_valetudo_leaves_an_adopted_marker_when_unreadable_live_version_i
 def test_update_valetudo_can_replace_an_unreadable_adopted_installation_deliberately(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[True, True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER, confirms=[True])
     ctx.need_robot().state_set("valetudo", ADOPTED_ROOT)
     base = ctx.runner.responder  # type: ignore[attr-defined]
 
@@ -367,7 +387,7 @@ def test_update_valetudo_does_not_publish_a_robot_side_digest_failure(
 
 
 def test_update_valetudo_refuses_to_downgrade_a_newer_live_version(make_ctx: CtxFactory) -> None:
-    ctx = _update_ctx(make_ctx, installed=VALETUDO_NEWER, confirms=[True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_NEWER, confirms=[])
     ctx.need_robot().state_set("valetudo", VALETUDO_OLDER)
 
     assert update_valetudo(ctx) is True
@@ -381,7 +401,7 @@ def test_update_valetudo_refuses_stable_to_same_release_candidate_downgrade(
     make_ctx: CtxFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[True])
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_TARGET, confirms=[])
     ctx.env["VALETUDO_VERSION"] = f"{VALETUDO_TARGET}-rc.1"
     _valetudo_bin(ctx)
     monkeypatch.setattr("dreame_valetudo.phases.push.fetch_valetudo", lambda _ctx: None)
@@ -411,10 +431,7 @@ def test_push_returns_false_when_robot_unreachable(make_ctx: CtxFactory) -> None
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
 
-    def responder(argv: tuple[str, ...]) -> Result:
-        return Result(argv, 255, "", "ssh: connect timed out")  # `true` fails
-
-    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    ctx.runner.responder = _ap_up_robot_silent()  # type: ignore[attr-defined]
     assert push(ctx) is False
     assert "Join the ROBOT's own Wi-Fi AP" in ctx.console.text()  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("valetudo")
@@ -433,12 +450,11 @@ def test_push_uses_the_selected_robots_key_not_the_later_workspace_choice(
     ctx.need_robot().state_set("sshkey", str(first))
     (ctx.ws.base / "sshkey.path").write_text(str(second) + "\n")
 
-    def unreachable(argv: tuple[str, ...]) -> Result:
-        return Result(argv, 255, "", "ssh: connect timed out")
-
-    ctx.runner.responder = unreachable  # type: ignore[attr-defined]
+    ctx.runner.responder = _ap_up_robot_silent()  # type: ignore[attr-defined]
     assert push(ctx) is False
-    probe = next(c for c in ctx.runner.calls if c[-1] == "true")  # type: ignore[attr-defined]
+    # The KEYED probe, not the unauthenticated AP one, which deliberately carries no identity.
+    probe = next(c for c in ctx.runner.calls  # type: ignore[attr-defined]
+                 if c[-1] == "true" and "-i" in c)
     assert str(first) in probe
     assert str(second) not in probe
 
@@ -453,11 +469,13 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
         {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
 
+    _silent = _ap_up_robot_silent()
+
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
             Path(argv[argv.index("-o") + 1]).write_bytes(b"valetudo")
             return Result(argv, 0, "", "")
-        return Result(argv, 255, "", "ssh: connect timed out")
+        return _silent(argv)
 
     ctx.runner.responder = responder  # type: ignore[attr-defined]
     assert push(ctx) is False
@@ -487,6 +505,60 @@ def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
     assert not any(ctx.profile.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
+def test_push_retries_the_download_after_leaving_the_robot_ap(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Being on the robot's AP is the ordinary reason this download fails, and it must not end the
+    run: everything after it needs that same AP, so the round trip is part of the run."""
+    ctx = _ctx(make_ctx)
+    monkeypatch.setattr(
+        fetch_mod, "VALETUDO_SHA256",
+        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+    )
+    robot = _text(did="12345")
+    ctx.runner.redirect_responder = _redirect()
+    downloads: list[int] = []
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl" and "-o" in argv:
+            downloads.append(1)
+            if len(downloads) == 1:
+                return Result(argv, 6, "", "Could not resolve host")  # still on the robot's AP
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"valetudo")
+            return Result(argv, 0, "", "")
+        return robot(argv)  # type: ignore[operator]
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    assert push(ctx) is True  # the single scripted confirm answers "Back on your normal Wi-Fi?"
+
+    assert len(downloads) >= 2, "the download was never retried after rejoining"
+    assert ctx.valetudo_bin.read_bytes() == b"valetudo"
+    assert "no internet" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_push_does_not_turn_a_declined_download_into_a_network_problem(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UserAbort subclasses Die, so the retry-on-AP catch sits directly in its path.
+
+    Declining to install a binary whose digest could not be verified is a deliberate, successful
+    stop. Reported as a download failure it would send the operator to change networks over a
+    choice they made on purpose.
+    """
+    ctx = _ctx(make_ctx)
+    monkeypatch.setattr(
+        fetch_mod, "fetch_valetudo",
+        lambda _ctx: (_ for _ in ()).throw(UserAbort("left unverified on purpose")),
+    )
+    monkeypatch.setattr(push_mod, "fetch_valetudo", fetch_mod.fetch_valetudo)
+
+    with pytest.raises(UserAbort, match="left unverified on purpose"):
+        push(ctx)
+
+    assert "no internet" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize(("missing", "cached"), [("curl", False), ("ssh", True)])
 def test_push_names_a_missing_required_host_tool_before_running_commands(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, missing: str, cached: bool,
@@ -514,9 +586,7 @@ def test_push_warns_when_a_cached_binary_cannot_be_reverified_without_curl(
         "dreame_valetudo.phases.doctor.shutil.which",
         lambda tool: None if tool == "curl" else f"/usr/bin/{tool}",
     )
-    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
-        argv, 255, "", "ssh: connect timed out"
-    )
+    ctx.runner.responder = _ap_up_robot_silent()  # type: ignore[attr-defined]
 
     assert push(ctx) is False
     assert "Missing external tools: curl" in ctx.console.text()  # type: ignore[attr-defined]
@@ -632,7 +702,7 @@ def test_push_requires_physical_confirmation_when_the_live_model_is_missing(
 def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_declined(
     make_ctx: CtxFactory,
 ) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True, False])
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[False])
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
     _valetudo_bin(ctx)
@@ -1047,7 +1117,8 @@ def test_capture_issues_exactly_the_pinned_remote_commands(make_ctx: CtxFactory)
     start = next(i for i, call in enumerate(calls) if call[-1] == "true")
     end = next(i for i, call in enumerate(calls) if "by-name/misc" in call[-1])
     assert [call[-1] for call in calls[start:end + 1]] == [
-        "true",
+        "true",  # unauthenticated: is anything answering at the AP address yet
+        "true",  # and now with the key: is the ROBOT answering
         "test -d /mnt/private/ULI/factory",
         (
             "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
