@@ -334,7 +334,7 @@ def test_selecting_text_returns_the_pane_to_the_prompt(
     binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
     drags = [o for o in binds if "MouseDragEnd1Pane" in o]
     assert drags, "nothing binds the end of a drag"
-    assert all("copy-pipe-and-cancel" in o for o in drags)
+    assert all("copy-pipe-and-cancel" in o[-1] for o in drags)
     assert not any("no-clear" in item for o in drags for item in o)
 
 
@@ -346,7 +346,27 @@ def test_the_no_clipboard_fallback_still_keeps_the_selection(
     monkeypatch.setattr("dreame_valetudo.session.shutil.which", lambda *_a, **_k: None)
     binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
     drags = [o for o in binds if "MouseDragEnd1Pane" in o]
-    assert all("copy-selection-no-clear" in o for o in drags)
+    assert all("copy-selection-no-clear" in o[-1] for o in drags)
+
+
+def test_the_copy_binding_is_handed_over_as_one_word(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verified against the tmux the .pkg ships: `;` as its own argv word is silently swallowed.
+
+    tmux reads it as a command SEPARATOR, so `display-message` becomes a second top-level command
+    that runs once at bind time and never becomes part of the binding. It reports no error, and
+    `list-keys` then shows a key bound to the copy alone — the announcement simply gone. The whole
+    sequence therefore has to arrive as a single argument.
+    """
+    monkeypatch.setattr("dreame_valetudo.session.sys.platform", "darwin")
+    drags = [o for o in session_options(_SESSION, colour=True)
+             if o[0] == "bind-key" and "MouseDragEnd1Pane" in o]
+    assert drags
+    for option in drags:
+        assert len(option) == 5, "the command must be one argument, not several"
+        assert ";" not in option[:-1], "a bare ';' argument would split the binding in two"
+        assert " ; " in option[-1]
 
 
 def test_mouse_capture_stays_on_by_default() -> None:
@@ -371,9 +391,11 @@ def test_mouse_selection_copies_to_the_macos_clipboard(
 ) -> None:
     monkeypatch.setattr("dreame_valetudo.session.sys.platform", "darwin")
     binds = [o for o in session_options(_SESSION, colour=True) if o[0] == "bind-key"]
+    # One argv word, not several: `;` passed as its own word becomes a second TOP-LEVEL command
+    # that runs at bind time and never reaches the binding, silently leaving the copy unannounced.
     assert binds == [
-        ["bind-key", "-T", table, "MouseDragEnd1Pane", "send-keys", "-X",
-         "copy-pipe-and-cancel", "pbcopy"]
+        ["bind-key", "-T", table, "MouseDragEnd1Pane",
+         'send-keys -X "copy-pipe-and-cancel" "pbcopy" ; display-message "copied"']
         for table in ("copy-mode", "copy-mode-vi")
     ] + [
         ["bind-key", "-T", table, "MouseDown1Pane", "send-keys", "-X",
@@ -390,13 +412,19 @@ def test_mouse_selection_prefers_wayland_then_xclip(
     monkeypatch.setattr("dreame_valetudo.session.shutil.which", found.get)
     binds = [o for o in session_options(_SESSION, colour=True)
              if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
-    assert all(o[-2:] == ["copy-pipe-and-cancel", "/bin/wl-copy"] for o in binds)
+    assert all(
+        o[-1] == 'send-keys -X "copy-pipe-and-cancel" "/bin/wl-copy" ; display-message "copied"'
+        for o in binds
+    )
 
     found.pop("wl-copy")
     binds = [o for o in session_options(_SESSION, colour=True)
              if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
-    assert all(o[-2:] == ["copy-pipe-and-cancel", "/bin/xclip -selection clipboard"]
-               for o in binds)
+    assert all(
+        o[-1] == ('send-keys -X "copy-pipe-and-cancel" "/bin/xclip -selection clipboard" ; '
+                  'display-message "copied"')
+        for o in binds
+    )
 
 
 def test_mouse_selection_survives_without_a_clipboard_helper(
@@ -406,7 +434,10 @@ def test_mouse_selection_survives_without_a_clipboard_helper(
     monkeypatch.setattr("dreame_valetudo.session.shutil.which", lambda _name: None)
     binds = [o for o in session_options(_SESSION, colour=True)
              if o[:2] == ["bind-key", "-T"] and o[3] == "MouseDragEnd1Pane"]
-    assert all(o[-1] == "copy-selection-no-clear" for o in binds)
+    assert all(
+        o[-1] == 'send-keys -X "copy-selection-no-clear" ; display-message "copied"'
+        for o in binds
+    )
 
 
 def test_a_new_session_is_dressed_before_the_user_sees_it() -> None:
