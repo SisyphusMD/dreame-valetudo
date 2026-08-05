@@ -28,7 +28,7 @@ from typing import Literal
 
 from . import __version__
 from .console import Die, UserAbort, die
-from .constants import ADOPTED_ROOT, RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES
+from .constants import ADOPTED_ROOT, RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, ROBOT_AP_IP
 from .context import Context
 from .log import scrub
 from .phases.doctor import _sunxi_ready, doctor
@@ -43,6 +43,8 @@ from .phases.push import (
     valetudo_update_available,
 )
 from .phases.recon import recon
+from .phases.rekey import _MISC_KEYS as MISC_AUTHORIZED_KEYS
+from .phases.rekey import rekey
 from .phases.restore import restore, stock_restore_kit_valid
 from .phases.root import root
 from .profiles import SUPPORTED_MODELS, load_profile
@@ -53,7 +55,7 @@ from .recovery import (
     recovery_source_records,
 )
 from .run import RunError
-from .ssh import resolve_sshkey
+from .ssh import ap_reachable, is_dreame_ap, resolve_sshkey, robot_ssh
 from .util import parse_config, same_robot_config
 from .workspace import (
     RECOVERY_BACKUP_ZIP,
@@ -209,6 +211,25 @@ SCENARIOS: tuple[Scenario, ...] = (
         "ssh-wrong-key", "H2", "fail explicit wrong-key authentication without fallback", True,
         expected="safe-stop", stop_contains=("SSH authentication failed",),
     ),
+    Scenario(
+        "rekey-dry-run", "H1", "preview an authorized-key change that writes nothing", True,
+    ),
+    Scenario(
+        "rekey-over-ssh", "H2", "authorize an SSH key over the robot's AP without flashing", True,
+    ),
+    Scenario(
+        # H2, not H1: after the wrong serial is rejected the same run retries with the correct one
+        # and rewrites authorized_keys, so this is rooted maintenance, not a read-only probe.
+        "rekey-wrong-serial", "H2", "reject a mistyped serial, then authorize on the retry", True,
+        "Did this run first reject a deliberately wrong serial, then accept the correct one?",
+    ),
+    Scenario(
+        "rekey-over-usb", "H3", "authorize an SSH key by rewriting misc over fastboot", True,
+        "Did the robot reboot successfully after its misc partition was rewritten?",
+    ),
+    # No hardware scenario interrupts the misc write to exercise its recovery. This guide forbids
+    # unplugging USB mid-write, and misc carries this unit's camera and lidar calibration. The
+    # recovery path is proved off-hardware in tests/python/test_phase_rekey.py instead.
     Scenario("already-rooted-recon", "H1", "preserve pre-root recovery on forced recon", True),
     Scenario("already-rooted-root", "H3", "skip an already-rooted robot without force", True),
     Scenario(
@@ -225,8 +246,39 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("downgrade-readonly", "H0", "older release refuses a newer workspace unchanged"),
 )
 
+# A release rarely changes everything, and a campaign that can never report complete stops being
+# read at all. A suite is a view over SCENARIOS, never campaign state: the same campaign can be
+# planned and reported under any suite, and a report with no suite still demands the whole matrix.
+SUITES: Mapping[str, tuple[str, ...]] = {
+    "smoke": ("host-smoke",),
+    "key-recovery": (
+        "host-smoke", "rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial",
+        "rekey-over-usb",
+    ),
+    "lifecycle": (
+        "host-smoke", "stock-recon", "first-root", "post-root-install", "rooted-resume",
+        "diagnose", "valetudo-update",
+    ),
+    "restore": (
+        "host-smoke", "stock-restore", "reroot-after-restore", "wrong-robot-restore",
+        "decline-restore", "terminal-loss-restore", "terminal-loss-after-restore-reboot",
+        "restore-returns-to-fel",
+    ),
+}
+
+_WIFI_ONLY_SCENARIOS = frozenset({"rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial"})
+
+_HOST_ONLY_SUITES = frozenset(
+    name for name, members in SUITES.items() if set(members) <= {"host-smoke"}
+)
+
 _SCENARIO_BY_KEY = {scenario.key: scenario for scenario in SCENARIOS}
 _REPORT_SCHEMA = 2
+# Additive: an older report simply carries no fatal message, and stays readable as history.
+_MAX_FATAL_MESSAGE = 500
+_PRIVATE_ROBOT = "<private-robot-name>"
+_AP_IDENTITY_POLLS = 15
+_AP_IDENTITY_SECONDS = 3.0
 _CAMPAIGN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _METADATA_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
 _ROBOT_SLOT_RE = re.compile(r"robot-[0-9a-f]{12}")
@@ -235,6 +287,9 @@ _DANGEROUS_MARKERS = frozenset({"flash-attempt", "rooted", "restore-attempt", "r
 _RECOVERY_REQUIRED = frozenset({
     "recon-repeat", "first-root", "wrong-robot-root", "decline-flash",
     "terminal-loss-root", "already-rooted-recon", "reroot-after-restore",
+    # misc carries this unit's camera and lidar calibration; nothing may rewrite it while the
+    # only intact record of the robot's factory state is missing or damaged.
+    "rekey-over-usb",
 })
 _RECOVERY_OUTPUT = frozenset({
     "stock-recon", "legacy-root-adoption", "recon-repeat", "fel-wrong-timing", "terminal-loss-prompt",
@@ -256,7 +311,7 @@ _USB_STACK_SCENARIOS = frozenset({
     "fel-not-entered", "fel-wrong-timing", "usb-drop-recon", "ctrl-c-recon",
     "terminal-loss-prompt", "wrong-model-root", "wrong-robot-root", "decline-flash",
     "terminal-loss-root", "wrong-robot-restore", "decline-restore", "terminal-loss-restore",
-    "already-rooted-recon", "already-rooted-root",
+    "already-rooted-recon", "already-rooted-root", "rekey-over-usb",
 })
 _IDENTITY_ADOPTING_RECON = frozenset({"stock-recon", "legacy-root-adoption"})
 
@@ -280,6 +335,211 @@ class Snapshot:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _private_labels(ctx: Context) -> list[str]:
+    """The operator's own names for this robot, longest first so a prefix cannot mask a longer one."""
+    labels = {ctx.env.get("DREAME_ROBOT")}
+    if ctx.robot is not None:
+        labels.add(ctx.robot.work.name)
+    return sorted((label for label in labels if label), key=len, reverse=True)
+
+
+def _fatal_message(exc: BaseException, ctx: Context) -> str:
+    """The message a run died on, scrubbed, short enough to sit in a shared report.
+
+    A campaign that records only the exception type cannot distinguish a defect from an unplugged
+    robot, so its verdicts are unusable exactly when they matter. scrub() removes the config,
+    serial, keys, and password a phase legitimately names in its own refusal, but it rewrites only
+    the home prefix of a path — the workspace slug is the operator's own label for the robot and
+    survives inside any path an error names. Folded to one line first: scrub() redacts per line.
+    """
+    text = " ".join(str(exc).split())
+    if not text:
+        return ""
+    scrubbed = scrub(text, ctx.home)
+    for label in _private_labels(ctx):
+        escaped = re.escape(label)
+        scrubbed = re.sub(rf"(?<=/){escaped}(?=/|$)", _PRIVATE_ROBOT, scrubbed)
+        scrubbed = scrubbed.replace(f"'{label}'", f"'{_PRIVATE_ROBOT}'")
+    if len(scrubbed) <= _MAX_FATAL_MESSAGE:
+        return scrubbed
+    return scrubbed[:_MAX_FATAL_MESSAGE - 1] + "…"
+
+
+def _is_robot_ap(ctx: Context, key: Path, *, wait_for_mount: bool) -> bool:
+    """Whether the AP endpoint is the robot itself rather than a router that answers the address.
+
+    /mnt/private is not mounted for the first seconds after a reboot, so a single probe answers
+    "not the robot" about a robot that has simply not finished booting. Only a check that follows
+    a reboot pays for the wait.
+    """
+    target = f"root@{ROBOT_AP_IP}"
+    polls = _AP_IDENTITY_POLLS if wait_for_mount else 1
+    for attempt in range(polls):
+        if is_dreame_ap(ctx.runner, target, key):
+            return True
+        if attempt + 1 < polls:
+            ctx.sleep(_AP_IDENTITY_SECONDS)
+    return False
+
+
+def _robot_authorized_keys(ctx: Context, key: Path | None) -> str | None:
+    """The robot's own copy of its authorized keys, or None when it cannot be read.
+
+    Unreadable is the normal state of the very lockout this phase exists to fix, so it is an
+    answer, not an error. Read only once the endpoint has proved it is the robot: on a home
+    network this address is usually the router, and router data as a baseline would fail a
+    perfectly good qualification.
+    """
+    if key is None or not key.is_file():
+        return None
+    if not _is_robot_ap(ctx, key, wait_for_mount=False):
+        return None
+    result = robot_ssh(
+        ctx.runner, f"root@{ROBOT_AP_IP}", f"cat {MISC_AUTHORIZED_KEYS}", key=key, check=False,
+    )
+    return result.stdout if result.ok else None
+
+
+def _resolved_key(ctx: Context) -> Path | None:
+    """The key this workspace authenticates with now.
+
+    Deliberately not gated on the sshkey-authorized marker: only rekey writes that, so a robot
+    rooted normally has none while already carrying the operator's key from the image — the case
+    where reselecting that key authorizes nothing and must not read as a pass.
+    """
+    if ctx.robot is None:
+        return None
+    try:
+        key = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, ctx.robot)
+    except Die:
+        return None
+    return key if key.is_file() else None
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyBaseline:
+    """What the robot accepted before a rekey scenario ran, as far as it could be established."""
+    fingerprint: bytes | None
+    authorized_keys: str | None
+    ap_answered: bool
+
+
+def _key_baseline(ctx: Context) -> _KeyBaseline:
+    """What the robot demonstrably accepted before the run.
+
+    The recorded path can hold material the robot has never seen: a key regenerated in place is
+    exactly the lockout this phase exists to fix. So a fingerprint means "already authorized" only
+    when the robot answers to that key right now — otherwise re-authorizing it is the recovery, not
+    a no-op, and refusing it would fail the scenario for succeeding.
+    """
+    answered = ap_reachable(ctx)
+    current = _resolved_key(ctx) if answered else None
+    accepted = _robot_authorized_keys(ctx, current)
+    if current is None or accepted is None:
+        return _KeyBaseline(None, accepted, answered)
+    try:
+        fingerprint = _ssh_public_fingerprint(ctx, current, "already-authorized")
+    except Die:
+        fingerprint = None
+    return _KeyBaseline(fingerprint, accepted, answered)
+
+
+def _require_ap_baseline(ctx: Context) -> _KeyBaseline:
+    """The baseline for a route whose transport IS the AP, refusing to write without one.
+
+    Taken before the phase asks the operator to join, so on a bench that has not joined yet both
+    values come back unknown and any working key afterwards would read as newly authorized. An
+    unanswered address means the baseline is missing, not that the robot refused: a refusal proves
+    a server is there, and that is a genuine lockout whose empty baseline is the real answer.
+    """
+    baseline = _key_baseline(ctx)
+    if not baseline.ap_answered:
+        raise Die(
+            "Bench check failed before writing anything: nothing answered at the robot's AP "
+            "address, so there is no record of which keys it accepted beforehand and a no-op "
+            "could not be told from a real authorization. Join the robot's own Wi-Fi AP first, "
+            "then re-run this scenario."
+        )
+    return baseline
+
+
+def _confirm_authorized_key(ctx: Context, before: _KeyBaseline) -> dict[str, object]:
+    """Prove the robot accepts a key it did not accept before, rather than that a marker exists.
+
+    The USB route records the marker BEFORE it checks, deliberately: once the write reports OKAY
+    the robot does accept the key whether or not the later AP probe succeeds, and a workspace still
+    naming the old key would send every later phase at the wrong one. So the marker proves a write
+    was attempted, never that the robot honours it — an H3 flash the robot rejected would otherwise
+    read as a pass, and a run that bailed out early inherits the previous scenario's marker.
+
+    Compared by public-key identity, never by the marker's path: the same key reached by another
+    path is not a new authorization, and new key material written at the same path is.
+
+    Probed directly rather than by reusing the phase's own check, which would make the operator
+    re-establish the AP a second time.
+    """
+    robot = ctx.need_robot()
+    if not robot.state_get("sshkey-authorized"):
+        raise Die("Bench check failed: no key was recorded as authorized on the robot.")
+    key = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, robot)
+    after = _ssh_public_fingerprint(ctx, key, "newly-authorized")
+    if before.fingerprint is not None and hmac.compare_digest(before.fingerprint, after):
+        raise Die(
+            "Bench check failed: the robot already accepted this exact key before the run, so "
+            "nothing new was authorized. Re-run the scenario choosing a different key."
+        )
+    target = f"root@{ROBOT_AP_IP}"
+    if not _is_robot_ap(ctx, key, wait_for_mount=True):
+        probe = robot_ssh(ctx.runner, target, "true", key=key, check=False)
+        if probe.ok:
+            raise Die(
+                f"Bench check failed: {ROBOT_AP_IP} accepted the key but is not the robot — on a "
+                "home network that address is usually the router. Join the robot's own AP."
+            )
+        detail = " ".join(probe.stderr.split())[:160]
+        raise Die(
+            "Bench check failed: the robot did not accept the key this run authorized "
+            f"({detail}). A recorded write is not proof the robot honours it."
+        )
+    # A robot rooted by this tool already carries the operator's key from the image, so the
+    # workspace marker is absent and the fingerprint above proves nothing. Re-running with that
+    # same key is a no-op the phase performs silently and the AP probe happily confirms.
+    written = _robot_authorized_keys(ctx, key)
+    if (
+        before.authorized_keys is not None
+        and written is not None
+        and before.authorized_keys == written
+    ):
+        raise Die(
+            "Bench check failed: the robot's authorized keys are byte-identical to before the "
+            "run, so nothing was authorized. Re-run choosing a key the robot does not accept yet."
+        )
+    return {
+        "authorized_key_confirmed_over_ap": True,
+        # False only when the robot's keys could not be read beforehand — the lockout this phase
+        # exists to fix. There, a key that works now and did not before is itself the proof.
+        "prior_authorized_keys_compared": before.authorized_keys is not None,
+    }
+
+
+def _failure_detail(entry: Mapping[str, object]) -> list[str]:
+    """Why one recorded scenario did not pass, in the order that explains it best.
+
+    A failed check names the invariant that broke; the fatal message names why the run never
+    reached one. An entry carrying neither was recorded before messages were kept.
+    """
+    checks = entry.get("checks")
+    if isinstance(checks, list):
+        named = [check for check in checks if isinstance(check, str) and check]
+        if named:
+            return named
+    for field in ("failure_message", "stop_message"):
+        recorded = entry.get(field)
+        if isinstance(recorded, str) and recorded:
+            return [recorded]
+    return []
 
 
 def _scenario(key: str) -> Scenario:
@@ -310,19 +570,23 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
 
     start = 2 if scenario is not None else 1
     allowed = {
-        "plan": {"campaign"},
+        "plan": {"campaign", "suite"},
         "run": {"campaign", "allow-destructive"},
         "record": {"campaign", "model", "robot", "note"},
         "waive": {"campaign", "model", "robot", "reason", "risk", "accepted-by"},
-        "report": {"campaign"},
+        "report": {"campaign", "suite"},
     }[action]
     positional, options = _options(args[start:], allowed)
+    _suite_scenarios(options)
     campaign = _campaign_name(ctx, options)
     report = _preflight_report(ctx, campaign)
     if action == "plan":
         if positional:
             raise Die("Unexpected positional arguments after 'bench plan'.")
-        return True
+        # A host-only suite has nothing to ask a robot. Forcing selection would run the
+        # first-robot/model prompts and bind the campaign for a plan that never leaves this machine.
+        _, planned = _suite_scenarios(options)
+        return any(item.key != "host-smoke" for item in planned)
     if action == "run":
         if positional:
             raise Die("Unexpected positional arguments after the bench scenario.")
@@ -364,6 +628,28 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
 
 def bench_needs_robot(ctx: Context, args: Sequence[str]) -> bool:
     return validate_bench_args(ctx, args)
+
+
+def bench_is_model_independent(args: Sequence[str]) -> bool:
+    """Whether this bench invocation is about no model at all.
+
+    Answered before a Context exists, so a stale or mistyped DREAME_MODEL cannot refuse a command
+    that never consults the model table. Parsed leniently: a malformed invocation is rejected later
+    by validate_bench_args, with a better message than "Unknown model key".
+    """
+    action = args[0] if args else None
+    if action in {"list", "record", "report", "waive"}:
+        return True
+    if action == "run":
+        return len(args) >= 2 and args[1] == "host-smoke"
+    if action != "plan":
+        return False
+    for index, item in enumerate(args):
+        if item.startswith("--suite="):
+            return item.removeprefix("--suite=") in _HOST_ONLY_SUITES
+        if item == "--suite" and index + 1 < len(args):
+            return args[index + 1] in _HOST_ONLY_SUITES
+    return False
 
 
 def _ssh_public_fingerprint(ctx: Context, key: Path, role: str) -> bytes:
@@ -416,6 +702,10 @@ def bench_drives_hardware(args: Sequence[str]) -> bool:
         and scenario is not None
         and scenario.automated
         and scenario.key != "host-smoke"
+        # These reach the robot over its Wi-Fi AP and never open the USB device, exactly as
+        # `rekey --over-ssh` does. Gating them behind the Linux udev rule would refuse the one
+        # route someone locked out of their robot can still take.
+        and scenario.key not in _WIFI_ONLY_SCENARIOS
     )
 
 
@@ -449,6 +739,19 @@ def _options(args: Sequence[str], allowed: set[str]) -> tuple[list[str], dict[st
         options[name] = args[index + 1]
         index += 2
     return positional, options
+
+
+def _suite_scenarios(
+    options: Mapping[str, str | bool],
+) -> tuple[str | None, tuple[Scenario, ...]]:
+    """The scenarios a `--suite` selects, or every scenario when none was named."""
+    raw = options.get("suite")
+    if raw is None:
+        return None, SCENARIOS
+    if not isinstance(raw, str) or raw not in SUITES:
+        die(f"Unknown bench suite '{raw}'. Available: {', '.join(sorted(SUITES))}.")
+    members = SUITES[raw]
+    return raw, tuple(scenario for scenario in SCENARIOS if scenario.key in members)
 
 
 def _campaign_name(ctx: Context, options: Mapping[str, str | bool]) -> str:
@@ -724,6 +1027,12 @@ def _validate_result_entry(entry: object) -> None:
         )
     ):
         die(f"Hardware-bench result for {key} has an invalid safety, result, or evidence schema.")
+    for field in ("failure_message", "stop_message"):
+        recorded = entry.get(field)
+        if recorded is not None and (
+            not isinstance(recorded, str) or len(recorded) > _MAX_FATAL_MESSAGE
+        ):
+            die(f"Hardware-bench result for {key} has an invalid {field}.")
     observation_host = entry.get("observation_host")
     if observation_host is not None and (
         not isinstance(observation_host, dict)
@@ -1398,6 +1707,46 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
             failures.append("no new identity-bound manifested factory backup was published")
         if after.partial_backups:
             failures.append("an incomplete backup directory remains")
+    if scenario.key == "rekey-dry-run" and before.markers != after.markers:
+        failures.append("the preview changed saved robot state")
+    if scenario.key in {"rekey-over-ssh", "rekey-wrong-serial", "rekey-over-usb"}:
+        # That the key is NEW, and that the robot actually honours it, are proved by public-key
+        # identity in _confirm_authorized_key. Marker text cannot decide either: the same key
+        # reached by another path rewrites it, and rotating key material in place does not.
+        if "sshkey-authorized" not in markers:
+            failures.append("no authorized-key marker was recorded")
+        elif (
+            scenario.key == "rekey-over-usb"
+            and before.markers.get("sshkey-authorized") == after.markers.get("sshkey-authorized")
+        ):
+            # A real flash rewrites this marker every time. Unchanged means the phase took a branch
+            # that wrote nothing, and an earlier SSH scenario in the sequence leaves the marker
+            # behind for the AP probe to confirm — a pass with no partition rewrite at all.
+            # Required only here: the destructive route is the one that must not be assumed.
+            #
+            # The marker is "<key path> config=<config>", so re-authorizing regenerated material at
+            # the SAME path on the same robot writes identical text and is refused despite having
+            # flashed. Deliberate: on the one scenario that rewrites a partition carrying this
+            # unit's calibration, a re-run costs a bench cycle and a wrong pass costs the evidence.
+            failures.append(
+                "the authorized-key marker is unchanged, so no misc write happened — if the key "
+                "was regenerated at its existing path, re-run choosing a different path"
+            )
+        if "rekey-attempt" in markers:
+            failures.append("an uncertain rekey-attempt marker remains")
+    if scenario.key in {
+        "rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial", "rekey-over-usb",
+    }:
+        # Authorizing a key must never be a route to reinstalling, restoring, or re-rooting: the
+        # SSH route writes one file and the USB route writes only misc.
+        changed_dangerous = sorted(
+            name for name in _DANGEROUS_MARKERS
+            if before.markers.get(name) != after.markers.get(name)
+        )
+        if changed_dangerous:
+            failures.append("dangerous state changed: " + ", ".join(changed_dangerous))
+        if before.markers.get("valetudo") != after.markers.get("valetudo"):
+            failures.append("the key change altered Valetudo completion state")
     if scenario.key in {
         "rooted-resume", "diagnose", "implementation-fix", "valetudo-update",
     }:
@@ -1485,6 +1834,10 @@ def _starting_failures(
         "ssh-wrong-key": frozenset({"rooted"}),
         "already-rooted-recon": frozenset({"recon", "rooted"}),
         "already-rooted-root": frozenset({"rooted"}),
+        "rekey-dry-run": frozenset({"rooted"}),
+        "rekey-over-ssh": frozenset({"rooted"}),
+        "rekey-wrong-serial": frozenset({"rooted"}),
+        "rekey-over-usb": frozenset({"rooted"}),
         "offline-cached-binary": frozenset({"rooted"}),
         "multi-robot-selection": frozenset({"rooted"}),
     }
@@ -1516,6 +1869,12 @@ def _starting_failures(
         "ssh-wrong-key": frozenset({"valetudo", "restored-stock"}),
         "offline-cached-binary": frozenset({"valetudo", "restored-stock"}),
         "multi-robot-selection": frozenset({"valetudo", "restored-stock"}),
+        # The SSH route refuses outright while a USB write is unaccounted for, because writing one
+        # file into a partly-written misc neither repairs it nor puts the pristine copy back.
+        "rekey-dry-run": frozenset({"rekey-attempt", "restored-stock"}),
+        "rekey-over-ssh": frozenset({"rekey-attempt", "restored-stock"}),
+        "rekey-wrong-serial": frozenset({"rekey-attempt", "restored-stock"}),
+        "rekey-over-usb": frozenset({"rekey-attempt", "restored-stock"}),
     }
     failures.extend(
         f"required {marker} completion marker is absent"
@@ -1707,6 +2066,20 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
             raise Die("Valetudo installation did not complete.")
     elif scenario.key == "implementation-fix":
         fix_impl(ctx)
+    elif scenario.key == "rekey-dry-run":
+        rekey(ctx, over_ssh=True, dry_run=True)
+        return {"preview_only": True}
+    elif scenario.key in {"rekey-over-ssh", "rekey-wrong-serial"}:
+        previously_authorized = _require_ap_baseline(ctx)
+        rekey(ctx, over_ssh=True)
+        return {
+            "key_authorized_without_flashing": True,
+            **_confirm_authorized_key(ctx, previously_authorized),
+        }
+    elif scenario.key == "rekey-over-usb":
+        previously_authorized = _key_baseline(ctx)
+        rekey(ctx)
+        return _confirm_authorized_key(ctx, previously_authorized)
     elif scenario.key == "rooted-resume":
         auto_fn(ctx, ())
     elif scenario.key == "wifi-wrong-network":
@@ -1886,6 +2259,7 @@ def _resume_observation(
             "observation_confirmed": False,
             "observation_host": _host_metadata(ctx),
         })
+        failed["checks"] = [f"the operator did not observe: {scenario.observation}"]
         _append(report, "results", failed)
         _write_report(path, report)
         ctx.console.warn("The required physical condition was not observed. The scenario failed.")
@@ -1938,6 +2312,7 @@ def _record_observation(
             "observation_resumed": False,
             "observation_confirmed": False,
         })
+        failed["checks"] = [f"the operator did not observe: {scenario.observation}"]
         _append(report, "results", failed)
         _write_report(path, report)
         ctx.console.warn("The required physical condition was not observed. The scenario failed.")
@@ -2103,6 +2478,7 @@ def _run(
                 "method": "automated",
                 "result": result,
                 "expected_stop": type(exc).__name__,
+                "stop_message": _fatal_message(exc, ctx),
                 "checks": failures,
                 "evidence": _evidence(before, after),
             }
@@ -2131,6 +2507,7 @@ def _run(
             "method": "automated",
             "result": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
             "failure_type": type(exc).__name__,
+            "failure_message": _fatal_message(exc, ctx),
             "checks": [],
             "evidence": _evidence(before, after),
         })
@@ -2283,34 +2660,43 @@ def _waive(
     return 0
 
 
-def _report(ctx: Context, campaign: str) -> int:
+def _report(
+    ctx: Context, campaign: str, suite: str | None, scenarios: Sequence[Scenario],
+) -> int:
     path, report = _load_report(ctx, campaign)
     _write_report(path, report)
     results = report["results"]
     waivers = report["waivers"]
     assert isinstance(results, list) and isinstance(waivers, list)
-    latest: dict[str, str] = {}
+    latest: dict[str, Mapping[str, object]] = {}
     for entry in results:
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str):
-            latest[entry["scenario"]] = str(entry.get("result"))
+            latest[entry["scenario"]] = entry
     waived = {
         entry["scenario"] for entry in waivers
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
     }
     missing: list[str] = []
     metadata_missing: list[str] = []
+    # A host-only suite never reaches a robot, so demanding a robot binding would make it
+    # permanently incomplete for a fact about itself it can never establish.
+    reaches_robot = any(scenario.key != "host-smoke" for scenario in scenarios)
     if report.get("channel") == "unspecified":
         metadata_missing.append("install channel")
-    if report.get("model_key") is None:
+    if report.get("model_key") is None and reaches_robot:
         metadata_missing.append("model binding")
-    if report.get("robot") is None:
+    if report.get("robot") is None and reaches_robot:
         metadata_missing.append("physical robot binding")
+    scope = f"Hardware campaign: {campaign}" if suite is None else (
+        f"Hardware campaign: {campaign} · suite {suite}"
+    )
     ctx.console.say(
-        f"Hardware campaign: {campaign} ({report.get('build')}, {report.get('channel')}, "
+        f"{scope} ({report.get('build')}, {report.get('channel')}, "
         f"model={report.get('model_key') or 'not bound'})"
     )
-    for scenario in SCENARIOS:
-        state = latest.get(scenario.key)
+    for scenario in scenarios:
+        entry = latest.get(scenario.key)
+        state = str(entry.get("result")) if entry is not None else None
         if state == "passed":
             label = "PASS"
         elif state:
@@ -2324,27 +2710,40 @@ def _report(ctx: Context, campaign: str) -> int:
         else:
             label = "OPTIONAL"
         ctx.console.info(f"  {label:<11} {scenario.key:<24} {scenario.safety}")
+        if entry is not None and state not in {None, "passed"}:
+            for line in _failure_detail(entry):
+                ctx.console.detail(f"    {line}")
     ctx.console.info(f"Shareable report (contains no robot identity or credentials): {path}")
     if metadata_missing:
         ctx.console.warn("Campaign metadata is incomplete: " + ", ".join(metadata_missing) + ".")
+    subject = "Campaign" if suite is None else f"Suite '{suite}'"
     if missing:
-        ctx.console.warn(f"Campaign is incomplete: {len(missing)} scenario(s) remain.")
+        ctx.console.warn(f"{subject} is incomplete: {len(missing)} scenario(s) remain.")
     if missing or metadata_missing:
         return 1
-    ctx.console.say("Campaign complete: every scenario passed or has an explicit waiver.")
+    if suite is None:
+        ctx.console.say("Campaign complete: every scenario passed or has an explicit waiver.")
+    else:
+        ctx.console.say(
+            f"Suite '{suite}' complete: every scenario in it passed or has an explicit waiver. "
+            "The rest of the campaign is untouched — run 'bench report' with no suite for that."
+        )
     return 0
 
 
-def _plan(ctx: Context, campaign: str) -> int:
+def _plan(
+    ctx: Context, campaign: str, suite: str | None, scenarios: Sequence[Scenario],
+) -> int:
     path, report = _load_report(ctx, campaign)
-    _bind_report_model(report, ctx.profile.key)
-    _bind_report_robot(report, _robot_slot(ctx, campaign))
+    if any(scenario.key != "host-smoke" for scenario in scenarios):
+        _bind_report_model(report, ctx.profile.key)
+        _bind_report_robot(report, _robot_slot(ctx, campaign))
     _write_report(path, report)
     results = report["results"]
     waivers = report["waivers"]
     assert isinstance(results, list) and isinstance(waivers, list)
     latest = {
-        str(entry["scenario"]): str(entry.get("result"))
+        str(entry["scenario"]): entry
         for entry in results
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
     }
@@ -2354,11 +2753,15 @@ def _plan(ctx: Context, campaign: str) -> int:
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
     }
     snapshot = _snapshot(ctx, verify_recovery=True)
-    ctx.console.say(f"Hardware campaign plan: {campaign}")
+    ctx.console.say(
+        f"Hardware campaign plan: {campaign}"
+        + ("" if suite is None else f" · suite {suite}")
+    )
     ctx.console.info("READY can run from this robot's current saved state. WAIT explains the "
                      "missing or already-passed lifecycle boundary; it is never counted as a pass.")
-    for scenario in SCENARIOS:
-        state = latest.get(scenario.key)
+    for scenario in scenarios:
+        entry = latest.get(scenario.key)
+        state = str(entry.get("result")) if entry is not None else None
         reason: str | None = None
         if state == "passed":
             label = "PASS"
@@ -2367,7 +2770,8 @@ def _plan(ctx: Context, campaign: str) -> int:
             reason = "rerun the scenario to answer its pending physical observation"
         elif state is not None:
             label = state.upper()
-            reason = "the latest attempt did not pass"
+            detail = _failure_detail(entry) if entry is not None else []
+            reason = detail[0] if detail else "the latest attempt did not pass"
         elif scenario.key in waived:
             label = "WAIVED"
         elif not scenario.automated:
@@ -2412,14 +2816,20 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
             mode = "run" if item.automated else "record"
             ctx.console.info(f"{item.safety}  {mode:<6} {item.key}")
             ctx.console.detail(f"    {item.summary}")
+        ctx.console.say("Suites, for scoping a plan or report to what a release changed")
+        for name in sorted(SUITES):
+            ctx.console.info(f"  {name:<14} {len(SUITES[name])} scenario(s)")
+        ctx.console.detail("    e.g. dreame-valetudo bench plan --campaign <name> "
+                           "--suite key-recovery")
         return 0
 
     start = 2 if scenario is not None else 1
     if action == "plan":
-        positional, options = _options(args[start:], {"campaign"})
+        positional, options = _options(args[start:], {"campaign", "suite"})
         if positional:
             raise Die("Unexpected positional arguments after 'bench plan'.")
-        return _plan(ctx, _campaign_name(ctx, options))
+        suite, scenarios = _suite_scenarios(options)
+        return _plan(ctx, _campaign_name(ctx, options), suite, scenarios)
     if action == "run":
         positional, options = _options(
             args[start:], {"campaign", "allow-destructive"},
@@ -2450,7 +2860,8 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
             raise Die("Unexpected positional arguments after the waiver scenario.")
         assert scenario is not None
         return _waive(ctx, scenario, _campaign_name(ctx, options), options)
-    positional, options = _options(args[start:], {"campaign"})
+    positional, options = _options(args[start:], {"campaign", "suite"})
     if positional:
         raise Die("Unexpected positional arguments after 'bench report'.")
-    return _report(ctx, _campaign_name(ctx, options))
+    suite, scenarios = _suite_scenarios(options)
+    return _report(ctx, _campaign_name(ctx, options), suite, scenarios)
