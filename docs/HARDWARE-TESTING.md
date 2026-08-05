@@ -191,6 +191,41 @@ on every other physically available fastboot model because that is non-destructi
 loader, enumeration, identity, and model-table errors. Run `first-root` only when that particular
 robot was already intended to be rooted.
 
+## Key recovery
+
+`rekey` is the way back in when a rooted robot no longer accepts your SSH key.
+`/mnt/misc/authorized_keys` survives a root flash, so re-rooting can never install a new key, and
+these scenarios are the only proof that either route works.
+
+Run them in this order. The preview writes nothing, the SSH route writes one file, and only the USB
+route rewrites a partition.
+
+| ID | Class | Starting state | What it proves | Expected result |
+|---|---:|---|---|---|
+| `rekey-dry-run` | H1 | rooted; robot booted with its AP up and **already joined** | The SSH route resolves a key, reaches the robot, and reports what it would change | no state marker changes at all |
+| `rekey-over-ssh` | H2 | rooted; **already joined** to the AP; the robot still accepts the serial-derived root password | Serial-derived login, key composition, and the written result confirmed over the AP | authorized-key marker recorded; no flash; rooted and Valetudo state unchanged |
+| `rekey-over-usb` | H3 | rooted; intact identity-bound recovery evidence | The pristine `misc` is saved first, then `misc` is rewritten under the `oem dust` identity gate | authorized-key marker recorded; no uncertain-write marker; robot reboots |
+
+Join the robot's AP **before** starting either Wi-Fi scenario. The phase would ask later, but the
+qualification records which keys the robot accepted beforehand, and it can only do that while the
+robot is reachable — so an unjoined start is refused before anything is written. A refusal at that
+address is not the same thing: it proves a server is there, which is the genuine lockout these
+scenarios exist to prove, and its empty baseline is a real answer.
+
+Choose a **different** key for each write scenario. The USB route records its marker before it
+checks the result — after an OKAY flash the robot accepts the key whether or not the later AP probe
+succeeds — so marker presence alone proves only that a write was attempted. Each write scenario
+therefore requires both a changed marker and its own confirmation that the robot answers to the new
+key; re-authorizing the key already in place cannot satisfy either.
+
+`misc` also holds this unit's camera and lidar calibration, so `rekey-over-usb` refuses to start
+unless intact identity-bound recovery evidence was already captured. Never erase `misc`.
+
+There is deliberately **no** scenario that interrupts the `misc` write to exercise its recovery:
+unplugging USB mid-write is on the never-test-on-hardware list above, and this is the partition
+carrying that calibration. The interrupted-write recovery is proved off-hardware in
+`tests/python/test_phase_rekey.py`, which is where those cases belong.
+
 ## Failure and interruption scenarios
 
 These reproduce mistakes a normal user can make without intentionally damaging flash.
@@ -215,6 +250,7 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 | `wifi-drop-backup` | H2 | Leave the robot AP during the factory-backup transfer | no published manifest/partial generation; retry succeeds |
 | `ctrl-c-push` | H2 | Interrupt during a pre-install backup transfer | incomplete backup is removed; Valetudo marker is absent |
 | `ssh-wrong-key` | H2 | Select an unrelated explicit key | error names authentication/key problem without password fallback |
+| `rekey-wrong-serial` | H2 | Enter a deliberately wrong serial at the password prompt, then the correct one | the wrong serial is named as one cause and not-the-robot as the other; the same run re-asks; nothing is written until a login succeeds |
 | `already-rooted-recon` | H1 | Force recon on a rooted robot | identity refreshes, but the pre-root recovery capture is not overwritten |
 | `already-rooted-root` | H3 | Invoke root normally on a rooted workspace | it refuses/skips without provisioning or flashing; only explicit `--force` can reflash |
 | `offline-cached-binary` | H2 | Fetch while online, then join the offline robot AP and resume | digest-bound cached Valetudo remains accepted |

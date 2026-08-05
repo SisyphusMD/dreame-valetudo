@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import inspect
 import io
 import json
+import re
 import tarfile
 from pathlib import Path
 
@@ -13,6 +15,7 @@ import pytest
 from conftest import VALETUDO_NEWER, VALETUDO_OLDER, VALETUDO_TARGET, CtxFactory
 
 import dreame_valetudo.bench as B
+from dreame_valetudo.cli import _ROBOT_COMMANDS
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
@@ -159,6 +162,7 @@ def test_every_destructive_scenario_is_classified_h3() -> None:
         "first-root", "stock-restore", "reroot-after-restore", "wrong-robot-root",
         "decline-flash", "terminal-loss-root", "wrong-robot-restore", "decline-restore",
         "terminal-loss-restore", "already-rooted-root",
+        "rekey-over-usb",
     }
     assert {scenario.key for scenario in B.SCENARIOS if scenario.safety == "H3"} == destructive
 
@@ -166,6 +170,185 @@ def test_every_destructive_scenario_is_classified_h3() -> None:
 def test_write_capable_multi_robot_probe_is_classified_h2() -> None:
     scenario = next(item for item in B.SCENARIOS if item.key == "multi-robot-selection")
     assert scenario.safety == "H2"
+
+
+def _phase_source() -> str:
+    """Every package source file that could emit an operator-facing message.
+
+    bench.py is excluded on purpose: the fragments being searched for are declared there, in
+    SCENARIOS itself, so including it would match every fragment against its own declaration and
+    the search could never fail.
+
+    A message the operator sees on one line is written across several in source, so a literal
+    search for it fails unless the `"..."\\n    "..."` seams are closed first.
+    """
+    joined = []
+    for path in sorted((Path(__file__).parents[2] / "dreame_valetudo").rglob("*.py")):
+        if path.name == "bench.py":
+            continue
+        text = path.read_text()
+        text = re.sub(r'"\s*\n\s*"', "", text)
+        joined.append(re.sub(r"'\s*\n\s*'", "", text))
+    return "\n".join(joined)
+
+
+def test_every_safe_stop_scenario_waits_for_a_message_the_code_can_emit() -> None:
+    """A scenario whose expected message no longer exists can never pass, only hang or fail.
+
+    The bootloader names no model on any fastboot robot, so a scenario written against a
+    model-mismatch stop from recon waited for output nothing produces. Pin every fragment to real
+    source text so a reworded refusal breaks this test instead of a bench session.
+    """
+    source = _phase_source()
+    unmatched = sorted(
+        (scenario.key, fragment)
+        for scenario in B.SCENARIOS
+        for fragment in scenario.stop_contains
+        if fragment not in source
+    )
+    assert not unmatched, f"safe-stop fragments no code emits: {unmatched}"
+
+
+def test_the_safe_stop_search_would_notice_a_reworded_refusal() -> None:
+    """The search is only meaningful if it can fail, and it silently could not."""
+    assert "connected robot config=" in _phase_source()
+    assert "no phase emits this sentence" not in _phase_source()
+
+
+def test_every_safe_stop_scenario_declares_what_it_waits_for() -> None:
+    missing = sorted(
+        scenario.key for scenario in B.SCENARIOS
+        if scenario.expected == "safe-stop" and not scenario.stop_contains
+    )
+    assert not missing, f"safe-stop scenarios that assert nothing: {missing}"
+
+
+def test_automated_scenarios_match_the_branches_that_conduct_them() -> None:
+    performed = inspect.getsource(B._perform)
+    assert not sorted(
+        scenario.key for scenario in B.SCENARIOS
+        if scenario.automated and f'"{scenario.key}"' not in performed
+    ), "scenario marked automated with no branch to conduct it"
+    assert not sorted(
+        scenario.key for scenario in B.SCENARIOS
+        if not scenario.automated and f'"{scenario.key}"' in performed
+    ), "operator-recorded scenario with an unreachable automated branch"
+
+
+# Every command that reaches a robot is either conducted by a scenario or carries a recorded reason
+# a physical bench cannot prove it. Without this table a new command ships with no scenario and
+# `bench plan` silently has nothing to schedule, which is invisible until someone is at the bench.
+_COMMAND_COVERAGE = {
+    "auto": "auto_fn(",
+    "backup": "backup(",
+    "diagnose": "diagnose(",
+    "doctor": "doctor(",
+    "fetch": "fetch(",
+    "fix-impl": "fix_impl(",
+    "image": "image(",
+    "push": "push(",
+    "recon": "recon(",
+    "rekey": "rekey(",
+    "restore": "restore(",
+    "root": "root(",
+    "update-valetudo": "update_valetudo(",
+}
+_COMMAND_NOT_BENCHABLE = {
+    "fix-did": "push repairs a negative deviceId inline; the standalone retry needs factory data "
+               "no bench may deliberately corrupt to reproduce",
+    "fix-key": "push restores the miio key inline; the standalone retry needs a unit that keeps it "
+               "only in secure storage",
+    "model": "edits the model saved in the workspace and never contacts a robot",
+    "sshkey": "prints or generates a host-side key and never contacts a robot",
+    "valetudo": "prints the Phase 3 walkthrough and never contacts a robot",
+    "verify-form": "compares a live DustBuilder form against its golden; CI runs verify-forms "
+                   "across every model",
+}
+
+
+def test_recorded_fatal_message_keeps_the_reason_and_drops_the_identity(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    config = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    recorded = B._fatal_message(
+        Die(f"SAFETY STOP: connected robot config={config} but this workspace's robot is other."),
+        ctx,
+    )
+    assert config not in recorded
+    assert "SAFETY STOP" in recorded and "Wrong robot" not in recorded
+
+
+def test_recorded_fatal_message_hides_the_operators_name_for_the_robot(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="Kitchen-Vacuum")
+    rollback = ctx.need_robot().work / "rekey-rollback" / "misc.bin"
+    recorded = B._fatal_message(Die(f"Could not write {rollback}: disk full"), ctx)
+    assert "Kitchen-Vacuum" not in recorded
+    assert "<private-robot-name>" in recorded
+    assert "disk full" in recorded
+
+
+def test_recorded_fatal_message_is_one_bounded_line(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    recorded = B._fatal_message(Die("first\n   second " + "x" * B._MAX_FATAL_MESSAGE), ctx)
+    assert "\n" not in recorded
+    assert recorded.startswith("first second ")
+    assert len(recorded) <= B._MAX_FATAL_MESSAGE
+
+
+def _prepare_mismatched_host_smoke(ctx: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    entrypoint = "/test/bin/dreame-valetudo"
+    monkeypatch.setattr(B.sys, "argv", [entrypoint])
+    monkeypatch.setattr(
+        B.shutil, "which", lambda name: entrypoint if name == "dreame-valetudo" else None,
+    )
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 0, "dreame-valetudo 0.0.0-not-this-build\n", "",
+    )
+
+
+def test_a_failed_scenario_records_the_reason_it_died(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    _prepare_mismatched_host_smoke(ctx, monkeypatch)
+
+    with pytest.raises(Die):
+        B.bench(ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto)
+
+    entry = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert entry["result"] == "failed"
+    assert entry["failure_type"] == "Die"
+    assert "exact version" in entry["failure_message"]
+
+
+def test_report_names_why_a_scenario_did_not_pass(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    _prepare_mismatched_host_smoke(ctx, monkeypatch)
+    with pytest.raises(Die):
+        B.bench(ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto)
+
+    assert B.bench(ctx, ["report", "--campaign", "rc"], auto_fn=_noop_auto) == 1
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "FAILED" in text
+    assert "exact version" in text
+
+
+def test_every_robot_command_is_conducted_or_explicitly_excused() -> None:
+    classified = set(_COMMAND_COVERAGE) | set(_COMMAND_NOT_BENCHABLE)
+    assert classified == set(_ROBOT_COMMANDS), (
+        "robot commands with no bench verdict: "
+        f"{sorted(set(_ROBOT_COMMANDS) - classified)}; "
+        f"stale entries: {sorted(classified - set(_ROBOT_COMMANDS))}"
+    )
+    source = inspect.getsource(B)
+    assert not sorted(
+        command for command, symbol in _COMMAND_COVERAGE.items() if symbol not in source
+    ), "commands claimed as covered that no scenario actually calls"
 
 
 @pytest.mark.parametrize(
@@ -243,6 +426,426 @@ def test_plan_offers_only_compatible_work_for_an_adopted_rooted_robot(
     assert "bench run already-rooted-root --campaign rc --allow-destructive" in text
     assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
     assert _report(ctx)["results"] == []
+
+
+def test_plan_offers_key_recovery_on_a_rooted_robot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("rooted")
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+    monkeypatch.setattr(B, "_recovery_provenance_valid", lambda _robot: True)
+
+    assert B.bench(ctx, ["plan", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "READY     H1  rekey-dry-run" in text
+    assert "READY     H2  rekey-over-ssh" in text
+    assert "READY     H3  rekey-over-usb" in text
+    assert "bench run rekey-over-usb --campaign rc --allow-destructive" in text
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_plan_withholds_the_no_flash_route_while_a_usb_write_is_unaccounted_for(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("rooted")
+    robot.state_set("rekey-attempt", "misc")
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+    monkeypatch.setattr(B, "_recovery_provenance_valid", lambda _robot: True)
+
+    assert B.bench(ctx, ["plan", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "WAIT      H2  rekey-over-ssh" in text
+    assert "WAIT      H1  rekey-dry-run" in text
+    assert "rekey-attempt completion marker already exists" in text
+
+
+def test_key_recovery_requires_intact_recovery_evidence_before_rewriting_misc(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("rooted")
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: False)
+    monkeypatch.setattr(B, "_recovery_provenance_valid", lambda _robot: False)
+
+    assert B.bench(ctx, ["plan", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "WAIT      H3  rekey-over-usb" in text
+    # The SSH route writes one file and never touches the partition holding calibration.
+    assert "READY     H2  rekey-over-ssh" in text
+
+
+def _snapshot_with(**markers: str) -> B.Snapshot:
+    return B.Snapshot(
+        markers=markers,
+        recovery_artifacts={},
+        robot_count=1,
+        recovery_valid=True,
+        recovery_provenance=True,
+        recovery_refresh_pending=False,
+        recon_backup_obtained=True,
+        backup_counts={},
+        bound_factory_backups=frozenset(),
+        backup_artifacts={},
+        partial_backups=0,
+        valetudo_version=None,
+        root_origin=None,
+    )
+
+
+@pytest.mark.parametrize("key", ["rekey-over-ssh", "rekey-over-usb", "rekey-wrong-serial"])
+def test_a_key_change_is_not_a_pass_without_its_marker(key: str) -> None:
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    before = _snapshot_with(rooted="yes")
+    after = _snapshot_with(rooted="yes")
+    assert "no authorized-key marker was recorded" in B._validate(scenario, before, after)
+
+
+def test_the_usb_route_needs_a_rewritten_marker_not_an_inherited_one() -> None:
+    """An earlier SSH scenario leaves the marker; a real misc flash rewrites it every time."""
+    scenario = next(item for item in B.SCENARIOS if item.key == "rekey-over-usb")
+    stale = {"rooted": "yes", "sshkey-authorized": "from-the-ssh-scenario"}
+    failures = B._validate(scenario, _snapshot_with(**stale), _snapshot_with(**stale))
+    assert any("so no misc write happened" in failure for failure in failures), failures
+
+
+@pytest.mark.parametrize("key", ["rekey-over-ssh", "rekey-over-usb", "rekey-wrong-serial"])
+def test_an_uncertain_write_marker_is_never_a_pass(key: str) -> None:
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    before = _snapshot_with(rooted="yes")
+    after = _snapshot_with(
+        rooted="yes", **{"sshkey-authorized": "this-run", "rekey-attempt": "misc"},
+    )
+    assert "an uncertain rekey-attempt marker remains" in B._validate(scenario, before, after)
+
+
+def _authorized(ctx: object, fingerprint: str) -> None:
+    """Record a robot that already authenticates with a real key of the given material."""
+    robot = ctx.need_robot()  # type: ignore[attr-defined]
+    key = ctx.ws.base / "id_bench"  # type: ignore[attr-defined]
+    key.write_text(f"PRIVATE {fingerprint}\n")
+    robot.state_set("sshkey", str(key))
+    robot.state_set("sshkey-authorized", f"{key} over-ssh")
+
+
+def _baseline(*, keys: str | None = None) -> B._KeyBaseline:
+    return B._KeyBaseline(
+        fingerprint=b"a different key entirely", authorized_keys=keys, ap_answered=True,
+    )
+
+
+def _keygen_responder(ctx: object, blob: str) -> None:
+    previous = ctx.runner.responder  # type: ignore[attr-defined]
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, f"ssh-ed25519 {blob}\n", "")
+        return previous(argv) if previous is not None else Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+
+def test_reauthorizing_the_same_key_material_is_refused(make_ctx: CtxFactory) -> None:
+    """The same key reached by another path is not a new authorization."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "unchanged")
+    _keygen_responder(ctx, "QUJDRA==")
+    before = B._key_baseline(ctx)
+    assert before.fingerprint is not None
+
+    with pytest.raises(Die, match="already accepted this exact key"):
+        B._confirm_authorized_key(ctx, before)
+
+
+def test_a_new_key_the_robot_rejects_is_refused(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "rotated")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        return Result(argv, 255, "", "root@192.168.5.1: Permission denied (publickey,password).")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="did not accept the key"):
+        B._confirm_authorized_key(ctx, _baseline())
+
+
+def test_a_router_that_accepts_the_key_is_not_the_robot(make_ctx: CtxFactory) -> None:
+    """192.168.5.1 is usually the router on a home LAN, and a router may accept the key."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "rotated")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        if argv[-1] == "test -d /mnt/private/ULI/factory":
+            return Result(argv, 1, "", "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="is not the robot"):
+        B._confirm_authorized_key(ctx, _baseline())
+
+
+def test_a_confirmed_new_key_on_the_real_robot_passes(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "rotated")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    assert B._confirm_authorized_key(ctx, _baseline()) == {
+        "authorized_key_confirmed_over_ap": True,
+        "prior_authorized_keys_compared": False,
+    }
+
+
+def test_the_wifi_routes_are_not_gated_behind_the_usb_permission_rule() -> None:
+    """Refusing these would gate the one route someone locked out of their robot can still take."""
+    for key in ("rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial"):
+        assert B.bench_drives_hardware(("run", key, "--campaign", "rc")) is False
+    assert B.bench_drives_hardware(("run", "rekey-over-usb", "--campaign", "rc")) is True
+
+
+def test_the_ssh_route_refuses_to_write_without_a_baseline(make_ctx: CtxFactory) -> None:
+    """Taken before the phase asks the operator to join, so an unjoined bench has no baseline."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "whatever")
+    # No route to the address: nothing answered, so which keys it accepted is simply unknown.
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 255, "", "ssh: connect to host 192.168.5.1 port 22: No route to host",
+    )
+
+    with pytest.raises(Die, match="before writing anything"):
+        B._require_ap_baseline(ctx)
+
+
+def test_a_refusal_at_the_ap_is_a_lockout_not_a_missing_baseline(make_ctx: CtxFactory) -> None:
+    """A refusal proves a server is there; the empty baseline is then the real answer."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "locked-out")
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 255, "", "root@192.168.5.1: Permission denied (publickey,password).",
+    )
+
+    baseline = B._require_ap_baseline(ctx)
+    assert baseline.ap_answered is True
+    assert baseline.authorized_keys is None
+    assert baseline.fingerprint is None
+
+
+def test_a_normally_rooted_robot_still_gets_a_baseline(make_ctx: CtxFactory) -> None:
+    """Only rekey writes sshkey-authorized, but the image already installed the operator's key."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    key = ctx.ws.base / "id_bench"
+    key.write_text("PRIVATE from-the-rooted-image\n")
+    robot.state_set("sshkey", str(key))
+    existing = "ssh-ed25519 AAAA from-the-image\n"
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        if argv[-1].startswith("cat "):
+            return Result(argv, 0, existing, "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    baseline = B._key_baseline(ctx)
+    assert baseline.authorized_keys == existing
+    assert baseline.fingerprint is not None
+
+    robot.state_set("sshkey-authorized", f"{key} over-ssh")
+    with pytest.raises(Die, match="already accepted this exact key"):
+        B._confirm_authorized_key(ctx, baseline)
+
+
+def test_a_key_regenerated_in_place_is_not_treated_as_already_authorized(
+    make_ctx: CtxFactory,
+) -> None:
+    """The locked-out robot cannot be read, so the local key's fingerprint proves nothing."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "regenerated-in-place")
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        return Result(argv, 255, "", "root@192.168.5.1: Permission denied (publickey,password).")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    baseline = B._key_baseline(ctx)
+    assert baseline.fingerprint is None
+    assert baseline.authorized_keys is None
+
+    # The very key the robot just started accepting must now qualify, not be called a no-op.
+    ctx.runner.responder = lambda argv: (  # type: ignore[attr-defined]
+        Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        if argv[:1] == ("ssh-keygen",) else Result(argv, 0, "", "")
+    )
+    assert B._confirm_authorized_key(ctx, baseline)["authorized_key_confirmed_over_ap"] is True
+
+
+def test_a_post_reboot_mount_delay_is_not_mistaken_for_a_router(make_ctx: CtxFactory) -> None:
+    """/mnt/private is unmounted for the first seconds after the USB route reboots the robot."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "rotated")
+    probes = {"count": 0}
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        if argv[-1] == "test -d /mnt/private/ULI/factory":
+            probes["count"] += 1
+            return Result(argv, 0 if probes["count"] > 4 else 1, "", "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    assert B._confirm_authorized_key(ctx, _baseline())["authorized_key_confirmed_over_ap"] is True
+    assert probes["count"] >= 5, "identity was not retried across the mount delay"
+
+
+def test_a_run_that_left_the_robots_keys_untouched_is_refused(make_ctx: CtxFactory) -> None:
+    """A robot rooted by this tool already carries the key, so re-choosing it writes nothing."""
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    _authorized(ctx, "unchanged")
+    existing = "ssh-ed25519 AAAA already-there\n"
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:1] == ("ssh-keygen",):
+            return Result(argv, 0, "ssh-ed25519 QUJDRA==\n", "")
+        if argv[-1].startswith("cat "):
+            return Result(argv, 0, existing, "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="byte-identical to before the run"):
+        B._confirm_authorized_key(ctx, _baseline(keys=existing))
+
+
+def test_every_suite_names_real_scenarios() -> None:
+    keys = {scenario.key for scenario in B.SCENARIOS}
+    unknown = sorted(
+        (name, member)
+        for name, members in B.SUITES.items()
+        for member in members
+        if member not in keys
+    )
+    assert not unknown, f"suites naming scenarios that do not exist: {unknown}"
+
+
+def test_suite_scopes_the_plan_to_what_a_release_changed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("rooted")
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+    monkeypatch.setattr(B, "_recovery_provenance_valid", lambda _robot: True)
+
+    assert B.bench(
+        ctx, ["plan", "--campaign", "rc", "--suite", "key-recovery"], auto_fn=_noop_auto,
+    ) == 0
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "suite key-recovery" in text
+    assert "rekey-over-ssh" in text
+    assert "stock-restore" not in text
+
+
+def test_a_suite_can_complete_while_the_whole_campaign_cannot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(env={"DREAME_BENCH_BUILD": B.__version__, "DREAME_BENCH_CHANNEL": "pkg"})
+    _prepare_host_smoke(ctx, monkeypatch)
+    assert B.bench(ctx, ["run", "host-smoke", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    assert B.bench(
+        ctx, ["report", "--campaign", "rc", "--suite", "smoke"], auto_fn=_noop_auto,
+    ) == 0
+    assert B.bench(ctx, ["report", "--campaign", "rc"], auto_fn=_noop_auto) == 1
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "Suite 'smoke' complete" in text
+    assert "The rest of the campaign is untouched" in text
+
+
+def test_a_host_only_plan_neither_selects_nor_binds_a_robot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(env={"DREAME_BENCH_BUILD": B.__version__, "DREAME_BENCH_CHANNEL": "pkg"})
+    assert B.bench_needs_robot(ctx, ("plan", "--campaign", "rc", "--suite", "smoke")) is False
+    assert B.bench_needs_robot(ctx, ("plan", "--campaign", "rc")) is True
+
+    _prepare_host_smoke(ctx, monkeypatch)
+    assert B.bench(
+        ctx, ["plan", "--campaign", "rc", "--suite", "smoke"], auto_fn=_noop_auto,
+    ) == 0
+    report = _report(ctx)
+    assert report["robot"] is None
+    assert report["model_key"] is None
+
+
+@pytest.mark.parametrize(
+    ("args", "independent"),
+    [
+        (("list",), True),
+        (("report", "--campaign", "rc"), True),
+        (("run", "host-smoke", "--campaign", "rc"), True),
+        (("run", "stock-recon", "--campaign", "rc"), False),
+        (("plan", "--campaign", "rc"), False),
+        (("plan", "--campaign", "rc", "--suite", "smoke"), True),
+        (("plan", "--suite=smoke", "--campaign", "rc"), True),
+        (("plan", "--campaign", "rc", "--suite", "key-recovery"), False),
+        (("plan", "--campaign", "rc", "--suite"), False),
+    ],
+)
+def test_model_independence_is_decided_before_the_model_table_is_read(
+    args: tuple[str, ...], independent: bool,
+) -> None:
+    assert B.bench_is_model_independent(args) is independent
+
+
+def test_unknown_suite_is_refused_before_a_campaign_is_created(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    with pytest.raises(Die, match="Unknown bench suite"):
+        B.bench(ctx, ["plan", "--campaign", "rc", "--suite", "nope"], auto_fn=_noop_auto)
+    assert not (ctx.ws.base / "bench" / "rc").exists()
 
 
 def test_campaign_name_is_required_and_path_safe(make_ctx: CtxFactory) -> None:

@@ -14,7 +14,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .bench import bench, bench_drives_hardware, bench_needs_robot, validate_bench_args
+from .bench import (
+    bench,
+    bench_drives_hardware,
+    bench_is_model_independent,
+    bench_needs_robot,
+    validate_bench_args,
+)
 from .console import Console, Die, UserAbort, die, idle_timeout
 from .constants import ADOPTED_ROOT, RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from .context import Context
@@ -143,10 +149,7 @@ def _validate_command_args(cmd: str, rest: Sequence[str]) -> None:
 
 def _profile_key_for_invocation(cmd: str, rest: Sequence[str], env: Mapping[str, str]) -> str:
     """The model this invocation is about — the default where it is about no model at all."""
-    bench_action = rest[0] if cmd == "bench" and rest else None
-    bench_model_independent = bench_action in {"list", "record", "report", "waive"} or (
-        bench_action == "run" and len(rest) >= 2 and rest[1] == "host-smoke"
-    )
+    bench_model_independent = cmd == "bench" and bench_is_model_independent(rest)
     if cmd in _MODEL_INDEPENDENT_COMMANDS or bench_model_independent:
         return DEFAULT_MODEL_KEY
     return env.get("DREAME_MODEL") or DEFAULT_MODEL_KEY

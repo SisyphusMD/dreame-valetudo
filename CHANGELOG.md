@@ -34,6 +34,12 @@
 
 ### Changed
 
+- `bench` now covers `rekey`: the preview, the no-flash Wi-Fi route, the USB `misc` rewrite, and a
+  mistyped serial. Each write scenario confirms the robot accepts the new key before passing.
+- A failed `bench` scenario now records and prints why it stopped, so a report distinguishes an
+  unreachable robot from a check that actually failed.
+- `bench plan` and `bench report` take `--suite` to scope them to what a release changed
+  (`smoke`, `key-recovery`, `lifecycle`, `restore`).
 - Choosing which SSH key reaches the robot now shows each key's type, fingerprint, and comment,
   not just its path.
 - Steps needing the robot's Wi-Fi AP now wait for it and detect it, rather than asking whether you
