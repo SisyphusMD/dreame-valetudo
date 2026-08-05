@@ -59,7 +59,7 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     # confirms: [already rooted? no] [open dustbuilder?] [config accepted?] [flash now?];
     # asks: [FEL readiness (Enter)] [SSH key choice (1 = dedicated)]
     ctx = make_ctx(model="x40-ultra", responder=responder, confirms=[False, True, True, True],
-                   asks=["", "1"], env={"HOME": str(home)})
+                   asks=["", "P3020000AA1234567890", "1"], env={"HOME": str(home)})
     # stage1 present so recon proceeds
     stage_dist(ctx)
 
@@ -70,6 +70,13 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     assert robot is not None
     assert robot.work.name == f"r2416-{CFG[:12]}"
     assert robot.state_has("recon")
+    # Recorded off the label, but the bootloader cannot confirm it, so it stays unverified until a
+    # phase reaches the robot over its own AP. Never a state marker: bench digests those into a
+    # shareable report, and this seeds the rescue root password.
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+    assert saved.verified is False
+    assert not (robot.state_dir / "serial").exists()
 
     # 2) image: stages the built zip into THIS robot's fw dir. The zip lands WHILE the phase waits,
     # which is what marks it as this robot's build — one that predates the build order is treated

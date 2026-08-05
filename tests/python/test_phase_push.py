@@ -1122,6 +1122,8 @@ def test_capture_issues_exactly_the_pinned_remote_commands(make_ctx: CtxFactory)
         "test -d /mnt/private/ULI/factory",
         (
             "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
+            "printf 'factory_serial='; cat /mnt/private/ULI/factory/sn.txt 2>/dev/null; "
+            "printf '\\n'; "
             "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null"
         ),
         "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null",
@@ -1397,3 +1399,54 @@ def test_push_warns_and_omits_a_dedicated_key_copy_that_failed(
     assert (backup / "id_dreame.pub").read_text() == "PUBLIC"
     assert "could not preserve SSH key file id_dreame" in ctx.console.text()  # type: ignore[attr-defined]
     assert "disk full" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+# --- Serial settlement -------------------------------------------------------------------------
+def test_the_robot_confirms_a_serial_typed_off_a_label(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.remember_serial("P3020000AA1234567890", verified=False)
+
+    push_mod._settle_serial(ctx, {"factory_serial": "P3020000AA1234567890"})
+
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+    assert saved.verified is True
+
+
+def test_a_label_that_disagrees_with_the_robot_is_reported_and_the_robot_wins(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.remember_serial("TYPEDWRONG1234", verified=False)
+
+    push_mod._settle_serial(ctx, {"factory_serial": "P3020000AA1234567890"})
+
+    saved = robot.serial()
+    assert saved is not None and saved.value == "P3020000AA1234567890"
+    assert saved.verified is True
+    assert "not the one the robot reports" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_a_robot_that_reports_no_serial_leaves_the_record_untouched(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.remember_serial("P3020000AA1234567890", verified=False)
+
+    push_mod._settle_serial(ctx, {"factory_config": "abc"})
+
+    saved = robot.serial()
+    assert saved is not None and saved.verified is False
+
+
+def test_a_first_serial_learned_from_the_robot_needs_no_prior_record(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    assert robot.serial() is None
+
+    push_mod._settle_serial(ctx, {"factory_serial": "P3020000AA1234567890"})
+
+    saved = robot.serial()
+    assert saved is not None and saved.verified is True
+    assert "not the one the robot reports" not in ctx.console.text()  # type: ignore[attr-defined]
