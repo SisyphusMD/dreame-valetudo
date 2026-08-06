@@ -140,6 +140,124 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
     assert floor_rules[0]["allowedVersions"] == r"/^3\.11\.0$/"
 
 
+def test_python_version_bumps_wait_for_the_setup_python_manifest() -> None:
+    workflows = sorted((_ROOT / ".forgejo" / "workflows").glob("*.yml"))
+    workflows += sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
+    pinned = [w for w in workflows if re.search(r'python-version: "(?!3\.11\.0")', w.read_text())]
+    assert len(pinned) >= 3
+
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    delayed = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("matchManagers") == ["github-actions"]
+        and rule.get("matchDepNames") == ["python"]
+        and "minimumReleaseAge" in rule
+    ]
+    assert len(delayed) == 1
+    # Unscoped by file, so it covers every workflow above rather than whichever one broke last.
+    assert "matchFileNames" not in delayed[0]
+    # Days, not hours: actions/python-versions merges the manifest setup-python reads well over an
+    # hour after cutting the release Renovate watches, and nothing bounds that lag to one hour.
+    assert re.fullmatch(r"[1-9]\d* days?", delayed[0]["minimumReleaseAge"])
+
+
+def test_pinned_toolchain_matches_the_lockfile() -> None:
+    ci = _CI.read_text()
+    lock = (_ROOT / "uv.lock").read_text()
+    for package, var in (("ruff", "RUFF"), ("mypy", "MYPY"), ("pytest", "PYTEST")):
+        pin = re.search(rf'{var}="([^"]+)"', ci)
+        locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
+        assert pin is not None and locked is not None, package
+        # CI installs the literal; `uv run` resolves the lock. Contributors lint with whatever
+        # these disagree on, and no other check compares them.
+        assert pin.group(1) == locked.group(1), (
+            f"{package}: CI installs {pin.group(1)}, uv.lock resolves {locked.group(1)}"
+        )
+
+
+def test_deps_ci_cannot_exercise_are_not_automerged() -> None:
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    for dep in ("pyusb", "ruff", "mypy", "pytest"):
+        rules = [
+            rule
+            for rule in config["packageRules"]
+            if dep in rule.get("matchDepNames", []) and rule.get("automerge") is False
+        ]
+        assert len(rules) == 1, dep
+        assert rules[0].get("prBodyNotes"), dep
+
+
+def test_the_cpython_pin_is_proposed_without_its_tag_prefix() -> None:
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    rules = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("matchDepNames") == ["python/cpython"] and "extractVersion" in rule
+    ]
+    assert len(rules) == 1
+    # Renovate matches with RE2, which spells a named group `(?<name>)`; Python's re wants `(?P<name>)`.
+    pattern = re.compile(rules[0]["extractVersion"].replace("(?<", "(?P<"))
+    extracted = pattern.match("v3.14.7")
+    assert extracted is not None and extracted.group("version") == "3.14.7"
+
+    # Every consumer writes the bare value, so a `v`-prefixed proposal would break all of them.
+    for path in (_CI, _MACOS_CI, _ROOT / "dreame_valetudo" / "constants.py"):
+        assert not re.search(r'"v\d+\.\d+\.\d+"', path.read_text())
+
+
+def test_the_cpython_tag_pin_governs_only_what_ships() -> None:
+    workflows = sorted((_ROOT / ".forgejo" / "workflows").glob("*.yml"))
+    workflows += sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
+    # A test-runner `python-version:` belongs to the built-in github-actions manager as dep
+    # `python`, which tracks the actions/python-versions manifest setup-python installs from.
+    # Annotating one with the CPython tag datasource adds a second owner for the same line and
+    # proposes a version the manifest cannot serve for another day or more.
+    for workflow in workflows:
+        if workflow == _MACOS:
+            continue
+        assert "depName=python/cpython" not in workflow.read_text(), workflow.name
+
+    # release-macos.yml is the exception: PyInstaller freezes this interpreter into the shipped
+    # .pkg, so it must move with the bundle pin and its reviewed checksum, not on its own.
+    macos = _MACOS.read_text()
+    assert "depName=python/cpython" in macos
+    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    assert "depName=python/cpython" in constants
+    bundled = re.search(r'BUNDLE_PYTHON_VERSION = "([^"]+)"', constants)
+    assert bundled is not None
+    assert f'python-version: "{bundled.group(1)}"' in macos
+
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    disabled = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("matchManagers") == ["github-actions"]
+        and rule.get("matchDepNames") == ["python"]
+        and rule.get("matchFileNames") == [".github/workflows/release-macos.yml"]
+    ]
+    assert len(disabled) == 1
+    assert disabled[0]["enabled"] is False
+
+
+def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> None:
+    smoke = (_ROOT / "packaging" / "package-smoke.Dockerfile").read_text()
+    assert "depName=ubuntu-26.04-current packageName=ubuntu" in smoke
+    digest = re.search(r"ubuntu:26\.04@(sha256:[0-9a-f]{64})", smoke)
+    assert digest is not None
+    assert digest.group(1) in _CI.read_text()
+
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    disabled = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("matchManagers") == ["dockerfile"]
+        and rule.get("matchFileNames") == ["packaging/package-smoke.Dockerfile"]
+    ]
+    assert len(disabled) == 1
+    assert disabled[0]["enabled"] is False
+
+
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
     bridge = _MACOS_WAIT.read_text()
 
