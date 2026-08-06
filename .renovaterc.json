@@ -42,8 +42,8 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block (or packaging/shellcheck-all.sh, the one such pin extracted into a script).",
-      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/"],
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the two files that carry such a pin outside a workflow: packaging/shellcheck-all.sh, and package-smoke.Dockerfile's base image, which has to move with the qualification image ci.yml pins.",
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]
@@ -54,6 +54,12 @@
       "description": "Docker Images",
       "matchDatasources": ["docker"],
       "addLabels": ["docker"]
+    },
+    {
+      "description": "package-smoke.Dockerfile's base image is claimed by the annotation-driven regex manager so it stays one dependency with ci.yml's qualification pin. Left enabled, the built-in dockerfile manager would also claim it as a separate `ubuntu` dep that updates in its own PR — and since publish.yml is the only thing that builds this file, that PR would automerge on a CI run that never touched it.",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["packaging/package-smoke.Dockerfile"],
+      "enabled": false
     },
     {
       "description": "The Debian 12 and Ubuntu 22.04 legs are compatibility floors, not current-release aliases; Renovate still refreshes their immutable digests.",
@@ -100,6 +106,12 @@
       "allowedVersions": "/^3\\.11\\.0$/"
     },
     {
+      "description": "setup-python resolves a version through actions/python-versions' versions-manifest.json, which that repo merges over an hour AFTER publishing the GitHub release Renovate reads. A bump raised inside that gap installs nothing: every python job on both forges dies at setup with 'version not found', which reads as a broken PR rather than an upstream artifact that has not landed yet. Hold each bump until the manifest is certain to list it.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
       "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
       "matchDepNames": ["rocky-8-compat"],
       "allowedVersions": "/^8$/"
@@ -140,8 +152,14 @@
       "automerge": true
     },
     {
-      "description": "These actions run ONLY inside the release/publish workflows, which ci.yml's push checks don't exercise, so their minor + major bumps get a human review (patch + digest still automerge).",
-      "matchDepNames": ["docker/setup-qemu-action", "actions/upload-artifact", "actions/download-artifact"],
+      "description": "ci.yml's build job does install setup-qemu-action, but it only builds the x86_64 leg; the arm64 emulation qemu exists to provide is first exercised by publish.yml, at release. So a green PR says nothing about the case that matters, and minor + major bumps get a human review (patch + digest still automerge).",
+      "matchDepNames": ["docker/setup-qemu-action"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
+    },
+    {
+      "description": "These actions run ONLY inside the macOS release workflow, which ci.yml's push checks don't exercise, so their minor + major bumps get a human review (patch + digest still automerge).",
+      "matchDepNames": ["actions/upload-artifact", "actions/download-artifact"],
       "matchUpdateTypes": ["minor", "major"],
       "automerge": false
     },
@@ -162,6 +180,31 @@
       "matchDepNames": ["tmux/tmux"],
       "automerge": false,
       "prBodyNotes": ["Update `TMUX_SHA256` in `dreame_valetudo/constants.py` from the new release tarball before merging."]
+    },
+    {
+      "description": "This dep reads CPython's git tag, which has two consequences. The tag carries a leading `v` that no consumer accepts — setup-python resolves `python-version`, and the bundle build interpolates the value into a python.org source URL — so strip it. And the tag lands more than a day before actions/python-versions publishes the manifest setup-python installs from, so hold the bump until that manifest can serve it.",
+      "matchDepNames": ["python/cpython"],
+      "extractVersion": "^v(?<version>.+)$",
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "release-macos.yml's `python-version` is not a test runner: PyInstaller freezes that exact interpreter into the shipped .pkg, so it has to move with BUNDLE_PYTHON_VERSION and the checksum a human reviews alongside it. The annotation hands the line to the cpython tag dep; disabling the built-in manager here leaves that dep as its only owner rather than an automerging second one that could ship a different Python than the Linux bundles carry.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "matchFileNames": [".github/workflows/release-macos.yml"],
+      "enabled": false
+    },
+    {
+      "description": "pyusb is the USB transport the fastboot client speaks to the robot. CI proves only that it imports and enumerates: the unit tests stub `usb.core`/`usb.util` into `sys.modules`, and the build-job client smoke stops at `find_device()` with no robot attached, leaving every descriptor, endpoint and bulk-transfer call unexecuted. Green CI therefore says nothing about the path that writes to flash, so a bump is read by a human.",
+      "matchDepNames": ["pyusb"],
+      "automerge": false,
+      "prBodyNotes": ["CI cannot reach the flashing path. Re-verify `dreame-fastboot` against real hardware before relying on this bump."]
+    },
+    {
+      "description": "The dev toolchain is pinned twice: as literals in the workflows, which CI installs, and in `uv.lock`, which `uv run` resolves. Renovate moves only the first — `pep621` sees the permanently-satisfied `>=` floors in pyproject.toml and never raises a PR — so an automerged bump would leave contributors linting with a different binary than CI. Hand-reviewed so the lock moves in the same PR.",
+      "matchDepNames": ["ruff", "mypy", "pytest"],
+      "automerge": false,
+      "prBodyNotes": ["Run `uv lock --upgrade-package <dep>` and commit `uv.lock` in this PR; `test_pinned_toolchain_matches_the_lockfile` fails until it matches."]
     },
     {
       "description": "CPython is frozen into the bundle, and every version change requires the matching source checksum; a new minor also changes the Homebrew dependency.",
