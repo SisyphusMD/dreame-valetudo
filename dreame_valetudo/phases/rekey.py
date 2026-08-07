@@ -550,7 +550,8 @@ def _login_with_serial(ctx: Context, robot: Robot, staging: Path) -> str:
     Only a REFUSAL loops. Anything that failed to reach the robot still raises, because retyping a
     serial cannot fix a robot that was never contacted.
     """
-    default, confirmed = _stored_serial(robot)
+    stored, stored_confirmed = _stored_serial(robot)
+    default, confirmed = stored, stored_confirmed
     while True:
         serial = _ask_serial(ctx, default, confirmed=confirmed)
         try:
@@ -559,10 +560,37 @@ def _login_with_serial(ctx: Context, robot: Robot, staging: Path) -> str:
             ctx.console.warn(str(exc))
             if not ctx.console.confirm("Try another serial?"):
                 abort("Aborted — nothing was changed on the robot.")
-            # Never re-offered: this is the value that was just refused, and pressing Enter past it
-            # would loop on the same failure.
-            default, confirmed = None, False
+            # Only the value that was actually refused stops being offered, because pressing Enter
+            # past that one would loop on the same failure. Typing something else over the default
+            # does not make the default wrong: the commonest refusal here is being on the wrong
+            # network, where the serial was never the problem, and dropping it then sends the
+            # operator back under the robot for a value the robot itself had already confirmed.
+            if serial == default:
+                default, confirmed = None, False
             continue
+        # adbd.sh derives root's password from THIS robot's own sn.txt, so a serial that
+        # authenticates is the far end naming itself, and one OTHER than the serial recorded here
+        # means a different robot answered — whose authorized_keys a replace would revoke, locking
+        # its owner out of a robot nobody meant to touch.
+        #
+        # Any recorded serial counts, confirmed or not: recon saves the one read off the selected
+        # robot's own label unconfirmed, so that is the usual state on a first AP login — the very
+        # moment the wrong AP is easiest to join.
+        #
+        # Asked, not refused. "Confirmed" only means some robot on the AP accepted it, and the run
+        # that recorded it could itself have been aimed at the wrong AP, so no stored value is
+        # bound to this workspace and any of them can be wrong. A hard stop would then strand the
+        # one route that rescues a robot nothing else can reach. Answering yes IS the correction:
+        # the serial below is re-recorded.
+        if stored is not None and serial != stored:
+            ctx.console.warn("That serial authenticated, but it is not the one recorded for this "
+                             "robot. Either you joined a DIFFERENT robot's AP, or the serial "
+                             f"recorded for {robot.work.name} is wrong.")
+            ctx.console.info("Continuing rewrites the keys of whichever robot is on the AP now, "
+                             "removing whatever it authorizes today, and records this serial for "
+                             f"{robot.work.name}.")
+            if not ctx.console.confirm(f"Is the robot on this AP really {robot.work.name}?"):
+                abort("Aborted — nothing was changed on the robot.")
         # The robot accepted a password derived from it, which is the robot confirming the value —
         # so a later rescue never has to ask for this label again.
         robot.remember_serial(serial, verified=True)

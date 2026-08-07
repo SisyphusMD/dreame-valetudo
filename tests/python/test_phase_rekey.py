@@ -1363,6 +1363,105 @@ def test_a_serial_the_robot_refused_is_never_recorded(
     assert saved is not None and saved.value == _SERIAL
 
 
+def test_a_serial_typed_over_the_default_and_refused_leaves_the_default_offered(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """Only the value that was actually refused stops being offered.
+
+    The commonest refusal on this route is being on the wrong network, where the stored serial was
+    never the problem. Dropping it because something else failed sends the operator back under the
+    robot for a value the robot itself had already confirmed.
+    """
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], asks=["NOTTHESERIAL", ""])
+    _prepare_rooted_robot(ctx)
+    ctx.need_robot().remember_serial(_SERIAL, verified=True)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    # Offered on the retry too, so the empty second answer could take it.
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert text.count("reported this serial itself") == 2
+
+
+def test_pressing_enter_past_a_refused_default_stops_re_offering_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The one case where dropping it is right: re-offering the value just refused would loop.
+
+    Uses a saved-but-unconfirmed serial, which is the only way a stored value can itself be wrong —
+    a serial the robot confirmed cannot be, and a different one authenticating means a different
+    robot.
+    """
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    # Three: retry the serial, confirm the robot the corrected serial identifies, then the write.
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True, True], asks=["", _SERIAL])
+    _prepare_rooted_robot(ctx)
+    ctx.need_robot().remember_serial("R00000000USA00000000", verified=False)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert text.count("never confirmed against it") == 1
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_a_serial_that_authenticates_but_is_not_this_robots_asks_before_writing(
+    make_ctx: CtxFactory, tmp_path: Path, verified: bool,
+) -> None:
+    """A serial that authenticates is the far end naming itself.
+
+    adbd.sh derives root's password from that robot's own sn.txt, so a serial other than the one
+    recorded here means a different robot answered — and replacing its authorized_keys would
+    revoke whatever lets its owner in.
+
+    Unconfirmed counts too: recon records the label serial of the SELECTED robot unconfirmed, so
+    that is the usual state on a first AP login, which is exactly when the wrong AP gets joined.
+    """
+    other = "R99999999USA00000001"
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[False], asks=[other])
+    _prepare_rooted_robot(ctx)
+    ctx.need_robot().remember_serial(_SERIAL, verified=verified)
+    _FakeRobot(password=_password_candidates(other)[0]).install(ctx)
+
+    with pytest.raises(UserAbort):
+        rekey(ctx, over_ssh=True)
+
+    assert "DIFFERENT robot's AP" in ctx.console.text()  # type: ignore[attr-defined]
+    assert f"cat > {_MISC_STAGED}" not in _remote_commands(ctx)
+
+
+def test_confirming_the_robot_corrects_a_serial_recorded_against_the_wrong_one(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The stored serial is not bound to the workspace, so it can itself be the wrong one.
+
+    An earlier run aimed at the wrong AP records whatever answered, marked verified. Refusing on
+    mismatch would then strand this robot's only remaining route in, so confirming has to be able
+    to put the record right.
+    """
+    real = "R99999999USA00000001"
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True, True], asks=[real])
+    _prepare_rooted_robot(ctx)
+    ctx.need_robot().remember_serial(_SERIAL, verified=True)
+    _FakeRobot(password=_password_candidates(real)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    recorded = ctx.need_robot().serial()
+    assert recorded is not None
+    assert recorded.value == real
+    assert f"cat > {_MISC_STAGED}" in _remote_commands(ctx)
+
+
 def test_a_recorded_serial_is_offered_as_the_default(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:

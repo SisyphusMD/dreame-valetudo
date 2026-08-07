@@ -77,6 +77,11 @@
   now reported as unconfirmed instead of as the robot rejecting the key.
 - A refused serial now names the likelier cause first, using what actually answered rather than
   always sending you back to the label under the dustbin.
+- Typing a different serial over the remembered one and having it refused no longer forgets the
+  remembered one, which had you fetching the robot to re-read a label that was never wrong.
+- `rekey --over-ssh` now asks before writing when the serial that authenticates is not the one
+  recorded for the selected robot, so joining the wrong robot's AP no longer silently rewrites its
+  keys. Confirming corrects the recorded serial.
 - `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
   comment, which nearly every key does.
 - A `bench` question about what you physically saw now ignores anything typed before it was asked,
