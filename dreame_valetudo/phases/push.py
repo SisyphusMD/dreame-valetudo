@@ -36,6 +36,7 @@ from ..ssh import (
     robot_ssh,
     ssh_base,
     ssh_failure_guidance,
+    valetudo_version_header,
 )
 from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish, valid_serial
@@ -657,17 +658,9 @@ def _prepare_valetudo_binary(ctx: Context, *, retry_command: str) -> None:
 
 
 def _installed_valetudo_version(ctx: Context) -> str | None:
-    response = ctx.runner.run(
-        ["curl", "-sS", "-m", "3", "-D", "-", "-o", "/dev/null", f"http://{ROBOT_AP_IP}"],
-        check=False,
-    )
-    match = re.search(
-        r"(?im)^x-valetudo-version\s*:\s*([^\s]+)",
-        response.stdout + response.stderr,
-    )
-    if match is None:
+    version = valetudo_version_header(ctx.runner)
+    if version is None:
         return None
-    version = match.group(1).strip()
     return version if _VALETUDO_VERSION_RE.fullmatch(version) else None
 
 

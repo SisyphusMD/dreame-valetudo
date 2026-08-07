@@ -55,6 +55,19 @@ def test_ask_returns_input_and_empty_on_eof(monkeypatch: pytest.MonkeyPatch) -> 
     assert _console().ask("name?") == ""
 
 
+def test_ask_spells_out_that_enter_takes_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare [value] means "default" only to someone who already knows the convention."""
+    shown: list[str] = []
+
+    def capture(prompt: str) -> str:
+        shown.append(prompt)
+        return ""
+
+    monkeypatch.setattr("builtins.input", capture)
+    assert _console().ask("Robot serial number?", default="R2240") == "R2240"
+    assert "Enter = R2240" in shown[0]
+
+
 
 
 def test_eof_prompt_terminates_its_line(

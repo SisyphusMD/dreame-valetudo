@@ -15,6 +15,7 @@ import os
 import select
 import shutil
 import sys
+import termios
 import textwrap
 import threading
 import time
@@ -279,6 +280,24 @@ class Console:
         window."""
         return _LiveProgress(self, label, timer=timer)
 
+    def discard_pending_input(self) -> None:
+        """Drop anything typed before the question was asked.
+
+        A question that records physical evidence has to capture what the operator decided, not
+        what their keyboard happened to be holding. Long hardware steps invite stray Enter presses
+        — a robot that seems stuck, a progress line that stopped moving — and a queued newline is
+        indistinguishable from a deliberate answer, so it takes the default silently. Which
+        direction that lands in is luck: it can fail a scenario the hardware passed, or pass one
+        nobody observed.
+        """
+        try:
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (OSError, ValueError, termios.error):
+            # No tty, a closed stdin, or a platform that will not flush it. Input hygiene is never
+            # worth failing a run over.
+            pass
+
     def confirm(self, prompt: str) -> bool:
         self._suspend_progress()
         _bookmark(prompt)
@@ -301,7 +320,9 @@ class Console:
         _bookmark(prompt)
         # The default is rendered but never becomes part of `prompt`, which the run log records
         # verbatim — offering a remembered secret must not be what writes it to disk.
-        shown = f"{prompt} [{default}]" if default else prompt
+        # Spelled out rather than just bracketed: a bare [value] reads as a default to anyone who
+        # already knows the convention and as nothing at all to everyone else.
+        shown = f"{prompt} [Enter = {default}]" if default else prompt
         answer = self._prompt(self._c("1;35", f"?? {shown} "))
         _bookmark(None)  # see confirm(): deliberately not a finally
         if default is not None and not answer.strip():

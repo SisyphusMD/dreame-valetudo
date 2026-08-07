@@ -71,6 +71,25 @@
 
 ### Fixed
 
+- `rekey --over-ssh` now checks that the robot answers as Valetudo before asking for the serial,
+  so the password derived from it is not offered to your router when you are still on home Wi-Fi.
+- After a `rekey` write, a key refused by something that never identified itself as the robot is
+  now reported as unconfirmed instead of as the robot rejecting the key.
+- A refused serial now names the likelier cause first, using what actually answered rather than
+  always sending you back to the label under the dustbin.
+- Typing a different serial over the remembered one and having it refused no longer forgets the
+  remembered one, which had you fetching the robot to re-read a label that was never wrong.
+- `rekey --over-ssh` now asks before writing when the serial that authenticates is not the one
+  recorded for the selected robot, so joining the wrong robot's AP no longer silently rewrites its
+  keys. Confirming corrects the recorded serial.
+- Prompts that offer a value now say that Enter accepts it, instead of only bracketing it.
+- `rekey --over-ssh` no longer prints the whole "join the robot's AP" block twice in a row.
+- Repeating the FEL button sequence now reminds you the robot may have powered itself back on
+  while you were deciding, and must be fully off first.
+- `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
+  comment, which nearly every key does.
+- A `bench` question about what you physically saw now ignores anything typed before it was asked,
+  rather than taking a stray keypress as your answer.
 - A download that fails because you are on the robot's AP now waits for you to rejoin your normal
   Wi-Fi and carries on, instead of ending the run.
 - When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot

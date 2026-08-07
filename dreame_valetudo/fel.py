@@ -53,6 +53,10 @@ def print_fel_entry(console: Console, host: str = "computer") -> None:
 
     if not console.once("fel-entry", full):
         console.action("Redo the PCB button sequence (steps above).")
+        # The rail comes back on its own, so a robot left sitting through a decision prompt is
+        # usually booted by now — and the sequence silently does nothing on a robot already on.
+        console.detail("(If the robot powered itself back on while you were deciding, hold power "
+                       "~15s until it is fully off first.)")
 
 
 def wait_for_fel(ctx: Context) -> bool:

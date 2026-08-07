@@ -660,8 +660,10 @@ def _ssh_public_fingerprint(ctx: Context, key: Path, role: str) -> bytes:
         timeout=10,
     )
     lines = result.stdout.strip().splitlines()
+    # ssh-keygen prints the comment held in the private key as a third field, and ssh-keygen
+    # defaults that comment to user@host — so an exact count rejects almost every real key.
     fields = lines[0].split() if len(lines) == 1 else []
-    if not result.ok or len(fields) != 2:
+    if not result.ok or len(fields) < 2:
         raise Die(
             f"Could not derive the {role} SSH key's public identity without a passphrase; "
             "refusing a write-capable authentication probe."
@@ -2249,6 +2251,7 @@ def _resume_observation(
     if not ctx.interactive:
         ctx.console.warn("Physical observation is still pending; the hardware phase was not repeated.")
         return 1
+    ctx.console.discard_pending_input()
     if not ctx.console.confirm(scenario.observation):
         failed = dict(pending)
         failed.update({
@@ -2303,6 +2306,7 @@ def _record_observation(
                          "repeated on the next bench run.")
         ctx.console.info(f"Campaign report: {path}")
         return 1
+    ctx.console.discard_pending_input()
     if not ctx.console.confirm(scenario.observation):
         failed = dict(pending)
         failed.update({

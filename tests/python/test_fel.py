@@ -67,6 +67,10 @@ def test_fel_entry_is_full_then_compact_in_one_process(capsys: pytest.CaptureFix
     output = capsys.readouterr().out
     assert output.count("Connect the USB cable") == 1
     assert output.count("Redo the PCB button sequence (steps above).") == 1
+    # The rail returns on its own ~210s after the previous sequence, so by the second one the robot
+    # has usually booted — and the button sequence does nothing at all on a robot already on.
+    assert "powered itself back on" in " ".join(output.split())
+    assert "hold power ~15s until it is fully off first" in " ".join(output.split())
 
 
 def test_fresh_process_prints_all_guarded_blocks_again() -> None:
