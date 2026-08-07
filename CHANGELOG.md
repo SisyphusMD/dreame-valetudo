@@ -71,6 +71,10 @@
 
 ### Fixed
 
+- `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
+  comment, which nearly every key does.
+- A `bench` question about what you physically saw now ignores anything typed before it was asked,
+  rather than taking a stray keypress as your answer.
 - A download that fails because you are on the robot's AP now waits for you to rejoin your normal
   Wi-Fi and carries on, instead of ending the run.
 - When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot

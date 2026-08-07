@@ -15,6 +15,7 @@ import os
 import select
 import shutil
 import sys
+import termios
 import textwrap
 import threading
 import time
@@ -278,6 +279,24 @@ class Console:
         context manager; never hold one across a prompt (confirm/ask force-close it) or the flash
         window."""
         return _LiveProgress(self, label, timer=timer)
+
+    def discard_pending_input(self) -> None:
+        """Drop anything typed before the question was asked.
+
+        A question that records physical evidence has to capture what the operator decided, not
+        what their keyboard happened to be holding. Long hardware steps invite stray Enter presses
+        — a robot that seems stuck, a progress line that stopped moving — and a queued newline is
+        indistinguishable from a deliberate answer, so it takes the default silently. Which
+        direction that lands in is luck: it can fail a scenario the hardware passed, or pass one
+        nobody observed.
+        """
+        try:
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (OSError, ValueError, termios.error):
+            # No tty, a closed stdin, or a platform that will not flush it. Input hygiene is never
+            # worth failing a run over.
+            pass
 
     def confirm(self, prompt: str) -> bool:
         self._suspend_progress()

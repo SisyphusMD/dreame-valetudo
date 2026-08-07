@@ -552,7 +552,9 @@ def _keygen_responder(ctx: object, blob: str) -> None:
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[:1] == ("ssh-keygen",):
-            return Result(argv, 0, f"ssh-ed25519 {blob}\n", "")
+            # Carries a comment because ssh-keygen defaults one to user@host: a bare two-field
+            # reply is the shape almost no real key has.
+            return Result(argv, 0, f"ssh-ed25519 {blob} operator@laptop\n", "")
         return previous(argv) if previous is not None else Result(argv, 0, "", "")
 
     ctx.runner.responder = responder  # type: ignore[attr-defined]
@@ -1488,6 +1490,43 @@ def test_wrong_key_preflight_defers_identity_comparison_until_robot_selection(
     assert ctx.runner.transcript() == []
 
 
+def test_key_fingerprint_accepts_the_comment_ssh_keygen_prints(make_ctx: CtxFactory) -> None:
+    """A comment is part of what ssh-keygen prints, and identifies nothing.
+
+    Requiring exactly two fields rejected every key carrying one — which is almost every key, since
+    ssh-keygen defaults the comment to user@host — and it did so on the post-write path, scoring a
+    completed hardware rekey as a failure.
+    """
+    blob = "QUJDRA=="
+    key = None
+
+    def commented(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 0, f"ssh-ed25519 {blob} operator@laptop\n", "")
+
+    def bare(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 0, f"ssh-ed25519 {blob}\n", "")
+
+    ctx = make_ctx(robot_name="bench", responder=commented)
+    key = ctx.ws.base / "commented-key"
+    key.write_text("private-half")
+
+    with_comment = B._ssh_public_fingerprint(ctx, key, "newly-authorized")
+    ctx.runner.responder = bare  # type: ignore[attr-defined]
+    assert with_comment == B._ssh_public_fingerprint(ctx, key, "newly-authorized")
+
+
+def test_key_fingerprint_still_refuses_output_it_cannot_read(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        return Result(argv, 0, "ssh-ed25519\n", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
+    key = ctx.ws.base / "unreadable-key"
+    key.write_text("private-half")
+
+    with pytest.raises(Die, match="public identity"):
+        B._ssh_public_fingerprint(ctx, key, "newly-authorized")
+
+
 def test_wrong_key_scenario_rejects_the_robots_normal_key(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1998,6 +2037,40 @@ def test_unconfirmed_physical_observation_is_a_failure(
     entry = _report(ctx)["results"][-1]  # type: ignore[index]
     assert entry["result"] == "failed"
     assert entry["observation_confirmed"] is False
+
+
+def test_observation_prompt_discards_input_typed_before_the_question(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Enter pressed while the hardware step ran must not answer the evidence question.
+
+    Anything already in the terminal buffer is indistinguishable from a deliberate answer, so it
+    resolves the prompt to its default and records physical evidence nobody gave.
+    """
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    _prepare_root_start(ctx, monkeypatch)
+    _arm_h3(ctx)
+    monkeypatch.setattr(B, "root", lambda inner: inner.need_robot().state_set("rooted"))
+    order: list[str] = []
+    answer = ctx.console.confirm
+
+    def record_discard() -> None:
+        order.append("discarded")
+
+    def record_confirm(prompt: str) -> bool:
+        order.append(f"asked: {prompt}")
+        return answer(prompt)
+
+    monkeypatch.setattr(ctx.console, "discard_pending_input", record_discard)
+    monkeypatch.setattr(ctx.console, "confirm", record_confirm)
+
+    assert B.bench(
+        ctx,
+        ["run", "first-root", "--campaign", "rc", "--allow-destructive"],
+        auto_fn=_noop_auto,
+    ) == 0
+    observation = next(s.observation for s in B.SCENARIOS if s.key == "first-root")
+    assert order[-2:] == ["discarded", f"asked: {observation}"]
 
 
 def test_interrupted_physical_observation_resumes_without_repeating_hardware(
