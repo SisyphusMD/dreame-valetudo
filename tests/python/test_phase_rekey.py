@@ -1363,6 +1363,24 @@ def test_a_serial_the_robot_refused_is_never_recorded(
     assert saved is not None and saved.value == _SERIAL
 
 
+def test_the_ap_warning_and_joining_steps_are_printed_once(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The phase prints them, and the wait that follows used to announce itself and print them
+    again — the whole block, verbatim, twice in a row."""
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   confirms=[True], asks=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    rekey(ctx, over_ssh=True)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert text.count("NOT your home network") == 1
+    assert text.count("join the robot's Wi-Fi") == 1
+
+
 def test_a_serial_typed_over_the_default_and_refused_leaves_the_default_offered(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:

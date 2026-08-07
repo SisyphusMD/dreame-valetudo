@@ -176,8 +176,12 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _wait_for_robot_ap(ctx: Context) -> None:
-    """``offer_ap_wait`` for the routes where giving up means the run cannot continue."""
-    if not offer_ap_wait(ctx):
+    """``offer_ap_wait`` for the routes where giving up means the run cannot continue.
+
+    ``announce=False`` because every caller has just printed the same warning and the same joining
+    steps; letting the wait repeat them prints the whole block twice in a row.
+    """
+    if not offer_ap_wait(ctx, announce=False):
         abort("Aborted — nothing was sent to the robot.")
 
 

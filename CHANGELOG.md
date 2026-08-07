@@ -82,6 +82,10 @@
 - `rekey --over-ssh` now asks before writing when the serial that authenticates is not the one
   recorded for the selected robot, so joining the wrong robot's AP no longer silently rewrites its
   keys. Confirming corrects the recorded serial.
+- Prompts that offer a value now say that Enter accepts it, instead of only bracketing it.
+- `rekey --over-ssh` no longer prints the whole "join the robot's AP" block twice in a row.
+- Repeating the FEL button sequence now reminds you the robot may have powered itself back on
+  while you were deciding, and must be fully off first.
 - `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
   comment, which nearly every key does.
 - A `bench` question about what you physically saw now ignores anything typed before it was asked,

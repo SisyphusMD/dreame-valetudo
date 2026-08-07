@@ -320,7 +320,9 @@ class Console:
         _bookmark(prompt)
         # The default is rendered but never becomes part of `prompt`, which the run log records
         # verbatim — offering a remembered secret must not be what writes it to disk.
-        shown = f"{prompt} [{default}]" if default else prompt
+        # Spelled out rather than just bracketed: a bare [value] reads as a default to anyone who
+        # already knows the convention and as nothing at all to everyone else.
+        shown = f"{prompt} [Enter = {default}]" if default else prompt
         answer = self._prompt(self._c("1;35", f"?? {shown} "))
         _bookmark(None)  # see confirm(): deliberately not a finally
         if default is not None and not answer.strip():
