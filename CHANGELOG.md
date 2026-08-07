@@ -71,6 +71,12 @@
 
 ### Fixed
 
+- `rekey --over-ssh` now checks that the robot answers as Valetudo before asking for the serial,
+  so the password derived from it is not offered to your router when you are still on home Wi-Fi.
+- After a `rekey` write, a key refused by something that never identified itself as the robot is
+  now reported as unconfirmed instead of as the robot rejecting the key.
+- A refused serial now names the likelier cause first, using what actually answered rather than
+  always sending you back to the label under the dustbin.
 - `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
   comment, which nearly every key does.
 - A `bench` question about what you physically saw now ignores anything typed before it was asked,

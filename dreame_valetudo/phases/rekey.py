@@ -57,6 +57,7 @@ from ..ssh import (
     remember_sshkey,
     robot_ssh,
     ssh_failure_guidance,
+    valetudo_version_header,
 )
 from ..util import parse_config, same_robot_config
 from ..workspace import Robot, protect_private_dir, recovery_dump_valid, valid_serial
@@ -223,6 +224,17 @@ def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
         ctx.console.warn("Could not reach the robot, so whether it accepts the key is still "
                          "unknown — this is NOT a refusal. Check the AP and re-run; it will "
                          "confirm without writing again.")
+        return "unproven"
+    if valetudo_version_header(ctx.runner) is None:
+        # An SSH server refused the key, but nothing established it was the robot's. The wait above
+        # settles for any server at this address, and on a home network that is the router, which
+        # refuses every key. Calling that a refusal blames a write that reported OKAY and sends the
+        # operator looking for a fault in the one place it is not.
+        ctx.console.warn(f"An SSH server at {ROBOT_AP_IP} refused the key, but nothing there "
+                         "identified itself as the robot — on a home network this address is your "
+                         "ROUTER. This is NOT a refusal by the robot.")
+        ctx.console.info("Join the robot's own Wi-Fi AP and re-run 'rekey'; it confirms the key "
+                         "without writing again.")
         return "unproven"
     ctx.console.err(guidance)
     return "rejected"
@@ -508,6 +520,28 @@ def _ask_serial(ctx: Context, default: str | None, *, confirmed: bool = False) -
     return serial
 
 
+def _confirm_peer_before_serial(ctx: Context) -> None:
+    """Do not hand the serial to whatever happens to be answering at the AP address.
+
+    The password offered next is derived from the serial, and until now nothing had established
+    what the far end is — the AP wait settles for any SSH server, and on a home network that is the
+    router. Valetudo's version header identifies the robot without spending a credential, so it
+    goes first.
+
+    It asks rather than refuses: a rooted robot with Valetudo stopped reports no header, and this
+    route exists to rescue robots that are not in a normal state.
+    """
+    if valetudo_version_header(ctx.runner) is not None:
+        return
+    ctx.console.warn(f"Nothing at {ROBOT_AP_IP} identified itself as a Valetudo robot. On a home "
+                     "network this address is your ROUTER, and continuing hands it the password "
+                     "derived from this robot's serial.")
+    ctx.console.info("A rooted robot that is not currently running Valetudo also reports nothing "
+                     "here, so this does not prove the far end is wrong.")
+    if not ctx.console.confirm("Try the serial against it anyway?"):
+        abort("Aborted — no serial was entered and nothing was sent.")
+
+
 def _login_with_serial(ctx: Context, robot: Robot, staging: Path) -> str:
     """Ask for the serial until one authenticates, or the operator gives up.
 
@@ -577,16 +611,25 @@ def _authenticate_with_serial(ctx: Context, staging: Path, serial: str) -> str:
             "was changed — this is NOT a wrong serial. Join the ROBOT's own Wi-Fi AP (SSID like "
             "'dreame-vacuum-...'), give it time to finish booting, and re-run."
         )
-    # A refusal cannot tell a mistyped serial from a host that was never the robot: this route has
-    # no credential to identify the far end with until a password is accepted, so both causes have
-    # to be named rather than one of them guessed at.
+    # A refusal on its own cannot tell a mistyped serial from a host that was never the robot, but
+    # the credential-free identity check can — so the likelier cause leads, instead of both being
+    # listed in a fixed order that pointed at the label even when the label was never the problem.
+    if valetudo_version_header(ctx.runner) is None:
+        raise _WrongSerial(
+            f"Nothing at {ROBOT_AP_IP} identified itself as a Valetudo robot, and it refused both "
+            "passwords derived from that serial. Nothing was changed. On a home network this "
+            "address is usually your ROUTER — join the ROBOT's own Wi-Fi AP (SSID like "
+            "'dreame-vacuum-...') and re-run. If you ARE on the robot's AP, it may simply not be "
+            "running Valetudo: then check the serial against the label under the dustbin (it is "
+            "case-sensitive) and that the robot is rooted and fully booted."
+        )
     raise _WrongSerial(
-        f"The host at {ROBOT_AP_IP} did not accept either password derived from that serial, and "
-        "nothing was changed. Either the serial is wrong — check the label under the dustbin, it is "
-        f"case-sensitive — or that host is not the robot, which is normal on a home network, where "
-        f"{ROBOT_AP_IP} is usually your ROUTER. Also check the robot is rooted and fully booted, "
-        "and that ssh is OpenSSH 8.4 or newer: older versions insist on asking for the password at "
-        "the terminal instead of taking it from this tool."
+        f"The host at {ROBOT_AP_IP} answered as a Valetudo robot but did not accept either "
+        "password derived from that serial, and nothing was changed. Check the serial against the "
+        "label under the dustbin — it is case-sensitive. If it matches, you may have joined a "
+        "DIFFERENT robot's AP than the one selected here. Also check that ssh is OpenSSH 8.4 or "
+        "newer: older versions insist on asking for the password at the terminal instead of taking "
+        "it from this tool."
     )
 
 
@@ -677,6 +720,7 @@ def _rekey_over_ssh(ctx: Context, robot: Robot, *, keep_existing: bool, dry_run:
          "home Wi-Fi and lose internet briefly — normal."),
     ])
     _wait_for_robot_ap(ctx)
+    _confirm_peer_before_serial(ctx)
 
     staging = robot.work / "rekey"
     staging.mkdir(parents=True, exist_ok=True)

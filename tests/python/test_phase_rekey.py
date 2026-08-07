@@ -584,9 +584,12 @@ class _FakeRobot:
 
     def __init__(self, *, password: str, existing: str = _EXISTING_LINE,
                  key_authorized: bool = True, break_publish: bool = False,
-                 ap_up: bool = True) -> None:
+                 ap_up: bool = True, serves_valetudo: bool = True) -> None:
         self.password = password
         self.key_authorized = key_authorized
+        # Whether it answers the credential-free identity probe. A rooted robot normally does, and
+        # a router at the same address never does — which is the distinction the probe exists for.
+        self.serves_valetudo = serves_valetudo
         # Whether the robot's AP answers at all. The unauthenticated reachability probe is the only
         # thing that can tell "not on the AP yet" from "on it and refused", so it needs a robot that
         # can genuinely be absent rather than merely unwelcoming.
@@ -615,6 +618,10 @@ class _FakeRobot:
         if argv[:2] == ("ssh-keygen", "-y"):
             algo, blob = Path(f"{argv[-1]}.pub").read_text().split()[:2]
             return Result(argv, 0, f"{algo} {blob}\n", "")
+        if argv[0] == "curl":
+            if not self.ap_up or not self.serves_valetudo:
+                return Result(argv, 7, "", "curl: (7) Failed to connect to 192.168.5.1 port 80")
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\nX-Valetudo-Version: 2025.01.0\r\n", "")
         if argv[0] != "ssh":
             return Result(argv, 0, "OKAY", "")
         # The reachability probe carries neither an identity nor a password, so it is the one ssh
@@ -1039,14 +1046,47 @@ def test_over_ssh_refuses_a_host_that_takes_the_password_but_is_not_a_dreame(
         return Result(argv, 1, "", "")  # authenticated, but no factory dir
 
     key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    # It serves no Valetudo header either, so the operator is warned first and confirms anyway —
+    # this test is about the check that catches it after that.
     ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
-                   responder=responder, confirms=[], asks=[_SERIAL])
+                   responder=responder, confirms=[True], asks=[_SERIAL])
     _prepare_rooted_robot(ctx)
 
     with pytest.raises(Die, match="it is not the robot"):
         rekey(ctx, over_ssh=True)
 
     assert f"cat > {_MISC_STAGED}" not in _remote_commands(ctx)
+
+
+def test_over_ssh_will_not_offer_the_serial_to_something_that_is_not_a_valetudo_robot(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The password about to be offered is derived from the serial, so what receives it matters.
+
+    Until this check there was nothing to identify the far end with: the AP wait accepts any SSH
+    server, and the login's own identity check only runs once a secret has already been handed
+    over. Declining must cost nothing — no serial asked, nothing sent.
+    """
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("ssh-keygen", "-y"):
+            algo, blob = Path(f"{argv[-1]}.pub").read_text().split()[:2]
+            return Result(argv, 0, f"{algo} {blob}\n", "")
+        if argv[0] == "curl":
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\nServer: router\r\n", "")
+        return Result(argv, 0, "", "")  # answers ssh, so the AP probe is satisfied
+
+    key = _sshkey(tmp_path, "id_new", blob="BBBB", comment="new@laptop")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+                   responder=responder, confirms=[False], asks=[_SERIAL])
+    _prepare_rooted_robot(ctx)
+
+    with pytest.raises(UserAbort):
+        rekey(ctx, over_ssh=True)
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert any("identified itself as a Valetudo robot" in msg for _kind, msg in lines)
+    assert not any(kind == "secret" for kind, _msg in lines)
+    assert "PubkeyAuthentication=no" not in " ".join(ctx.runner.transcript())
 
 
 def test_over_ssh_offers_another_serial_when_neither_password_is_accepted(
@@ -1191,8 +1231,37 @@ def test_verify_over_ap_reports_success_when_the_robot_answers(
 def test_verify_over_ap_does_not_claim_success_when_the_robot_refuses(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:
-    """A rekey nobody checked is a rekey nobody knows worked — and a refusal must read as one."""
+    """A rekey nobody checked is a rekey nobody knows worked — and a refusal must read as one.
+
+    The far end answers the identity probe, so the refusal is genuinely the robot's and may be
+    reported as one.
+    """
     denied = "root@192.168.5.1: Permission denied (publickey)."
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            return Result(argv, 0, "HTTP/1.1 200 OK\r\nX-Valetudo-Version: 2025.01.0\r\n", "")
+        return Result(argv, 255, "", denied)
+
+    ctx = make_ctx(robot_name="bench", responder=responder, confirms=[True])
+    key = _sshkey(tmp_path, "id_new")
+
+    assert _verify_over_ap(ctx, key) == "rejected"
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert any(kind == "err" and "SSH authentication failed" in msg for kind, msg in lines)
+    assert not any("CONFIRMED" in msg for _kind, msg in lines)
+
+
+def test_verify_over_ap_will_not_call_it_a_refusal_when_nothing_proved_it_was_the_robot(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The AP wait settles for any SSH server, and on a home network that is the router.
+
+    A router refuses every key. Reporting that as the robot refusing one blames a write that
+    reported OKAY and sends the operator hunting a fault in the only place it cannot be.
+    """
+    denied = "root@192.168.5.1: Permission denied (publickey,keyboard-interactive)."
     ctx = make_ctx(
         robot_name="bench",
         responder=lambda argv: Result(argv, 255, "", denied),
@@ -1200,10 +1269,10 @@ def test_verify_over_ap_does_not_claim_success_when_the_robot_refuses(
     )
     key = _sshkey(tmp_path, "id_new")
 
-    assert _verify_over_ap(ctx, key) == "rejected"
+    assert _verify_over_ap(ctx, key) == "unproven"
 
     lines = ctx.console.lines  # type: ignore[attr-defined]
-    assert any(kind == "err" and "SSH authentication failed" in msg for kind, msg in lines)
+    assert any("NOT a refusal by the robot" in msg for _kind, msg in lines)
     assert not any("CONFIRMED" in msg for _kind, msg in lines)
 
 

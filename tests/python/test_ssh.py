@@ -23,6 +23,7 @@ from dreame_valetudo.ssh import (
     ssh_base,
     ssh_failure_guidance,
     stage_pub_for_upload,
+    valetudo_version_header,
 )
 
 
@@ -584,6 +585,35 @@ def test_ensure_sshkey_treats_a_dangling_symlinked_half_as_missing(tmp_path: Pat
     with pytest.raises(Die, match=r"public half is missing"):
         ensure_sshkey(rr, Console(color=False), key)
     assert rr.calls == []
+
+
+def test_the_identity_probe_reads_the_version_header_without_going_through_a_proxy() -> None:
+    """The AP is a direct link to a fixed address the host just joined.
+
+    An http_proxy in the environment would send this probe somewhere else entirely while every ssh
+    call still goes direct, so a header it returned would describe the proxy — and this answer
+    decides whether the far end is treated as the robot.
+    """
+    rr = RecordingRunner(
+        responder=lambda argv: Result(
+            argv, 0, "HTTP/1.1 200 OK\r\nX-Valetudo-Version: 2025.01.0\r\n", "",
+        ),
+    )
+
+    assert valetudo_version_header(rr) == "2025.01.0"
+    argv = rr.calls[0]
+    assert "--noproxy" in argv
+    assert argv[argv.index("--noproxy") + 1] == "*"
+
+
+def test_the_identity_probe_reports_nothing_when_no_version_header_comes_back() -> None:
+    """A router answers HTTP too. Absence is not proof of a router either — a rooted robot with
+    Valetudo stopped reports nothing — so callers ask rather than conclude."""
+    rr = RecordingRunner(
+        responder=lambda argv: Result(argv, 0, "HTTP/1.1 200 OK\r\nServer: router\r\n", ""),
+    )
+
+    assert valetudo_version_header(rr) is None
 
 
 def test_the_ap_hint_names_the_vpn_that_takes_the_robots_address() -> None:

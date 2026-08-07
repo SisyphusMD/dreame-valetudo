@@ -74,6 +74,33 @@ def ap_reachable(ctx: Context) -> bool:
     return "permission denied" in " ".join(probe.stderr.split()).lower()
 
 
+def valetudo_version_header(runner: Runner) -> str | None:
+    """The X-Valetudo-Version the AP address reports, or None if nothing reports one.
+
+    The only identity evidence that costs no credential, which makes it the only one available to
+    the two callers is_dreame_ap cannot serve: the password route, which would otherwise offer the
+    serial-derived password before anything established what the far end is, and the post-write
+    verify, which cannot log in with a key the robot may have refused.
+
+    Weaker than is_dreame_ap and not a substitute for it. A rooted robot with Valetudo stopped
+    reports nothing here, so absence is a reason to ask or to withhold a verdict, never a reason to
+    call the far end a router.
+    """
+    response = runner.run(
+        # --noproxy because this is a fixed link-local address on a Wi-Fi AP the host just joined.
+        # An http_proxy in the environment would send the probe somewhere else entirely while the
+        # ssh calls still go direct, so the answer would describe the proxy, not the peer — and it
+        # is used to decide whether the far end is the robot.
+        ["curl", "-sS", "-m", "3", "--noproxy", "*", "-D", "-", "-o", "/dev/null",
+         f"http://{ROBOT_AP_IP}"],
+        check=False,
+    )
+    match = re.search(
+        r"(?im)^x-valetudo-version\s*:\s*([^\s]+)", response.stdout + response.stderr,
+    )
+    return match.group(1).strip() if match is not None else None
+
+
 def offer_ap_wait(ctx: Context, *, announce: bool = True) -> bool:
     """Poll until the robot's AP answers, asking only before each FURTHER round of waiting.
 
