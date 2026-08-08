@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14.6"   # exact pin (repo convention); Renovate bumps the patch
+          python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
       - name: lint + typecheck + test
         run: |
           # Pin the dev toolchain (kept in lockstep with uv.lock): CI ran these unpinned, so an
@@ -228,7 +228,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.14.6"   # exact pin (repo convention); Renovate bumps the patch
+          python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
       - name: install the session wrapper's own dependency
         run: |
           # Without a real tmux the session suite SKIPS, and a skip in CI reads exactly like a
