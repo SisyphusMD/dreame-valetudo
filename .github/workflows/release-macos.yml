@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           # renovate: datasource=github-tags depName=python/cpython versioning=pep440
-          python-version: "3.14.6"   # exact interpreter frozen into the bundle
+          python-version: "3.14.7"   # exact interpreter frozen into the bundle
 
       - name: Install, test, and uninstall the Homebrew release formula
         run: bash packaging/test-homebrew-formula.sh "$GITHUB_REF_NAME"
