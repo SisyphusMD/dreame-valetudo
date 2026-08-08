@@ -29,6 +29,10 @@ case "$DREAME_FAKE_CURL_CASE:$n" in
   pass:*) status=completed; conclusion=success; sha="$SHA" ;;
   fail:*) status=completed; conclusion=failure; sha="$SHA" ;;
   missing:*) printf '{"workflow_runs":[]}\n'; exit 0 ;;
+  # curl's own failure, the shape a 403 from the shared IP's unauthenticated quota takes.
+  ratelimited:1) exit 22 ;;
+  ratelimited:*) status=completed; conclusion=success; sha="$SHA" ;;
+  unreachable:*) exit 22 ;;
 esac
 printf '{"workflow_runs":[{"head_sha":"%s","path":".github/workflows/ci-macos.yml@feature","status":"%s","conclusion":%s}]}\n' \
   "$sha" "$status" "$([ "$conclusion" = null ] && printf null || printf '"%s"' "$conclusion")"
@@ -51,6 +55,13 @@ if run_case fail 1; then
 fi
 if run_case missing 2; then
   echo "a missing native macOS run was accepted" >&2
+  exit 1
+fi
+# An API that cannot be reached has not reported a failing macOS run. Every gate in flight would
+# otherwise go red together whenever the shared IP's hourly quota runs out, needing a hand to clear.
+run_case ratelimited 2
+if run_case unreachable 2; then
+  echo "an unreachable API was treated as a passing macOS run" >&2
   exit 1
 fi
 

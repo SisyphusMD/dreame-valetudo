@@ -20,10 +20,18 @@ workflow=".github/workflows/ci-macos.yml"
 
 (( initial_delay == 0 )) || sleep "$initial_delay"
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  response="$(curl --retry 3 --retry-all-errors --retry-delay 5 -fsSL \
-    -H 'Accept: application/vnd.github+json' \
-    -H 'X-GitHub-Api-Version: 2022-11-28' \
-    "$api/actions/runs?event=push&head_sha=$sha&per_page=20")"
+  if ! response="$(curl --retry 3 --retry-all-errors --retry-delay 5 -fsSL \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "$api/actions/runs?event=push&head_sha=$sha&per_page=20")"; then
+    # Not being able to ask is not an answer. The budget below assumes a couple of concurrent
+    # gates; a busier hour exhausts the shared IP's unauthenticated quota and every gate in flight
+    # would fail at once on a 403 — reporting a macOS verdict GitHub never gave, and one only a
+    # person can clear. Spend the attempt and ask again.
+    echo "GitHub API unavailable for $sha ($attempt/$attempts) — no verdict, retrying" >&2
+    (( attempt == attempts )) || sleep "$delay"
+    continue
+  fi
   read -r status conclusion < <(
     python3 -c '
 import json, sys
