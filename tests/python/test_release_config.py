@@ -14,6 +14,8 @@ _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 _MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
 _MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
+# pyusb drives real USB hardware, so no CI job can prove a bump of it works.
+_AUTOMERGE_EXEMPT = ("pyusb",)
 _LINUX_PACKAGES = _ROOT / "packaging" / "test-linux-packages.sh"
 _README = _ROOT / "README.md"
 
@@ -165,20 +167,54 @@ def test_python_version_bumps_wait_for_the_setup_python_manifest() -> None:
 def test_pinned_toolchain_matches_the_lockfile() -> None:
     ci = _CI.read_text()
     lock = (_ROOT / "uv.lock").read_text()
+    project = (_ROOT / "pyproject.toml").read_text()
     for package, var in (("ruff", "RUFF"), ("mypy", "MYPY"), ("pytest", "PYTEST")):
         pin = re.search(rf'{var}="([^"]+)"', ci)
         locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
+        declared = re.search(rf'"{package}==([^"]+)"', project)
         assert pin is not None and locked is not None, package
         # CI installs the literal; `uv run` resolves the lock. Contributors lint with whatever
         # these disagree on, and no other check compares them.
         assert pin.group(1) == locked.group(1), (
             f"{package}: CI installs {pin.group(1)}, uv.lock resolves {locked.group(1)}"
         )
+        # An `==` pin, not a floor: a floor is permanently satisfied, so pep621 raises nothing and
+        # the lock never follows the literal Renovate does move. This is what makes one PR able to
+        # carry all three, so it is pinned here rather than left to the config comment.
+        assert declared is not None, f"{package} must be pinned exactly in pyproject.toml"
+        assert declared.group(1) == locked.group(1), (
+            f"{package}: pyproject pins {declared.group(1)}, uv.lock resolves {locked.group(1)}"
+        )
 
 
 def test_deps_ci_cannot_exercise_are_not_automerged() -> None:
+    """Only deps no CI job covers stay hand-reviewed.
+
+    ruff/mypy/pytest run in every python job, and their exact pins let one PR move pyproject,
+    uv.lock, and the workflow literals together — so green genuinely proves the bump, and they
+    automerge like anything else CI exercises.
+    """
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    for dep in ("pyusb", "ruff", "mypy", "pytest"):
+
+    def held(dep: str) -> list[dict[str, object]]:
+        return [
+            rule
+            for rule in config["packageRules"]
+            if dep in rule.get("matchDepNames", []) and rule.get("automerge") is False
+        ]
+
+    # Read out of the config, never off a local list: re-adding a hold on these is the regression
+    # worth catching, and comparing two constants declared in this file could not catch it.
+    for dep in ("ruff", "mypy", "pytest"):
+        assert held(dep) == [], f"{dep} is held again — did the lockfile stop moving with it?"
+    blanket = [
+        rule
+        for rule in config["packageRules"]
+        if rule.get("automerge") is True and "patch" in rule.get("matchUpdateTypes", [])
+    ]
+    assert len(blanket) == 1, "nothing automerges a green patch bump any more"
+
+    for dep in _AUTOMERGE_EXEMPT:
         rules = [
             rule
             for rule in config["packageRules"]

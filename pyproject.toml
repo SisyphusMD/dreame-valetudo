@@ -60,4 +60,8 @@ module = ["usb.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+# Exact, not floors. CI installs these literally and `uv run` resolves them from uv.lock, so any
+# disagreement means contributors lint with a different binary than the gate. A floor is
+# permanently satisfied, which leaves pep621 nothing to raise and no way for the lockfile to move
+# in the same PR as the annotated workflow literals.
+dev = ["pytest==9.1.1", "ruff==0.16.2", "mypy==2.3.0"]

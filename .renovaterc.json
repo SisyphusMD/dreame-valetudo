@@ -201,10 +201,9 @@
       "prBodyNotes": ["CI cannot reach the flashing path. Re-verify `dreame-fastboot` against real hardware before relying on this bump."]
     },
     {
-      "description": "The dev toolchain is pinned twice: as literals in the workflows, which CI installs, and in `uv.lock`, which `uv run` resolves. Renovate moves only the first — `pep621` sees the permanently-satisfied `>=` floors in pyproject.toml and never raises a PR — so an automerged bump would leave contributors linting with a different binary than CI. Hand-reviewed so the lock moves in the same PR.",
+      "description": "The dev toolchain lives in three places that must agree exactly: literals in the workflows, which CI installs with pip; `uv.lock`, which `uv run` resolves; and pyproject.toml, pinned with `==` rather than a `>=` floor. The floor matters because a satisfied one leaves `pep621` nothing to raise, so the lockfile cannot move in the same PR as the literals and each bump strands it. Pinned exactly, pep621 raises the bump and relocks `uv.lock` as an artifact while the annotated literals share the branch, so one PR carries all three and green proves the whole toolchain — which is what lets these automerge like any other CI-exercised dep.",
       "matchDepNames": ["ruff", "mypy", "pytest"],
-      "automerge": false,
-      "prBodyNotes": ["Run `uv lock --upgrade-package <dep>` and commit `uv.lock` in this PR; `test_pinned_toolchain_matches_the_lockfile` fails until it matches."]
+      "prBodyNotes": ["`test_pinned_toolchain_matches_the_lockfile` fails unless pyproject.toml, `uv.lock`, and the workflow literals all name the same version. If this PR is red because Renovate could not relock, run `uv lock` and commit `uv.lock` here."]
     },
     {
       "description": "CPython is frozen into the bundle, and every version change requires the matching source checksum; a new minor also changes the Homebrew dependency.",
