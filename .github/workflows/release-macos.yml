@@ -61,7 +61,7 @@ jobs:
           # Self-contained native binaries (python + the package / pyusb frozen in).
           python -m pip install --upgrade pip
           # renovate: datasource=pypi depName=pyinstaller
-          python -m pip install pyinstaller==6.21.0
+          python -m pip install pyinstaller==6.22.0
           PYUSB="$(read_pin PYUSB_VERSION)"
           python -m pip install "pyusb==$PYUSB"
           rm -rf dist
