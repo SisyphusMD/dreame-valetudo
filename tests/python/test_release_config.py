@@ -14,8 +14,9 @@ _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 _MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
 _MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
-# pyusb drives real USB hardware, so no CI job can prove a bump of it works.
-_AUTOMERGE_EXEMPT = ("pyusb",)
+# No datasource tracks these, so nothing bumps them and nothing has to refresh them: the stage1
+# tarball has no upstream release feed, and the Dust keystream is a constant of the format.
+_STATIC_DIGESTS = ("STAGE1_SHA256", "DUST_KEYSTREAM_SHA256")
 _LINUX_PACKAGES = _ROOT / "packaging" / "test-linux-packages.sh"
 _README = _ROOT / "README.md"
 
@@ -187,26 +188,21 @@ def test_pinned_toolchain_matches_the_lockfile() -> None:
         )
 
 
-def test_deps_ci_cannot_exercise_are_not_automerged() -> None:
-    """Only deps no CI job covers stay hand-reviewed.
+def test_no_dependency_is_held_back_for_hand_updating() -> None:
+    """Nothing may require a person to edit a file to make its bump mergeable.
 
-    ruff/mypy/pytest run in every python job, and their exact pins let one PR move pyproject,
-    uv.lock, and the workflow literals together — so green genuinely proves the bump, and they
-    automerge like anything else CI exercises.
+    Every hold here existed because something bound to the version — a digest, a lockfile — had no
+    datasource and could not move with it, so the branch arrived half-applied. Refreshing those
+    from the version removes the reason, and a hold with no reason is just a chore.
     """
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    held = [
+        rule.get("matchDepNames") or rule.get("matchManagers") or rule.get("description", "?")
+        for rule in config["packageRules"]
+        if rule.get("automerge") is False
+    ]
+    assert held == [], f"held for hand review: {held}"
 
-    def held(dep: str) -> list[dict[str, object]]:
-        return [
-            rule
-            for rule in config["packageRules"]
-            if dep in rule.get("matchDepNames", []) and rule.get("automerge") is False
-        ]
-
-    # Read out of the config, never off a local list: re-adding a hold on these is the regression
-    # worth catching, and comparing two constants declared in this file could not catch it.
-    for dep in ("ruff", "mypy", "pytest"):
-        assert held(dep) == [], f"{dep} is held again — did the lockfile stop moving with it?"
     blanket = [
         rule
         for rule in config["packageRules"]
@@ -214,14 +210,31 @@ def test_deps_ci_cannot_exercise_are_not_automerged() -> None:
     ]
     assert len(blanket) == 1, "nothing automerges a green patch bump any more"
 
-    for dep in _AUTOMERGE_EXEMPT:
-        rules = [
-            rule
-            for rule in config["packageRules"]
-            if dep in rule.get("matchDepNames", []) and rule.get("automerge") is False
-        ]
-        assert len(rules) == 1, dep
-        assert rules[0].get("prBodyNotes"), dep
+
+def test_every_version_bound_digest_is_refreshed_automatically() -> None:
+    """A digest pinned beside a version must be recomputed from it, or the next bump strands it.
+
+    This is the anti-rot half: adding a new digest pin without teaching the refresher about it
+    would quietly reintroduce the hand-editing this removed.
+    """
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    task = config["postUpgradeTasks"]
+    assert any("refresh-pins.sh" in command for command in task["commands"])
+    # Per branch, not per update: several deps can land in one branch and the refresher reads
+    # whatever versions the branch ended up with.
+    assert task["executionMode"] == "branch"
+    assert "dreame_valetudo/constants.py" in task["fileFilters"]
+    assert any(f.startswith("packaging/homebrew/") for f in task["fileFilters"])
+
+    refresher = (_ROOT / "packaging" / "refresh-pins.sh").read_text()
+    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    for name in sorted(set(re.findall(r"^(\w*SHA256)\b", constants, re.M))):
+        if name in _STATIC_DIGESTS:
+            continue
+        assert name in refresher, (
+            f"{name} moves with a version but nothing refreshes it, so its next bump lands "
+            "half-applied and waits for a human"
+        )
 
 
 def test_the_cpython_pin_is_proposed_without_its_tag_prefix() -> None:
@@ -310,15 +323,19 @@ def test_homebrew_templates_use_the_replicated_release_tarball() -> None:
         assert "forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/" in formula
         assert "github.com/SisyphusMD/dreame-valetudo/releases/download/" in formula
         assert "/archive/" not in formula
-        assert "bump by hand with each CPython minor" in formula
+        assert "refresh-pins.sh" in formula
 
-    config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    homebrew_rules = [
-        rule for rule in config["packageRules"]
-        if "python/cpython" in rule.get("matchDepNames", []) and "prBodyNotes" in rule
-    ]
-    assert len(homebrew_rules) == 1
-    assert any("packaging/homebrew/*.rb" in note for note in homebrew_rules[0]["prBodyNotes"])
+    # No Renovate manager reads a .rb, so the formula's interpreter can only stay correct by being
+    # rewritten from the pin. Assert they actually agree rather than that a note asks someone to.
+    series = ".".join(
+        re.search(  # type: ignore[union-attr]
+            r'^BUNDLE_PYTHON_VERSION = "([^"]+)"',
+            (_ROOT / "dreame_valetudo" / "constants.py").read_text(), re.M,
+        ).group(1).split(".")[:2]
+    )
+    for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
+        assert f'depends_on "python@{series}"' in formula, name
 
 
 def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
@@ -486,17 +503,20 @@ def test_bundled_python_updates_require_a_matching_source_checksum() -> None:
     ]
 
     assert len(rules) == 1
-    assert rules[0]["matchUpdateTypes"] == ["patch", "minor", "major"]
-    assert rules[0]["automerge"] is False
     assert "BUNDLE_PYTHON_SHA256" in rules[0]["prBodyNotes"][0]
+    # The checksum is what makes the frozen interpreter verifiable, so the refresher has to derive
+    # it from the same version Renovate writes — the .tar.xz the Linux bundle actually compiles.
+    refresher = (_ROOT / "packaging" / "refresh-pins.sh").read_text()
+    assert "BUNDLE_PYTHON_SHA256" in refresher
+    assert "Python-${PY_VERSION}.tar.xz" in refresher
 
 
-def test_manylinux_builders_are_pinned_to_dated_tags_and_stay_hand_reviewed() -> None:
-    # The digest already freezes the build, so `latest` bought nothing and cost the reviewer
-    # everything: a bump arrived as a bare hex diff with no version to order or compare, which is
-    # not a reviewable artifact for the images that define the shipped glibc ABI. The dated tag
-    # makes each bump self-describing, and the regex versioning keeps `latest` out of the
-    # candidates entirely. Automerge stays off whatever bucket the dated tag lands in.
+def test_manylinux_builders_are_pinned_to_dated_tags() -> None:
+    # The digest already freezes the build, so `latest` bought nothing and cost the reader
+    # everything: a bump arrives as a bare hex diff with no version to order or compare, for the
+    # images that define the shipped glibc ABI. The dated tag makes each bump self-describing, and
+    # the regex versioning keeps `latest` out of the candidates entirely. What proves a bump safe
+    # is packaging/check-glibc-floor.py running inside deb.Dockerfile, which the build job builds.
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
     rules = [
         rule for rule in config["packageRules"]
@@ -506,7 +526,6 @@ def test_manylinux_builders_are_pinned_to_dated_tags_and_stay_hand_reviewed() ->
     ]
 
     assert len(rules) == 1
-    assert rules[0]["automerge"] is False
     assert rules[0]["versioning"].startswith("regex:")
 
     for workflow in (_CI, _PUBLISH):

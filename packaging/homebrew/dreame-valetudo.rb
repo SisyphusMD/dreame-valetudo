@@ -19,8 +19,8 @@ class DreameValetudo < Formula
   sha256 "REPLACE_TARBALL_SHA256"
   license "AGPL-3.0-or-later"
 
-  # matches the interpreter the .pkg/.deb bundles freeze; bump by hand with each CPython minor —
-  # no Renovate manager covers this formula (see the python/cpython prBodyNotes in .renovaterc.json).
+  # matches the interpreter the .pkg/.deb bundles freeze. No Renovate manager covers this formula,
+  # so packaging/refresh-pins.sh rewrites it from BUNDLE_PYTHON_VERSION as a postUpgradeTask.
   depends_on "python@3.14"
   depends_on "libusb"       # the fastboot-over-libusb client + sunxi-fel load it at runtime
   depends_on "uv"           # runs the libusb fastboot client (fetches pyusb on first use)

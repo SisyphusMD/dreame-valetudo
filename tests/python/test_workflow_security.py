@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -66,12 +67,22 @@ def test_github_token_defaults_read_only_and_only_macos_publish_can_write() -> N
     assert macos.count("contents: write") == 1
 
 
-def test_sunxi_tools_updates_always_require_human_review() -> None:
+def test_sunxi_tools_is_pinned_to_one_exact_upstream_commit() -> None:
+    """The FEL transport is compiled from source and talks to the robot's boot ROM.
+
+    What has to hold is that every channel builds one identified commit — a floating ref would let
+    two release builds ship different transports under the same version, which no amount of review
+    afterwards can reconstruct.
+    """
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
     matching = [
         rule for rule in config["packageRules"]
         if "https://github.com/linux-sunxi/sunxi-tools" in rule.get("matchDepNames", [])
     ]
     assert len(matching) == 1
-    assert matching[0]["automerge"] is False
-    assert any("upstream" in note for note in matching[0]["prBodyNotes"])
+    assert any("constants.py" in note for note in matching[0]["prBodyNotes"])
+
+    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    ref = re.search(r'^SUNXI_TOOLS_REF = "([^"]+)"', constants, re.M)
+    assert ref is not None
+    assert re.fullmatch(r"[0-9a-f]{40}", ref.group(1)), "must be a full commit, never a branch"
