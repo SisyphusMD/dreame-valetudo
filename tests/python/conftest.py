@@ -25,6 +25,11 @@ FB = ("python3", "/x/fastboot-libusb.py")
 
 # A 32-hex device config value, shared by every test that needs a plausible-looking one.
 CFG = "abcdef0123456789abcdef0123456789"
+# The robot's SoC id, deliberately unlike CFG: the bootloader config and the factory
+# cpuid.txt are different facts, and a test must fail if one is used where the other belongs.
+CPUID = "0f1e2d3c4b5a69780f1e2d3c4b5a6978"
+# Every robot carries sn.txt; recon records the same value off the label under the dustbin.
+SERIAL = "A1B2C3D4E5F6G7H8"
 
 
 def _shift_year(version: str, delta: int) -> str:

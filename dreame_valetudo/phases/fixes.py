@@ -78,7 +78,7 @@ def _require_selected_robot(ctx: Context, key: Path | None, command: str) -> Non
     expected_config = ctx.robot_config()
     if expected_config is None and ctx.profile.method == "fastboot":
         die(f"No recorded config identity for the selected robot; re-run recon before {command}.")
-    _live_robot_identity(ctx, key, expected_config)
+    _live_robot_identity(ctx, key)
 
 
 def fix_wifi(ctx: Context) -> None:

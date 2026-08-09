@@ -71,6 +71,10 @@
 
 ### Fixed
 
+- Installing Valetudo and capturing a factory backup work again. Both checked the robot's identity
+  against `/mnt/private/ULI/factory/config.txt`, a file no Dreame robot has, so every run stopped at
+  that gate and no backup could ever be published. They now use the SoC id the robot really carries,
+  recorded the first time a robot is reached and required to match on every run after.
 - `bench` can now qualify the whole install path on one robot. Each install scenario used to require
   that Valetudo had never been installed, so running any one of them made the rest unreachable for
   good. A repeat run is refused only when it would downgrade the robot, and `bench report` marks it

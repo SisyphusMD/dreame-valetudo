@@ -29,6 +29,7 @@ from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import Robot
 
 _CONFIG = "a" * 32
+_CPUID = "0f1e2d3c4b5a69780f1e2d3c4b5a6978"
 
 
 def _remote(call: tuple[str, ...]) -> str:
@@ -44,8 +45,8 @@ def _matching_fix_robot(argv: tuple[str, ...]) -> Result | None:
     preflight = _reachable_dreame(argv)
     if preflight is not None:
         return preflight
-    if "factory_config=" in _remote(argv):
-        return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={_CONFIG}\n", "")
+    if "factory_cpuid=" in _remote(argv):
+        return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_cpuid={_CPUID}\n", "")
     return None
 
 
@@ -55,6 +56,9 @@ def _bind_recon_robot(ctx: Context, config: str | None = _CONFIG) -> Context:
     ctx.robot.recon_dir.mkdir(parents=True, exist_ok=True)
     if config is not None:
         (ctx.robot.recon_dir / "config.txt").write_text(f"config: {config}\n")
+        # A fastboot workspace that has reached its robot before carries the pinned SoC id; a UART
+        # one (config None) never does, and binds on live model instead.
+        ctx.robot.state_set("cpuid", _CPUID)
     return ctx
 
 
@@ -128,13 +132,13 @@ def test_fix_rejects_another_robot_before_any_repair_read_or_write(
         pre = _reachable_dreame(argv)
         if pre is not None:
             return pre
-        if "factory_config=" in _remote(argv):
-            return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={'b' * 32}\n", "")
+        if "factory_cpuid=" in _remote(argv):
+            return Result(argv, 0, f"model=dreame.vacuum.r2416\nfactory_cpuid={'b' * 32}\n", "")
         return Result(argv, 0, "", "")
 
     ctx = _bind_recon_robot(make_ctx(responder=responder, confirms=[True]))
 
-    with pytest.raises(Die, match="factory config does not match"):
+    with pytest.raises(Die, match="not the selected robot"):
         command(ctx)
 
     remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
@@ -173,7 +177,7 @@ def test_fix_proceeds_on_the_correctly_bound_robot(
 
     # The identity is proven BEFORE the repair reads the factory file it might rewrite.
     remotes = [_remote(call) for call in ctx.runner.calls]  # type: ignore[attr-defined]
-    identity = next(i for i, r in enumerate(remotes) if "factory_config=" in r)
+    identity = next(i for i, r in enumerate(remotes) if "factory_cpuid=" in r)
     repair = next(i for i, r in enumerate(remotes) if factory_path in r)
     assert identity < repair
 
@@ -239,9 +243,9 @@ def test_fix_impl_streams_config_without_shell_interpolation(make_ctx: CtxFactor
         if pre is not None:
             return pre
         cmd = _remote(argv)
-        if "factory_config=" in cmd:
+        if "factory_cpuid=" in cmd:
             return Result(
-                argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={_CONFIG}\n", "",
+                argv, 0, f"model=dreame.vacuum.r2416\nfactory_cpuid={_CPUID}\n", "",
             )
         if "device.conf" in cmd:
             return Result(argv, 0, "model=dreame.vacuum.r2416\n", "")
@@ -508,7 +512,7 @@ def _impl_responder(
     config_json: str,
     ui_up: bool,
     log_report: str = "",
-    factory_config: str = _CONFIG,
+    factory_cpuid: str = _CPUID,
 ) -> object:
     def responder(argv: tuple[str, ...]) -> Result:
         pre = _reachable_dreame(argv)
@@ -519,8 +523,8 @@ def _impl_responder(
         # be caught by the device.conf branch below.
         if "tail -n 40 /tmp/valetudo.log" in cmd:
             return Result(argv, 0, log_report, "")
-        if "factory_config=" in cmd:
-            return Result(argv, 0, f"{model_line}factory_config={factory_config}\n", "")
+        if "factory_cpuid=" in cmd:
+            return Result(argv, 0, f"{model_line}factory_cpuid={factory_cpuid}\n", "")
         if "device.conf" in cmd:
             return Result(argv, 0, model_line, "")
         if cmd == "cat /data/valetudo_config.json":
@@ -538,9 +542,9 @@ def test_fix_impl_rejects_another_selected_robot_before_any_write(
         pre = _reachable_dreame(argv)
         if pre is not None:
             return pre
-        if "factory_config=" in _remote(argv):
+        if "factory_cpuid=" in _remote(argv):
             return Result(
-                argv, 0, f"model=dreame.vacuum.r2416\nfactory_config={'b' * 32}\n", "",
+                argv, 0, f"model=dreame.vacuum.r2416\nfactory_cpuid={'b' * 32}\n", "",
             )
         return Result(argv, 0, "", "")
 
@@ -551,26 +555,26 @@ def test_fix_impl_rejects_another_selected_robot_before_any_write(
         lambda argv, _stdout, _stdin: redirects.append(argv) or Result(argv, 0, "", "")
     )
 
-    with pytest.raises(Die, match="factory config does not match"):
+    with pytest.raises(Die, match="not the selected robot"):
         fix_impl(ctx)
     assert redirects == []
 
 
-def test_fix_impl_accepts_same_robot_with_changed_session_config_suffix(
+def test_fix_impl_accepts_the_robot_whose_soc_id_was_pinned(
     make_ctx: CtxFactory,
 ) -> None:
     responder = _impl_responder(
         "model=dreame.vacuum.r2416\n",
         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}',
         ui_up=True,
-        factory_config=f"{'a' * 8}{'b' * 24}",
+        factory_cpuid=_CPUID,
     )
     ctx = make_ctx(model="x40-ultra", responder=responder)
     _bind_recon_robot(ctx)
 
     fix_impl(ctx)
 
-    assert any("factory_config=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert any("factory_cpuid=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_fix_impl_preserves_uart_workspace_without_recon_config(
@@ -582,7 +586,7 @@ def test_fix_impl_preserves_uart_workspace_without_recon_config(
             "model=dreame.vacuum.p2028\n",
             '{"robot":{"implementation":"DreameZ10ProValetudoRobot"}}',
             ui_up=True,
-            factory_config="",
+            factory_cpuid="",
         ),
     )
     ctx.robot = Robot(ctx.ws.robots_dir / "uart-robot")
@@ -591,7 +595,7 @@ def test_fix_impl_preserves_uart_workspace_without_recon_config(
     fix_impl(ctx)
 
     assert ctx.robot_config() is None
-    assert any("factory_config=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert any("factory_cpuid=" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_fix_impl_removes_the_plaintext_patch_when_the_remote_write_fails(

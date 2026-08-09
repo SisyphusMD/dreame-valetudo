@@ -38,7 +38,7 @@ from ..ssh import (
     ssh_failure_guidance,
     valetudo_version_header,
 )
-from ..util import parse_config, parse_mikey, repair_did, same_robot_config, sha256_of
+from ..util import parse_cpuid, parse_mikey, repair_did, sha256_of
 from ..workspace import RECOVERY_BACKUP_ZIP, robot_tag, staged_publish, valid_serial
 from .doctor import check_external_tools
 from .fetch import fetch_valetudo
@@ -50,7 +50,10 @@ _KEY_TXT = "/mnt/private/ULI/factory/key.txt"
 _MIKEY_RE = re.compile(r"[A-Za-z0-9]{8,64}")
 _VALETUDO_VERSION_RE = re.compile(r"[0-9]{4}\.[0-9]{2}\.[0-9]+(?:-[A-Za-z0-9.-]+)?")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_FACTORY_CONFIG_MEMBER = "mnt/private/ULI/factory/config.txt"
+# The identity anchor a backup carries. NOT the bootloader config: that value is answered by
+# `fastboot getvar config` and exists nowhere on the robot — verified against a complete capture of
+# a real robot's /mnt/private, /mnt/misc and /etc/*.pem, plus both raw partition images.
+_FACTORY_CPUID_MEMBER = "mnt/private/ULI/factory/cpuid.txt"
 _FACTORY_DID_MEMBER = "mnt/private/ULI/factory/did.txt"
 _FACTORY_KEY_MEMBER = "mnt/private/ULI/factory/key.txt"
 # Members the capture takes when the robot has them. Robots differ in which recovery PEMs they
@@ -152,8 +155,8 @@ def _tar_has_factory_data(path: Path) -> bool:
     members = _archive_members(path)
     if members is None:
         return False
-    config = _one_archived_file(members, _FACTORY_CONFIG_MEMBER)
-    if config is None or config.size <= 0:
+    cpuid = _one_archived_file(members, _FACTORY_CPUID_MEMBER)
+    if cpuid is None or cpuid.size <= 0:
         return False
     # A blank did.txt is a state real robots reach (push repairs it); its ABSENCE is what proves
     # the capture never reached the factory directory.
@@ -171,28 +174,29 @@ def _tar_has_factory_data(path: Path) -> bool:
     )
 
 
-def _archived_factory_config(path: Path) -> str | None:
-    """The config identity recorded INSIDE the archive, or None when it cannot be read."""
+def _archived_factory_cpuid(path: Path) -> str | None:
+    """The SoC id recorded INSIDE the archive, or None when it cannot be read."""
     try:
         with tarfile.open(path, "r:gz") as archive:
             for member in archive:
-                if member.name.removeprefix("./").lstrip("/") != _FACTORY_CONFIG_MEMBER:
+                if member.name.removeprefix("./").lstrip("/") != _FACTORY_CPUID_MEMBER:
                     continue
                 stream = archive.extractfile(member) if member.isfile() else None
-                return parse_config(stream.read(4096).decode(errors="ignore")) if stream else None
+                return parse_cpuid(stream.read(4096).decode(errors="ignore")) if stream else None
     except (EOFError, OSError, tarfile.TarError):
         return None
     return None
 
 
-def _archived_config_matches(path: Path, expected: str) -> bool:
-    """Whether the archive's own factory config names the robot it is supposed to have come from.
+def _archived_cpuid_matches(path: Path, live_cpuid: str) -> bool:
+    """Whether the archive came off the robot currently on the other end of the link.
 
-    Compared on the stable 8-hex prefix exactly as the live identity gate is — the tail changes
-    from session to session.
+    Compared against what that robot just reported rather than against a saved value, so a backup
+    can only be published when its bytes and the connected robot agree. Exact equality: a SoC id is
+    fixed in hardware, unlike the bootloader config whose tail drifts between sessions.
     """
-    archived = _archived_factory_config(path)
-    return archived is not None and same_robot_config(archived, expected)
+    archived = _archived_factory_cpuid(path)
+    return archived is not None and archived.lower() == live_cpuid.lower()
 
 
 def _archived_factory_key_is_empty(path: Path) -> bool:
@@ -453,18 +457,88 @@ def _settle_serial(ctx: Context, identity: dict[str, str]) -> None:
         robot.remember_serial(live, verified=True)
 
 
-def _live_robot_identity(
-    ctx: Context, key: str | Path | None, expected_config: str | None,
-) -> dict[str, str]:
+def _bind_live_robot(ctx: Context, identity: dict[str, str]) -> None:
+    """Refuse to go on unless the robot answering is the one this workspace is about.
+
+    The bootloader config cannot do this job. It is a `fastboot getvar` answer and is not stored
+    anywhere on the robot, so over the AP there is nothing to compare it against — the check that
+    used to live here read a file no Dreame robot has and therefore stopped every real run.
+
+    The SoC id is the anchor that exists on both sides. Nothing knows it before the first contact,
+    because recon talks to the bootloader and its capture stops short of `private`, so it is pinned
+    the first time this robot is reached and enforced exactly from then on. A verified serial is
+    enforced alongside it; an unverified one was typed off a label and may simply be a typo, which
+    `_settle_serial` resolves in the robot's favour rather than treating as a different robot.
+    """
+    robot = ctx.robot
+    if robot is None:
+        return
+    live_cpuid = parse_cpuid(identity.get("factory_cpuid", ""))
+    known_cpuid = robot.state_get("cpuid")
+    if known_cpuid is not None:
+        # Unreadable is only fatal once this workspace has a value to be held to. A UART workspace
+        # never captures one and binds on live model instead, so refusing there would strand it.
+        if live_cpuid is None:
+            die("Could not read this robot's factory SoC id, so it cannot be confirmed as the "
+                "selected robot — no backup or install was attempted.")
+        if known_cpuid.lower() != live_cpuid.lower():
+            die("SAFETY STOP: the connected robot is not the selected robot — its factory SoC id "
+                "differs from the one recorded for this workspace. Join the selected robot's "
+                "Wi-Fi AP and re-run; no backup or install was attempted.")
+        return
+    # Nothing is pinned yet, so this contact decides what this workspace means by "its robot" and
+    # a mistake here binds the wrong one for good. Two robots of one model are indistinguishable by
+    # model alone, so the recorded serial has to carry it — the config that used to stand here was
+    # never readable over the AP at all.
+    if live_cpuid is None and ctx.profile.method != "fastboot":
+        # UART robots are adopted through a guided install that captures no identity of their own,
+        # so live model stays their strongest automatic binding, exactly as before. A fastboot
+        # workspace has no such excuse and falls through to the checks below.
+        return
+    known_serial = robot.serial()
+    live_serial = valid_serial(identity.get("factory_serial", ""))
+    if known_serial is not None and live_serial is not None:
+        if known_serial.value != live_serial:
+            die("SAFETY STOP: the connected robot's serial is not the one recorded for this "
+                "robot. If you are on the right AP and typed the label wrong, correct the saved "
+                "serial first; no backup or install was attempted.")
+        return
+    if not ctx.interactive:
+        die("This robot has no confirmed identity yet and its serial could not be compared, so "
+            "the connected robot cannot be matched automatically. Re-run interactively; no backup "
+            "or install was attempted.")
+    ctx.console.warn("Nothing recorded for this robot can identify which robot is on this AP yet. "
+                     "Another robot of the same model would answer here identically.")
+    if not ctx.console.confirm(f"Is the robot on this Wi-Fi AP the one saved as {robot.work.name}?"):
+        abort("The connected robot was not confirmed as the selected robot. No backup or install "
+              "was attempted.")
+
+
+def _pin_live_robot(ctx: Context, identity: dict[str, str]) -> None:
+    """Record what this robot is, once every gate has agreed it is the selected one.
+
+    Deliberately after the model check: persisting on first contact and aborting afterwards would
+    leave the workspace bound to a robot it just rejected, and the real one locked out of it.
+    """
+    robot = ctx.robot
+    if robot is None:
+        return
+    live_cpuid = parse_cpuid(identity.get("factory_cpuid", ""))
+    if live_cpuid is not None and robot.state_get("cpuid") is None:
+        robot.state_set("cpuid", live_cpuid)
+    _settle_serial(ctx, identity)
+
+
+def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]:
     """Read only the non-secret identity fields needed to bind a backup to the selected profile."""
     result = robot_ssh(
         ctx.runner,
         _TARGET,
         "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
         # Terminated explicitly: sn.txt need not end in a newline, and an unterminated value would
-        # run the next field onto the same line. factory_config stays last, exactly as it was.
+        # run the next field onto the same line. factory_cpuid stays last, exactly as it was.
         "printf 'factory_serial='; cat /mnt/private/ULI/factory/sn.txt 2>/dev/null; printf '\\n'; "
-        "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null",
+        "printf 'factory_cpuid='; cat /mnt/private/ULI/factory/cpuid.txt 2>/dev/null",
         key=key,
         check=False,
     )
@@ -475,23 +549,11 @@ def _live_robot_identity(
         field, separator, value = line.partition("=")
         if (
             separator
-            and field in {"model", "did", "factory_config", "factory_serial"}
+            and field in {"model", "did", "factory_cpuid", "factory_serial"}
             and value.strip()
         ):
             identity[field] = value.strip()
-    live_config = parse_config(identity.get("factory_config", ""))
-    if expected_config is not None and live_config is None:
-        die("Could not read this robot's factory config identity — no backup or install was "
-            "attempted.")
-    if (
-        expected_config is not None
-        and live_config is not None
-        and not same_robot_config(live_config, expected_config)
-    ):
-        die("SAFETY STOP: the connected robot's factory config does not match the selected "
-            "robot. Join the selected robot's Wi-Fi AP and re-run; no backup or install was "
-            "attempted.")
-    _settle_serial(ctx, identity)
+    _bind_live_robot(ctx, identity)
     reported = identity.get("model")
     if not reported:
         if not ctx.interactive:
@@ -508,6 +570,7 @@ def _live_robot_identity(
         identity["model_verification"] = "physical-label"
         ctx.console.info(f"Physical model confirmed: {ctx.profile.model} "
                          f"({ctx.profile.model_code}).")
+        _pin_live_robot(ctx, identity)
         return identity
     exact_key = known_model_key_for_code(reported)
     if exact_key != ctx.profile.key:
@@ -516,6 +579,7 @@ def _live_robot_identity(
             "selected robot's Wi-Fi AP and re-run.")
     ctx.console.info(f"Live model verified: {reported} matches {ctx.profile.model}.")
     identity["model_verification"] = "device.conf"
+    _pin_live_robot(ctx, identity)
     return identity
 
 
@@ -560,10 +624,11 @@ def _capture_factory_backup(
             die("files.tar.gz is corrupt or truncated — rejoin the robot's AP and re-run.")
         if not _tar_has_factory_data(files_gz):
             die("files.tar.gz is missing the factory members an un-brick restore needs "
-                "(/mnt/private/ULI/factory/config.txt, did.txt, and /mnt/misc data) — refusing to "
+                "(/mnt/private/ULI/factory/cpuid.txt, did.txt, and /mnt/misc data) — refusing to "
                 "publish an unusable backup.")
-        if not _archived_config_matches(files_gz, cfg):
-            die("files.tar.gz carries a different robot's factory config — refusing to publish a "
+        live_cpuid = parse_cpuid(live_identity.get("factory_cpuid", ""))
+        if live_cpuid is None or not _archived_cpuid_matches(files_gz, live_cpuid):
+            die("files.tar.gz carries a different robot's factory SoC id — refusing to publish a "
                 "backup that cannot be traced to the connected robot.")
         ctx.console.info("  files.tar.gz — /mnt/private, /mnt/misc, /etc/*.pem")
         # Taken from the bytes that just passed validation, so the manifest describes a
@@ -784,7 +849,7 @@ def _capture_live_factory_backup(
     cfg = ctx.robot_config()
     if not cfg:
         die("No recorded config identity for the selected robot — re-run recon before backup.")
-    live_identity = _live_robot_identity(ctx, key, cfg)
+    live_identity = _live_robot_identity(ctx, key)
     return _capture_factory_backup(
         ctx,
         key,
@@ -914,7 +979,7 @@ def update_valetudo(ctx: Context, key: str | Path | None = None) -> bool:
     cfg = ctx.robot_config()
     if not cfg:
         die("No recorded config identity for the selected robot — run recon before updating.")
-    _live_robot_identity(ctx, key, cfg)
+    _live_robot_identity(ctx, key)
 
     installed = _installed_valetudo_version(ctx)
     target = ctx.valetudo_version
