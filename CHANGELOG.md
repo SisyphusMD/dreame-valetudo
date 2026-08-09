@@ -71,6 +71,14 @@
 
 ### Fixed
 
+- `fix-impl` no longer reports the web UI as down when it is up. The readiness check failed on any
+  HTTP error, so a Valetudo with authentication turned on — which answers 401 until you log in —
+  looked unreachable for the whole wait.
+- `bench` interrupts an install itself now, at each of the points one can be lost: the three backup
+  pulls, the deviceId and miio-key repairs, the binary copy, and the atomic rename. The factory
+  backup finishes in about a second on real hardware, so the scenarios that asked an operator to
+  pull Wi-Fi or press Ctrl+C at the right moment could never be satisfied. Do not interrupt those
+  two by hand any more.
 - Installing Valetudo and capturing a factory backup work again. Both checked the robot's identity
   against `/mnt/private/ULI/factory/config.txt`, a file no Dreame robot has, so every run stopped at
   that gate and no backup could ever be published. They now use the SoC id the robot really carries,

@@ -530,7 +530,13 @@ def _impl_responder(
         if cmd == "cat /data/valetudo_config.json":
             return Result(argv, 0, config_json, "")
         if argv and argv[0] == "curl":
-            return Result(argv, 0 if ui_up else 7, "", "")
+            # A live Valetudo always sends this header, and sends it even while answering 401 to an
+            # unauthenticated request. Returning a bare 200 would let a probe pass that cannot cope
+            # with the authenticated robots real users run.
+            if ui_up:
+                return Result(argv, 0, "HTTP/1.1 401 Unauthorized\r\n"
+                                       "X-Valetudo-Version: 2026.08.0\r\n", "")
+            return Result(argv, 7, "", "")
         return Result(argv, 0, "", "")
     return responder
 

@@ -247,8 +247,14 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 | `terminal-loss-after-restore-reboot` | H2 | Close the terminal after reboot is sent but before answering the stock-boot question | the pending observation resumes without another `oem dust` or flash |
 | `restore-returns-to-fel` | H2 | Observe a post-restore automatic FEL fallback | no completion marker and no speculative alternate-generation flash; the durable attempt remains for inspection |
 | `wifi-wrong-network` | H2 | Stay on the home LAN instead of joining the robot AP | the AP address is unreachable or rejected as not-Dreame; no SSH write |
-| `wifi-drop-backup` | H2 | Leave the robot AP during the factory-backup transfer | no published manifest/partial generation; retry succeeds |
-| `ctrl-c-push` | H2 | Interrupt during a pre-install backup transfer | incomplete backup is removed; Valetudo marker is absent |
+| `wifi-drop-backup` | H2 | Nothing — the conductor severs the link itself | every interruption point leaves no partial generation, no premature Valetudo marker, and no staged binary on the robot |
+| `ctrl-c-push` | H2 | Nothing — the conductor raises the interrupt itself | as above, for an interrupt rather than a lost link |
+
+Do not disconnect Wi-Fi or press Ctrl+C during those two. On real hardware the whole factory backup
+lands in about 0.9 seconds, so a hand-timed interruption always arrives after it, and interfering
+now competes with the injected one and can fail an otherwise good run. The conductor drives the
+production phase unchanged and cuts it at each point in turn: the three backup pulls, the binary
+copy, and the atomic rename.
 | `ssh-wrong-key` | H2 | Select an unrelated explicit key | error names authentication/key problem without password fallback |
 | `rekey-wrong-serial` | H2 | Enter a deliberately wrong serial at the password prompt, then the correct one | the wrong serial is named as one cause and not-the-robot as the other; the same run re-asks; nothing is written until a login succeeds |
 | `already-rooted-recon` | H1 | Force recon on a rooted robot | identity refreshes, but the pre-root recovery capture is not overwritten |
