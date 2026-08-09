@@ -23,6 +23,7 @@ from ..ssh import (
     robot_ssh,
     ssh_base,
     ssh_failure_guidance,
+    valetudo_version_header,
 )
 from ..util import parse_mikey, repair_did
 from .push import (
@@ -289,9 +290,10 @@ def fix_impl(ctx: Context) -> None:
     up = False
     with ctx.console.progress("Waiting for the web UI") as p:
         for _ in range(20):
-            if ctx.runner.run(
-                ["curl", "-sf", "-m", "3", "-o", "/dev/null", f"http://{ROBOT_AP_IP}"], check=False
-            ).ok:
+            # Not `curl -f`: a Valetudo with authentication turned on answers 401, which -f treats
+            # as failure, so the UI is reported down for as long as it stays up. The version header
+            # is served before any credential is asked for and also proves it is Valetudo replying.
+            if valetudo_version_header(ctx.runner) is not None:
                 up = True
                 break
             ctx.sleep(3)

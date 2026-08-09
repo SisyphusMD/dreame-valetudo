@@ -24,7 +24,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from . import __version__
 from .console import Die, UserAbort, die
@@ -55,7 +55,7 @@ from .recovery import (
     read_recovery_provenance,
     recovery_source_records,
 )
-from .run import RunError
+from .run import Result, RunError, Runner
 from .ssh import ap_reachable, is_dreame_ap, resolve_sshkey, robot_ssh
 from .util import parse_config, same_robot_config
 from .workspace import (
@@ -199,14 +199,10 @@ SCENARIOS: tuple[Scenario, ...] = (
         "rejected?",
     ),
     Scenario(
-        "wifi-drop-backup", "H2", "discard an interrupted factory backup generation", True,
-        "Did you disconnect Wi-Fi while the factory backup was actively transferring, then "
-        "reconnect and complete the retry?",
+        "wifi-drop-backup", "H2", "survive a link loss at every point an install can lose it", True,
     ),
     Scenario(
-        "ctrl-c-push", "H2", "discard an interrupted pre-install backup", True,
-        "Did you press Ctrl+C only after the factory backup transfer had visibly started?",
-        expected="interrupt",
+        "ctrl-c-push", "H2", "survive an interrupt at every point an install can take one", True,
     ),
     Scenario(
         "ssh-wrong-key", "H2", "fail explicit wrong-key authentication without fallback", True,
@@ -272,8 +268,147 @@ SUITES: Mapping[str, tuple[str, ...]] = {
 
 _WIFI_ONLY_SCENARIOS = frozenset({"rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial"})
 
+# Where an install can be interrupted, in the order push() reaches them. Measured on a D10s Plus:
+# the whole factory backup lands in about 0.9s while the binary copy takes ~27s, so asking an
+# operator to interrupt the backup by hand cannot work — every attempt arrives after it finished.
+# The conductor therefore fires the interruption itself at the seam every command already passes
+# through, which keeps the production phase unmodified and every command before the trigger real.
+class _InterruptPoint(NamedTuple):
+    """One place an install can be lost, and what a clean stop there looks like."""
+
+    trigger: str
+    where: str
+    # True once the factory backup has legitimately published, so a new generation is not a fault.
+    backup_published: bool
+    # Exit codes meaning the boundary was genuinely reached. Firing after a command that failed on
+    # its own would swap a synthetic interruption for a real fault and certify coverage the run
+    # never earned: tar reports 1 or 2 for ordinary conditions and still produces its archive,
+    # while the install script is `set -e`, so only rc 0 means the rename happened.
+    ok_codes: tuple[int, ...]
+    # Later commands that must stop a sweep which never fired. push() reaches the deviceId and
+    # miio-key repairs only on robots that need them, and without this a robot that skips one would
+    # run all the way through a real install and reboot while the conductor waited for a trigger
+    # that never comes. Every subsequent optional write is listed, not just the binary copy: passing
+    # through one would perform that repair and leave the next sweep with nothing left to interrupt.
+    guard: tuple[str, ...] = ()
+
+
+_SWEEP_ORDER: tuple[_InterruptPoint, ...] = (
+    _InterruptPoint("tar czf - /mnt/private", "pulling files.tar.gz", False, (0, 1, 2)),
+    _InterruptPoint("gzip -1c /dev/by-name/private", "pulling the private partition", False, (0,)),
+    _InterruptPoint("gzip -1c /dev/by-name/misc", "pulling the misc partition", False, (0,)),
+    # By here the backup is legitimately complete and published, so a publication is not a fault —
+    # only an installed binary or leftover wreckage would be.
+    _InterruptPoint(
+        "did_orig.txt", "repairing the factory deviceId", True, (0,),
+    ),
+    _InterruptPoint(
+        "key_orig.txt", "restoring the factory miio key", True, (0,),
+    ),
+    _InterruptPoint("cat > /data/.valetudo.update", "copying the Valetudo binary", True, (0,)),
+    # The sharpest boundary of the lot: the rename really happens, so the robot ends up running the
+    # new binary while the workspace still records it as uninstalled. A resume has to reconcile
+    # that rather than assume its own marker.
+    _InterruptPoint(
+        "mv -f /data/.valetudo.update /data/valetudo", "installing the binary atomically",
+        True, (0,),
+    ),
+)
+
+# Every point stops at the next one. A sweep whose trigger does not fire — because this robot skips
+# that repair, or because the command exited outside its accepted codes — must never be allowed to
+# carry on into a real install and reboot while the conductor waits for something that is not
+# coming. Derived rather than hand-listed: a guard that forgot a later optional write would let an
+# earlier sweep perform that repair and leave the next one nothing to interrupt.
+_INTERRUPT_POINTS: tuple[_InterruptPoint, ...] = tuple(
+    point._replace(guard=tuple(later.trigger for later in _SWEEP_ORDER[index + 1:]))
+    for index, point in enumerate(_SWEEP_ORDER)
+)
+
+
+class _BoundaryAbsent(Exception):
+    """This robot's install never reaches the boundary being swept, so there is nothing to cut."""
+
+
+class _InjectingRunner(Runner):
+    """Wraps the live runner and injects one interruption once a chosen command has run.
+
+    Between commands rather than inside one: that is the boundary this seam can reach, and it is
+    where the damage would be, since a phase's bookkeeping happens between the writes it records.
+    A real Ctrl-C can also land mid-command, which this does not model.
+    """
+
+    def __init__(
+        self, inner: Runner, trigger: str, *, link_loss: bool, ok_codes: tuple[int, ...] = (0,),
+        guard: tuple[str, ...] = (),
+    ) -> None:
+        self.inner = inner
+        self.trigger = trigger
+        self.link_loss = link_loss
+        self.ok_codes = ok_codes
+        self.guard = guard
+        self.fired = False
+        self.fired_rc: int | None = None
+        self.absent = False
+        self._lost = False
+
+    def _guarded(self, argv: Sequence[str]) -> None:
+        if self.fired or not self.guard:
+            return
+        line = " ".join(str(a) for a in argv)
+        if any(stop in line for stop in self.guard):
+            self.absent = True
+            raise _BoundaryAbsent
+
+    def _severed(self, argv: Sequence[str]) -> Result:
+        return Result(
+            tuple(str(a) for a in argv), 255, "",
+            "Read from remote host 192.168.5.1: Can't assign requested address\n"
+            "client_loop: send disconnect: Broken pipe",
+        )
+
+    def _armed(self, argv: Sequence[str]) -> bool:
+        return not self.fired and self.trigger in " ".join(str(a) for a in argv)
+
+    def _after(self, argv: Sequence[str], returncode: int) -> None:
+        self.fired = True
+        self.fired_rc = returncode
+        if self.link_loss:
+            self._lost = True
+        else:
+            raise KeyboardInterrupt
+
+    def run(self, argv: Sequence[str], **kwargs: object) -> Result:
+        if self._lost:
+            return self._severed(argv)
+        self._guarded(argv)
+        armed = self._armed(argv)
+        result = self.inner.run(argv, **kwargs)  # type: ignore[arg-type]
+        if armed and result.returncode in self.ok_codes:
+            self._after(argv, result.returncode)
+            return self._severed(argv)
+        return result
+
+    def run_redirect(self, argv: Sequence[str], **kwargs: object) -> Result:
+        if self._lost:
+            return self._severed(argv)
+        self._guarded(argv)
+        armed = self._armed(argv)
+        result = self.inner.run_redirect(argv, **kwargs)  # type: ignore[arg-type]
+        if armed and result.returncode in self.ok_codes:
+            self._after(argv, result.returncode)
+            return self._severed(argv)
+        return result
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.inner, name)
+
 # The scenarios that must leave Valetudo installed and a fresh factory-backup generation published.
-_INSTALL_SCENARIOS = frozenset({"post-root-install", "offline-cached-binary", "wifi-drop-backup"})
+_INSTALL_SCENARIOS = frozenset({"post-root-install", "offline-cached-binary"})
+
+# Both sweeps drive push() as far as the atomic rename, so they install the campaign binary for
+# real and need the same downgrade protection as the scenarios that finish the job.
+_BINARY_REACHING_SCENARIOS = _INSTALL_SCENARIOS | {"ctrl-c-push", "wifi-drop-backup"}
 
 _HOST_ONLY_SUITES = frozenset(
     name for name, members in SUITES.items() if set(members) <= {"host-smoke"}
@@ -310,7 +445,7 @@ _RECOVERY_IMMUTABILITY = frozenset({
     "fel-not-entered", "already-rooted-recon", "wrong-model-root",
 })
 _FACTORY_BACKUP_EVIDENCE = frozenset({
-    "adopted-root-backup", "post-root-install", "offline-cached-binary", "wifi-drop-backup",
+    "adopted-root-backup", "post-root-install", "offline-cached-binary",
 })
 _RESTORE_KIT_EVIDENCE = frozenset({"stock-restore", "terminal-loss-restore"})
 _USB_STACK_SCENARIOS = frozenset({
@@ -1803,14 +1938,18 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
         )
         if changed_dangerous:
             failures.append("dangerous state changed: " + ", ".join(changed_dangerous))
-    if scenario.key in {
-        "wifi-wrong-network", "ctrl-c-push", "ssh-wrong-key",
-        "multi-robot-selection",
-    }:
+    if scenario.key in {"wifi-wrong-network", "ssh-wrong-key", "multi-robot-selection"}:
         if before.markers.get("valetudo") != after.markers.get("valetudo"):
             failures.append("Valetudo completion state changed during the rejected/interrupted run")
         if before.backup_counts != after.backup_counts:
             failures.append("published backup counts changed during the rejected/interrupted run")
+        if after.partial_backups:
+            failures.append("an incomplete backup directory remains")
+    if scenario.key in {"ctrl-c-push", "wifi-drop-backup"}:
+        # Backup counts deliberately not pinned here: the sweep interrupts after the backup has
+        # legitimately published as well as before it, and judges each point on its own terms.
+        if before.markers.get("valetudo") != after.markers.get("valetudo"):
+            failures.append("Valetudo completion state changed during the interrupted run")
         if after.partial_backups:
             failures.append("an incomplete backup directory remains")
     return failures
@@ -1921,13 +2060,116 @@ def _starting_failures(
         and before.root_origin != ADOPTED_ROOT
     ):
         failures.append("the robot must carry the accepted existing-root adoption marker")
-    if scenario.key in _INSTALL_SCENARIOS and valetudo_would_downgrade(
+    if scenario.key in _BINARY_REACHING_SCENARIOS and valetudo_would_downgrade(
         before.valetudo_version, target_valetudo,
     ):
         # push() replaces the executable unconditionally — only update_valetudo() compares versions
         # — so repeating an install against a robot recorded newer than this build rolls it back.
         failures.append("the saved Valetudo version is newer than this build's verified target")
     return failures
+
+
+def _interrupted_install_sweep(ctx: Context, *, link_loss: bool) -> dict[str, object]:
+    """Interrupt an install at every point it can be interrupted, proving each leaves nothing behind.
+
+    Every command before the trigger runs for real against the robot, so this is still the
+    production phase meeting real hardware — only the moment of failure is chosen rather than
+    waited for.
+    """
+    original = ctx.runner
+    covered: list[str] = []
+    not_interrupted: list[str] = []
+    stranded: list[str] = []
+    try:
+        for index, point in enumerate(_INTERRUPT_POINTS):
+            if index:
+                # Backup directories are named to the second and a capture takes about 0.9s, so
+                # consecutive iterations would otherwise race for one destination and the second
+                # publication would be refused.
+                ctx.sleep(1.1)
+            before = _snapshot(ctx)
+            injector = _InjectingRunner(
+                original, point.trigger, link_loss=link_loss, ok_codes=point.ok_codes,
+                guard=point.guard,
+            )
+            ctx.runner = injector
+            try:
+                push(ctx)
+            except _BoundaryAbsent:
+                pass
+            except (Die, UserAbort, KeyboardInterrupt, RunError, OSError):
+                pass
+            else:
+                raise Die(
+                    f"Bench check failed: the install reported success despite losing the robot "
+                    f"while {point.where}."
+                )
+            finally:
+                ctx.runner = original
+            if injector.absent:
+                # Stopped at the guard before anything was written, so nothing needs cleaning up.
+                # Either this robot never needed that repair, or the other interruption mode swept
+                # it first and completed it for good — a repair cannot be re-broken to sweep twice
+                # without deliberately corrupting the robot, so the two are not distinguished here.
+                not_interrupted.append(point.where)
+                continue
+            if not injector.fired:
+                raise Die(f"Bench check failed: the install never reached {point.where}.")
+            after = _snapshot(ctx)
+            problems = []
+            if after.partial_backups:
+                problems.append("left a partial backup directory behind")
+            if before.markers.get("valetudo") != after.markers.get("valetudo"):
+                problems.append("recorded Valetudo as installed")
+            if not point.backup_published and before.backup_counts != after.backup_counts:
+                problems.append("published a backup built from an interrupted capture")
+            if problems:
+                raise Die(f"Bench check failed while {point.where}: {'; '.join(problems)}.")
+            # Per point, before the next push() would quietly clear it and hide the evidence.
+            if _clear_staged_binary(ctx):
+                stranded.append(point.where)
+            # Recorded per point: tar is accepted at 1 and 2 the way production accepts them, and a
+            # reader judging this evidence should be able to see the boundary was reached on a
+            # clean command rather than take it on trust.
+            covered.append(f"{point.where} (rc={injector.fired_rc})")
+    finally:
+        ctx.runner = original
+    return {
+        "interruption": "link-loss" if link_loss else "ctrl-c",
+        "points_covered": covered,
+        "points_not_interrupted": not_interrupted,
+        "points_that_stranded_a_staged_binary": stranded,
+    }
+
+
+def _clear_staged_binary(ctx: Context) -> bool:
+    """Remove the staged binary an interrupted install can leave, reporting whether one was there.
+
+    push() tries this itself, but that cleanup travels the same link the interruption just cut, so
+    after a link loss it never runs. The next install clears it before staging again, which makes a
+    leftover self-healing rather than a fault — but a sweep must not walk away having filled the
+    robot's /data with abandoned copies it never mentioned, and must not call a probe it could not
+    complete "clean".
+    """
+    robot = ctx.robot
+    if robot is None:
+        return False
+    resolved = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, robot)
+    key = resolved if Path(resolved).is_file() else None
+    staged = "/data/.valetudo.update"
+    probe = robot_ssh(
+        ctx.runner, f"root@{ROBOT_AP_IP}",
+        f"if [ -f {staged} ]; then echo present; else echo absent; fi; rm -f {staged}; "
+        f"if [ -f {staged} ]; then echo still-there; else echo gone; fi",
+        key=key, check=False,
+    )
+    if not probe.ok or "gone" not in probe.stdout:
+        raise Die(
+            "Bench check failed: could not confirm the robot is free of the staged install file "
+            f"{staged}. Rejoin the robot's AP and re-run; a leftover is removed by the next "
+            "install, but this run cannot claim it left the robot clean."
+        )
+    return "present" in probe.stdout
 
 
 def _recon_interruption_failures(
@@ -2166,38 +2408,10 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         image(ctx)
         root(ctx, force=True)
     elif scenario.key == "wifi-drop-backup":
-        before_drop = _snapshot(ctx)
-        try:
-            push(ctx)
-        except Die as exc:
-            transfer_failure = str(exc).lower()
-            if not any(fragment in transfer_failure for fragment in (
-                "connection failed while pulling",
-                "backup came back empty",
-                "corrupt or truncated",
-            )):
-                raise
-        else:
-            raise Die("Bench check failed: the backup completed without the required Wi-Fi drop.")
-        interrupted = _snapshot(ctx)
-        interrupted_failures = []
-        if before_drop.backup_counts != interrupted.backup_counts:
-            interrupted_failures.append("the interrupted attempt published a backup")
-        if interrupted.partial_backups:
-            interrupted_failures.append("the interrupted attempt left a partial backup directory")
-        if before_drop.markers.get("valetudo") != interrupted.markers.get("valetudo"):
-            interrupted_failures.append("the interrupted attempt changed Valetudo completion state")
-        if interrupted_failures:
-            raise Die("Bench check failed after Wi-Fi loss: " + "; ".join(interrupted_failures) + ".")
-        if ctx.interactive:
-            ctx.console.ask("Reconnect to the robot's Wi-Fi AP, then press Enter for the retry.")
-        if not push(ctx):
-            raise Die("Valetudo installation did not complete after reconnecting Wi-Fi.")
-        return {
-            "interrupted_backup_rejected": True,
-            "retry_completed": True,
-        }
-    elif scenario.key in {"ctrl-c-push", "ssh-wrong-key", "multi-robot-selection"}:
+        return _interrupted_install_sweep(ctx, link_loss=True)
+    elif scenario.key == "ctrl-c-push":
+        return _interrupted_install_sweep(ctx, link_loss=False)
+    elif scenario.key in {"ssh-wrong-key", "multi-robot-selection"}:
         if not push(ctx):
             raise Die("Valetudo installation did not complete.")
     elif scenario.key == "offline-cached-binary":

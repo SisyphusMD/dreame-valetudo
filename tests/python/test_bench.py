@@ -522,7 +522,9 @@ def test_one_install_scenario_does_not_strand_the_rest(key: str) -> None:
     assert not [item for item in failures if "valetudo" in item.lower()]
 
 
-@pytest.mark.parametrize("key", ["post-root-install", "offline-cached-binary", "wifi-drop-backup"])
+@pytest.mark.parametrize("key", [
+    "post-root-install", "offline-cached-binary", "ctrl-c-push", "wifi-drop-backup",
+])
 def test_a_repeat_install_refuses_to_roll_valetudo_back(key: str) -> None:
     # push() has no version comparison, so allowing repeats must not become a way to downgrade a
     # robot already running something newer than the campaign build.
@@ -3082,61 +3084,219 @@ def test_usb_drop_cannot_damage_published_recovery_evidence_before_retry(
     assert calls == 1
 
 
-@pytest.mark.parametrize(
-    "drop_message",
-    [
-        "connection failed while pulling backup private.dd.gz — rejoin and re-run",
-        "files.tar.gz is corrupt or truncated — rejoin and re-run",
-        "backup came back empty — is the robot fully booted? Re-run",
-    ],
-)
-def test_wifi_drop_scenario_proves_cleanup_then_a_successful_install_retry(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, drop_message: str,
+@pytest.mark.parametrize("scenario", ["ctrl-c-push", "wifi-drop-backup"])
+def test_the_sweep_covers_every_interruption_point(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, scenario: str,
 ) -> None:
-    ctx = make_ctx(robot_name="bench", asks=[""], confirms=[True])
+    """One interruption per point push() can reach, fired by the conductor.
+
+    An operator cannot do this: the whole factory backup lands in about 0.9s on real hardware, so
+    every hand-timed attempt arrives after it already finished.
+    """
+    def responder(argv: tuple[str, ...]) -> Result:
+        if ".valetudo.update" in argv[-1]:
+            return Result(argv, 0, "absent\ngone\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
     ctx.need_robot().state_set("rooted")
     _set_robot_identity(ctx)
-    calls = 0
+    seen: list[str] = []
 
-    def interrupted_then_complete(inner: object) -> bool:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise Die(drop_message)
-        inner.need_robot().state_set("valetudo")  # type: ignore[attr-defined]
-        _publish_factory_backup(inner, "retry-backup")
-        return True
+    def observe(inner: object) -> bool:
+        # The injector replaced ctx.runner, so the trigger it is armed for names this point.
+        trigger = inner.runner.trigger  # type: ignore[attr-defined]
+        seen.append(trigger)
+        # Reaching that command is what fires the injection: Ctrl-C raises out of the call, a link
+        # loss comes back as a severed result the phase then fails on.
+        inner.runner.run(["ssh", "robot", trigger], check=False)  # type: ignore[attr-defined]
+        raise Die("connection lost")
 
-    monkeypatch.setattr(B, "push", interrupted_then_complete)
-    assert B.bench(
-        ctx, ["run", "wifi-drop-backup", "--campaign", "rc"], auto_fn=_noop_auto,
-    ) == 0
-    assert calls == 2
+    monkeypatch.setattr(B, "push", observe)
+    assert B.bench(ctx, ["run", scenario, "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    assert seen == [trigger for trigger, *_rest in B._INTERRUPT_POINTS]
     evidence = _report(ctx)["results"][-1]["evidence"]  # type: ignore[index]
-    assert evidence["interrupted_backup_rejected"] is True
-    assert evidence["retry_completed"] is True
+    assert len(evidence["points_covered"]) == len(B._INTERRUPT_POINTS)
 
 
-def test_wifi_drop_scenario_fails_when_the_retry_does_not_complete(
+def test_a_boundary_this_robot_never_reaches_is_recorded_not_installed_through(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name="bench", asks=[""])
+    """A robot with a healthy deviceId never reaches that repair.
+
+    Without the guard, push() would run all the way through a real install and reboot while the
+    conductor waited for a trigger that cannot come.
+    """
+    def responder(argv: tuple[str, ...]) -> Result:
+        if ".valetudo.update" in argv[-1]:
+            return Result(argv, 0, "absent\ngone\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
     ctx.need_robot().state_set("rooted")
     _set_robot_identity(ctx)
-    calls = 0
+    completed = 0
 
-    def always_fail(_inner: object) -> bool:
-        nonlocal calls
-        calls += 1
-        raise Die("connection failed while pulling backup private.dd.gz — rejoin and re-run")
+    def healthy_identity(inner: object) -> bool:
+        # This robot needs no deviceId repair, so that command never runs; the binary copy does.
+        runner = inner.runner  # type: ignore[attr-defined]
+        if "did_orig.txt" not in runner.trigger:
+            runner.run(["ssh", "robot", runner.trigger], check=False)
+            raise Die("connection lost")
+        runner.run(["ssh", "robot", "cat > /data/.valetudo.update"], check=False)
+        nonlocal completed
+        completed += 1
+        return True
 
-    monkeypatch.setattr(B, "push", always_fail)
-    with pytest.raises(Die, match="connection failed while pulling"):
-        B.bench(
-            ctx, ["run", "wifi-drop-backup", "--campaign", "rc"], auto_fn=_noop_auto,
+    monkeypatch.setattr(B, "push", healthy_identity)
+    assert B.bench(ctx, ["run", "ctrl-c-push", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    assert completed == 0, "the guard must stop push before it installs"
+    evidence = _report(ctx)["results"][-1]["evidence"]  # type: ignore[index]
+    assert "repairing the factory deviceId" in evidence["points_not_interrupted"]
+    assert any(e.startswith("copying the Valetudo binary") for e in evidence["points_covered"])
+
+
+def test_an_absent_repair_does_not_consume_the_next_one(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bench robot's shape exactly: healthy deviceId, but the miio key does need repairing.
+
+    Guarding only on the binary copy would let push() perform the key repair while sweeping the
+    absent deviceId boundary, leaving the key sweep with nothing left to interrupt.
+    """
+    def responder(argv: tuple[str, ...]) -> Result:
+        if ".valetudo.update" in argv[-1]:
+            return Result(argv, 0, "absent\ngone\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
+    ctx.need_robot().state_set("rooted")
+    _set_robot_identity(ctx)
+    key_repairs = 0
+
+    def healthy_did_stale_key(inner: object) -> bool:
+        runner = inner.runner  # type: ignore[attr-defined]
+        nonlocal key_repairs
+        for cmd in (
+            "tar czf - /mnt/private /mnt/misc",
+            "gzip -1c /dev/by-name/private",
+            "gzip -1c /dev/by-name/misc",
+        ):
+            runner.run(["ssh", "robot", cmd], check=False)
+        # No deviceId repair on this robot; the key repair and the copy both happen, in that order.
+        runner.run(["ssh", "robot", "cp key.txt key_orig.txt"], check=False)
+        key_repairs += 1
+        runner.run(["ssh", "robot", "cat > /data/.valetudo.update"], check=False)
+        runner.run(["ssh", "robot", "mv -f /data/.valetudo.update /data/valetudo"], check=False)
+        raise Die("connection lost")
+
+    monkeypatch.setattr(B, "push", healthy_did_stale_key)
+    assert B.bench(ctx, ["run", "ctrl-c-push", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    evidence = _report(ctx)["results"][-1]["evidence"]  # type: ignore[index]
+    assert "repairing the factory deviceId" in evidence["points_not_interrupted"]
+    assert any(e.startswith("restoring the factory miio key") for e in evidence["points_covered"])
+
+
+def test_a_naturally_failed_command_is_not_certified_as_injected_coverage(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A digest failure before the rename must not be dressed up as having exercised the rename."""
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "tar czf - /mnt/private" in argv[-1]:
+            return Result(argv, 4, "", "tar: unreadable")  # outside the accepted codes
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
+    ctx.need_robot().state_set("rooted")
+    _set_robot_identity(ctx)
+
+    def reach_then_die(inner: object) -> bool:
+        inner.runner.run(  # type: ignore[attr-defined]
+            ["ssh", "robot", inner.runner.trigger], check=False,  # type: ignore[attr-defined]
         )
-    assert calls == 2
+        raise Die("connection lost")
+
+    monkeypatch.setattr(B, "push", reach_then_die)
+    with pytest.raises(Die, match=r"never reached pulling files\.tar\.gz"):
+        B.bench(ctx, ["run", "ctrl-c-push", "--campaign", "rc"], auto_fn=_noop_auto)
+
+
+def test_the_sweep_clears_a_staged_binary_left_on_the_robot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted install can strand ~20MB on /data, because push's own cleanup travels the
+    link that just died. Self-healing on the next run, but the bench must not leave it unmentioned.
+    """
+    def responder(argv: tuple[str, ...]) -> Result:
+        if ".valetudo.update" in argv[-1]:
+            return Result(argv, 0, "present\ngone\n", "")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(robot_name="bench", responder=responder)
+    ctx.need_robot().state_set("rooted")
+    _set_robot_identity(ctx)
+
+    def reach_then_die(inner: object) -> bool:
+        inner.runner.run(  # type: ignore[attr-defined]
+            ["ssh", "robot", inner.runner.trigger], check=False,  # type: ignore[attr-defined]
+        )
+        raise Die("connection lost")
+
+    monkeypatch.setattr(B, "push", reach_then_die)
+    assert B.bench(ctx, ["run", "ctrl-c-push", "--campaign", "rc"], auto_fn=_noop_auto) == 0
+
+    evidence = _report(ctx)["results"][-1]["evidence"]  # type: ignore[index]
+    assert evidence["points_that_stranded_a_staged_binary"]
+    assert any(
+        "rm -f /data/.valetudo.update" in call[-1]
+        for call in ctx.runner.calls  # type: ignore[attr-defined]
+    )
+
+
+def test_the_sweep_fails_when_an_interrupted_install_still_reports_success(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Link loss only. A Ctrl-C unwinds the stack, so that mode cannot manufacture a false success;
+    # a severed link hands the phase an ordinary failed result it is free to misread as fine.
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("rooted")
+    _set_robot_identity(ctx)
+    def succeed_anyway(inner: object) -> bool:
+        inner.runner.run(  # type: ignore[attr-defined]
+            ["ssh", "robot", inner.runner.trigger], check=False,  # type: ignore[attr-defined]
+        )
+        return True
+
+    monkeypatch.setattr(B, "push", succeed_anyway)
+
+    with pytest.raises(Die, match="reported success despite losing the robot"):
+        B.bench(ctx, ["run", "wifi-drop-backup", "--campaign", "rc"], auto_fn=_noop_auto)
     assert _report(ctx)["results"][-1]["result"] == "failed"  # type: ignore[index]
+
+
+def test_the_sweep_fails_when_an_interrupted_install_publishes_a_backup(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("rooted")
+    _set_robot_identity(ctx)
+    published = 0
+
+    def publish_then_die(inner: object) -> bool:
+        nonlocal published
+        published += 1
+        _publish_factory_backup(inner, f"half-captured-{published}")
+        inner.runner.run(  # type: ignore[attr-defined]
+            ["ssh", "robot", inner.runner.trigger], check=False,  # type: ignore[attr-defined]
+        )
+        raise Die("connection lost")
+
+    monkeypatch.setattr(B, "push", publish_then_die)
+    with pytest.raises(Die, match="published a backup built from an interrupted capture"):
+        B.bench(ctx, ["run", "ctrl-c-push", "--campaign", "rc"], auto_fn=_noop_auto)
 
 
 def test_wrong_network_accepts_a_reachable_non_dreame_host_and_operator_observation(
