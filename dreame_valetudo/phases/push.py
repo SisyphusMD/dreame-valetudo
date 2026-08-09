@@ -87,6 +87,15 @@ def valetudo_update_available(installed: str | None, target: str) -> bool:
     return current_order is not None and target_order is not None and target_order > current_order
 
 
+def valetudo_would_downgrade(installed: str | None, target: str) -> bool:
+    """Whether two concrete Valetudo releases prove that the configured target is older."""
+    if installed is None:
+        return False
+    current_order = _version_order(installed)
+    target_order = _version_order(target)
+    return current_order is not None and target_order is not None and target_order < current_order
+
+
 def _gzip_is_complete(path: Path) -> bool:
     """Stream through the gzip trailer without retaining a partition-sized payload in memory."""
     try:
