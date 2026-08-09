@@ -239,7 +239,10 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "multi-robot-selection", "H2", "prevent cross-robot workspace use", True,
-        expected="safe-stop", stop_contains=("factory config does not match",),
+        # Which identity gate refuses depends on what this workspace has pinned yet — SoC id,
+        # recorded serial, or an operator confirmation — and every fragment listed here must appear.
+        # Only the subject is common to all of them, so pinning more would fail a correct refusal.
+        expected="safe-stop", stop_contains=("connected robot",),
         required=False,
     ),
     Scenario("rename-resume", "H2", "preserve identity, state, and backups through rename"),

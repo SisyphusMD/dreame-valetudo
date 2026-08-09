@@ -29,6 +29,17 @@ def parse_config(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+def parse_cpuid(text: str) -> str | None:
+    """The 32-hex SoC id held in a factory cpuid.txt, or None.
+
+    Same shape as a config but a different fact about the robot: the config is a bootloader answer
+    that never appears on the filesystem, while this is a file the robot carries and a backup
+    preserves. Kept separate so neither is ever passed where the other is meant.
+    """
+    m = _CONFIG_RE.search(text)
+    return m.group(0) if m else None
+
+
 # A fastboot getvar reply: the libusb client (default transport) prints 'OKAY <value>' on stdout;
 # Google's fastboot prints '<var>: <value>' on stderr. Only used for the non-config identity vars
 # (serialno/toc0hash/toc1hash) the dustbuilder's manual checker wants — config has its own parser.

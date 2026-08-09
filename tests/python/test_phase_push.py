@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from conftest import (
     CFG,
+    CPUID,
+    SERIAL,
     VALETUDO_NEWER,
     VALETUDO_OLDER,
     VALETUDO_TARGET,
@@ -70,7 +72,7 @@ def _text(
         cmd = argv[-1]
         if "grep -E '^(model|did)='" in cmd:
             return Result(
-                argv, 0, f"model={model}\ndid={did}\nfactory_config=config: {CFG}\n", ""
+                argv, 0, f"model={model}\ndid={did}\nfactory_serial={SERIAL}\nfactory_cpuid={CPUID}\n", ""
             )
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, key + "\n", "")  # normal unit: key already present
@@ -97,16 +99,16 @@ def _write_factory_archive(path: Path, files_size: int, failure: str | None) -> 
             member.size = len(data)
             archive.addfile(member, io.BytesIO(data))
 
-        if failure != "files-missing-config":
-            config = CFG.encode()
-            if failure == "files-wrong-config":
-                config = b"b" * 32
+        if failure != "files-missing-cpuid":
+            cpuid = CPUID.encode()
+            if failure == "files-wrong-cpuid":
+                cpuid = b"b" * 32
             add(
-                "mnt/private/ULI/factory/config.txt",
-                b"" if failure == "files-empty-config" else b"config: " + config,
+                "mnt/private/ULI/factory/cpuid.txt",
+                b"" if failure == "files-empty-cpuid" else cpuid,
             )
-        if failure == "files-duplicate-config":
-            add("mnt/private/ULI/factory/config.txt", b"config: " + CFG.encode())
+        if failure == "files-duplicate-cpuid":
+            add("mnt/private/ULI/factory/cpuid.txt", CPUID.encode())
         if failure != "files-missing-did":
             add("mnt/private/ULI/factory/did.txt", b"" if failure == "files-empty-did" else b"1234")
         if failure != "files-missing-key":
@@ -193,6 +195,7 @@ def _ctx(make_ctx: CtxFactory) -> Context:
     ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    ctx.need_robot().remember_serial(SERIAL, verified=False)
     assert ctx.backups_dir.is_relative_to(ctx.ws.base.parent)
     return ctx
 
@@ -210,6 +213,7 @@ def _update_ctx(
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    robot.remember_serial(SERIAL, verified=False)
     robot.state_set("rooted")
     robot.state_set("valetudo", installed)
     _valetudo_bin(ctx)
@@ -687,6 +691,7 @@ def test_push_requires_physical_confirmation_when_the_live_model_is_missing(
     ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[True, True])
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    ctx.need_robot().remember_serial(SERIAL, verified=False)
     _valetudo_bin(ctx)
     ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
     ctx.runner.redirect_responder = _redirect()
@@ -705,6 +710,7 @@ def test_push_refuses_a_missing_live_model_when_physical_confirmation_is_decline
     ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", confirms=[False])
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    ctx.need_robot().remember_serial(SERIAL, verified=False)
     _valetudo_bin(ctx)
     ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
 
@@ -720,6 +726,7 @@ def test_push_refuses_a_missing_live_model_noninteractively(make_ctx: CtxFactory
     )
     ctx.need_robot().recon_dir.mkdir(parents=True)
     (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    ctx.need_robot().remember_serial(SERIAL, verified=False)
     _valetudo_bin(ctx)
     ctx.runner.responder = _text(model="")  # type: ignore[attr-defined]
 
@@ -875,9 +882,9 @@ def test_push_refuses_factory_directories_that_contain_no_files(make_ctx: CtxFac
 @pytest.mark.parametrize(
     "failure",
     [
-        "files-missing-config",
-        "files-empty-config",
-        "files-duplicate-config",
+        "files-missing-cpuid",
+        "files-empty-cpuid",
+        "files-duplicate-cpuid",
         "files-missing-did",
     ],
 )
@@ -902,9 +909,9 @@ def test_push_refuses_an_archive_recorded_against_another_robot(make_ctx: CtxFac
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
     ctx.runner.responder = _text()  # type: ignore[attr-defined]
-    ctx.runner.redirect_responder = _redirect(failure="files-wrong-config")
+    ctx.runner.redirect_responder = _redirect(failure="files-wrong-cpuid")
 
-    with pytest.raises(Die, match="carries a different robot's factory config"):
+    with pytest.raises(Die, match="carries a different robot's factory SoC id"):
         push(ctx)
 
     assert not list(ctx.backups_dir.glob("*"))
@@ -1012,46 +1019,174 @@ def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
     assert "backup has no copy of it" in ctx.console.text()  # type: ignore[attr-defined]
 
 
-def test_push_refuses_a_different_same_model_robot_by_factory_config(make_ctx: CtxFactory) -> None:
+def test_push_refuses_a_different_same_model_robot_by_factory_cpuid(make_ctx: CtxFactory) -> None:
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
-    ctx.runner.responder = _text()  # type: ignore[attr-defined]
-    normal = ctx.runner.responder  # type: ignore[attr-defined]
+    ctx.need_robot().state_set("cpuid", CPUID)  # this workspace has met its robot already
+    normal = _text()
 
     def wrong_robot(argv: tuple[str, ...]) -> Result:
         if "grep -E '^(model|did)='" in argv[-1]:
             return Result(
                 argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
-                "factory_config=config: beefbeefbeefbeefbeefbeefbeefbeef\n", "",
+                "factory_cpuid=beefbeefbeefbeefbeefbeefbeefbeef\n", "",
             )
-        return normal(argv)
+        return normal(argv)  # type: ignore[operator]
 
     ctx.runner.responder = wrong_robot  # type: ignore[attr-defined]
-    with pytest.raises(Die, match="factory config does not match"):
+    with pytest.raises(Die, match="not the selected robot"):
         push(ctx)
     assert not any("tar czf" in call[-1] or call[-1] == "cat > /data/valetudo"
                    for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
-def test_live_identity_accepts_same_robot_with_changed_session_config_suffix(
-    make_ctx: CtxFactory,
-) -> None:
+def test_live_identity_matches_the_soc_id_exactly(make_ctx: CtxFactory) -> None:
+    # The bootloader config was compared on its 8-hex prefix because its tail drifts between
+    # sessions. A SoC id is fixed in hardware, so a differing tail is a different robot.
     ctx = _ctx(make_ctx)
+    ctx.need_robot().state_set("cpuid", CPUID)
     normal = _text()
 
-    def changed_session(argv: tuple[str, ...]) -> Result:
+    def drifted(argv: tuple[str, ...]) -> Result:
         if "grep -E '^(model|did)='" in argv[-1]:
             return Result(
                 argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
-                f"factory_config=config: {CFG[:8]}{'0' * 24}\n", "",
+                f"factory_cpuid={CPUID[:8]}{'0' * 24}\n", "",
             )
         return normal(argv)  # type: ignore[operator]
 
-    ctx.runner.responder = changed_session  # type: ignore[attr-defined]
+    ctx.runner.responder = drifted  # type: ignore[attr-defined]
 
-    identity = _live_robot_identity(ctx, None, CFG)
+    with pytest.raises(Die, match="not the selected robot"):
+        _live_robot_identity(ctx, None)
 
-    assert identity["factory_config"] == f"config: {CFG[:8]}{'0' * 24}"
+
+def test_first_contact_stops_when_the_serial_names_another_robot(make_ctx: CtxFactory) -> None:
+    ctx = _ctx(make_ctx)
+    normal = _text()
+
+    def other_robot(argv: tuple[str, ...]) -> Result:
+        if "grep -E '^(model|did)='" in argv[-1]:
+            return Result(
+                argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
+                f"factory_serial=ZZ99ZZ99ZZ99ZZ99\nfactory_cpuid={CPUID}\n", "",
+            )
+        return normal(argv)  # type: ignore[operator]
+
+    ctx.runner.responder = other_robot  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="serial is not the one recorded"):
+        _live_robot_identity(ctx, None)
+    assert ctx.need_robot().state_get("cpuid") is None
+
+
+def test_first_contact_without_a_serial_refuses_noninteractively(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", interactive=False)
+    ctx.need_robot().recon_dir.mkdir(parents=True)
+    (ctx.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="no confirmed identity yet"):
+        _live_robot_identity(ctx, None)
+    assert ctx.need_robot().state_get("cpuid") is None
+
+
+def test_a_rejected_model_is_not_pinned_to_this_workspace(make_ctx: CtxFactory) -> None:
+    # Pinning before the model check would bind the workspace to a robot it then refuses, locking
+    # the real one out of it with no way back that does not mean hand-editing state.
+    ctx = _ctx(make_ctx)
+    normal = _text()
+
+    def wrong_model(argv: tuple[str, ...]) -> Result:
+        if "grep -E '^(model|did)='" in argv[-1]:
+            return Result(
+                argv, 0, "model=dreame.vacuum.r2228\ndid=12345\n"
+                f"factory_serial={SERIAL}\nfactory_cpuid={CPUID}\n", "",
+            )
+        return normal(argv)  # type: ignore[operator]
+
+    ctx.runner.responder = wrong_model  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="SAFETY STOP"):
+        _live_robot_identity(ctx, None)
+    assert ctx.need_robot().state_get("cpuid") is None
+
+
+def test_an_unreadable_soc_id_does_not_excuse_a_fastboot_robot(make_ctx: CtxFactory) -> None:
+    # Falling back to model-only binding is a UART allowance. Extending it to fastboot would let
+    # any same-model robot answer for the selected one whenever cpuid.txt failed to read.
+    ctx = _ctx(make_ctx)
+    normal = _text()
+
+    def no_cpuid(argv: tuple[str, ...]) -> Result:
+        if "grep -E '^(model|did)='" in argv[-1]:
+            return Result(
+                argv, 0, "model=dreame.vacuum.r2416\ndid=12345\n"
+                "factory_serial=ZZ99ZZ99ZZ99ZZ99\nfactory_cpuid=\n", "",
+            )
+        return normal(argv)  # type: ignore[operator]
+
+    ctx.runner.responder = no_cpuid  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="serial is not the one recorded"):
+        _live_robot_identity(ctx, None)
+
+
+def test_first_contact_pins_the_soc_id_for_later_runs(make_ctx: CtxFactory) -> None:
+    # Nothing can know it beforehand: recon reads the bootloader, and its capture stops short of
+    # the private partition that carries cpuid.txt.
+    ctx = _ctx(make_ctx)
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+
+    identity = _live_robot_identity(ctx, None)
+
+    assert identity["factory_cpuid"] == CPUID
+    assert ctx.need_robot().state_get("cpuid") == CPUID
+
+
+def test_the_factory_member_set_two_real_robots_carry_is_accepted(tmp_path: Path) -> None:
+    """Pinned to what real hardware actually holds, because a fixture is what hid this bug.
+
+    Observed on a live D10s Plus (r2240) and in a captured X40 Ultra (r2416) backup. Neither has a
+    config.txt, which the archive gate used to demand — so it rejected every genuine capture.
+    """
+    archive = tmp_path / "files.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        def add(name: str, data: bytes) -> None:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        for name, data in (
+            ("cpuid.txt", CPUID.encode()),
+            ("did.txt", b"123456789"),
+            ("key.txt", b"A1b2C3d4E5f6G7h8"),
+            ("language.txt", b"en"),
+            ("mac.txt", b"00:11:22:33:44:55"),
+            ("nation.txt", b"US"),
+            ("sn.txt", b"ABCDEFGHIJKLMNOPQR"),
+            ("timezone.txt", b"Europe/Berlin"),
+        ):
+            add(f"mnt/private/ULI/factory/{name}", data)
+        add("mnt/misc/unical-robot.jsonc", b"{}")
+
+    assert push_mod._tar_has_factory_data(archive) is True
+    assert push_mod._archived_factory_cpuid(archive) == CPUID
+
+
+def test_push_never_reads_a_factory_config_file(make_ctx: CtxFactory) -> None:
+    # No Dreame robot has /mnt/private/ULI/factory/config.txt. Requiring it stopped every genuine
+    # run at the identity gate; a complete capture of a real robot's private partition has none.
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner.responder = _text()  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()  # type: ignore[attr-defined]
+
+    assert push(ctx) is True
+
+    assert not any(
+        "factory/config.txt" in call[-1] for call in ctx.runner.calls  # type: ignore[attr-defined]
+    )
 
 
 def test_push_happy_path_installs_and_repairs_negative_did(make_ctx: CtxFactory) -> None:
@@ -1124,7 +1259,7 @@ def test_capture_issues_exactly_the_pinned_remote_commands(make_ctx: CtxFactory)
             "grep -E '^(model|did)=' /data/config/miio/device.conf 2>/dev/null || true; "
             "printf 'factory_serial='; cat /mnt/private/ULI/factory/sn.txt 2>/dev/null; "
             "printf '\\n'; "
-            "printf 'factory_config='; cat /mnt/private/ULI/factory/config.txt 2>/dev/null"
+            "printf 'factory_cpuid='; cat /mnt/private/ULI/factory/cpuid.txt 2>/dev/null"
         ),
         "tar czf - /mnt/private /mnt/misc /etc/*.pem 2>/dev/null",
         "gzip -1c /dev/by-name/private 2>/dev/null",
@@ -1211,7 +1346,7 @@ def test_push_restores_empty_key_from_secure_storage(make_ctx: CtxFactory) -> No
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2104\ndid=12345\n"
-                                  f"factory_config=config: {CFG}\n", "")
+                                  f"factory_cpuid={CPUID}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty: cloudKey only in secure storage
         if "dreame_release.na -c 7" in cmd:
@@ -1263,7 +1398,7 @@ def test_push_skips_key_restore_when_secure_storage_has_no_key(make_ctx: CtxFact
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
-                                  f"factory_config=config: {CFG}\n", "")
+                                  f"factory_cpuid={CPUID}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")  # empty
         if "did.txt" in cmd:
@@ -1327,7 +1462,7 @@ def test_push_skips_key_restore_on_malformed_secure_storage_key(make_ctx: CtxFac
             return Result(argv, 0, "", "")
         if "grep -E '^(model|did)='" in cmd:
             return Result(argv, 0, f"model=dreame.vacuum.r2416\ndid=12345\n"
-                                  f"factory_config=config: {CFG}\n", "")
+                                  f"factory_cpuid={CPUID}\n", "")
         if cmd == "cat /mnt/private/ULI/factory/key.txt 2>/dev/null":
             return Result(argv, 0, "", "")
         if "dreame_release.na -c 7" in cmd:
