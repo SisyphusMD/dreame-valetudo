@@ -71,6 +71,10 @@
 
 ### Fixed
 
+- `bench` can now qualify the whole install path on one robot. Each install scenario used to require
+  that Valetudo had never been installed, so running any one of them made the rest unreachable for
+  good. A repeat run is refused only when it would downgrade the robot, and `bench report` marks it
+  as a reinstall so it is never mistaken for first-install coverage.
 - `rekey --over-ssh` now checks that the robot answers as Valetudo before asking for the serial,
   so the password derived from it is not offered to your router when you are still on home Wi-Fi.
 - After a `rekey` write, a key refused by something that never identified itself as the robot is

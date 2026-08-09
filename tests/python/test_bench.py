@@ -501,9 +501,60 @@ def _snapshot_with(**markers: str) -> B.Snapshot:
         bound_factory_backups=frozenset(),
         backup_artifacts={},
         partial_backups=0,
-        valetudo_version=None,
+        valetudo_version=markers.get("valetudo"),
         root_origin=None,
     )
+
+
+@pytest.mark.parametrize("key", [
+    "post-root-install", "offline-cached-binary", "wifi-drop-backup",
+    "ctrl-c-push", "ssh-wrong-key", "multi-robot-selection",
+])
+def test_one_install_scenario_does_not_strand_the_rest(key: str) -> None:
+    # Each of these drives push() to cover a different way an install can fail. Gating them on an
+    # absent valetudo marker made the first one run and the other five permanently unreachable on
+    # that robot, so no campaign could ever qualify the whole install path.
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    before = _snapshot_with(rooted="yes", recon="backup=obtained", valetudo="2026.08.0")
+
+    failures = B._starting_failures(scenario, before, target_valetudo="2026.08.0")
+
+    assert not [item for item in failures if "valetudo" in item.lower()]
+
+
+@pytest.mark.parametrize("key", ["post-root-install", "offline-cached-binary", "wifi-drop-backup"])
+def test_a_repeat_install_refuses_to_roll_valetudo_back(key: str) -> None:
+    # push() has no version comparison, so allowing repeats must not become a way to downgrade a
+    # robot already running something newer than the campaign build.
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    before = _snapshot_with(rooted="yes", recon="backup=obtained", valetudo="2026.09.0")
+
+    failures = B._starting_failures(scenario, before, target_valetudo="2026.08.0")
+
+    assert "the saved Valetudo version is newer than this build's verified target" in failures
+
+
+@pytest.mark.parametrize("key", ["first-root", "terminal-loss-root"])
+def test_an_installed_robot_still_cannot_be_first_rooted(key: str) -> None:
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    before = _snapshot_with(rooted="yes", recon="backup=obtained", image="x", valetudo="2026.08.0")
+
+    failures = B._starting_failures(scenario, before, target_valetudo="2026.08.0")
+
+    assert "valetudo completion marker already exists" in failures
+
+
+def test_evidence_separates_a_first_install_from_a_reinstall() -> None:
+    first = B._evidence(
+        _snapshot_with(rooted="yes"), _snapshot_with(rooted="yes", valetudo="2026.08.0"),
+    )
+    repeat = B._evidence(
+        _snapshot_with(rooted="yes", valetudo="2026.08.0"),
+        _snapshot_with(rooted="yes", valetudo="2026.08.0"),
+    )
+
+    assert first["valetudo_present_before"] is False
+    assert repeat["valetudo_present_before"] is True
 
 
 @pytest.mark.parametrize("key", ["rekey-over-ssh", "rekey-over-usb", "rekey-wrong-serial"])
@@ -2528,6 +2579,30 @@ def test_stock_recon_rechecks_stock_state_after_adopting_an_existing_workspace(
     ) == 1
     checks = _report(ctx)["results"][0]["checks"]  # type: ignore[index]
     assert "rooted completion marker already exists on the adopted robot" in checks
+
+
+def test_report_marks_an_install_that_was_only_a_reinstall(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    robot.state_set("valetudo", ctx.valetudo_version)
+    _set_robot_identity(ctx)
+
+    def install(inner: object) -> bool:
+        inner.need_robot().state_set("valetudo", inner.valetudo_version)  # type: ignore[attr-defined]
+        _publish_factory_backup(inner, "fresh-generation")
+        return True
+
+    monkeypatch.setattr(B, "push", install)
+    assert B.bench(
+        ctx, ["run", "post-root-install", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+    # A one-scenario campaign is still incomplete, so report's exit code is not the subject here.
+    B.bench(ctx, ["report", "--campaign", "rc"], auto_fn=_noop_auto)
+
+    assert "(reinstall, not a first install)" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_install_cannot_reuse_an_unrelated_existing_factory_backup_as_evidence(

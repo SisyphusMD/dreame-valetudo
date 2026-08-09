@@ -41,6 +41,7 @@ from .phases.push import (
     push,
     update_valetudo,
     valetudo_update_available,
+    valetudo_would_downgrade,
 )
 from .phases.recon import recon
 from .phases.rekey import _MISC_KEYS as MISC_AUTHORIZED_KEYS
@@ -267,6 +268,9 @@ SUITES: Mapping[str, tuple[str, ...]] = {
 }
 
 _WIFI_ONLY_SCENARIOS = frozenset({"rekey-dry-run", "rekey-over-ssh", "rekey-wrong-serial"})
+
+# The scenarios that must leave Valetudo installed and a fresh factory-backup generation published.
+_INSTALL_SCENARIOS = frozenset({"post-root-install", "offline-cached-binary", "wifi-drop-backup"})
 
 _HOST_ONLY_SUITES = frozenset(
     name for name, members in SUITES.items() if set(members) <= {"host-smoke"}
@@ -1646,6 +1650,10 @@ def _evidence(before: Snapshot, after: Snapshot) -> dict[str, object]:
         "backup_counts": dict(after.backup_counts),
         "identity_bound_factory_backup_count": len(after.bound_factory_backups),
         "partial_backup_count": after.partial_backups,
+        # An install scenario run against a robot that already carries Valetudo exercises the same
+        # code but is a reinstall, not a first install. A reader comparing campaigns has to be able
+        # to tell which, so the distinction is recorded rather than inferred from run order.
+        "valetudo_present_before": "valetudo" in before.markers,
     }
 
 
@@ -1702,7 +1710,7 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
                             "scenario")
         if after.recovery_refresh_pending:
             failures.append("the scenario left an incomplete recovery refresh")
-    if scenario.key in {"post-root-install", "offline-cached-binary", "wifi-drop-backup"}:
+    if scenario.key in _INSTALL_SCENARIOS:
         if "valetudo" not in markers:
             failures.append("Valetudo completion marker is absent")
         if not after.bound_factory_backups - before.bound_factory_backups:
@@ -1853,7 +1861,12 @@ def _starting_failures(
                                    "restore-attempt"}),
         "first-root": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
                                  "restore-attempt"}),
-        "post-root-install": frozenset({"valetudo", "restored-stock"}),
+        # These six drive push(), which always publishes a fresh factory-backup generation and
+        # rewrites the binary — it has no already-installed short circuit. Gating them on an absent
+        # valetudo marker would let the first one run and permanently strand the other five, since
+        # a robot's first install cannot be un-done. Each one covers a distinct way that install
+        # can go wrong, so a campaign must be able to run all of them against the same robot.
+        "post-root-install": frozenset({"restored-stock"}),
         "wrong-robot-root": frozenset({"rooted", "valetudo", "restored-stock",
                                        "flash-attempt", "restore-attempt"}),
         "decline-flash": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
@@ -1866,11 +1879,11 @@ def _starting_failures(
         "terminal-loss-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
         "reroot-after-restore": frozenset({"rooted", "valetudo", "flash-attempt",
                                            "restore-attempt"}),
-        "wifi-drop-backup": frozenset({"valetudo", "restored-stock"}),
-        "ctrl-c-push": frozenset({"valetudo", "restored-stock"}),
-        "ssh-wrong-key": frozenset({"valetudo", "restored-stock"}),
-        "offline-cached-binary": frozenset({"valetudo", "restored-stock"}),
-        "multi-robot-selection": frozenset({"valetudo", "restored-stock"}),
+        "wifi-drop-backup": frozenset({"restored-stock"}),
+        "ctrl-c-push": frozenset({"restored-stock"}),
+        "ssh-wrong-key": frozenset({"restored-stock"}),
+        "offline-cached-binary": frozenset({"restored-stock"}),
+        "multi-robot-selection": frozenset({"restored-stock"}),
         # The SSH route refuses outright while a USB write is unaccounted for, because writing one
         # file into a partly-written misc neither repairs it nor puts the pristine copy back.
         "rekey-dry-run": frozenset({"rekey-attempt", "restored-stock"}),
@@ -1905,6 +1918,12 @@ def _starting_failures(
         and before.root_origin != ADOPTED_ROOT
     ):
         failures.append("the robot must carry the accepted existing-root adoption marker")
+    if scenario.key in _INSTALL_SCENARIOS and valetudo_would_downgrade(
+        before.valetudo_version, target_valetudo,
+    ):
+        # push() replaces the executable unconditionally — only update_valetudo() compares versions
+        # — so repeating an install against a robot recorded newer than this build rolls it back.
+        failures.append("the saved Valetudo version is newer than this build's verified target")
     return failures
 
 
@@ -2713,7 +2732,15 @@ def _report(
             missing.append(scenario.key)
         else:
             label = "OPTIONAL"
-        ctx.console.info(f"  {label:<11} {scenario.key:<24} {scenario.safety}")
+        note = ""
+        if scenario.key in _INSTALL_SCENARIOS and state == "passed" and entry is not None:
+            evidence = entry.get("evidence")
+            if isinstance(evidence, Mapping) and evidence.get("valetudo_present_before") is True:
+                # Only one run per robot can be the first install; the rest exercise the same code
+                # against a robot that already had Valetudo. Saying so keeps a campaign from
+                # reading as first-install coverage it cannot have.
+                note = "  (reinstall, not a first install)"
+        ctx.console.info(f"  {label:<11} {scenario.key:<24} {scenario.safety}{note}")
         if entry is not None and state not in {None, "passed"}:
             for line in _failure_detail(entry):
                 ctx.console.detail(f"    {line}")
