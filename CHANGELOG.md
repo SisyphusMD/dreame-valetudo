@@ -31,9 +31,6 @@
 - DustBuilder guidance is now written per model and stamped with the date it was last verified. When
   a config isn't recognized yet, the tool walks you through uploading it, with the current privacy
   and follow-up warnings.
-
-### Added
-
 - Setup now asks for the serial from the label under the dustbin and saves it, so a lost SSH key
   never means fetching the robot and turning it over. `rekey` offers it instead of asking again.
 
@@ -71,6 +68,12 @@
 
 ### Fixed
 
+- `bench run rekey-over-usb` waits for you to bring the robot's Wi-Fi back before it judges
+  the key. The write reboots the robot, and the check that follows gave up long before a
+  robot could boot, so a key the robot had accepted was recorded as refused.
+- `bench` checks the implementation pin on the robot instead of asking whether the web UI
+  looks right. Valetudo never displays its implementation class, and one with a password
+  shows a login form first, so that question had no honest answer.
 - `fix-impl` no longer reports the web UI as down when it is up. The readiness check failed on any
   HTTP error, so a Valetudo with authentication turned on — which answers 401 until you log in —
   looked unreachable for the whole wait.

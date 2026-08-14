@@ -33,7 +33,7 @@ from .context import Context
 from .log import scrub
 from .phases.doctor import _sunxi_ready, doctor
 from .phases.fetch import fetch, fetch_stage1, stage1_ready
-from .phases.fixes import diagnose, fix_impl
+from .phases.fixes import diagnose, fix_impl, resolved_impl_class
 from .phases.image import image
 from .phases.push import (
     backup,
@@ -107,7 +107,6 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "implementation-fix", "H2", "model-specific Valetudo implementation pin", True,
-        "Does the Valetudo web interface now load with the correct robot implementation?",
     ),
     Scenario(
         "rooted-resume", "H2", "normal rerun skips USB and flashing", True,
@@ -605,6 +604,47 @@ def _require_ap_baseline(ctx: Context) -> _KeyBaseline:
             "then re-run this scenario."
         )
     return baseline
+
+
+def _confirm_pinned_implementation(ctx: Context) -> dict[str, object]:
+    """Read the pin back off the robot rather than asking the operator whether the UI looks right.
+
+    Valetudo does not display its implementation class anywhere in the web interface, and one with
+    authentication turned on shows a login form before it shows anything at all, so the question
+    this scenario used to ask could not be answered honestly either way — and a confident yes would
+    have certified a pin nobody had seen. The pin is a value in a file on the robot, so read the
+    file. Derived through the phase's own rule, never a copy of it, so the check cannot certify a
+    class the phase would not have written.
+    """
+    key = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, ctx.need_robot())
+    if not _is_robot_ap(ctx, key, wait_for_mount=True):
+        raise Die(
+            f"Bench check failed: {ROBOT_AP_IP} is not answering as the robot, so the pin could "
+            "not be read back. On a home network that address is usually the router."
+        )
+    model, expected = resolved_impl_class(ctx, key)
+    if not model:
+        expected = ctx.profile.impl_class
+    elif expected is None:
+        raise Die(f"Bench check failed: the robot reports model '{model}', which has no known "
+                  "Valetudo implementation to pin.")
+    pulled = robot_ssh(
+        ctx.runner, f"root@{ROBOT_AP_IP}", "cat /data/valetudo_config.json", key=key, check=False,
+    )
+    if not pulled.ok:
+        raise Die("Bench check failed: could not read /data/valetudo_config.json back.")
+    try:
+        data = json.loads(pulled.stdout)
+    except json.JSONDecodeError:
+        raise Die("Bench check failed: the config read back is not valid JSON.") from None
+    pinned = data.get("robot", {}).get("implementation")
+    if pinned != expected:
+        raise Die(f"Bench check failed: the robot's config pins implementation={pinned!r}, not "
+                  f"the {expected!r} this run should have written.")
+    return {
+        "implementation_pinned": pinned,
+        "pin_derived_from_live_model": bool(model),
+    }
 
 
 def _confirm_authorized_key(ctx: Context, before: _KeyBaseline) -> dict[str, object]:
@@ -2332,6 +2372,7 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
             raise Die("Valetudo installation did not complete.")
     elif scenario.key == "implementation-fix":
         fix_impl(ctx)
+        return _confirm_pinned_implementation(ctx)
     elif scenario.key == "rekey-dry-run":
         rekey(ctx, over_ssh=True, dry_run=True)
         return {"preview_only": True}
@@ -2345,6 +2386,16 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
     elif scenario.key == "rekey-over-usb":
         previously_authorized = _key_baseline(ctx)
         rekey(ctx)
+        if ctx.interactive:
+            # The write ends in a fastboot reboot, and the confirmation that follows needs the
+            # robot answering on its own AP. That check waits only long enough for /mnt to finish
+            # mounting, which is nowhere near long enough for a robot to boot and an operator to
+            # start the AP and join it — so without this pause a rekey the robot honoured would be
+            # recorded as one it refused. The SSH route reboots nothing and needs no pause.
+            ctx.console.ask(
+                "The write rebooted the robot. Once it has finished booting, hold the two outer "
+                "buttons until its Wi-Fi AP starts, join that network, then press Enter."
+            )
         return _confirm_authorized_key(ctx, previously_authorized)
     elif scenario.key == "rooted-resume":
         auto_fn(ctx, ())
