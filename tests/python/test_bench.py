@@ -20,7 +20,12 @@ from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.phases.root import root as production_root
+from dreame_valetudo.profiles import impl_class_for_model
 from dreame_valetudo.run import Result
+
+# A model the fixture profile (x40-ultra) does not map to, so a pin taken from the workspace
+# instead of the robot is visibly wrong.
+_LIVE_MODEL = "dreame.vacuum.r2240"
 
 
 def _noop_auto(_ctx: object, _args: object) -> None:
@@ -573,6 +578,61 @@ def test_the_usb_route_needs_a_rewritten_marker_not_an_inherited_one() -> None:
     stale = {"rooted": "yes", "sshkey-authorized": "from-the-ssh-scenario"}
     failures = B._validate(scenario, _snapshot_with(**stale), _snapshot_with(**stale))
     assert any("so no misc write happened" in failure for failure in failures), failures
+
+
+def _rekey_route_events(
+    ctx: object, key: str, monkeypatch: pytest.MonkeyPatch,
+) -> list[str]:
+    """The order of rekey, any operator pause, and the authorized-key confirmation."""
+    events: list[str] = []
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+
+    def ask(prompt: str, **_kwargs: object) -> str:
+        events.append(f"ask: {prompt}")
+        return ""
+
+    monkeypatch.setattr(ctx.console, "ask", ask)
+    monkeypatch.setattr(B, "rekey", lambda *_a, **_k: events.append("rekey"))
+    monkeypatch.setattr(B, "_key_baseline", lambda _c: _baseline())
+    monkeypatch.setattr(B, "_require_ap_baseline", lambda _c: _baseline())
+    monkeypatch.setattr(
+        B, "_confirm_authorized_key",
+        lambda *_a, **_k: (events.append("confirm"), {})[1],
+    )
+    B._perform(scenario, ctx, _noop_auto)  # type: ignore[arg-type]
+    return events
+
+
+def test_a_usb_rekey_waits_for_the_ap_before_it_judges_the_key(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The write reboots the robot, and the confirmation cannot outwait a boot plus an AP join."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = True
+
+    events = _rekey_route_events(ctx, "rekey-over-usb", monkeypatch)
+
+    assert events[0] == "rekey"
+    assert events[-1] == "confirm"
+    assert "hold the two outer buttons" in events[1]
+
+
+def test_the_ssh_rekey_route_does_not_stop_to_ask_for_an_ap_it_never_left(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = True
+
+    assert _rekey_route_events(ctx, "rekey-over-ssh", monkeypatch) == ["rekey", "confirm"]
+
+
+def test_an_unattended_usb_rekey_does_not_block_on_a_question(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    assert _rekey_route_events(ctx, "rekey-over-usb", monkeypatch) == ["rekey", "confirm"]
 
 
 @pytest.mark.parametrize("key", ["rekey-over-ssh", "rekey-over-usb", "rekey-wrong-serial"])
@@ -1212,11 +1272,24 @@ def test_hardware_stack_is_not_ready_until_fastboot_client_is_usable(
     assert B._hardware_stack_ready(ctx)
 
 
+def _pins_implementation(ctx: object, implementation: str | None = None) -> None:
+    """Answer the pin read-back with a config the phase would have written."""
+    impl = ctx.profile.impl_class if implementation is None else implementation  # type: ignore[attr-defined]
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "cat /data/valetudo_config.json":
+            return Result(argv, 0, json.dumps({"robot": {"implementation": impl}}), "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+
 def test_wifi_side_scenario_does_not_seal_an_incomplete_fastboot_stack(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(robot_name="bench", confirms=[True])
+    ctx = make_ctx(robot_name="bench")
     _prepare_valetudo_state(ctx)
+    _pins_implementation(ctx)
     monkeypatch.setattr(B, "fix_impl", lambda inner: inner.need_robot().state_set("impl-fixed"))
 
     assert B.bench(
@@ -1225,6 +1298,67 @@ def test_wifi_side_scenario_does_not_seal_an_incomplete_fastboot_stack(
 
     assert ctx.need_robot().state_has("impl-fixed")
     assert _report(ctx)["hardware_fingerprint"] is None
+
+
+def test_implementation_pin_is_verified_on_the_robot_not_asked_about(
+    make_ctx: CtxFactory,
+) -> None:
+    """The operator cannot read the implementation class off the UI, so the file is the witness."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+    _pins_implementation(ctx)
+
+    assert B._confirm_pinned_implementation(ctx) == {
+        "implementation_pinned": ctx.profile.impl_class,
+        "pin_derived_from_live_model": False,
+    }
+
+
+def test_a_pin_the_run_did_not_write_fails_the_scenario(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+    _pins_implementation(ctx, "auto")
+
+    with pytest.raises(Die, match="pins implementation='auto'"):
+        B._confirm_pinned_implementation(ctx)
+
+
+def test_the_pin_is_checked_against_the_live_model_when_the_robot_reports_one(
+    make_ctx: CtxFactory,
+) -> None:
+    """A workspace bound to the wrong model must not certify that model's class."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1].startswith("cat /data/config/miio/device.conf"):
+            return Result(argv, 0, f"model={_LIVE_MODEL}\n", "")
+        if argv[-1] == "cat /data/valetudo_config.json":
+            return Result(
+                argv, 0, json.dumps({"robot": {"implementation": ctx.profile.impl_class}}), "",
+            )
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    assert impl_class_for_model(_LIVE_MODEL) != ctx.profile.impl_class
+    with pytest.raises(Die, match="Bench check failed: the robot's config pins"):
+        B._confirm_pinned_implementation(ctx)
+
+
+def test_an_address_that_is_not_the_robot_cannot_certify_a_pin(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "test -d /mnt/private/ULI/factory":
+            return Result(argv, 1, "", "")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="not answering as the robot"):
+        B._confirm_pinned_implementation(ctx)
 
 
 def test_valetudo_update_scenario_runs_the_production_updater_and_records_observation(

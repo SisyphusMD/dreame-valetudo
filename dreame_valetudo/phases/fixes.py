@@ -193,6 +193,24 @@ def fix_key(ctx: Context) -> bool:
     return True
 
 
+def resolved_impl_class(ctx: Context, key: Path | None) -> tuple[str, str | None]:
+    """The live model from device.conf and the implementation class it maps to.
+
+    Shared with the hardware bench, which verifies the pin fix-impl wrote: a bench that re-derived
+    the expected class on its own could drift from this rule and certify the wrong value. An empty
+    model means device.conf was unreadable, and the caller falls back to the selected profile; a
+    model with a None class is one this tool has no mapping for.
+    """
+    conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
+    for line in conf.stdout.splitlines():
+        if line.startswith("model="):
+            model = line[len("model="):].strip()
+            if model:
+                return model, impl_class_for_model(model)
+            break
+    return "", None
+
+
 def fix_impl(ctx: Context) -> None:
     key = _key(ctx)
     ctx.console.say("Fix: pin Valetudo's robot implementation")
@@ -200,16 +218,9 @@ def fix_impl(ctx: Context) -> None:
 
     _require_selected_robot(ctx, key, "fix-impl")
 
-    conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
-    model = ""
-    for line in conf.stdout.splitlines():
-        if line.startswith("model="):
-            model = line[len("model="):].strip()
-            break
-
+    model, impl = resolved_impl_class(ctx, key)
     if model:
         ctx.console.info(f"Robot model (from {_DEVICE_CONF}): {model}")
-        impl = impl_class_for_model(model)
         if impl is None:
             die(f"Model '{model}' isn't one this tool knows how to pin. You can force a class by "
                 "hand-editing robot.implementation in /data/valetudo_config.json.")
