@@ -103,7 +103,7 @@ jobs:
           # renovate: datasource=pypi depName=ruff
           RUFF="0.16.3"
           # renovate: datasource=pypi depName=mypy
-          MYPY="2.3.0"
+          MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
