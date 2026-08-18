@@ -42,18 +42,20 @@ RUN git clone -q https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx \
  && make -C /tmp/sx sunxi-fel
 WORKDIR /w
 COPY . /w
-# The build scripts smoke-test the frozen binaries by running them (dreame-valetudo version, the
-# fastboot client's usage). Under the emulated arm64 leg this runs a PyInstaller onefile through
-# qemu-user; keeping it as a real check makes an emulation limitation explicit before deciding
-# whether the smoke must become native-only.
-RUN bash packaging/build-bundle.sh /w/dist \
- && bash packaging/build-fastboot-client.sh /w/dist \
+# BUNDLE_MODE=onedir: the emulated arm64 leg cannot start a PyInstaller onefile at all, because the
+# bootloader's onefile child requires its parent to be the same executable and under qemu-user the
+# kernel names the injected emulator instead. A onedir bundle has no child process, so both build
+# scripts can keep smoke-testing what they froze by running it — on both architectures.
+RUN BUNDLE_MODE=onedir bash packaging/build-bundle.sh /w/dist \
+ && BUNDLE_MODE=onedir bash packaging/build-fastboot-client.sh /w/dist \
  && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel \
  && python3 packaging/check-glibc-floor.py "$(cat packaging/glibc-floor.txt)" \
       /w/dist/dreame-valetudo /w/dist/dreame-fastboot /w/dist/sunxi-fel
 
-# Export stage: BuildKit writes just these three native binaries to the --output dir (client-side
-# stream, so it isn't subject to the DinD workspace-visibility problem either).
+# Export stage: BuildKit writes just the two native bundle trees + sunxi-fel to the --output dir
+# (client-side stream, so it isn't subject to the DinD workspace-visibility problem either). A
+# directory source copies as its CONTENTS, so each bundle keeps its own launcher-plus-_internal
+# shape under the destination directory.
 FROM scratch AS export
 COPY --from=build /w/dist/dreame-valetudo /dreame-valetudo
 COPY --from=build /w/dist/dreame-fastboot /dreame-fastboot

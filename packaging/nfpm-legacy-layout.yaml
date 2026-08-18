@@ -1,0 +1,42 @@
+# Test fixture: the installed layout the packages had BEFORE the frozen tools became onedir trees —
+# two plain executables where there are now symlinks, and no bundle directories at all. Upgrading
+# from it is a package-manager transition (replace a regular file with a symlink, add the trees)
+# that no other case in packaging/test-linux-packages.sh can reach, because every other case
+# upgrades one current-layout package to another.
+#
+#   DEB_ARCH=amd64 VERSION=0.0.0-rc.0 nfpm package -p deb -f packaging/nfpm-legacy-layout.yaml
+#
+# It is packaged from the same built binaries rather than from an archived release so it cannot go
+# stale, and it declares no dependencies: the smoke never runs this install, only replaces it. Drop
+# this file once no supported upgrade can start from a pre-onedir install.
+name: dreame-valetudo
+arch: "${DEB_ARCH}"
+platform: linux
+version: "${VERSION}"
+section: utils
+priority: optional
+maintainer: "Cody Bryant <SisyphusMD@users.noreply.github.com>"
+vendor: SisyphusMD
+homepage: https://github.com/SisyphusMD/dreame-valetudo
+license: AGPL-3.0-or-later
+description: |
+  Pre-onedir installed layout, used only as the starting point of the upgrade smoke test.
+
+contents:
+  - src: ./dist/dreame-valetudo/dreame-valetudo
+    dst: /usr/bin/dreame-valetudo
+    file_info:
+      mode: 0755
+  - src: ./dist/dreame-fastboot/dreame-fastboot
+    dst: /usr/lib/dreame-valetudo/dreame-fastboot
+    file_info:
+      mode: 0755
+  - src: ./sunxi-fel
+    dst: /usr/lib/dreame-valetudo/sunxi-fel
+    file_info:
+      mode: 0755
+  - src: ./packaging/udev/99-dreame-valetudo.rules
+    dst: /usr/lib/udev/rules.d/99-dreame-valetudo.rules
+
+scripts:
+  postinstall: ./packaging/deb-postinstall.sh

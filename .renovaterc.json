@@ -205,14 +205,6 @@
       "matchDepNames": ["quay.io/pypa/manylinux_2_28_x86_64", "quay.io/pypa/manylinux_2_28_aarch64"],
       "groupName": "manylinux builders",
       "versioning": "regex:^(?<major>\\d{4})\\.(?<minor>\\d{2})\\.(?<patch>\\d{2})-(?<build>\\d+)$"
-    },
-    {
-      "description": "Held at 6.22.0. 6.22.0 added a onefile bootloader check closing GHSA-9fxf-4qw3-ghmr — a onefile app passes its unpack location to its child through _PYI_* variables, and an attacker who spoofs those can redirect the child, so the child now requires its parent to be running the same executable. 6.22.1 is where that comparison took effect on POSIX, and where this repo's release broke: the arm64 .deb is built and smoke-tested inside BuildKit's QEMU emulation, where the parent resolves to /dev/.buildkit_qemu_emulator rather than the app, so every emulated run of a frozen binary fails — the build-time smoke, the packaged `version` check, and `bench run host-smoke` alike. Nothing in ci.yml can catch it: that job builds amd64 only, and the emulated arm64 leg exists solely at release time. Tolerating the error instead would have retired the one pre-release check that runs the arm64 package at all. SisyphusMD/whiskerless hit this first and holds the same version; its packaging/check-pyinstaller-pin.sh carries the full reasoning and the rule for when the pin can be lifted. Upstream is active in this area, but the relaxations so far skip the check only when /proc/<ppid> is unreadable — an emulated entry is readable and merely points elsewhere, so they do not reach this case. Scoped to the two Forgejo workflows on purpose: release-macos.yml freezes its binary on a real macOS runner, where the parent is an ordinary shell and the check passes, so holding that pin back would cost a hardening for a problem it does not have.",
-      "matchManagers": ["custom.regex"],
-      "matchDepNames": ["pyinstaller"],
-      "matchFileNames": [".forgejo/workflows/ci.yml", ".forgejo/workflows/publish.yml"],
-      "allowedVersions": "<=6.22.0",
-      "prBodyNotes": ["Held below 6.22.1 on purpose — read the pyinstaller entry in .renovaterc.json before raising it, and expect to spend a release candidate proving any lift."]
     }
   ]
 }

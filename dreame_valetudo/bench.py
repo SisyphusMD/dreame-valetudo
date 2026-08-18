@@ -1067,29 +1067,69 @@ def _metadata(ctx: Context) -> tuple[str, str]:
     return build, channel
 
 
+# The Linux packages ship onedir bundles whose contents directory is named explicitly at build
+# time (packaging/build-bundle.sh), so a launcher is identifiable by that directory beside it.
+_BUNDLE_CONTENTS_DIR = "_internal"
+
+
+def _labelled(blob: bytes) -> bytes:
+    """Length-prefix a header so a path can never run together with the bytes that follow it."""
+    return len(blob).to_bytes(4, "big") + blob
+
+
+def _file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.digest()
+
+
+def _tree_digest(root: Path, *, prune_cache: bool = False) -> bytes:
+    """Digest every entry under `root` by relative path, kind, and either bytes or link target.
+
+    Links are inventoried rather than skipped: a frozen bundle may link shared libraries into
+    place, and a repointed link changes what actually runs while every regular file it ships
+    stays byte-identical.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if prune_cache and ("__pycache__" in path.parts or path.suffix == ".pyc"):
+            continue
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            digest.update(_labelled(f"{relative}\0symlink\0{path.readlink()}".encode()))
+        elif path.is_file():
+            digest.update(_labelled(f"{relative}\0file".encode()))
+            digest.update(_file_digest(path))
+    return digest.digest()
+
+
+def _bundle_root(path: Path) -> Path | None:
+    """The onedir bundle `path` is the launcher of, or None if it is a standalone executable."""
+    parent = path.resolve().parent
+    return parent if (parent / _BUNDLE_CONTENTS_DIR).is_dir() else None
+
+
 def _runtime_fingerprint() -> str:
     digest = hashlib.sha256()
-    if getattr(sys, "frozen", False):
-        candidates = [Path(sys.executable)]
-        root = Path(sys.executable).parent
-    else:
-        root = Path(__file__).resolve().parent
-        try:
-            candidates = sorted(
-                path for path in root.rglob("*")
-                if path.is_file() and not path.is_symlink()
-                and "__pycache__" not in path.parts and path.suffix != ".pyc"
-            )
-        except OSError as exc:
-            raise Die(f"Could not inventory this executable for bench qualification: {exc}") from exc
     try:
-        for path in candidates:
-            relative = path.relative_to(root).as_posix().encode()
-            digest.update(len(relative).to_bytes(4, "big"))
-            digest.update(relative)
-            with path.open("rb") as stream:
-                while chunk := stream.read(1 << 20):
-                    digest.update(chunk)
+        if getattr(sys, "frozen", False):
+            # Hash the launcher AND the contents the bootloader hands over, rather than deciding
+            # which bundle mode this is. A onefile executable IS the whole artifact and its
+            # contents are an extraction of itself, so it is merely counted twice; a onedir
+            # launcher is a near-generic stub whose runtime and bundled data live wholly in that
+            # directory, and hashing the stub alone would let two different builds — two different
+            # tools, with different hardware behaviour — share one campaign.
+            digest.update(_labelled(b"executable"))
+            digest.update(_file_digest(Path(sys.executable)))
+            contents = getattr(sys, "_MEIPASS", None)
+            if contents:
+                digest.update(_labelled(b"contents"))
+                digest.update(_tree_digest(Path(contents)))
+        else:
+            digest.update(_labelled(b"package"))
+            digest.update(_tree_digest(Path(__file__).resolve().parent, prune_cache=True))
     except OSError as exc:
         raise Die(f"Could not fingerprint this executable for bench qualification: {exc}") from exc
     return digest.hexdigest()
@@ -1125,16 +1165,18 @@ def _hardware_fingerprint(ctx: Context) -> str:
                 candidate = Path(value)
         try:
             if candidate is not None and candidate.is_file():
-                encoded = f"{label}\0file".encode()
-                digest.update(len(encoded).to_bytes(4, "big"))
-                digest.update(encoded)
-                with candidate.open("rb") as stream:
-                    while chunk := stream.read(1 << 20):
-                        digest.update(chunk)
+                bundle = _bundle_root(candidate)
+                if bundle is None:
+                    digest.update(_labelled(f"{label}\0file".encode()))
+                    digest.update(_file_digest(candidate))
+                else:
+                    # A onedir helper's launcher is a stub; the USB stack it actually loads is the
+                    # rest of the tree. Binding to the launcher alone would accept hardware results
+                    # produced by a materially different client whose stub bytes happened to match.
+                    digest.update(_labelled(f"{label}\0bundle".encode()))
+                    digest.update(_tree_digest(bundle))
             else:
-                encoded = f"{label}\0literal\0{value}".encode()
-                digest.update(len(encoded).to_bytes(4, "big"))
-                digest.update(encoded)
+                digest.update(_labelled(f"{label}\0literal\0{value}".encode()))
         except OSError as exc:
             raise Die(f"Could not fingerprint hardware helper {candidate}: {exc}") from exc
     return digest.hexdigest()

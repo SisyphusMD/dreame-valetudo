@@ -70,6 +70,9 @@
 - Recon now records the model it inspected, and rooting won't flash unless that record matches the
   selected model, checked before the robot is touched at all. A robot whose recon completed under
   0.2.x carries no such record, so run `recon --force` on it before rooting.
+- The Linux packages start faster and their arm64 builds are verified again: each frozen tool now
+  installs as a directory under `/usr/lib/dreame-valetudo`, reached through a symlink, instead of
+  unpacking itself on every run. Upgrading from an earlier package handles the change.
 
 ### Fixed
 

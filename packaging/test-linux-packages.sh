@@ -77,10 +77,21 @@ installed_smoke() {
       ;;
   esac
 
+  # Everything below describes the FINAL install: an upgrade case has already replaced whatever
+  # layout it started from.
+  test -L /usr/bin/dreame-valetudo
   test -x /usr/bin/dreame-valetudo
+  test -x /usr/lib/dreame-valetudo/app/dreame-valetudo
+  test -L /usr/lib/dreame-valetudo/dreame-fastboot
   test -x /usr/lib/dreame-valetudo/dreame-fastboot
+  test -x /usr/lib/dreame-valetudo/fastboot/dreame-fastboot
   test -x /usr/lib/dreame-valetudo/sunxi-fel
   test -f /usr/lib/udev/rules.d/99-dreame-valetudo.rules
+  # Data frozen into the bundle that no phase below reads. A tree that lost it still installs,
+  # still reports its version and still passes the host smoke, then fails on real hardware.
+  test -f /usr/lib/dreame-valetudo/app/_internal/libexec/fastboot-libusb.py
+  test -d /usr/lib/dreame-valetudo/app/_internal/libexec/dustbuilder-forms
+  test -f /usr/lib/dreame-valetudo/app/_internal/dreame_valetudo/CHANGELOG.md
   command -v tmux >/dev/null
 
   runtime=$(dreame-valetudo version)
@@ -110,10 +121,18 @@ installed_smoke() {
     zypper) zypper --non-interactive remove dreame-valetudo ;;
   esac
 
-  test ! -e /usr/bin/dreame-valetudo
-  test ! -e /usr/lib/dreame-valetudo/dreame-fastboot
-  test ! -e /usr/lib/dreame-valetudo/sunxi-fel
-  test ! -e /usr/lib/udev/rules.d/99-dreame-valetudo.rules
+  # -e is FALSE for a dangling symlink, so a package-owned launcher left pointing at a tree that
+  # was removed would slip through it unnoticed; -L is what catches that.
+  for path in /usr/bin/dreame-valetudo \
+              /usr/lib/dreame-valetudo/dreame-fastboot \
+              /usr/lib/dreame-valetudo/sunxi-fel \
+              /usr/lib/udev/rules.d/99-dreame-valetudo.rules; do
+    { [ ! -e "$path" ] && [ ! -L "$path" ]; } || fail "uninstall left $path behind"
+  done
+  # The trees are the bulk of the install. Removing only the launchers above would satisfy every
+  # check so far and leave both _internal directories on disk.
+  [ ! -d /usr/lib/dreame-valetudo/app ] || fail "uninstall left the main bundle tree behind"
+  [ ! -d /usr/lib/dreame-valetudo/fastboot ] || fail "uninstall left the client bundle tree behind"
   test -f "$HOME/dreame-valetudo/backups/uninstall-must-preserve"
   if [ "$upgrade" = true ]; then
     echo "package smoke PASS: $manager ($old_version -> $new_version -> removed)"
@@ -134,7 +153,8 @@ if [ "${1:-}" = "--inside-single" ]; then
   exit 0
 fi
 
-[ "$#" -eq 4 ] || fail "usage: $0 <old.deb> <new.deb> <old.rpm> <new.rpm>"
+[ "$#" -eq 6 ] \
+  || fail "usage: $0 <old.deb> <new.deb> <old.rpm> <new.rpm> <legacy.deb> <legacy.rpm>"
 : "${DEBIAN_FLOOR_IMAGE:?set DEBIAN_FLOOR_IMAGE to a pinned image}"
 : "${DEBIAN_CURRENT_IMAGE:?set DEBIAN_CURRENT_IMAGE to a pinned image}"
 : "${UBUNTU_FLOOR_IMAGE:?set UBUNTU_FLOOR_IMAGE to a pinned image}"
@@ -150,7 +170,9 @@ old_deb=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 new_deb=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 old_rpm=$(cd "$(dirname "$3")" && pwd)/$(basename "$3")
 new_rpm=$(cd "$(dirname "$4")" && pwd)/$(basename "$4")
-for package in "$old_deb" "$new_deb" "$old_rpm" "$new_rpm"; do
+legacy_deb=$(cd "$(dirname "$5")" && pwd)/$(basename "$5")
+legacy_rpm=$(cd "$(dirname "$6")" && pwd)/$(basename "$6")
+for package in "$old_deb" "$new_deb" "$old_rpm" "$new_rpm" "$legacy_deb" "$legacy_rpm"; do
   [ -s "$package" ] || fail "missing or empty package: $package"
 done
 
@@ -184,6 +206,14 @@ run_case() {
   docker image rm "$image" >/dev/null 2>&1 || true
 }
 
+# The pre-onedir installed layout is a package-manager transition of its own: two regular files
+# become symlinks and two bundle directories appear. Every other case here upgrades one onedir
+# package to another, which cannot see that. The legacy fixture is never executed — only its shape
+# is under test — so it is packaged from the same binaries rather than from an archived release.
+run_case "Debian 13 (upgrade from the pre-onedir layout)" \
+  "$DEBIAN_CURRENT_IMAGE" apt "$legacy_deb" "$new_deb"
+run_case "Fedora 44 (upgrade from the pre-onedir layout)" \
+  "$FEDORA_CURRENT_IMAGE" dnf "$legacy_rpm" "$new_rpm"
 run_case "Debian 12 (oldstable floor)" "$DEBIAN_FLOOR_IMAGE" apt "$old_deb" "$new_deb"
 run_case "Debian 13 (current stable)" "$DEBIAN_CURRENT_IMAGE" apt "$old_deb" "$new_deb"
 run_case "Ubuntu 22.04 (glibc floor)" "$UBUNTU_FLOOR_IMAGE" apt "$old_deb" "$new_deb"
