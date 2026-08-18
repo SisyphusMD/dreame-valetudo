@@ -52,8 +52,13 @@ jobs:
           export VERSION="${GITHUB_REF_NAME#v}"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
+          # Held at 6.22.0. 6.22.0 added a onefile bootloader check (GHSA-9fxf-4qw3-ghmr) that
+          # 6.22.1 activated on POSIX: a onefile child requires its parent to be running the same
+          # executable. Under BuildKit's QEMU emulation the parent is the injected emulator, so
+          # every frozen binary the arm64 leg builds refuses to start. See the pyinstaller clamp in
+          # .renovaterc.json; SisyphusMD/whiskerless hit this first and documents when to lift it.
           # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.22.2"
+          PYINSTALLER="6.22.0"
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
