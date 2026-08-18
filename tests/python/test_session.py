@@ -852,6 +852,60 @@ def test_an_interactive_run_inside_the_session_holds_its_final_screen(
     assert con.lines[-1] == ("confirm", "Set up another robot?")
 
 
+def test_continuing_a_failed_run_retries_that_command_not_the_auto_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Continue with X?" has to re-run the command that was asked for.
+
+    Answering it into the auto chain substitutes a different operation, and auto then reports every
+    phase complete on a robot whose remaining phases really are done — so the invocation the
+    operator named never ran and nothing said so.
+    """
+    work = tmp_path / "work"
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str] | None = None, **_kwargs: object) -> tuple[int, None]:
+        seen.append(list(argv or []))
+        _record_bound_robot(work)
+        return 1, None
+
+    con = ScriptedConsole(confirms=[True, False])
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    rc = main(["rekey"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                              "DREAME_WORK": str(work), "DREAME_ROBOT": "Test-Bench-1"},
+              console=con)
+
+    assert rc == 1
+    assert seen == [["rekey"], ["rekey"]]
+
+
+def test_continuing_a_successful_run_still_offers_the_auto_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success question offers something ELSE, which is exactly what auto is."""
+    work = tmp_path / "work"
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str] | None = None, **_kwargs: object) -> tuple[int, None]:
+        seen.append(list(argv or []))
+        _record_bound_robot(work)
+        return 0, None
+
+    con = ScriptedConsole(confirms=[True, False])
+    monkeypatch.setattr(cli_mod, "_run", fake_run)
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(sys, "stdout", _Tty(True))
+
+    main(["rekey"], env={IN_SESSION: "1", "HOME": str(tmp_path),
+                         "DREAME_WORK": str(work), "DREAME_ROBOT": "Test-Bench-1"},
+         console=con)
+
+    assert seen == [["rekey"], ["auto"]]
+
+
 def test_a_bench_run_never_offers_the_normal_workflow_continuation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

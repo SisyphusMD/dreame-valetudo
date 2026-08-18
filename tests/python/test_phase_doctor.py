@@ -11,7 +11,7 @@ from conftest import CtxFactory
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.context import Context
-from dreame_valetudo.phases.doctor import doctor
+from dreame_valetudo.phases.doctor import check_fastboot_client, doctor
 from dreame_valetudo.run import Result
 
 
@@ -276,3 +276,43 @@ def test_doctor_is_quiet_when_every_tool_is_present(
     doctor(ctx)
     warned = [m for k, m in ctx.console.lines if k == "warn"]  # type: ignore[attr-defined]
     assert not any("Missing external tools" in m for m in warned)
+
+
+_UV_NO_NETWORK = (
+    "error sending request for url (https://pypi.org/simple/pyusb/)\n"
+    "  Caused by: dns error: failed to lookup address information"
+)
+
+
+def test_a_client_that_could_not_fetch_pyusb_names_the_network_not_libusb(
+    make_ctx: CtxFactory,
+) -> None:
+    """The uv transport resolves pyusb from PyPI on every call, and the robot's AP has no route out.
+
+    Reporting that as a libusb fault sends the operator to reinstall a library that is working,
+    and says nothing about the one remedy that applies while offline.
+    """
+    ctx = make_ctx(
+        transport_mode="uv",
+        responder=lambda argv: Result(argv, 2, "", _UV_NO_NETWORK),
+    )
+    with pytest.raises(Die) as excinfo:
+        check_fastboot_client(ctx)
+
+    message = str(excinfo.value)
+    assert "libusb" not in message
+    assert "DREAME_PYTHON" in message
+
+
+def test_a_genuine_backend_fault_still_names_libusb(make_ctx: CtxFactory) -> None:
+    """Only the network shape is re-diagnosed: a real missing backend keeps its own remedy."""
+    ctx = make_ctx(
+        transport_mode="uv",
+        responder=lambda argv: Result(
+            argv, 1, "", "usb.core.NoBackendError: No backend available",
+        ),
+    )
+    with pytest.raises(Die) as excinfo:
+        check_fastboot_client(ctx)
+
+    assert "libusb" in str(excinfo.value)

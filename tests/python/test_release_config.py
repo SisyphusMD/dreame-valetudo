@@ -18,6 +18,7 @@ _MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
 # tarball has no upstream release feed, and the Dust keystream is a constant of the format.
 _STATIC_DIGESTS = ("STAGE1_SHA256", "DUST_KEYSTREAM_SHA256")
 _LINUX_PACKAGES = _ROOT / "packaging" / "test-linux-packages.sh"
+_SHELLCHECK_ALL = _ROOT / "packaging" / "shellcheck-all.sh"
 _README = _ROOT / "README.md"
 
 
@@ -355,7 +356,11 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
     # directly. Only the workflow_dispatch-only release/prerelease gates, never fork-triggered,
     # share packaging/shellcheck-all.sh.
     assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in ci
-    assert "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh" in ci
+    glob = "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh"
+    assert glob in ci
+    # The two must not drift: a script covered by one gate and not the other goes unchecked
+    # on whichever path the change happens to take.
+    assert glob in _SHELLCHECK_ALL.read_text()
     assert "apt-get install -y shellcheck" not in ci
     assert '-v "$PWD:' not in ci
     assert 'docker create -w /work "$SHELLCHECK"' in ci

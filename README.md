@@ -76,8 +76,10 @@ brew trust sisyphusmd/tap    # one-time; Homebrew 6+ won't load a third-party ta
 brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
-The same command works on any supported Mac or Linux architecture. On its first run, Homebrew builds
-`sunxi-fel`, the small helper used to talk to the robot in FEL mode.
+The same command works on any supported Mac or Linux architecture. Installing does not build
+anything: the first `dreame-valetudo` run compiles `sunxi-fel`, the small helper used to talk to the
+robot in FEL mode, which needs a compiler and network access that once. Run the command once before
+you join the robot's own Wi-Fi, where there is no internet.
 
 > [!NOTE]
 > **Linux, one time:** run `dreame-valetudo install-udev` so the tool can use USB without sudo. It
