@@ -80,6 +80,27 @@ for formula in "$BREW_FORMULAE"/*.rb; do
   fi
 done
 
+# --- pyusb: vendored into the Homebrew virtualenv so USB needs no network -------------------------
+# Same reason as the python@ rewrite above: the formulae are published straight from this tree and
+# no Renovate manager reads them, so the resource has to move with the pin rather than after it.
+PYUSB_PIN="$(read_pin PYUSB_VERSION)"
+[ -n "$PYUSB_PIN" ] || { echo "could not read PYUSB_VERSION" >&2; exit 1; }
+PYUSB_FRESH="$(digest_of "https://files.pythonhosted.org/packages/source/p/pyusb/pyusb-${PYUSB_PIN}.tar.gz")"
+for formula in "$BREW_FORMULAE"/*.rb; do
+  [ -f "$formula" ] || continue
+  grep -q 'resource "pyusb"' "$formula" || continue
+  if grep -q "pyusb-${PYUSB_PIN}\.tar\.gz" "$formula" && grep -q "$PYUSB_FRESH" "$formula"; then
+    continue
+  fi
+  tmp="$(mktemp)"
+  # The 4-space anchor is what keeps this off the formula's own top-level tarball digest.
+  sed -E -e "s|(/pyusb/pyusb-)[^\"]*(\.tar\.gz)|\1${PYUSB_PIN}\2|" \
+         -e "s|^(    sha256 \")[0-9a-f]{64}(\")|\1${PYUSB_FRESH}\2|" \
+         "$formula" >"$tmp"
+  mv "$tmp" "$formula"
+  note "$(basename "$formula") -> pyusb ${PYUSB_PIN} ($PYUSB_FRESH)"
+done
+
 # --- tmux: bundled only by the .pkg, which has no package manager to get it from ------------------
 TMUX_VERSION="$(read_pin TMUX_VERSION)"
 TMUX_CURRENT="$(read_pin TMUX_SHA256)"

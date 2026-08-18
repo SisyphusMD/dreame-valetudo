@@ -1083,7 +1083,13 @@ def main(
                     key_file = base / "robots" / robot_dir / "state" / "model_key"
                     if key_file.is_file() and key_file.read_text().strip():
                         resumed["DREAME_MODEL"] = key_file.read_text().strip()
-                return main(["auto"], env=resumed, console=console, runner=runner)
+                # Only a run that SUCCEEDED is followed by the auto chain, which is what "run
+                # something else" offers. Continuing a failed or interrupted run must retry the
+                # command that was actually asked for: sending those answers to auto silently
+                # substitutes a different operation and can report every phase complete without
+                # having done the one the invocation named.
+                follow_on = ["auto"] if rc == 0 else (invocation or ["auto"])
+                return main(follow_on, env=resumed, console=console, runner=runner)
             tmux = working_tmux(resolved)
             if tmux is not None:
                 session = session_name(pre_migration_session_path(resolved, base))

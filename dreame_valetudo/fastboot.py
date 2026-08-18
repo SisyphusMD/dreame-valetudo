@@ -80,6 +80,18 @@ class Transport:
     cmd: tuple[str, ...]  # executable plus any fixed arguments
 
 
+def _default_pyusb_version(py: str) -> str | None:
+    """The pyusb version ``py`` can import, or None if it cannot import one at all."""
+    try:
+        res = subprocess.run(
+            [py, "-c", "import usb; print(usb.__version__)"],
+            capture_output=True, check=False, text=True,
+        )
+    except OSError:
+        return None
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
 def _default_python_imports_usb(py: str) -> bool:
     try:
         return subprocess.run(
@@ -95,6 +107,7 @@ def resolve_transport(
     *,
     which: Callable[[str], str | None] = shutil.which,
     python_imports_usb: Callable[[str], bool] = _default_python_imports_usb,
+    pyusb_version: Callable[[str], str | None] = _default_pyusb_version,
 ) -> Transport:
     """Pick the fastboot transport, in order of self-containment."""
     fblibusb = str(libexec / "fastboot-libusb.py")
@@ -116,6 +129,15 @@ def resolve_transport(
     ):
         if py and Path(py).is_file() and os.access(py, os.X_OK) and python_imports_usb(py):
             return Transport("python", (py, fblibusb))
+
+    # The interpreter running this tool, but only when it carries the PINNED pyusb — which is how
+    # a packaged install ships it. Taken ahead of uv because uv resolves pyusb from PyPI on every
+    # call, and the flash phases run while the host is joined to the robot's own AP, which has no
+    # internet: a transport that needs the network is unavailable exactly where it is needed.
+    # Requiring an exact match is what keeps this from quietly bypassing the pin. Skipped when
+    # frozen — re-executing a PyInstaller bundle with -c relaunches the app, not python.
+    if not getattr(sys, "frozen", False) and pyusb_version(sys.executable) == PYUSB_VERSION:
+        return Transport("python", (sys.executable, fblibusb))
 
     if which("uv"):
         return Transport(

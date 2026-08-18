@@ -36,6 +36,11 @@
 
 ### Changed
 
+- `dreame-valetudo bench campaign` runs a whole hardware session in one command: it works out what
+  the robot in front of you can actually qualify, says what to do and what to answer before each
+  scenario that needs your hands, waits for the robot's own Wi-Fi rather than whatever answers that
+  address, and explains every scenario it skips instead of failing it.
+
 - `bench` now covers `rekey`: the preview, the no-flash Wi-Fi route, the USB `misc` rewrite, and a
   mistyped serial. Each write scenario confirms the robot accepts the new key before passing.
 - A failed `bench` scenario now records and prints why it stopped, so a report distinguishes an
@@ -67,6 +72,17 @@
   0.2.x carries no such record, so run `recon --force` on it before rooting.
 
 ### Fixed
+
+- USB work no longer needs the internet. A Homebrew install now carries the fastboot client's pyusb
+  itself, instead of fetching it on first use — which failed on the robot's own Wi-Fi AP, where
+  there is no internet and where the install actually runs. When it still cannot be prepared, the
+  error names the network rather than blaming libusb.
+- Answering "continue?" after a command failed now retries that command, instead of quietly running
+  the full setup chain and reporting every phase complete.
+- `rekey` over USB no longer announces a reboot it never confirmed: the request is sent without
+  acknowledgement, and a robot that reached fastboot over USB often stays off until its power button
+  is pressed. It now says so, and keeps waiting for the robot rather than judging the key against
+  whatever answered first — on a home network, that is the router.
 
 - `bench run rekey-over-usb` waits for you to bring the robot's Wi-Fi back before it judges
   the key. The write reboots the robot, and the check that follows gave up long before a

@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 from ..console import die
-from ..constants import SUNXI_TOOLS_REF
+from ..constants import PYUSB_VERSION, SUNXI_TOOLS_REF
 from ..context import Context
 
 # Shelled out to by later phases on every platform. The deb/rpm declare these and macOS ships
@@ -23,6 +23,14 @@ _REQUIRED_TOOLS = ("curl", "unzip", "tar", "zip", "ssh", "ssh-keygen")
 _FASTBOOT_HOST_FAULT = re.compile(
     r"traceback|nobackenderror|no libusb backend|permission denied|access denied|"
     r"library not loaded|error while loading shared libraries",
+    re.IGNORECASE,
+)
+# The `uv` transport resolves pyusb from PyPI on every invocation, so it fails with a fetch error
+# rather than a USB error the moment the host has no route out — the normal state on the robot's
+# own AP. Naming libusb there sends the operator to fix something that is not broken.
+_NO_NETWORK = re.compile(
+    r"failed to fetch|dns error|could not resolve|temporary failure in name resolution|"
+    r"network is unreachable|no address associated|offline",
     re.IGNORECASE,
 )
 
@@ -70,6 +78,14 @@ def check_fastboot_client(ctx: Context) -> None:
     if (probe.returncode not in (0, 1) or (probe.returncode == 1 and diagnostic.strip())
             or _FASTBOOT_HOST_FAULT.search(diagnostic)):
         ctx.fastboot.report_failure(probe)
+        if ctx.fastboot.transport.mode == "uv" and _NO_NETWORK.search(diagnostic):
+            die("The fastboot client could not be prepared: this install fetches pyusb with 'uv' "
+                "the first time USB is used, and this host has no route to PyPI right now. The "
+                "robot's own Wi-Fi AP has no internet, so run one USB command while on a network "
+                "that does, or point DREAME_PYTHON at a python that already has pyusb installed:\n"
+                "  uv venv ~/.dreame-fastboot-venv\n"
+                f"  uv pip install --python ~/.dreame-fastboot-venv/bin/python3 pyusb=={PYUSB_VERSION}\n"
+                "  export DREAME_PYTHON=~/.dreame-fastboot-venv/bin/python3")
         die("fastboot client cannot access libusb. Install/fix libusb, then re-run (macOS: "
             "'brew install libusb'; Debian: 'sudo apt install libusb-1.0-0'; Linux permission "
             "errors: install packaging/udev/99-dreame-valetudo.rules).")

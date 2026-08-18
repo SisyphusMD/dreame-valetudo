@@ -204,13 +204,16 @@ def test_transport_uses_dreame_python(tmp_path: Path) -> None:
     assert t.cmd == (sys.executable, str(tmp_path / "fastboot-libusb.py"))
 
 
-def test_transport_prefers_uv_over_current_interpreter(tmp_path: Path) -> None:
-    # There is NO sys.executable shortcut: even when the running interpreter has pyusb, uv (with
-    # the pinned pyusb) wins, so the pin is never silently bypassed.
+def test_transport_prefers_uv_over_an_interpreter_whose_pyusb_is_not_the_pin(
+    tmp_path: Path,
+) -> None:
+    # The running interpreter is a shortcut ONLY at the pinned version. Any other pyusb it happens
+    # to carry loses to uv, so the pin cannot be silently bypassed by whatever python is in front.
     (tmp_path / "fastboot-libusb.py").write_text("# client")
     t = resolve_transport(
         {}, tmp_path, which=lambda c: "/usr/bin/uv" if c == "uv" else None,
         python_imports_usb=lambda p: p == sys.executable,
+        pyusb_version=lambda p: "1.0.0",
     )
     assert t == Transport(
         "uv",
@@ -220,10 +223,30 @@ def test_transport_prefers_uv_over_current_interpreter(tmp_path: Path) -> None:
     )
 
 
+
+
+def test_transport_uses_the_running_interpreter_when_it_carries_the_pinned_pyusb(
+    tmp_path: Path,
+) -> None:
+    """A packaged install puts the pinned pyusb beside the package, and USB must work offline.
+
+    The flash phases run while the host is joined to the robot's own AP, which has no internet, so
+    a transport that resolves pyusb from PyPI is unusable there — uv must not win when the
+    interpreter already satisfies the pin exactly.
+    """
+    (tmp_path / "fastboot-libusb.py").write_text("# client")
+    t = resolve_transport(
+        {}, tmp_path, which=lambda c: "/usr/bin/uv" if c == "uv" else None,
+        python_imports_usb=lambda p: False,
+        pyusb_version=lambda p: PYUSB_VERSION if p == sys.executable else None,
+    )
+    assert t == Transport("python", (sys.executable, str(tmp_path / "fastboot-libusb.py")))
+
 def test_transport_falls_back_to_uv(tmp_path: Path) -> None:
     t = resolve_transport(
         {}, tmp_path, which=lambda c: "/usr/bin/uv" if c == "uv" else None,
         python_imports_usb=lambda p: False,
+        pyusb_version=lambda p: None,
     )
     assert t == Transport(
         "uv",

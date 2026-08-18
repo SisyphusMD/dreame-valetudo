@@ -9,6 +9,7 @@ import io
 import json
 import re
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
 from dreame_valetudo.phases.root import root as production_root
 from dreame_valetudo.profiles import impl_class_for_model
-from dreame_valetudo.run import Result
+from dreame_valetudo.run import Result, RunError
 
 # A model the fixture profile (x40-ultra) does not map to, so a pin taken from the workspace
 # instead of the robot is visibly wrong.
@@ -603,18 +604,32 @@ def _rekey_route_events(
     return events
 
 
-def test_a_usb_rekey_waits_for_the_ap_before_it_judges_the_key(
+def test_a_usb_rekey_adds_no_pause_of_its_own_before_judging_the_key(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The write reboots the robot, and the confirmation cannot outwait a boot plus an AP join."""
+    """Waiting for the robot to come back belongs to the phase, which is where it can work.
+
+    The phase tells the operator to power the robot on, waits for the AP, and takes another round
+    when what answered was the router. A pause added out here runs only after all of that has
+    finished, so it cannot protect the check it would be standing in front of.
+    """
     ctx = make_ctx(robot_name="bench")
     ctx.interactive = True
 
-    events = _rekey_route_events(ctx, "rekey-over-usb", monkeypatch)
+    assert _rekey_route_events(ctx, "rekey-over-usb", monkeypatch) == ["rekey", "confirm"]
 
-    assert events[0] == "rekey"
-    assert events[-1] == "confirm"
-    assert "hold the two outer buttons" in events[1]
+
+def test_a_usb_rekey_is_judged_on_the_key_not_on_a_reboot_nobody_confirmed(
+    make_ctx: CtxFactory,
+) -> None:
+    """The reboot is requested unacknowledged, and a FEL-booted robot often stays off entirely.
+
+    Asking an operator to certify it fails a robot that took the key, which is the one thing this
+    scenario exists to establish — and the authorized-key check already establishes it.
+    """
+    scenario = next(s for s in B.SCENARIOS if s.key == "rekey-over-usb")
+
+    assert scenario.observation is None
 
 
 def test_the_ssh_rekey_route_does_not_stop_to_ask_for_an_ap_it_never_left(
@@ -3947,3 +3962,597 @@ def test_the_probe_never_lands_on_the_recon_authorized_model(
     ) == 0
 
     assert seen and seen[0] != bound, "probed with the model recon already authorized"
+
+
+# --- the campaign conductor ---------------------------------------------------------------------
+def _campaign_run(
+    ctx: object,
+    monkeypatch: pytest.MonkeyPatch,
+    keys: tuple[str, ...],
+    *,
+    allow_destructive: bool = False,
+    failing: str | None = None,
+    failure: BaseException | None = None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Drive _campaign over named scenarios, returning what it actually started."""
+    started: list[str] = []
+
+    def fake_run(_ctx: object, scenario: B.Scenario, *_a: object, **_k: object) -> int:
+        started.append(scenario.key)
+        if scenario.key == failing:
+            raise failure if failure is not None else Die("scripted stop")
+        return 0
+
+    monkeypatch.setattr(B, "_run", fake_run)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
+    scenarios = tuple(s for s in B.SCENARIOS if s.key in keys)
+    B._campaign(
+        ctx, "conductor-test", None, scenarios,  # type: ignore[arg-type]
+        auto_fn=_noop_auto, allow_destructive=allow_destructive,
+    )
+    return started, list(ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_a_campaign_skips_what_the_robot_cannot_qualify_instead_of_failing_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A boundary this robot has not reached is not a defect in the tool.
+
+    Running it anyway records a FAILED that was never the robot's fault, and days later that reads
+    exactly like a real regression.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    started, lines = _campaign_run(ctx, monkeypatch, ("host-smoke", "first-root"))
+
+    assert started == ["host-smoke"]
+    assert any("first-root" in msg and "WAIT" in msg for _kind, msg in lines)
+
+
+def test_a_campaign_excludes_firmware_writes_until_it_is_armed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    started, lines = _campaign_run(ctx, monkeypatch, ("host-smoke", "already-rooted-root"))
+
+    assert "already-rooted-root" not in started
+    assert any("--allow-destructive" in msg for _kind, msg in lines)
+
+
+def test_a_campaign_defers_the_terminal_loss_scenarios_rather_than_hosting_them(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing the terminal IS the test, so a conductor running one would die with it."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    started, lines = _campaign_run(ctx, monkeypatch, ("host-smoke", "terminal-loss-prompt"))
+
+    assert "terminal-loss-prompt" not in started
+    assert any("bench run terminal-loss-prompt" in msg for _kind, msg in lines)
+
+
+def test_one_scenario_stopping_does_not_end_the_campaign(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session costs an hour of hands-on setup to reach; one stop must not throw it away."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    started, lines = _campaign_run(
+        ctx, monkeypatch, ("host-smoke", "fel-not-entered"), failing="host-smoke",
+    )
+
+    assert started == ["host-smoke", "fel-not-entered"]
+    assert any("host-smoke stopped" in msg for _kind, msg in lines)
+
+
+def test_the_operator_surface_follows_the_usb_stack_set() -> None:
+    """One list of which scenarios need the cable, not two that can disagree."""
+    assert B._surface(next(s for s in B.SCENARIOS if s.key == "host-smoke")) == "host"
+    assert B._surface(next(s for s in B.SCENARIOS if s.key == "rekey-over-usb")) == "cable"
+    assert B._surface(next(s for s in B.SCENARIOS if s.key == "rekey-over-ssh")) == "ap"
+
+
+def test_guidance_is_not_part_of_a_recorded_result_s_identity() -> None:
+    """Correcting the wording of an instruction says nothing about a recorded result's validity.
+
+    Folding it into the definition hash would invalidate a whole campaign's evidence every time a
+    banner was made clearer, which is the opposite of the incentive that should exist.
+    """
+    scenario = next(s for s in B.SCENARIOS if s.key == "rekey-over-usb")
+    reworded = replace(scenario, operator=("totally different instructions",))
+
+    assert B._scenario_definition(reworded) == B._scenario_definition(scenario)
+
+
+def test_a_failed_external_command_does_not_end_the_campaign(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scenario leaves through whatever its phase raised, which is usually not Die.
+
+    Checked external commands raise RunError, and the run re-raises it. Catching only Die would
+    end a whole hands-on session on the most ordinary failure there is.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    started, lines = _campaign_run(
+        ctx, monkeypatch, ("host-smoke", "fel-not-entered"),
+        failing="host-smoke", failure=RunError(Result(("fastboot", "devices"), 1, "", "FAILED")),
+    )
+
+    assert started == ["host-smoke", "fel-not-entered"]
+    assert any("host-smoke stopped" in msg for _kind, msg in lines)
+
+
+def test_an_operator_interrupt_ends_the_campaign_rather_than_skipping_one_scenario(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl+C means stop, not "move on to the next thing that touches my robot"."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    with pytest.raises(KeyboardInterrupt):
+        _campaign_run(
+            ctx, monkeypatch, ("host-smoke", "fel-not-entered"),
+            failing="host-smoke", failure=KeyboardInterrupt(),
+        )
+
+
+def test_the_wrong_network_probe_runs_from_the_home_network_not_the_robot_ap(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It exists to prove the tool REFUSES whatever is not the robot at the AP address.
+
+    Marched onto the robot's own AP it finds a healthy robot, cannot reject anything, and records
+    itself as a failure — the scenario disproving its own premise.
+    """
+    ctx = make_ctx(robot_name="bench", env={"DREAME_VALETUDO_VERSION": VALETUDO_TARGET})
+    ctx.interactive = False
+    waits: list[str] = []
+    monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: waits.append("on-ap") or True)
+    monkeypatch.setattr(B, "_wait_off_robot_ap", lambda *_a, **_k: waits.append("off-ap") or True)
+    monkeypatch.setattr(B, "_run", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+
+    scenarios = tuple(s for s in B.SCENARIOS if s.key == "wifi-wrong-network")
+    B._campaign(
+        ctx, "conductor-network", None, scenarios,  # type: ignore[arg-type]
+        auto_fn=_noop_auto, allow_destructive=False,
+    )
+
+    assert "on-ap" not in waits
+
+
+def test_deferred_destructive_commands_are_printed_armed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An H3 command printed without its flag stops at the destructive guard and tests nothing."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+
+    _, lines = _campaign_run(
+        ctx, monkeypatch, ("host-smoke", "terminal-loss-restore"), allow_destructive=True,
+    )
+
+    printed = [msg for _kind, msg in lines if "bench run terminal-loss-restore" in msg]
+    assert printed and all("--allow-destructive" in msg for msg in printed)
+
+
+def test_a_deferred_scenario_that_already_passed_is_not_advertised_again(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sending an operator to redo a passed scenario by hand costs a bench cycle for nothing."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+
+    _, lines = _campaign_run(ctx, monkeypatch, ("host-smoke", "terminal-loss-restore"))
+
+    assert not any("bench run terminal-loss-restore" in msg for _kind, msg in lines)
+    assert any("terminal-loss-restore" in msg and "WAIT" in msg for _kind, msg in lines)
+
+
+def test_pre_write_scenarios_are_scheduled_before_anything_that_writes_firmware() -> None:
+    """Crossing that boundary is irreversible, and a restore does not give it back.
+
+    In plain table order a fresh robot reaches first-root long before several scenarios that can
+    only ever run on a robot with no firmware-write history, stranding them for its whole life.
+    """
+    ordered = B._campaign_order(B.SCENARIOS)
+    keys = [s.key for s in ordered]
+
+    assert keys.index("usb-drop-recon") < keys.index("first-root")
+    assert keys.index("decline-flash") < keys.index("first-root")
+    # Everything needing a never-written robot but not consuming that state comes first, as a rule
+    # rather than as three examples. `terminal-loss-root` is deliberately NOT among them: it roots
+    # the robot too, so it and `first-root` are peers competing for the same one-time boundary.
+    last_pre = max(
+        index for index, item in enumerate(ordered)
+        if B._stock_only(item) and not B._crosses_write_boundary(item)
+    )
+    first_write = min(
+        index for index, item in enumerate(ordered) if B._crosses_write_boundary(item)
+    )
+    assert last_pre < first_write
+
+
+def test_scheduling_keeps_every_scenario_exactly_once() -> None:
+    """Reordering must not drop or duplicate a scenario — a campaign is a coverage claim."""
+    ordered = B._campaign_order(B.SCENARIOS)
+
+    assert sorted(s.key for s in ordered) == sorted(s.key for s in B.SCENARIOS)
+
+
+def test_a_campaign_runs_the_states_that_are_meant_to_be_resumable() -> None:
+    """An interrupted run and a pending observation both say, in the report, to rerun them.
+
+    Skipping either forever contradicts the resume guarantee the rest of the tool is built on: a
+    rerun resumes only the pending observation and never repeats the hardware phase.
+    """
+    assert {"INTERRUPTED", "OBSERVE"} <= B._CONDUCTOR_RUNNABLE
+    assert "FAILED" in B._CONDUCTOR_RUNNABLE
+    # A passed scenario must not be re-run: on an H3 that is another partition write.
+    assert not {"PASS", "WAIT", "SPECIAL", "RECORD", "WAIVED"} & B._CONDUCTOR_RUNNABLE
+
+
+def test_an_unreachable_ap_is_waited_for_once_not_once_per_scenario(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each wait is fifteen minutes; repeating it per scenario turns one dead AP into hours."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+    waits = 0
+
+    def never(*_a: object, **_k: object) -> bool:
+        nonlocal waits
+        waits += 1
+        return False
+
+    monkeypatch.setattr(B, "_wait_for_robot_ap", never)
+    monkeypatch.setattr(B, "_run", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+    scenarios = tuple(s for s in B.SCENARIOS if s.key in {"rooted-resume", "diagnose"})
+    B._campaign(
+        ctx, "conductor-ap", None, scenarios,  # type: ignore[arg-type]
+        auto_fn=_noop_auto, allow_destructive=False,
+    )
+
+    assert waits == 1
+
+
+def test_a_campaign_needs_the_usb_rule_only_when_it_will_reach_the_device() -> None:
+    """The Linux udev guard must refuse a session that will open USB, and only such a session."""
+    assert not B.bench_drives_hardware(["campaign", "--suite", "smoke"])
+    assert not B.bench_drives_hardware(["campaign", "--suite=smoke"])
+    # key-recovery's only cable scenario is a firmware write, so unarmed it stays on Wi-Fi.
+    assert not B.bench_drives_hardware(["campaign", "--suite", "key-recovery"])
+    assert B.bench_drives_hardware(
+        ["campaign", "--suite", "key-recovery", "--allow-destructive"]
+    )
+    assert B.bench_drives_hardware(["campaign"])
+
+
+def test_post_root_scenarios_are_not_scheduled_before_the_robot_is_rooted() -> None:
+    """They forbid `restored-stock` while requiring `rooted`, which is not the same as needing a
+    virgin robot. Reading only the forbidden side puts the step that installs Valetudo ahead of the
+    one that roots the robot, where a single-pass conductor can never run it."""
+    keys = [item.key for item in B._campaign_order(B.SCENARIOS)]
+
+    assert keys.index("first-root") < keys.index("post-root-install")
+    for key in ("post-root-install", "wifi-drop-backup", "ctrl-c-push", "stock-restore"):
+        assert not B._stock_only(next(s for s in B.SCENARIOS if s.key == key)), key
+
+
+def test_a_scenario_that_refuses_before_touching_usb_asks_for_no_cable(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its guard answers from the saved marker, so opening the robot for it is wasted work."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+
+    _, lines = _campaign_run(
+        ctx, monkeypatch, ("already-rooted-root",), allow_destructive=True,
+    )
+
+    assert not any("breakout PCB" in msg for _kind, msg in lines)
+
+
+def test_mutually_exclusive_recon_scenarios_are_not_both_attempted(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """They describe the same one-time boundary from opposite starting assumptions.
+
+    Once one has established what this robot was, running the other records a failure the robot
+    could never have avoided.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    monkeypatch.setattr(
+        B, "_recorded",
+        lambda _report: ({"stock-recon": {"result": "passed"}}, set()),
+    )
+
+    started, lines = _campaign_run(ctx, monkeypatch, ("legacy-root-adoption",))
+
+    assert started == []
+    assert any("SUPERSEDED" in msg for _kind, msg in lines)
+
+
+def test_the_wrong_key_scenario_is_not_started_without_its_wrong_key(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Started with a key the robot ACCEPTS it does not test rejection, it reinstalls Valetudo."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+
+    def refuse(_ctx: object) -> None:
+        raise Die("DREAME_SSHKEY is the key this robot already accepts")
+
+    monkeypatch.setattr(B, "_validate_wrong_key_identity", refuse)
+    started, lines = _campaign_run(ctx, monkeypatch, ("ssh-wrong-key",))
+
+    assert started == []
+    assert any("not set up" in msg for _kind, msg in lines)
+
+
+def test_the_wrong_model_probe_is_not_advertised_as_needing_a_second_robot() -> None:
+    """It derives a confusable model from the recon binding and swaps only this process's profile.
+
+    Calling that SPECIAL retires a safety-gate test from every campaign for a requirement it does
+    not have.
+    """
+    ctx_free = B._REQUIRED_MARKERS["wrong-model-root"]
+
+    assert "recon" in ctx_free
+
+
+def test_scenarios_that_need_the_current_state_run_before_the_write_that_consumes_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stock-restore consumes rooted-plus-Valetudo, which decline-restore needs.
+
+    In one ordered walk the write goes first and the checks that depend on that state are stranded
+    for the rest of the campaign. Passes exist so the non-consuming ones go first.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+    monkeypatch.setattr(B, "_recovery_provenance_valid", lambda _robot: True)
+    monkeypatch.setattr(B, "recovery_backup_valid", lambda _path: True)
+
+    started, _ = _campaign_run(
+        ctx, monkeypatch, ("stock-restore", "decline-restore"), allow_destructive=True,
+    )
+
+    if "stock-restore" in started and "decline-restore" in started:
+        assert started.index("decline-restore") < started.index("stock-restore")
+
+
+def test_a_deferred_firmware_write_is_not_advertised_by_an_unarmed_campaign(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that promised to exclude firmware writes must not hand out one to launch by hand."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)
+
+    _, lines = _campaign_run(ctx, monkeypatch, ("terminal-loss-restore",))
+
+    assert not any("--allow-destructive" in msg and "bench run" in msg for _kind, msg in lines)
+
+
+def test_a_stale_failure_is_not_retried_once_the_robot_moved_past_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry label is about the last attempt; eligibility is about the robot as it is now.
+
+    Presenting a scenario the robot can no longer start walks the operator through its setup only
+    for the starting-state gate to refuse it.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_valetudo_state(ctx)  # rooted: decline-flash can never start again
+    monkeypatch.setattr(
+        B, "_recorded",
+        lambda _report: ({"decline-flash": {"result": "failed"}}, set()),
+    )
+
+    started, _ = _campaign_run(ctx, monkeypatch, ("decline-flash",), allow_destructive=True)
+
+    assert started == []
+
+
+def test_a_deliberately_wrong_model_does_not_outlive_its_scenario(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wrong-model-root mis-selects the model on purpose, to prove the flash gate catches it.
+
+    Self-limiting while every scenario was its own process; sharing one context across a session
+    would leave every later scenario bound to a model this robot is not.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    before = ctx.profile
+
+    def swap(_c: object, scenario: B.Scenario, *_a: object, **_k: object) -> int:
+        ctx.profile = B.load_profile("d10s-plus")
+        return 0
+
+    monkeypatch.setattr(B, "_run", swap)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
+    scenarios = tuple(s for s in B.SCENARIOS if s.key == "fel-not-entered")
+    B._campaign(
+        ctx, "conductor-profile", None, scenarios,  # type: ignore[arg-type]
+        auto_fn=_noop_auto, allow_destructive=False,
+    )
+
+    assert ctx.profile is before
+
+
+def test_rekey_is_not_treated_as_a_lifecycle_write() -> None:
+    """It rewrites `misc` and advances nothing, so scheduling it behind a restore strands it.
+
+    `restored-stock` makes it permanently ineligible, and no later step gives that back.
+    """
+    rekey = next(s for s in B.SCENARIOS if s.key == "rekey-over-usb")
+    restore = next(s for s in B.SCENARIOS if s.key == "stock-restore")
+
+    assert not B._crosses_write_boundary(rekey)
+    assert B._crosses_write_boundary(restore)
+
+
+def test_every_destructive_scenario_is_classified_deliberately() -> None:
+    """A new H3 scenario must default to lifecycle-consuming rather than be silently reordered."""
+    for scenario in B.SCENARIOS:
+        if scenario.safety == "H3" and scenario.expected == "success":
+            assert (
+                B._crosses_write_boundary(scenario)
+                or scenario.key in B._NON_LIFECYCLE_WRITES
+            ), scenario.key
+
+
+def test_scheduling_does_not_rehash_the_recovery_capture_for_every_question(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifying provenance SHA-256s the whole 1.2 GB capture.
+
+    Scheduling asks about every pending scenario several times a pass, so reading it per question
+    would hash tens of gigabytes between scenarios and look exactly like a hang.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    snapshots = 0
+    real = B._snapshot
+
+    def counted(*args: object, **kwargs: object) -> object:
+        nonlocal snapshots
+        snapshots += 1
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(B, "_snapshot", counted)
+    monkeypatch.setattr(B, "_run", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
+    scenarios = tuple(
+        s for s in B.SCENARIOS
+        if s.key in {"host-smoke", "fel-not-entered", "fel-wrong-timing", "ctrl-c-recon"}
+    )
+    B._campaign(
+        ctx, "conductor-cache", None, scenarios,  # type: ignore[arg-type]
+        auto_fn=_noop_auto, allow_destructive=False,
+    )
+
+    # One per scenario that ran, plus the pass that finds nothing left. Without the cache this is
+    # several times the number of pending scenarios, every pass.
+    assert snapshots <= len(scenarios) + 1
+
+
+def test_a_campaign_blocked_on_a_staged_image_says_so(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No scenario stages an image — it is downloaded from the dustbuilder by hand.
+
+    A campaign that simply runs out of eligible scenarios there looks finished when it is only
+    blocked, and the operator has no way to tell those apart.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    ctx.need_robot().state_set("recon", "model=x40-ultra backup=obtained")
+
+    _, lines = _campaign_run(ctx, monkeypatch, ("first-root",), allow_destructive=True)
+
+    assert any("dreame-valetudo image" in msg for _kind, msg in lines)
+
+
+def test_manual_stock_evidence_is_named_before_rooting_spends_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A research baseline captured after rooting is not a stock baseline.
+
+    It is recorded by hand rather than run, so a warning that counted only runnable scenarios would
+    let the write proceed and report the baseline as still owed afterwards, when it is too late.
+    """
+    baseline = next(s for s in B.SCENARIOS if s.key == "research-baseline")
+
+    assert B._ABSENT_MARKERS["research-baseline"] & B._DANGEROUS_MARKERS
+    assert not baseline.automated
+
+
+def test_the_offline_cache_scenario_is_not_marched_onto_the_ap_first(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It fetches the binary online, then asks for the AP itself to prove the cache installs.
+
+    Routed onto the AP up front, a cold cache has nothing to download from and the scenario cannot
+    set up the thing it exists to test.
+    """
+    scenario = next(s for s in B.SCENARIOS if s.key == "offline-cached-binary")
+
+    assert B._surface(scenario) != "ap"
+
+
+def test_standalone_scenarios_are_recorded_before_a_write_can_strand_them(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rival root consumes the boundary a deferred terminal-loss scenario needs.
+
+    Noting the deferred one costs nothing and changes nothing, so it has to happen first or its
+    standalone command is never printed and that qualification becomes impossible on this robot.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = False
+    _prepare_root_start(ctx, monkeypatch)
+
+    _, lines = _campaign_run(
+        ctx, monkeypatch, ("first-root", "terminal-loss-root"), allow_destructive=True,
+    )
+
+    assert any("bench run terminal-loss-root" in msg for _kind, msg in lines)
+
+
+def test_every_lifecycle_write_asks_before_it_spends_the_state_it_takes(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each crossing consumes a different state, so warning once a session is warning too little.
+
+    Rooting and restoring both strand things, and a flag set by the first left the second free to
+    take what a deferred scenario still needed without ever saying so.
+    """
+    ctx = make_ctx(robot_name="bench")
+    ctx.interactive = True
+    asked: list[str] = []
+    monkeypatch.setattr(
+        B._CampaignState, "_contested",
+        lambda self, scenario, _all: asked.append(scenario.key) or "go",
+    )
+    monkeypatch.setattr(ctx.console, "ask", lambda *_a, **_k: "")
+    monkeypatch.setattr(B, "_run", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_report", lambda *_a, **_k: 0)
+    monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
+    state = B._CampaignState(ctx, "conductor-cross", True, _noop_auto)
+    for key in ("first-root", "stock-restore"):
+        scenario = next(s for s in B.SCENARIOS if s.key == key)
+        state.attempt(scenario, B.SCENARIOS)
+
+    assert asked == ["first-root", "stock-restore"]
+
+
+def test_the_cancellation_scenario_tells_the_operator_about_the_repeat_prompt() -> None:
+    """It reruns recon without --force, so a robot with a completed recon is asked to repeat it.
+
+    Declining finishes the run without ever watching for FEL and records a cancellation that never
+    happened — and nothing on screen connects that prompt to this scenario's outcome.
+    """
+    scenario = next(s for s in B.SCENARIOS if s.key == "fel-not-entered")
+
+    assert any("repeat recon" in line for line in scenario.operator)

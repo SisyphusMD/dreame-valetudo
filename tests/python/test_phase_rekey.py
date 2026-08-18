@@ -1265,7 +1265,7 @@ def test_verify_over_ap_will_not_call_it_a_refusal_when_nothing_proved_it_was_th
     ctx = make_ctx(
         robot_name="bench",
         responder=lambda argv: Result(argv, 255, "", denied),
-        confirms=[True],
+        confirms=[False],  # declines the offer of another round
     )
     key = _sshkey(tmp_path, "id_new")
 
@@ -1493,3 +1493,28 @@ def test_a_recorded_serial_is_offered_as_the_default(
     rekey(ctx, over_ssh=True)
 
     assert "reported this serial itself" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_reaching_something_that_is_not_the_robot_offers_another_round(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    """The write's own reboot is unacknowledged, so the robot is often still off at this point.
+
+    The AP wait is satisfied by any server, and the router answers it instantly — so the first
+    round routinely happens before the operator has switched the robot on. Ending there on a
+    verdict spends the whole post-write check on the wrong device.
+    """
+    denied = "root@192.168.5.1: Permission denied (publickey,keyboard-interactive)."
+    ctx = make_ctx(
+        robot_name="bench",
+        responder=lambda argv: Result(argv, 255, "", denied),
+        confirms=[True, False],  # takes one more round, then stops
+    )
+    key = _sshkey(tmp_path, "id_new")
+
+    assert _verify_over_ap(ctx, key) == "unproven"
+
+    lines = ctx.console.lines  # type: ignore[attr-defined]
+    assert any(kind == "confirm" and "check the key again" in msg for kind, msg in lines)
+    # Two rounds actually ran: the offer is not merely printed, it re-checks.
+    assert sum("NOT a refusal by the robot" in msg for _kind, msg in lines) == 2

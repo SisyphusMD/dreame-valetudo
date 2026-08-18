@@ -35,10 +35,22 @@ export DREAME_ROBOT=x40
 
 dreame-valetudo bench list
 dreame-valetudo bench plan
-dreame-valetudo bench run host-smoke
-dreame-valetudo bench run stock-recon
+dreame-valetudo bench campaign --allow-destructive
 ```
 
+`bench campaign` is the whole session in one command. It walks the scenario table in order and, for
+each one, re-reads what this robot can currently qualify — running what is eligible and explaining
+every skip with the same reason `bench plan` would give. Before a scenario that needs your hands it
+says what to do and what to answer, waits for the robot's own AP when the scenario needs it (polling
+for the Valetudo header, so the router answering that address cannot satisfy it), and pauses for
+Enter. A scenario that stops does not end the session. Eligibility is re-read between scenarios
+rather than planned up front, because the scenarios move the robot's lifecycle as they run.
+
+Without `--allow-destructive` it skips everything that writes firmware. Those scenarios still stop
+to have their arming phrase typed out, which nothing can answer on your behalf. The
+terminal-loss scenarios are named at the end instead of run: closing the terminal is the test, so a
+conductor hosting them would be taken down with the run it is judging. Individual scenarios are
+still available as `bench run <scenario>`.
 
 `bench plan` is the state-aware conductor view. It reads the selected robot's saved lifecycle and
 the campaign report, then labels each scenario PASS, READY, WAIT, RECORD, or SPECIAL and
@@ -204,7 +216,7 @@ route rewrites a partition.
 |---|---:|---|---|---|
 | `rekey-dry-run` | H1 | rooted; robot booted with its AP up and **already joined** | The SSH route resolves a key, reaches the robot, and reports what it would change | no state marker changes at all |
 | `rekey-over-ssh` | H2 | rooted; **already joined** to the AP; the robot still accepts the serial-derived root password | Serial-derived login, key composition, and the written result confirmed over the AP | authorized-key marker recorded; no flash; rooted and Valetudo state unchanged |
-| `rekey-over-usb` | H3 | rooted; intact identity-bound recovery evidence | The pristine `misc` is saved first, then `misc` is rewritten under the `oem dust` identity gate | authorized-key marker recorded; no uncertain-write marker; robot reboots |
+| `rekey-over-usb` | H3 | rooted; intact identity-bound recovery evidence | The pristine `misc` is saved first, then `misc` is rewritten under the `oem dust` identity gate | authorized-key marker recorded; no uncertain-write marker; the robot accepts the new key |
 
 Join the robot's AP **before** starting either Wi-Fi scenario. The phase would ask later, but the
 qualification records which keys the robot accepted beforehand, and it can only do that while the
@@ -234,8 +246,17 @@ These reproduce mistakes a normal user can make without intentionally damaging f
 |---|---:|---|---|
 | `fel-not-entered` | H1 | Start recon without doing the PCB sequence, then cancel | no robot/recon completion marker; useful retry guidance |
 | `fel-wrong-timing` | H1 | Perform the button sequence incorrectly once, then correctly | same run keeps watching and succeeds after retry |
-| `usb-drop-recon` | H1 | Unplug during the recovery *read*, never during a write | incomplete capture is rejected behind the refresh marker; any older good generation stays preserved; retry replaces it atomically |
+| `usb-drop-recon` | H1 | **Stock robot only.** Unplug during the recovery *read*, never during a write | incomplete capture is rejected behind the refresh marker; any older good generation stays preserved; retry replaces it atomically |
 | `ctrl-c-recon` | H1 | Press Ctrl+C while waiting or reading | clean interruption; rerun resumes without false completion |
+
+`usb-drop-recon` is gated to a robot with no firmware-write history, and there is no way to give
+that back. Recon skips the recovery pull entirely once a robot carries `rooted`, `restored-stock`,
+`flash-attempt`, or `restore-attempt`, so on a written robot there is no transfer to unplug and
+nothing to reject — the scenario cannot be satisfied, and before it was gated it simply failed a
+healthy robot. Restoring to stock does not reopen it: `restored-stock` is write history too,
+deliberately, because a restored flash is no more a trustworthy factory source than a rooted one.
+Budget this scenario against a robot's one-time stock state, alongside `stock-recon` and
+`first-root`.
 | `terminal-loss-prompt` | H1 | Close the terminal at an ordinary question | tmux run survives, pending question is shown on rejoin |
 | `wrong-model-root` | H1 | After `stock-recon` binds the campaign correctly, invoke `root` on that same robot with a different supported model selected | safety stop says the completed recon is not bound to the selected model, before any runner call; recon state and recovery artifacts unchanged |
 | `wrong-robot-root` | H3 | Stage for robot A, attach robot B, stop before any write | live config mismatch stops before `oem dust` |

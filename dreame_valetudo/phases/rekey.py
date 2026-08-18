@@ -198,9 +198,15 @@ def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
     ctx.console.phase("Check the robot now accepts the key")
     ap_not_your_router(ctx)
     ctx.console.action("Hands on the robot: unplug the USB cable + remove the Breakout PCB (done "
-                       "with them), then hold the two OUTER buttons until it starts its Wi-Fi AP.")
+                       "with them), power the robot on, then hold the two OUTER buttons until it "
+                       "starts its Wi-Fi AP.")
     ctx.console.steps([
-        "Let the robot finish booting — the first boot after a write is slow.",
+        # The reboot the write ends with is sent unacknowledged, and a robot that reached fastboot
+        # through FEL is running a RAM payload with its rail held by the power MCU — resetting the
+        # SoC frequently leaves it switched off rather than booting. Waiting for a boot that needs
+        # a button press first is indistinguishable, from here, from a robot that refused the key.
+        "Press the robot's power button if it is not already booting.",
+        "Let it finish booting — the first boot after a write is slow.",
         "USB cable + Breakout PCB are done — unplug/remove them if you haven't.",
         "On the robot: hold the two OUTER buttons until it starts its Wi-Fi AP.",
         (f"On the {ctx.host}: join the robot's Wi-Fi (SSID like 'dreame-vacuum-...'). You'll leave "
@@ -237,6 +243,10 @@ def _verify_over_ap(ctx: Context, key: Path) -> _Verdict:
         ctx.console.warn(f"An SSH server at {ROBOT_AP_IP} refused the key, but nothing there "
                          "identified itself as the robot — on a home network this address is your "
                          "ROUTER. This is NOT a refusal by the robot.")
+        if ctx.interactive and ctx.console.confirm(
+            "Bring the robot's own Wi-Fi AP up and check the key again?"
+        ):
+            return _verify_over_ap(ctx, key)
         ctx.console.info("Join the robot's own Wi-Fi AP and re-run 'rekey'; it confirms the key "
                          "without writing again.")
         return "unproven"
@@ -1076,7 +1086,8 @@ def rekey(
         die("The 'misc' partition flashed OKAY and reboot was sent, but the tool could not record "
             f"it in the workspace ({marker_error}). The robot now accepts {key}; preserve the "
             "workspace and investigate its storage before re-running.")
-    ctx.console.say("The 'misc' partition flashed OKAY and reboot was sent.")
+    ctx.console.say("The 'misc' partition flashed OKAY. A reboot was requested; it is sent "
+                    "without acknowledgement, so the robot may need its power button.")
     verdict = _verify_over_ap(ctx, key)
     if verdict == "confirmed":
         ctx.console.say(f"CONFIRMED: the robot accepts {key}.")

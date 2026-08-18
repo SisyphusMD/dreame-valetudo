@@ -21,6 +21,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,7 +57,13 @@ from .recovery import (
     recovery_source_records,
 )
 from .run import Result, RunError, Runner
-from .ssh import ap_reachable, is_dreame_ap, resolve_sshkey, robot_ssh
+from .ssh import (
+    ap_reachable,
+    is_dreame_ap,
+    resolve_sshkey,
+    robot_ssh,
+    valetudo_version_header,
+)
 from .util import parse_config, same_robot_config
 from .workspace import (
     RECOVERY_BACKUP_ZIP,
@@ -83,6 +90,12 @@ class Scenario:
     expected: Literal["success", "safe-stop", "interrupt"] = "success"
     stop_contains: tuple[str, ...] = ()
     required: bool = True
+    # What the operator has to do, and what to answer, shown BEFORE the scenario starts. Kept here
+    # rather than in a driver script because a script is a copy of this table that drifts from it,
+    # and an operator standing over an open robot reading stale instructions is how a healthy robot
+    # gets recorded as a failure. Deliberately absent from _scenario_definition: correcting the
+    # wording of an instruction says nothing about whether a recorded result is still valid.
+    operator: tuple[str, ...] = ()
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -129,18 +142,41 @@ SCENARIOS: tuple[Scenario, ...] = (
         "fel-not-entered", "H1", "cancel cleanly when FEL was never entered", True,
         "Did you intentionally leave the robot out of FEL and stop only while the tool was waiting?",
         expected="safe-stop", stop_contains=("No FEL device",),
+        operator=(
+            "Connect the cable but do NOT do the button sequence — leave the robot out of FEL.",
+            ("If it asks whether to repeat recon, answer YES. Declining finishes the run without "
+             "ever watching for FEL, and records a cancellation that did not happen."),
+            "When it says it is watching for the FEL device, press Ctrl-C once.",
+            "A clean cancel is the pass. It must never claim it found a robot.",
+        ),
     ),
     Scenario(
         "fel-wrong-timing", "H1", "recover from an incorrect FEL button sequence", True,
         "Did this run first observe an incorrect FEL sequence, then succeed after the retry?",
+        operator=(
+            "Do the sequence WRONG once: hold the robot's power button WITHOUT the PCB button.",
+            "The robot boots normally. That IS the wrong attempt — it is meant to happen.",
+            "Then hold power ~15s until it is fully off and do the sequence CORRECTLY.",
+            "Power-cycle the robot as often as you need; just do not restart THIS run.",
+        ),
     ),
     Scenario(
         "usb-drop-recon", "H1", "reject an interrupted recovery read, then retry", True,
         "Did you disconnect USB while a recovery slice was actively transferring, then reconnect "
         "and complete the retry?",
+        operator=(
+            "Enter FEL normally. While a recovery slice is actively TRANSFERRING, unplug the cable.",
+            "Read only — nothing is written. Then reconnect, re-enter FEL, and retry.",
+        ),
     ),
     Scenario(
         "ctrl-c-recon", "H1", "resume safely after recon interruption", True,
+        operator=(
+            "Enter FEL normally and let it run.",
+            ("At the FIRST [y/N] question, press Ctrl-C instead of answering — that is safely "
+             "before the recon completion marker is written, which this scenario requires."),
+            "Then reconnect, re-enter FEL, and let the retry finish.",
+        ),
     ),
     Scenario(
         "terminal-loss-prompt", "H1", "rejoin a question after terminal loss", True,
@@ -221,13 +257,34 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "rekey-over-usb", "H3", "authorize an SSH key by rewriting misc over fastboot", True,
-        "Did the robot reboot successfully after its misc partition was rewritten?",
+        operator=(
+            ("This one WRITES: it rewrites misc, which also carries this unit's camera and "
+             "lidar calibration. The pristine partition is saved first."),
+            ("Enter FEL when asked. The robot will probably reboot while you read the "
+             "confirmation prompt — expected: answering yes starts a FRESH FEL sequence for the "
+             "write itself."),
+            ("After the write, POWER THE ROBOT ON (it often stays off), let it boot, then "
+             "hold the two OUTER buttons and join its AP before answering anything."),
+        ),
     ),
     # No hardware scenario interrupts the misc write to exercise its recovery. This guide forbids
     # unplugging USB mid-write, and misc carries this unit's camera and lidar calibration. The
     # recovery path is proved off-hardware in tests/python/test_phase_rekey.py instead.
-    Scenario("already-rooted-recon", "H1", "preserve pre-root recovery on forced recon", True),
-    Scenario("already-rooted-root", "H3", "skip an already-rooted robot without force", True),
+    Scenario(
+        "already-rooted-recon", "H1", "preserve pre-root recovery on forced recon", True,
+        operator=(
+            "A completely normal FEL sequence and recon. There is nothing to break here.",
+            "It silently checks the pre-root recovery capture is identical afterwards.",
+        ),
+    ),
+    Scenario(
+        "already-rooted-root", "H3", "skip an already-rooted robot without force", True,
+        operator=(
+            "Nothing physical at all: no cable action, no button sequence.",
+            "It must REFUSE because the robot is already rooted.",
+            "If it asks for FEL or starts provisioning, stop and report that — it is a real fault.",
+        ),
+    ),
     Scenario(
         "offline-cached-binary", "H2", "accept verified cached Valetudo while offline", True,
         "Did Valetudo installation complete while the computer was offline on the robot AP?",
@@ -733,7 +790,7 @@ def _scenario(key: str) -> Scenario:
 
 def _action_and_scenario(args: Sequence[str]) -> tuple[str, Scenario | None]:
     action = args[0] if args else ""
-    if action not in {"list", "plan", "run", "record", "waive", "report"}:
+    if action not in {"list", "plan", "campaign", "run", "record", "waive", "report"}:
         die("Usage: dreame-valetudo bench <list|plan|run|record|waive|report> ...")
     if action in {"run", "record", "waive"}:
         if len(args) < 2 or args[1].startswith("--"):
@@ -753,6 +810,7 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
     start = 2 if scenario is not None else 1
     allowed = {
         "plan": {"campaign", "suite"},
+        "campaign": {"campaign", "suite", "allow-destructive"},
         "run": {"campaign", "allow-destructive"},
         "record": {"campaign", "model", "robot", "note"},
         "waive": {"campaign", "model", "robot", "reason", "risk", "accepted-by"},
@@ -762,9 +820,9 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
     _suite_scenarios(options)
     campaign = _campaign_name(ctx, options)
     report = _preflight_report(ctx, campaign)
-    if action == "plan":
+    if action in {"plan", "campaign"}:
         if positional:
-            raise Die("Unexpected positional arguments after 'bench plan'.")
+            raise Die(f"Unexpected positional arguments after 'bench {action}'.")
         # A host-only suite has nothing to ask a robot. Forcing selection would run the
         # first-robot/model prompts and bind the campaign for a plan that never leaves this machine.
         _, planned = _suite_scenarios(options)
@@ -812,6 +870,36 @@ def bench_needs_robot(ctx: Context, args: Sequence[str]) -> bool:
     return validate_bench_args(ctx, args)
 
 
+def _campaign_suite_scenarios(args: Sequence[str]) -> tuple[Scenario, ...]:
+    """The scenarios an invocation selects, read leniently before any Context exists.
+
+    An unknown suite name resolves to nothing here rather than raising: validate_bench_args rejects
+    it later with a message that explains it, and a preflight guard is the wrong place to do that.
+    """
+    name = _named_suite(args)
+    if name is None:
+        return SCENARIOS
+    keys = SUITES.get(name)
+    if keys is None:
+        return ()
+    return tuple(item for item in SCENARIOS if item.key in keys)
+
+
+def _named_suite(args: Sequence[str]) -> str | None:
+    for index, item in enumerate(args):
+        if item.startswith("--suite="):
+            return item.removeprefix("--suite=")
+        if item == "--suite" and index + 1 < len(args):
+            return args[index + 1]
+    return None
+
+
+def _host_only_suite(args: Sequence[str]) -> bool:
+    """Whether an explicit --suite names one that never reaches a robot."""
+    name = _named_suite(args)
+    return name is not None and name in _HOST_ONLY_SUITES
+
+
 def bench_is_model_independent(args: Sequence[str]) -> bool:
     """Whether this bench invocation is about no model at all.
 
@@ -824,14 +912,9 @@ def bench_is_model_independent(args: Sequence[str]) -> bool:
         return True
     if action == "run":
         return len(args) >= 2 and args[1] == "host-smoke"
-    if action != "plan":
+    if action not in {"plan", "campaign"}:
         return False
-    for index, item in enumerate(args):
-        if item.startswith("--suite="):
-            return item.removeprefix("--suite=") in _HOST_ONLY_SUITES
-        if item == "--suite" and index + 1 < len(args):
-            return args[index + 1] in _HOST_ONLY_SUITES
-    return False
+    return _host_only_suite(args)
 
 
 def _ssh_public_fingerprint(ctx: Context, key: Path, role: str) -> bytes:
@@ -881,6 +964,17 @@ def _validate_wrong_key_identity(ctx: Context) -> None:
 
 def bench_drives_hardware(args: Sequence[str]) -> bool:
     action, scenario = _action_and_scenario(args)
+    if action == "campaign":
+        # A campaign opens the USB device for whichever cable scenarios turn out to be eligible,
+        # and that is not known until it runs — so the udev guard has to speak before the session
+        # starts rather than as a run of permission errors recorded inside it. It is asked of the
+        # SELECTED suite, though: a Wi-Fi-only suite, or one whose only cable scenario is a
+        # firmware write this invocation did not arm, never reaches the device at all.
+        armed = "--allow-destructive" in args
+        return any(
+            _surface(item) == "cable" and (armed or item.safety != "H3")
+            for item in _campaign_suite_scenarios(args)
+        )
     return (
         action == "run"
         and scenario is not None
@@ -1995,6 +2089,96 @@ def _validate(scenario: Scenario, before: Snapshot, after: Snapshot) -> list[str
     return failures
 
 
+# What must ALREADY be recorded for a scenario to mean anything. Module level for the same
+# reason as the absent table below: scheduling has to tell a scenario that needs a virgin
+# robot from one that needs a rooted one, and both are expressed here.
+_REQUIRED_MARKERS: Mapping[str, frozenset[str]] = {
+    "recon-repeat": frozenset({"recon"}),
+    "first-root": frozenset({"recon", "image"}),
+    "post-root-install": frozenset({"rooted"}),
+    "adopted-root-backup": frozenset({"rooted", "valetudo", "root-origin"}),
+    "implementation-fix": frozenset({"rooted", "valetudo"}),
+    "rooted-resume": frozenset({"rooted", "valetudo"}),
+    "diagnose": frozenset({"rooted", "valetudo"}),
+    "valetudo-update": frozenset({"rooted", "valetudo"}),
+    "stock-restore": frozenset({"rooted", "valetudo"}),
+    "reroot-after-restore": frozenset({"restored-stock"}),
+    "wrong-model-root": frozenset({"recon"}),
+    "wrong-robot-root": frozenset({"recon", "image"}),
+    "decline-flash": frozenset({"recon", "image"}),
+    "terminal-loss-root": frozenset({"recon", "image"}),
+    "wrong-robot-restore": frozenset({"rooted", "valetudo"}),
+    "decline-restore": frozenset({"rooted", "valetudo"}),
+    "terminal-loss-restore": frozenset({"rooted", "valetudo"}),
+    "wifi-wrong-network": frozenset({"rooted", "valetudo"}),
+    "wifi-drop-backup": frozenset({"rooted"}),
+    "ctrl-c-push": frozenset({"rooted"}),
+    "ssh-wrong-key": frozenset({"rooted"}),
+    "already-rooted-recon": frozenset({"recon", "rooted"}),
+    "already-rooted-root": frozenset({"rooted"}),
+    "rekey-dry-run": frozenset({"rooted"}),
+    "rekey-over-ssh": frozenset({"rooted"}),
+    "rekey-wrong-serial": frozenset({"rooted"}),
+    "rekey-over-usb": frozenset({"rooted"}),
+    "offline-cached-binary": frozenset({"rooted"}),
+    "multi-robot-selection": frozenset({"rooted"}),
+}
+
+
+# What must NOT already be recorded for a scenario to mean anything. Module level so the
+# campaign conductor can schedule around it: a scenario gated on the absence of a write-history
+# marker can only ever run before the robot acquires one, and no restore gives that back.
+_ABSENT_MARKERS: Mapping[str, frozenset[str]] = {
+    "stock-recon": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                               "restore-attempt"}),
+    "legacy-root-adoption": frozenset({
+        "rooted", "valetudo", "restored-stock", "flash-attempt", "restore-attempt",
+    }),
+    "recon-repeat": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                               "restore-attempt"}),
+    "research-baseline": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                                    "restore-attempt"}),
+    "first-root": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                             "restore-attempt"}),
+    # Interrupting the recovery pull requires a robot that HAS one: recon skips the pull
+    # outright once a robot carries firmware-write history, so on a written robot there is no
+    # transfer to unplug and no incomplete generation to reject. Restoring to stock does not
+    # give this back — `restored-stock` is write history too, deliberately, because a restored
+    # flash is no more a factory source than a rooted one.
+    "usb-drop-recon": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                                 "restore-attempt"}),
+    # These six drive push(), which always publishes a fresh factory-backup generation and
+    # rewrites the binary — it has no already-installed short circuit. Gating them on an absent
+    # valetudo marker would let the first one run and permanently strand the other five, since
+    # a robot's first install cannot be un-done. Each one covers a distinct way that install
+    # can go wrong, so a campaign must be able to run all of them against the same robot.
+    "post-root-install": frozenset({"restored-stock"}),
+    "wrong-robot-root": frozenset({"rooted", "valetudo", "restored-stock",
+                                   "flash-attempt", "restore-attempt"}),
+    "decline-flash": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
+                                "restore-attempt"}),
+    "terminal-loss-root": frozenset({"rooted", "valetudo", "restored-stock",
+                                     "flash-attempt", "restore-attempt"}),
+    "stock-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
+    "wrong-robot-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
+    "decline-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
+    "terminal-loss-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
+    "reroot-after-restore": frozenset({"rooted", "valetudo", "flash-attempt",
+                                       "restore-attempt"}),
+    "wifi-drop-backup": frozenset({"restored-stock"}),
+    "ctrl-c-push": frozenset({"restored-stock"}),
+    "ssh-wrong-key": frozenset({"restored-stock"}),
+    "offline-cached-binary": frozenset({"restored-stock"}),
+    "multi-robot-selection": frozenset({"restored-stock"}),
+    # The SSH route refuses outright while a USB write is unaccounted for, because writing one
+    # file into a partly-written misc neither repairs it nor puts the pristine copy back.
+    "rekey-dry-run": frozenset({"rekey-attempt", "restored-stock"}),
+    "rekey-over-ssh": frozenset({"rekey-attempt", "restored-stock"}),
+    "rekey-wrong-serial": frozenset({"rekey-attempt", "restored-stock"}),
+    "rekey-over-usb": frozenset({"rekey-attempt", "restored-stock"}),
+}
+
+
 def _starting_failures(
     scenario: Scenario,
     before: Snapshot,
@@ -2003,76 +2187,8 @@ def _starting_failures(
 ) -> list[str]:
     markers = set(before.markers)
     failures: list[str] = []
-    required: dict[str, frozenset[str]] = {
-        "recon-repeat": frozenset({"recon"}),
-        "first-root": frozenset({"recon", "image"}),
-        "post-root-install": frozenset({"rooted"}),
-        "adopted-root-backup": frozenset({"rooted", "valetudo", "root-origin"}),
-        "implementation-fix": frozenset({"rooted", "valetudo"}),
-        "rooted-resume": frozenset({"rooted", "valetudo"}),
-        "diagnose": frozenset({"rooted", "valetudo"}),
-        "valetudo-update": frozenset({"rooted", "valetudo"}),
-        "stock-restore": frozenset({"rooted", "valetudo"}),
-        "reroot-after-restore": frozenset({"restored-stock"}),
-        "wrong-robot-root": frozenset({"recon", "image"}),
-        "decline-flash": frozenset({"recon", "image"}),
-        "terminal-loss-root": frozenset({"recon", "image"}),
-        "wrong-robot-restore": frozenset({"rooted", "valetudo"}),
-        "decline-restore": frozenset({"rooted", "valetudo"}),
-        "terminal-loss-restore": frozenset({"rooted", "valetudo"}),
-        "wifi-wrong-network": frozenset({"rooted", "valetudo"}),
-        "wifi-drop-backup": frozenset({"rooted"}),
-        "ctrl-c-push": frozenset({"rooted"}),
-        "ssh-wrong-key": frozenset({"rooted"}),
-        "already-rooted-recon": frozenset({"recon", "rooted"}),
-        "already-rooted-root": frozenset({"rooted"}),
-        "rekey-dry-run": frozenset({"rooted"}),
-        "rekey-over-ssh": frozenset({"rooted"}),
-        "rekey-wrong-serial": frozenset({"rooted"}),
-        "rekey-over-usb": frozenset({"rooted"}),
-        "offline-cached-binary": frozenset({"rooted"}),
-        "multi-robot-selection": frozenset({"rooted"}),
-    }
-    absent: dict[str, frozenset[str]] = {
-        "stock-recon": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
-                                   "restore-attempt"}),
-        "legacy-root-adoption": frozenset({
-            "rooted", "valetudo", "restored-stock", "flash-attempt", "restore-attempt",
-        }),
-        "recon-repeat": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
-                                   "restore-attempt"}),
-        "first-root": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
-                                 "restore-attempt"}),
-        # These six drive push(), which always publishes a fresh factory-backup generation and
-        # rewrites the binary — it has no already-installed short circuit. Gating them on an absent
-        # valetudo marker would let the first one run and permanently strand the other five, since
-        # a robot's first install cannot be un-done. Each one covers a distinct way that install
-        # can go wrong, so a campaign must be able to run all of them against the same robot.
-        "post-root-install": frozenset({"restored-stock"}),
-        "wrong-robot-root": frozenset({"rooted", "valetudo", "restored-stock",
-                                       "flash-attempt", "restore-attempt"}),
-        "decline-flash": frozenset({"rooted", "valetudo", "restored-stock", "flash-attempt",
-                                    "restore-attempt"}),
-        "terminal-loss-root": frozenset({"rooted", "valetudo", "restored-stock",
-                                         "flash-attempt", "restore-attempt"}),
-        "stock-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
-        "wrong-robot-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
-        "decline-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
-        "terminal-loss-restore": frozenset({"restored-stock", "flash-attempt", "restore-attempt"}),
-        "reroot-after-restore": frozenset({"rooted", "valetudo", "flash-attempt",
-                                           "restore-attempt"}),
-        "wifi-drop-backup": frozenset({"restored-stock"}),
-        "ctrl-c-push": frozenset({"restored-stock"}),
-        "ssh-wrong-key": frozenset({"restored-stock"}),
-        "offline-cached-binary": frozenset({"restored-stock"}),
-        "multi-robot-selection": frozenset({"restored-stock"}),
-        # The SSH route refuses outright while a USB write is unaccounted for, because writing one
-        # file into a partly-written misc neither repairs it nor puts the pristine copy back.
-        "rekey-dry-run": frozenset({"rekey-attempt", "restored-stock"}),
-        "rekey-over-ssh": frozenset({"rekey-attempt", "restored-stock"}),
-        "rekey-wrong-serial": frozenset({"rekey-attempt", "restored-stock"}),
-        "rekey-over-usb": frozenset({"rekey-attempt", "restored-stock"}),
-    }
+    required = _REQUIRED_MARKERS
+    absent = _ABSENT_MARKERS
     failures.extend(
         f"required {marker} completion marker is absent"
         for marker in sorted(required.get(scenario.key, frozenset()) - markers)
@@ -2386,16 +2502,6 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
     elif scenario.key == "rekey-over-usb":
         previously_authorized = _key_baseline(ctx)
         rekey(ctx)
-        if ctx.interactive:
-            # The write ends in a fastboot reboot, and the confirmation that follows needs the
-            # robot answering on its own AP. That check waits only long enough for /mnt to finish
-            # mounting, which is nowhere near long enough for a robot to boot and an operator to
-            # start the AP and join it — so without this pause a rekey the robot honoured would be
-            # recorded as one it refused. The SSH route reboots nothing and needs no pause.
-            ctx.console.ask(
-                "The write rebooted the robot. Once it has finished booting, hold the two outer "
-                "buttons until its Wi-Fi AP starts, join that network, then press Enter."
-            )
         return _confirm_authorized_key(ctx, previously_authorized)
     elif scenario.key == "rooted-resume":
         auto_fn(ctx, ())
@@ -3030,18 +3136,143 @@ def _report(
     return 0
 
 
-def _plan(
-    ctx: Context, campaign: str, suite: str | None, scenarios: Sequence[Scenario],
-) -> int:
-    path, report = _load_report(ctx, campaign)
-    if any(scenario.key != "host-smoke" for scenario in scenarios):
-        _bind_report_model(report, ctx.profile.key)
-        _bind_report_robot(report, _robot_slot(ctx, campaign))
-    _write_report(path, report)
+# Alternatives, not a sequence: each pair describes the same one-time robot state from a different
+# starting assumption, so attempting the second after the first has passed records a failure the
+# robot could never have avoided.
+_MUTUALLY_EXCLUSIVE: Mapping[str, frozenset[str]] = {
+    "stock-recon": frozenset({"legacy-root-adoption"}),
+    "legacy-root-adoption": frozenset({"stock-recon"}),
+    "first-root": frozenset({"terminal-loss-root"}),
+    "terminal-loss-root": frozenset({"first-root"}),
+}
+
+
+# Closing the terminal IS the test for these, so a conductor hosting them would be taken down with
+# the run it is judging. They are named at the end of a campaign instead.
+_CONDUCTOR_DEFERRED = frozenset({
+    "terminal-loss-prompt", "terminal-loss-root", "terminal-loss-restore",
+})
+
+# What a conductor will start. FAILED is retried because re-running after a fix is the point;
+# INTERRUPTED and OBSERVE are resumable by design — rerunning resumes only the pending observation
+# and never repeats the hardware phase. PASS is excluded: it would spend a bench cycle to learn
+# nothing, and on an H3 scenario a partition write as well.
+_CONDUCTOR_RUNNABLE = frozenset({"READY", "FAILED", "INTERRUPTED", "OBSERVE"})
+
+# Markers no scenario produces, and the command that does. Staging an image means visiting the
+# dustbuilder and downloading a build, so a campaign can only stop and say so.
+_UNBLOCKING_COMMANDS: Mapping[str, str] = {
+    "image": "dreame-valetudo image",
+}
+
+_AP_WAIT_POLLS = 90
+_AP_WAIT_SECONDS = 10
+
+
+# Proves the tool rejects whatever is NOT the robot at the AP address, so it is the one scenario
+# that has to run from the ordinary home network. On the robot's own AP it would find a healthy
+# robot and record itself as a failure.
+_HOME_NETWORK_SCENARIOS = frozenset({"wifi-wrong-network"})
+
+# In the USB set because they exercise the flash path's guards, but the guard they exercise refuses
+# from the saved marker before anything opens the USB device. Asking an operator to open the robot
+# and fit the breakout PCB for them is work the scenario will never use.
+_REFUSES_BEFORE_USB = frozenset({"already-rooted-root"})
+
+# Starts online on purpose — it fetches the binary, and only then asks the operator onto the AP to
+# prove the cached copy installs with no internet. Routed onto the AP first, a cold cache has
+# nothing to download from and the scenario cannot set up the very thing it tests.
+_MANAGES_OWN_NETWORK = frozenset({"offline-cached-binary"})
+
+
+def _surface(scenario: Scenario) -> Literal["host", "ap", "cable", "home"]:
+    """Where the operator has to be for this scenario.
+
+    Derived from the USB-stack set rather than stored per scenario: a second list of which
+    scenarios need the cable is a second thing to keep in step with the first.
+    """
+    if scenario.key == "host-smoke":
+        return "host"
+    if scenario.key in _HOME_NETWORK_SCENARIOS:
+        return "home"
+    if scenario.key in _REFUSES_BEFORE_USB or scenario.key in _MANAGES_OWN_NETWORK:
+        return "host"
+    return "cable" if scenario.key in _USB_STACK_SCENARIOS else "ap"
+
+
+# H3 writes that do NOT move the robot to a new lifecycle stage, and so do not strand anything by
+# running early: rekey rewrites `misc` alone, and the already-rooted probe refuses before writing at
+# all. Listed as exceptions rather than derived, so an H3 scenario added later is treated as
+# lifecycle-consuming until someone says otherwise — the conservative direction, since the cost of
+# guessing wrong is a boundary that cannot be re-earned.
+_NON_LIFECYCLE_WRITES = frozenset({"rekey-over-usb", "already-rooted-root"})
+
+
+def _crosses_write_boundary(scenario: Scenario) -> bool:
+    """Whether a successful run moves the robot to a lifecycle stage it cannot come back from.
+
+    The H3 scenarios expected to stop or be interrupted deliberately write nothing, and two of the
+    ones expected to succeed write without advancing anything.
+    """
+    return (
+        scenario.safety == "H3"
+        and scenario.expected == "success"
+        and scenario.key not in _NON_LIFECYCLE_WRITES
+    )
+
+
+def _stock_only(scenario: Scenario) -> bool:
+    """Whether this scenario needs a robot that has never had firmware written to it.
+
+    Forbidding a write marker is not enough on its own: the post-root scenarios forbid
+    `restored-stock` while REQUIRING `rooted`, so reading only the absent side would schedule the
+    step that installs Valetudo ahead of the one that roots the robot, where it can never run.
+    """
+    key = scenario.key
+    if _REQUIRED_MARKERS.get(key, frozenset()) & _DANGEROUS_MARKERS:
+        return False
+    return bool(_ABSENT_MARKERS.get(key, frozenset()) & _DANGEROUS_MARKERS)
+
+
+def _campaign_order(scenarios: Sequence[Scenario]) -> list[Scenario]:
+    """Table order, except that everything needing a never-written robot comes first.
+
+    Crossing that boundary is irreversible and a restore does not undo it — `restored-stock` is
+    write history too. In table order a fresh robot reaches `first-root` well before several
+    scenarios that can only ever run before it, and rooting strands them for the life of the robot.
+    """
+    pre = [s for s in scenarios if _stock_only(s) and not _crosses_write_boundary(s)]
+    rest = [s for s in scenarios if s not in pre]
+    return pre + rest
+
+
+def _wait_off_robot_ap(ctx: Context, why: str) -> bool:
+    """Poll until the host is NOT on the robot's AP.
+
+    Asks the same two-sided identity question as the wait for it: a robot whose Valetudo happens to
+    be stopped serves no version header, and treating that absence as "left the AP" would run the
+    home-network probe against the robot itself and record a failure it invented.
+    """
+    if not _robot_answers_ap(ctx):
+        return True
+    ctx.console.action(f"On the {ctx.host}: {why}")
+    with ctx.console.progress("Waiting for the normal network") as waiting:
+        for _ in range(_AP_WAIT_POLLS):
+            ctx.sleep(_AP_WAIT_SECONDS)
+            if not _robot_answers_ap(ctx):
+                return True
+        waiting.close(done=False)
+    ctx.console.warn("Still on the robot's AP; skipping the scenario that needs the home network.")
+    return False
+
+
+def _recorded(
+    report: Mapping[str, object],
+) -> tuple[dict[str, Mapping[str, object]], set[str]]:
     results = report["results"]
     waivers = report["waivers"]
     assert isinstance(results, list) and isinstance(waivers, list)
-    latest = {
+    latest: dict[str, Mapping[str, object]] = {
         str(entry["scenario"]): entry
         for entry in results
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
@@ -3051,6 +3282,375 @@ def _plan(
         for entry in waivers
         if isinstance(entry, dict) and isinstance(entry.get("scenario"), str)
     }
+    return latest, waived
+
+
+def _scenario_state(
+    ctx: Context,
+    scenario: Scenario,
+    campaign: str,
+    latest: Mapping[str, Mapping[str, object]],
+    waived: AbstractSet[str],
+    snapshot: Snapshot,
+) -> tuple[str, str | None]:
+    """The plan label for one scenario, and the one line that explains it."""
+    entry = latest.get(scenario.key)
+    state = str(entry.get("result")) if entry is not None else None
+    if state == "passed":
+        return "PASS", None
+    if state == "awaiting-observation":
+        return "OBSERVE", "rerun the scenario to answer its pending physical observation"
+    if state is not None:
+        label = state.upper()
+        # A retry label describes the last attempt; whether the scenario can START again is about
+        # the robot as it is now. Offering one the robot has since moved past walks the operator
+        # through its setup only for the starting-state gate to refuse it. An awaiting-observation
+        # resume is exempt: its hardware phase already ran and only the question is outstanding.
+        if label in {"FAILED", "INTERRUPTED"}:
+            stale = _starting_failures(scenario, snapshot, target_valetudo=ctx.valetudo_version)
+            if stale:
+                return "WAIT", stale[0]
+        detail = _failure_detail(entry) if entry is not None else []
+        return label, detail[0] if detail else "the latest attempt did not pass"
+    if scenario.key in waived:
+        return "WAIVED", None
+    if not scenario.automated:
+        return "RECORD", "follow the hardware guide, then record pass or fail"
+    if scenario.key in {"wrong-robot-root", "wrong-robot-restore", "multi-robot-selection"}:
+        return "SPECIAL", "requires a second model, robot, or workspace; follow the hardware guide"
+    failures = _starting_failures(scenario, snapshot, target_valetudo=ctx.valetudo_version)
+    if failures:
+        return "WAIT", failures[0]
+    command = f"dreame-valetudo bench run {scenario.key} --campaign {campaign}"
+    if scenario.safety == "H3":
+        command += " --allow-destructive"
+    return "READY", command
+
+
+def _robot_answers_ap(ctx: Context) -> bool:
+    """Whether the ROBOT — not the router — is answering the AP address.
+
+    Presence is not identity: on a home network the router holds this address and answers at once,
+    so accepting any responder would run a whole scenario against the router.
+
+    Two proofs, because neither covers the whole lifecycle. Valetudo's version header settles it
+    once Valetudo is installed; before that, on a robot that is rooted but not yet provisioned,
+    only the SSH-side identity exists — and insisting on the header there would stall the very
+    scenario that installs Valetudo.
+    """
+    if valetudo_version_header(ctx.runner) is not None:
+        return True
+    try:
+        key = resolve_sshkey(ctx.env, ctx.home, ctx.ws.base, ctx.robot)
+    except (Die, OSError):
+        return False
+    return is_dreame_ap(ctx.runner, f"root@{ROBOT_AP_IP}", key)
+
+
+def _wait_for_robot_ap(ctx: Context, why: str) -> bool:
+    """Poll until the robot answers at the AP address."""
+    if _robot_answers_ap(ctx):
+        return True
+    ctx.console.action(f"Hands on the robot: {why}")
+    ctx.console.steps([
+        "Let the robot finish booting; press its power button if it is off.",
+        "On the robot: hold the two OUTER buttons until its Wi-Fi AP starts.",
+        f"On the {ctx.host}: join that Wi-Fi network.",
+        "Nothing to press here — this continues by itself once the robot answers.",
+    ])
+    with ctx.console.progress("Waiting for the robot's own AP") as waiting:
+        for _ in range(_AP_WAIT_POLLS):
+            ctx.sleep(_AP_WAIT_SECONDS)
+            if _robot_answers_ap(ctx):
+                return True
+        waiting.close(done=False)
+    ctx.console.warn("Gave up waiting for the robot's AP; skipping the scenarios that need it.")
+    return False
+
+
+def _campaign(
+    ctx: Context,
+    campaign: str,
+    suite: str | None,
+    scenarios: Sequence[Scenario],
+    *,
+    auto_fn: AutoFn,
+    allow_destructive: bool,
+) -> int:
+    """Run every scenario this robot can qualify, scheduling around the boundaries it can cross.
+
+    Passes, not one sweep. A scenario that writes firmware or restores stock consumes a lifecycle
+    state that other scenarios need, and which no later step gives back, so each pass runs
+    everything that does NOT cross a boundary and only then allows a single crossing — after which
+    a fresh pass picks up whatever that crossing just made possible. One ordered walk cannot do
+    this: rooting makes half the table eligible and the other half impossible, in one step.
+    """
+    path, report = _load_report(ctx, campaign)
+    if any(scenario.key != "host-smoke" for scenario in scenarios):
+        # Same binding _plan performs, and for the same reason: results already in this campaign
+        # must be refused unless they belong to the robot and model selected now. Skipping it would
+        # let a finished campaign report PASS for every scenario against a robot never touched.
+        _bind_report_model(report, ctx.profile.key)
+        _bind_report_robot(report, _robot_slot(ctx, campaign))
+    _write_report(path, report)
+    ctx.console.phase(f"Hardware campaign: {campaign}"
+                      + ("" if suite is None else f" · suite {suite}"))
+    ctx.console.info("Runs what this robot can qualify right now and explains every skip. Where a "
+                     "scenario needs your hands it says what to do, and what to answer, first.")
+    if not allow_destructive:
+        ctx.console.info("Scenarios that write firmware are excluded. Add --allow-destructive to "
+                         "include them.")
+
+    state = _CampaignState(ctx, campaign, allow_destructive, auto_fn)
+    pending = _campaign_order(scenarios)
+    while pending:
+        ready = [item for item in pending if state.runnable(item)]
+        # Deferred scenarios change nothing, so noting them costs nothing — and it has to happen
+        # before a write can make them ineligible. A rival root or restore would otherwise consume
+        # the boundary first and the promised standalone command would never be printed at all.
+        standalone = [item for item in ready if item.key in _CONDUCTOR_DEFERRED]
+        rest = [item for item in ready if item not in standalone]
+        crossing = [item for item in rest if _crosses_write_boundary(item)]
+        holding = [item for item in rest if item not in crossing]
+        if standalone:
+            batch = standalone
+        elif holding:
+            batch = holding
+        elif crossing:
+            # One at a time, and only once nothing else can run: the crossing is what makes the
+            # rest of this pass's world different, and two in a row would spend two boundaries
+            # against a single re-evaluation.
+            batch = crossing[:1]
+        else:
+            break
+        for scenario in batch:
+            # Re-asked per scenario, not per batch: running one can settle another outright — a
+            # passing stock-recon supersedes legacy-root-adoption, and attempting it anyway records
+            # a failure on a robot that was never going to satisfy it.
+            if not state.runnable(scenario):
+                label, reason = state.status(scenario)
+                ctx.console.info(f"skip  {scenario.safety}  {scenario.key}  [{label}]")
+                if reason is not None:
+                    ctx.console.detail(f"    {reason}")
+                pending = [item for item in pending if item.key != scenario.key]
+                continue
+            if state.attempt(scenario, scenarios) == "stop":
+                pending = []
+                break
+            pending = [item for item in pending if item.key != scenario.key]
+
+    blocked_on: set[str] = set()
+    for scenario in pending:
+        label, reason = state.status(scenario)
+        ctx.console.info(f"skip  {scenario.safety}  {scenario.key}  [{label}]")
+        if reason is not None:
+            ctx.console.detail(f"    {reason}")
+        if label == "WAIT" and reason is not None:
+            blocked_on.update(
+                marker for marker, command in _UNBLOCKING_COMMANDS.items()
+                if f"required {marker} completion marker is absent" == reason
+            )
+    if blocked_on:
+        ctx.console.phase("Blocked on a step no scenario performs")
+        for marker in sorted(blocked_on):
+            ctx.console.info(f"  {_UNBLOCKING_COMMANDS[marker]}")
+        ctx.console.detail("    Then start the campaign again; it picks up from there.")
+
+    if state.deferred:
+        ctx.console.phase("Run these by hand, each in its own terminal")
+        ctx.console.info("Closing the terminal is the test, so it would take this run down too. "
+                         "The pass is that the command REJOINS its run and the pending question "
+                         "comes back — a run that starts over from the beginning is a failure.")
+        for scenario in state.deferred:
+            command = f"  dreame-valetudo bench run {scenario.key} --campaign {campaign}"
+            if scenario.safety == "H3":
+                command += " --allow-destructive"
+            ctx.console.detail(command)
+    ctx.console.info(f"{state.attempted} scenario(s) attempted this session.")
+    return _report(ctx, campaign, suite, scenarios)
+
+
+class _CampaignState:
+    """One session's view of a campaign: eligibility now, and what it has already decided."""
+
+    def __init__(
+        self, ctx: Context, campaign: str, allow_destructive: bool, auto_fn: AutoFn,
+    ) -> None:
+        self.ctx = ctx
+        self.campaign = campaign
+        self.allow_destructive = allow_destructive
+        self.auto_fn = auto_fn
+        self.deferred: list[Scenario] = []
+        self.attempted = 0
+        self.ap_unavailable = False
+        self.chosen: dict[str, bool] = {}
+        self._observed: tuple[
+            Mapping[str, Mapping[str, object]], AbstractSet[str], Snapshot,
+        ] | None = None
+
+    def _current(self) -> tuple[Mapping[str, Mapping[str, object]], AbstractSet[str], Snapshot]:
+        """The report and robot state, read once and reused until a scenario changes them.
+
+        Verifying recovery provenance SHA-256s the whole 1.2 GB capture. Scheduling asks about
+        every pending scenario, several times per pass, so reading this per question would hash
+        tens of gigabytes between scenarios and look, from the outside, exactly like a hang.
+        """
+        if self._observed is None:
+            _, report = _load_report(self.ctx, self.campaign)
+            latest, waived = _recorded(report)
+            self._observed = (latest, waived, _snapshot(self.ctx, verify_recovery=True))
+        return self._observed
+
+    def invalidate(self) -> None:
+        """Forget the cached view — only a scenario that ran can have moved the robot."""
+        self._observed = None
+
+    def status(self, scenario: Scenario) -> tuple[str, str | None]:
+        """The scenario's label right now, re-read because earlier scenarios move the robot."""
+        latest, waived, snapshot = self._current()
+        label, reason = _scenario_state(
+            self.ctx, scenario, self.campaign, latest, waived, snapshot,
+        )
+        if label in _CONDUCTOR_RUNNABLE:
+            settled = [
+                peer for peer in sorted(_MUTUALLY_EXCLUSIVE.get(scenario.key, frozenset()))
+                if str((latest.get(peer) or {}).get("result")) == "passed"
+            ]
+            if not settled and self.chosen.get(scenario.key) is False:
+                return "SUPERSEDED", "you chose its alternative for this robot"
+            if settled:
+                return "SUPERSEDED", (
+                    f"{', '.join(settled)} already established this robot's state; the two "
+                    "describe the same one-time boundary from different starting assumptions"
+                )
+            if scenario.safety == "H3" and not self.allow_destructive:
+                return "NOT ARMED", "re-run with --allow-destructive to include it"
+            if self.ap_unavailable and _surface(scenario) == "ap":
+                return "NO AP", "the robot's AP did not come up earlier in this session"
+        return label, reason
+
+    def runnable(self, scenario: Scenario) -> bool:
+        return self.status(scenario)[0] in _CONDUCTOR_RUNNABLE
+
+    def status_of_key(self, key: str) -> str:
+        scenario = next((item for item in SCENARIOS if item.key == key), None)
+        return "MISSING" if scenario is None else self.status(scenario)[0]
+
+    def attempt(self, scenario: Scenario, campaign_scenarios: Sequence[Scenario]) -> str:
+        """Run one scenario. Returns "ran", "skipped", or "stop" to end the session."""
+        ctx = self.ctx
+        if scenario.key in _CONDUCTOR_DEFERRED:
+            self.deferred.append(scenario)
+            return "skipped"
+        surface = _surface(scenario)
+        if surface == "ap" and self.ap_unavailable:
+            return "skipped"
+        if surface == "ap" and not _wait_for_robot_ap(
+            ctx, f"bring the robot's Wi-Fi AP up for {scenario.key}"
+        ):
+            self.ap_unavailable = True
+            return "skipped"
+        if surface == "home" and not _wait_off_robot_ap(
+            ctx, f"rejoin your ordinary Wi-Fi — {scenario.key} runs from the home network"
+        ):
+            return "skipped"
+        if _crosses_write_boundary(scenario) and self._contested(
+            scenario, campaign_scenarios
+        ) == "stop":
+            return "stop"
+        rivals = [
+            peer for peer in sorted(_MUTUALLY_EXCLUSIVE.get(scenario.key, frozenset()))
+            if peer not in self.chosen and self.status_of_key(peer) in _CONDUCTOR_RUNNABLE
+        ]
+        if rivals and ctx.interactive:
+            # Only the operator knows which of these describes the robot in front of them, and
+            # attempting both records a failure on whichever one it was not.
+            ctx.console.warn(
+                f"{scenario.key} and {', '.join(rivals)} describe the same one-time robot state "
+                "from different starting assumptions. Only one of them can pass on this robot."
+            )
+            if not ctx.console.confirm(f"Is {scenario.key} the one that fits this robot?"):
+                self.chosen[scenario.key] = False
+                return "skipped"
+            self.chosen[scenario.key] = True
+            for peer in rivals:
+                self.chosen[peer] = False
+        if scenario.key == "ssh-wrong-key":
+            # Without this the scenario runs push() with a key the robot ACCEPTS, which publishes a
+            # backup and reinstalls Valetudo before recording a failure — a mutation, in the one
+            # scenario whose whole purpose is to prove authentication is refused.
+            try:
+                _validate_wrong_key_identity(ctx)
+            except Die as exc:
+                ctx.console.info(f"skip  {scenario.safety}  {scenario.key}  [not set up]")
+                ctx.console.detail(f"    {exc}")
+                return "skipped"
+
+        ctx.console.say(f"Next: {scenario.key} ({scenario.safety}) — {scenario.summary}")
+        if surface == "cable":
+            ctx.console.action("Robot open, breakout PCB fitted, USB cable to this computer.")
+        for line in scenario.operator:
+            ctx.console.detail(f"  {line}")
+        if scenario.safety == "H3":
+            ctx.console.warn("This scenario writes to the robot. Before it starts it will ask you "
+                             "to TYPE an arming phrase naming this exact robot; read it off the "
+                             "screen. Nothing can answer that for you, deliberately.")
+        if ctx.interactive:
+            ctx.console.ask("Press Enter when you are ready to start this scenario.")
+        self.attempted += 1
+        # wrong-model-root deliberately swaps in a confusable profile to prove the flash gate
+        # catches it. That was self-limiting while every scenario was its own process; sharing one
+        # context across a session leaves the wrong model selected for everything after it.
+        selected = ctx.profile
+        try:
+            _run(
+                ctx, scenario, self.campaign,
+                allow_destructive=self.allow_destructive, auto_fn=self.auto_fn,
+            )
+        except (Die, UserAbort, RunError, OSError, ValueError) as exc:
+            # One scenario stopping is a result, not a reason to end a session that took an hour of
+            # hands-on setup to reach. The report already carries what happened. KeyboardInterrupt
+            # is deliberately NOT caught: an operator pressing Ctrl+C means end the session.
+            ctx.console.warn(f"{scenario.key} stopped: {exc}")
+        finally:
+            ctx.profile = selected
+            self.invalidate()
+        return "ran"
+
+    def _contested(self, scenario: Scenario, campaign_scenarios: Sequence[Scenario]) -> str:
+        """Warn, and let the operator stop, before a one-time robot state is spent."""
+        contested = [
+            other.key for other in campaign_scenarios
+            if other.key != scenario.key
+            and _ABSENT_MARKERS.get(other.key, frozenset()) & _DANGEROUS_MARKERS
+            and self.status(other)[0] in (*_CONDUCTOR_RUNNABLE, "RECORD")
+        ]
+        if not contested:
+            return "go"
+        self.ctx.console.warn(
+            f"{scenario.key} writes firmware. These can only ever run on a robot that has never "
+            "had firmware written to it, and this robot is about to stop being one: "
+            + ", ".join(contested)
+            + ". Restoring to stock does not give it back — `restored-stock` is write history too."
+        )
+        if self.ctx.interactive and not self.ctx.console.confirm(
+            f"Spend this robot's one-time stock state on {scenario.key} now?"
+        ):
+            self.ctx.console.info("Stopped before the write. Run the scenarios above first, then "
+                                  "start the campaign again.")
+            return "stop"
+        return "go"
+
+
+def _plan(
+    ctx: Context, campaign: str, suite: str | None, scenarios: Sequence[Scenario],
+) -> int:
+    path, report = _load_report(ctx, campaign)
+    if any(scenario.key != "host-smoke" for scenario in scenarios):
+        _bind_report_model(report, ctx.profile.key)
+        _bind_report_robot(report, _robot_slot(ctx, campaign))
+    _write_report(path, report)
+    latest, waived = _recorded(report)
     snapshot = _snapshot(ctx, verify_recovery=True)
     ctx.console.say(
         f"Hardware campaign plan: {campaign}"
@@ -3059,40 +3659,7 @@ def _plan(
     ctx.console.info("READY can run from this robot's current saved state. WAIT explains the "
                      "missing or already-passed lifecycle boundary; it is never counted as a pass.")
     for scenario in scenarios:
-        entry = latest.get(scenario.key)
-        state = str(entry.get("result")) if entry is not None else None
-        reason: str | None = None
-        if state == "passed":
-            label = "PASS"
-        elif state == "awaiting-observation":
-            label = "OBSERVE"
-            reason = "rerun the scenario to answer its pending physical observation"
-        elif state is not None:
-            label = state.upper()
-            detail = _failure_detail(entry) if entry is not None else []
-            reason = detail[0] if detail else "the latest attempt did not pass"
-        elif scenario.key in waived:
-            label = "WAIVED"
-        elif not scenario.automated:
-            label = "RECORD"
-            reason = "follow the hardware guide, then record pass or fail"
-        elif scenario.key in {"wrong-model-root", "wrong-robot-root", "wrong-robot-restore",
-                              "multi-robot-selection"}:
-            label = "SPECIAL"
-            reason = "requires a second model, robot, or workspace; follow the hardware guide"
-        else:
-            failures = _starting_failures(
-                scenario, snapshot, target_valetudo=ctx.valetudo_version,
-            )
-            if failures:
-                label = "WAIT"
-                reason = failures[0]
-            else:
-                label = "READY"
-                command = f"dreame-valetudo bench run {scenario.key} --campaign {campaign}"
-                if scenario.safety == "H3":
-                    command += " --allow-destructive"
-                reason = command
+        label, reason = _scenario_state(ctx, scenario, campaign, latest, waived, snapshot)
         ctx.console.info(f"{label:<9} {scenario.safety}  {scenario.key}")
         if reason is not None:
             ctx.console.detail(f"    {reason}")
@@ -3129,6 +3696,21 @@ def bench(ctx: Context, args: Sequence[str], *, auto_fn: AutoFn) -> int:
             raise Die("Unexpected positional arguments after 'bench plan'.")
         suite, scenarios = _suite_scenarios(options)
         return _plan(ctx, _campaign_name(ctx, options), suite, scenarios)
+    if action == "campaign":
+        positional, options = _options(
+            args[start:], {"campaign", "suite", "allow-destructive"},
+        )
+        if positional:
+            raise Die("Unexpected positional arguments after 'bench campaign'.")
+        suite, scenarios = _suite_scenarios(options)
+        return _campaign(
+            ctx,
+            _campaign_name(ctx, options),
+            suite,
+            scenarios,
+            auto_fn=auto_fn,
+            allow_destructive=bool(options.get("allow-destructive")),
+        )
     if action == "run":
         positional, options = _options(
             args[start:], {"campaign", "allow-destructive"},
