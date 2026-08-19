@@ -97,7 +97,7 @@ def _open_dustbuilder(ctx: Context) -> None:
                          f"If that tab is still open, finish it there; the page is: "
                          f"{ctx.dustbuilder_page}")
         if ctx.interactive and ctx.console.confirm("Reopen the dustbuilder page now?"):
-            reopened = open_url(ctx.runner, ctx.system, ctx.dustbuilder_page)
+            reopened = open_url(ctx.runner, ctx.system, ctx.dustbuilder_page, env=ctx.env)
             if not reopened:
                 ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
     else:
@@ -105,7 +105,7 @@ def _open_dustbuilder(ctx: Context) -> None:
         # ~/Downloads for a build the user never started.
         if not ctx.console.confirm("Open the dustbuilder in your browser now?"):
             abort("No problem — re-run 'dreame-valetudo' for this robot when ready.")
-        if not open_url(ctx.runner, ctx.system, ctx.dustbuilder_page):
+        if not open_url(ctx.runner, ctx.system, ctx.dustbuilder_page, env=ctx.env):
             ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
     # The receipt is the floor that decides whether a downloaded zip belongs to this build, so it
     # moves forward whenever a build is (re)ordered — but NOT on a plain re-run, which would

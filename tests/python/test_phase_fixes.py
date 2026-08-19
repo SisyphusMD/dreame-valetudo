@@ -656,7 +656,9 @@ def test_fix_impl_idempotent_when_already_pinned(make_ctx: CtxFactory) -> None:
 def test_fix_impl_does_not_claim_a_browser_opened_when_no_launcher_exists(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("dreame_valetudo.phases.fixes.open_url", lambda *_args: False)
+    monkeypatch.setattr(
+        "dreame_valetudo.phases.fixes.open_url", lambda *_args, **_kwargs: False,
+    )
     r = _impl_responder("model=dreame.vacuum.r2416\n",
                         '{"robot":{"implementation":"DreameX40UltraValetudoRobot"}}', ui_up=True)
     ctx = make_ctx(model="x40-ultra", responder=r, system="Linux")

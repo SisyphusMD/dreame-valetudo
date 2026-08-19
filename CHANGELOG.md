@@ -45,6 +45,14 @@
   mistyped serial. Each write scenario confirms the robot accepts the new key before passing.
 - A failed `bench` scenario now records and prints why it stopped, so a report distinguishes an
   unreachable robot from a check that actually failed.
+- `bench` no longer offers the stock-restore scenarios on a robot with no capture attested as
+  factory firmware, and its wrong-model probe now refuses correctly on an already-rooted robot
+  instead of recording a failure no healthy robot could avoid.
+- `bench campaign` now answers the questions it can work out for itself — recorded in the report
+  with the reason — and stops only for what you alone can settle. It groups scenarios by where you
+  have to be, names the step between one place and the next, and shows how far through it is.
+- Rekey bench scenarios generate their own SSH key per run instead of asking you to pick one that
+  the robot does not already authorize.
 - `bench plan` and `bench report` take `--suite` to scope them to what a release changed
   (`smoke`, `key-recovery`, `lifecycle`, `restore`).
 - Choosing which SSH key reaches the robot now shows each key's type, fingerprint, and comment,

@@ -12,6 +12,7 @@ import pytest
 
 from dreame_valetudo import console
 from dreame_valetudo.console import (
+    Answer,
     Console,
     Die,
     bookmark_prompts_in,
@@ -432,3 +433,72 @@ def test_an_unknowable_attachment_never_times_out(monkeypatch: pytest.MonkeyPatc
     finally:
         console._IDLE_TIMEOUT.clear()
         console._IDLE_PROBE.clear()
+
+
+class _Recording(Console):
+    """A console that records instead of printing, and refuses to prompt."""
+
+    def __init__(self) -> None:
+        super().__init__(color=False)
+        self.lines: list[str] = []
+
+    def _emit(self, kind: str, message: str, **_kwargs: object) -> None:
+        self.lines.append(message)
+
+    def _prompt(self, rendered: str) -> str:
+        raise AssertionError(f"a determined question still reached the operator: {rendered}")
+
+
+def test_a_determined_question_is_answered_and_says_why() -> None:
+    console = _Recording()
+    with console.answering([Answer("already rooted", True, "the robot carries the marker")]) as hits:
+        assert console.confirm("Was this robot already rooted and running Valetudo?") is True
+
+    assert hits == ["already rooted -> yes"]
+    assert any("Answered automatically: yes — the robot carries the marker" in line
+               for line in console.lines)
+
+
+def test_answers_fire_in_order_so_one_question_can_be_driven_twice() -> None:
+    """rekey-wrong-serial asks the same question twice and needs different answers."""
+    console = _Recording()
+    answers = [
+        Answer("serial number?", "WRONG1", "deliberately altered"),
+        Answer("serial number?", "", "the recorded one", times=2),
+    ]
+    with console.answering(answers):
+        assert console.ask("Robot serial number?") == "WRONG1"
+        assert console.ask("Robot serial number?", default="RIGHT") == "RIGHT"
+
+
+def test_a_sensitive_answer_is_not_echoed() -> None:
+    console = _Recording()
+    with console.answering([Answer("serial number?", "R2240SECRET", "a mistyped serial")]):
+        assert console.ask("Robot serial number?", sensitive=True) == "R2240SECRET"
+
+    assert not any("R2240SECRET" in line for line in console.lines)
+    assert any("<not recorded>" in line for line in console.lines)
+
+
+def test_a_string_answer_cannot_satisfy_a_confirm() -> None:
+    """Substring matching is loose by design; letting the shapes cross would answer the wrong
+    question with whatever was meant for another one."""
+    console = _Recording()
+    with console.answering([Answer("Write", "yes", "not a boolean")]), pytest.raises(AssertionError):
+        console.confirm("Write the updated authorized_keys to the robot now?")
+
+
+def test_questions_outside_the_registry_still_reach_the_operator() -> None:
+    console = _Recording()
+    with console.answering([Answer("already rooted", True, "recorded")]), pytest.raises(
+        AssertionError,
+    ):
+        console.confirm("At the moment this backup was captured, was the robot still stock?")
+
+
+def test_answers_do_not_outlive_their_block() -> None:
+    console = _Recording()
+    with console.answering([Answer("anything", True, "recorded")]):
+        pass
+    with pytest.raises(AssertionError):
+        console.confirm("anything at all?")

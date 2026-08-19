@@ -114,7 +114,7 @@ def test_dustbuilder_prints_the_url_when_the_desktop_launcher_fails(
     ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True])
     attempted: list[tuple[str, str]] = []
 
-    def fail_open(_runner: object, system: str, url: str) -> bool:
+    def fail_open(_runner: object, system: str, url: str, **_kwargs: object) -> bool:
         attempted.append((system, url))
         return False
 

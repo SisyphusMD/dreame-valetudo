@@ -429,6 +429,31 @@ def test_root_refuses_an_unbound_or_ambiguous_recon_model(
     assert not ctx.need_robot().state_has("rooted")
 
 
+@pytest.mark.parametrize("origin", [None, ADOPTED_ROOT])
+def test_forced_root_still_refuses_an_unbound_model_on_an_already_written_robot(
+    make_ctx: CtxFactory, origin: str | None,
+) -> None:
+    """The model gate must sit below the already-rooted and adopted returns, and not be force-gated.
+
+    bench's wrong-model probe runs `root --force` precisely to get past those two returns; if this
+    gate ever moved above them, or started honouring force, the probe would stop refusing and an
+    H1 scenario would carry a deliberately mis-selected model toward a flash.
+    """
+    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=config_responder(), confirms=[True])
+    _stage_image(ctx)
+    _write_recon(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("recon", "model=x30-ultra backup=obtained")
+    robot.state_set("rooted")
+    if origin is not None:
+        robot.state_set("root-origin", origin)
+
+    with pytest.raises(Die, match="not bound to the currently selected model"):
+        root(ctx, force=True)
+
+    assert ctx.runner.calls == []
+
+
 def test_root_flashes_a_correctly_bound_robot(make_ctx: CtxFactory) -> None:
     """The false-negative direction: a marker that DOES match must reach the flash.
 

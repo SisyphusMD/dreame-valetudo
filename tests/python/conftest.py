@@ -68,10 +68,19 @@ class ScriptedConsole(Console):
         return Progress()  # inert: no thread, no output
 
     def confirm(self, prompt: str) -> bool:
+        # Consulted first, exactly as the real console does: a scripted console that skipped the
+        # pre-determined answers would let a bench scenario pass here while hanging on hardware.
+        handled, value = self._answered(prompt, boolean=True)
+        if handled:
+            return bool(value)
         self.lines.append(("confirm", prompt))
         return self._confirms.pop(0) if self._confirms else False
 
     def ask(self, prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
+        handled, value = self._answered(prompt, sensitive=sensitive)
+        if handled:
+            resolved = str(value)
+            return default if default is not None and not resolved.strip() else resolved
         # A sensitive answer is captured the way ask_secret's was — QUESTION recorded, answer never
         # — so a test asserting one stays out of the transcript is still asserting something real.
         if sensitive:
