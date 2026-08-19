@@ -15,7 +15,8 @@ from .workspace import remove_private_file, write_private_text
 PROVENANCE_FILE = "recovery-provenance.json"
 RECOVERY_REFRESH_FILE = ".recovery-capture-refresh"
 _BINDINGS = frozenset({"captured-same-session", "legacy-user-confirmed"})
-_FIRMWARE_STATES = frozenset({"stock-user-attested", "unverified"})
+STOCK_ATTESTED = "stock-user-attested"
+_FIRMWARE_STATES = frozenset({STOCK_ATTESTED, "unverified"})
 
 
 def begin_recovery_refresh(recon_dir: Path) -> None:
