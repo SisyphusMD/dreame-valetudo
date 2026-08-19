@@ -66,8 +66,20 @@ def apply_library_path(libexec: str | Path) -> None:
     os.environ.update(overlay)
 
 
-def open_url(runner: Runner, system: str, url: str) -> bool:
-    """Open a URL with the host desktop, returning whether the launcher accepted it."""
+NO_BROWSER = "DREAME_NO_BROWSER"
+
+
+def open_url(
+    runner: Runner, system: str, url: str, *, env: Mapping[str, str] | None = None,
+) -> bool:
+    """Open a URL with the host desktop, returning whether the launcher accepted it.
+
+    `DREAME_NO_BROWSER` refuses, so the caller falls back to printing the address. A browser
+    taking the foreground mid-run steals the terminal an operator is reading instructions from,
+    which during a scored hardware scenario is worse than useless.
+    """
+    if env is not None and env.get(NO_BROWSER):
+        return False
     command = "open" if system == "Darwin" else "xdg-open" if system == "Linux" else None
     if command is None:
         return False
