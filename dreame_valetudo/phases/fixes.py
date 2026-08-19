@@ -312,7 +312,7 @@ def fix_impl(ctx: Context) -> None:
             p.close(done=False)
     if up:
         url = f"http://{ROBOT_AP_IP}"
-        if open_url(ctx.runner, ctx.system, url):
+        if open_url(ctx.runner, ctx.system, url, env=ctx.env):
             ctx.console.say(f"Valetudo is UP — opened {url}")
         else:
             ctx.console.say(f"Valetudo is UP — open {url}")

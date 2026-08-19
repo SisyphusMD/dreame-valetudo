@@ -87,6 +87,24 @@ def _prepare_valetudo_state(ctx: object) -> None:
     robot.state_set("valetudo")
 
 
+def _attest_stock_capture(ctx: object) -> None:
+    """What a robot that may legally be stock-restored carries: a capture the operator attested was
+    untouched factory firmware. The restore scenarios' eligibility requires it, because restore.py
+    refuses to derive a kit from anything else."""
+    robot = ctx.need_robot()  # type: ignore[attr-defined]
+    robot.recon_dir.mkdir(parents=True, exist_ok=True)
+    path = robot.recon_dir / B.PROVENANCE_FILE
+    # A complete record, because read_recovery_provenance rejects a partial one outright.
+    path.write_text(json.dumps({
+        "provenance_version": 1,
+        "binding": "captured-same-session",
+        "model_key": "x40-ultra",
+        "config": "a" * 32,
+        "firmware_state": B.STOCK_ATTESTED,
+        "sources": {},
+    }))
+
+
 def _set_robot_identity(ctx: object, config: str = "a" * 32) -> None:
     robot = ctx.need_robot()  # type: ignore[attr-defined]
     robot.state_set("model_key", "x40-ultra")
@@ -502,6 +520,7 @@ def _snapshot_with(**markers: str) -> B.Snapshot:
         robot_count=1,
         recovery_valid=True,
         recovery_provenance=True,
+        stock_restore_source=True,
         recovery_refresh_pending=False,
         recon_backup_obtained=True,
         backup_counts={},
@@ -2228,6 +2247,64 @@ def test_recovery_provenance_accepts_an_adopted_robots_unverified_capture(
     assert B._recovery_provenance_valid(robot)
 
 
+def test_an_unverified_capture_is_not_a_stock_restore_source(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the test above: intact evidence, but not a legal restore source."""
+    ctx = make_ctx(robot_name="bench")
+    _write_trusted_recovery_generation(ctx, monkeypatch)
+    robot = ctx.need_robot()
+    assert B._stock_restore_source(robot)
+
+    path = robot.recon_dir / B.PROVENANCE_FILE
+    provenance = json.loads(path.read_text())
+    provenance["firmware_state"] = "unverified"
+    path.write_text(json.dumps(provenance))
+
+    assert B._stock_restore_source(robot) is False
+    assert B._recovery_provenance_valid(robot)
+
+    # No record at all is deliberately not a refusal: restore attests a legacy capture in place.
+    (robot.recon_dir / B.PROVENANCE_FILE).unlink()
+    assert B._stock_restore_source(robot) is None
+
+
+@pytest.mark.parametrize("key", sorted(B._RESTORE_INVOKING))
+def test_restore_scenarios_need_an_attested_capture_not_just_clean_markers(key: str) -> None:
+    """A robot rooted before this tool existed carries none of the write markers these scenarios
+    forbid, so markers alone said READY — and the conductor then offered to spend a one-time
+    boundary on a scenario restore.py refuses at its own gate."""
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+    attested = _snapshot_with(rooted="1", valetudo="2026.08.0")
+    unattested = replace(attested, stock_restore_source=False)
+
+    def refused(before: B.Snapshot) -> bool:
+        return any(
+            "attested as untouched factory firmware" in item
+            for item in B._starting_failures(scenario, before, target_valetudo="2026.08.0")
+        )
+
+    assert refused(unattested)
+    assert not refused(attested)
+    # A capture predating provenance is not a refusal — restore attests it interactively.
+    assert not refused(replace(attested, stock_restore_source=None))
+    # Nor is one whose kit this robot already has: restore returns that without reading provenance.
+    assert not refused(
+        replace(unattested, backup_counts={"robot-stock-restore-kit": 1})
+    )
+
+
+def test_the_restore_eligibility_gate_covers_every_scenario_that_calls_restore() -> None:
+    """Two lists of the same four scenarios: if they drift, one returns to reading READY on a robot
+    that can never satisfy it."""
+    block = re.search(
+        r"elif scenario\.key in \{([^}]*)\}:\s*\n\s*restore\(ctx\)",
+        inspect.getsource(B._perform),
+    )
+    assert block is not None
+    assert set(re.findall(r'"([^"]+)"', block.group(1))) == set(B._RESTORE_INVOKING)
+
+
 def test_recovery_provenance_requires_every_recorded_generation_to_match(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3020,6 +3097,7 @@ def test_successful_restore_requires_a_validated_selected_robot_kit(
     _arm_h3(ctx)
     _prepare_valetudo_state(ctx)
     _set_robot_identity(ctx)
+    _attest_stock_capture(ctx)
     kit = ctx.backups_dir / "selected-kit"
     kit.mkdir(parents=True)
     (kit / "manifest.json").write_text(json.dumps({"backup_type": "stock-restore-kit"}))
@@ -3955,6 +4033,32 @@ def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
     assert _report(ctx)["model_key"] == "x40-ultra"
 
 
+def test_wrong_model_probe_refuses_on_a_robot_that_has_already_been_written(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliberately does NOT stub root: the defect this covers was root's gate ORDERING.
+
+    root returns early for an adopted or already-rooted robot, above the model gate, so the probe
+    completed normally and the scenario recorded "completed normally instead of producing the
+    expected safe stop" on every robot past its first flash — which is every robot a bench session
+    reaches by the time this scenario comes up. A stubbed root cannot see that.
+    """
+    ctx = make_ctx(robot_name="x40")
+    robot = _bound_campaign_robot(ctx, monkeypatch)
+    robot.state_set("rooted")  # type: ignore[attr-defined]
+    robot.state_set("root-origin", B.ADOPTED_ROOT)  # type: ignore[attr-defined]
+
+    assert B.bench(
+        ctx, ["run", "wrong-model-root", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["result"] == "passed"
+    assert "not bound to the currently selected model" in result["stop_message"]
+    assert ctx.runner.calls == []
+    assert ctx.need_robot().state_get("model_key") == "x40-ultra"
+
+
 def test_wrong_model_probe_requires_an_existing_correct_model_binding(
     make_ctx: CtxFactory,
 ) -> None:
@@ -4220,6 +4324,7 @@ def test_deferred_destructive_commands_are_printed_armed(
     ctx = make_ctx(robot_name="bench")
     ctx.interactive = False
     _prepare_valetudo_state(ctx)
+    _attest_stock_capture(ctx)
 
     _, lines = _campaign_run(
         ctx, monkeypatch, ("host-smoke", "terminal-loss-restore"), allow_destructive=True,
@@ -4640,3 +4745,259 @@ def test_the_cancellation_scenario_tells_the_operator_about_the_repeat_prompt() 
     scenario = next(s for s in B.SCENARIOS if s.key == "fel-not-entered")
 
     assert any("repeat recon" in line for line in scenario.operator)
+
+
+# Prompts the conductor must never be able to satisfy: the attestations and accepts that exist
+# precisely because a person has to take responsibility for them. A conductor able to answer these
+# would be certifying the hardware evidence it is also producing.
+_NEVER_ANSWERED = (
+    ("At the moment this backup was captured, was the robot still running untouched factory "
+     "firmware and never previously rooted or flashed?"),
+    ("When these files were captured, was this robot still running untouched factory firmware "
+     "and never previously rooted or flashed?"),
+    "Flash Dreame X40 Ultra now? (you're accepting the risk of bricking it)",
+    "Flash without a disaster-recovery backup anyway?",
+    "Write the updated authorized_keys to the robot now?",
+    "Write the updated 'misc' partition to the robot now?",
+    "Try the serial against it anyway?",
+    "Did the robot boot normally into its stock firmware?",
+    'Type "rekey-over-usb robot-0123456789ab" to arm this hardware scenario:',
+)
+
+
+def test_no_scenario_can_answer_a_question_only_a_person_may(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+    _set_robot_identity(ctx)
+    ctx.need_robot().remember_serial("R22400000USA00000AA", verified=True)
+
+    for scenario in B.SCENARIOS:
+        for answer in B._scenario_answers(ctx, scenario):
+            for prompt in _NEVER_ANSWERED:
+                assert answer.match not in prompt, (
+                    f"{scenario.key} would answer {prompt!r} with {answer.value!r}"
+                )
+
+
+def test_the_mistyped_serial_keeps_its_shape_and_differs() -> None:
+    """A value refused for its FORMAT never reaches the login, so it would qualify nothing."""
+    for serial in ("R22403519USA00276KF", "1234567890", "ABCDEFGH"):
+        wrong = B._mistyped_serial(serial)
+        assert wrong != serial
+        assert len(wrong) == len(serial)
+        assert wrong.isalnum()
+
+
+def test_a_write_scenario_gets_a_key_the_robot_cannot_already_authorize(
+    make_ctx: CtxFactory,
+) -> None:
+    """Novelty by construction, instead of an eleven-way question with an unstated rule."""
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    scenario = next(item for item in B.SCENARIOS if item.key == "rekey-over-usb")
+
+    first = B._bench_key(robot, scenario)
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text("a used key")
+
+    assert B._bench_key(robot, scenario) != first
+    # The preview writes nothing, so it deliberately reuses one key rather than making a new one.
+    dry = next(item for item in B.SCENARIOS if item.key == "rekey-dry-run")
+    assert B._bench_key(robot, dry) == B._bench_key(robot, dry)
+
+
+def test_an_operator_supplied_key_is_never_overridden(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": "/keys/mine"})
+    scenario = next(item for item in B.SCENARIOS if item.key == "rekey-over-ssh")
+
+    assert "DREAME_SSHKEY" not in B._scenario_env(ctx, scenario)
+
+
+def test_every_scenario_runs_without_the_browser_taking_the_terminal(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    for scenario in B.SCENARIOS:
+        assert B._scenario_env(ctx, scenario)[B.NO_BROWSER] == "1"
+
+
+def _campaign_asks(
+    ctx: object, monkeypatch: pytest.MonkeyPatch, keys: tuple[str, ...],
+) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """Drive a campaign, also recording every question that reached the operator."""
+    asked: list[str] = []
+    original = ctx.console.ask  # type: ignore[attr-defined]
+
+    def spy(prompt: str, **kwargs: object) -> str:
+        asked.append(prompt)
+        return original(prompt, **kwargs)
+
+    monkeypatch.setattr(ctx.console, "ask", spy)  # type: ignore[attr-defined]
+    monkeypatch.setattr(B, "_wait_off_robot_ap", lambda *_a, **_k: True)
+    started, lines = _campaign_run(ctx, monkeypatch, keys)
+    return asked, started, lines
+
+
+def test_no_keystroke_is_asked_for_where_the_operator_has_nothing_to_do(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both of these run on the robot's AP, which is POLLED — the arrival is detected, not
+    announced, so a keystroke confirming it says nothing the conductor did not already know."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    asked, started, _ = _campaign_asks(ctx, monkeypatch, ("diagnose", "wifi-drop-backup"))
+
+    assert started == ["diagnose", "wifi-drop-backup"]
+    assert not [prompt for prompt in asked if "Press Enter" in prompt]
+
+
+def test_the_cable_surface_still_stops_for_the_operator(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing polls for a fitted breakout PCB, so this one really does need a person."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    asked, started, _ = _campaign_asks(ctx, monkeypatch, ("diagnose", "ctrl-c-recon"))
+
+    assert started == ["diagnose", "ctrl-c-recon"]
+    assert len([prompt for prompt in asked if "Press Enter" in prompt]) == 1
+
+
+def test_a_campaign_names_the_surface_and_how_to_get_to_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the cable requirement was ever printed. An operator who happened to be on the home
+    network for wifi-wrong-network was never told the scenario required it."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    _, started, lines = _campaign_asks(
+        ctx, monkeypatch, ("ctrl-c-recon", "wifi-wrong-network"),
+    )
+
+    assert started == ["ctrl-c-recon", "wifi-wrong-network"]
+    text = "\n".join(msg for _kind, msg in lines)
+    assert "Robot open, breakout PCB fitted" in text
+    assert "NOT the robot's AP" in text
+    # The step between them is the one nothing used to mention.
+    assert "still in fastboot" in text
+
+
+def test_a_campaign_reports_how_far_through_it_is(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    _, _, lines = _campaign_asks(ctx, monkeypatch, ("diagnose", "wifi-drop-backup"))
+
+    text = "\n".join(msg for _kind, msg in lines)
+    assert "[1/2] diagnose" in text
+    assert "[2/2] wifi-drop-backup" in text
+    assert "progress: 2/2 decided · 2 ran · 0 stopped · 0 skipped" in text
+
+
+def test_a_campaign_finishes_a_surface_before_moving_off_it(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Table order is a lifecycle narrative for readers, not a work order for an operator. Every
+    transition it interleaves costs a power cycle, a button sequence and a Wi-Fi change."""
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+
+    _, started, _ = _campaign_asks(
+        ctx, monkeypatch, ("diagnose", "ctrl-c-recon", "wifi-drop-backup"),
+    )
+
+    # Table order is diagnose, ctrl-c-recon, wifi-drop-backup: two surface changes. One is enough.
+    assert started == ["diagnose", "wifi-drop-backup", "ctrl-c-recon"]
+
+
+def test_the_conductor_answers_what_it_knows_and_records_that_it_did(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wiring end to end: real phase questions, settled from the robot's own markers, and
+    written into the report so a reader is never left trusting an answer nobody can account for."""
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    _set_robot_identity(ctx)
+
+    def what_recon_asks(_scenario: object, inner: object, _auto: object) -> dict[str, object]:
+        console = inner.console  # type: ignore[attr-defined]
+        assert console.confirm(
+            "Before today's recon, was this robot already rooted and running Valetudo?"
+        ) is True
+        assert console.confirm(
+            "Leave its existing rooted firmware untouched and adopt it as-is? Answer No to "
+            "continue with a current re-root."
+        ) is True
+        raise Die("No FEL device found")
+
+    monkeypatch.setattr(B, "_perform", what_recon_asks)
+
+    assert B.bench(
+        ctx, ["run", "fel-not-entered", "--campaign", "rc"], auto_fn=_noop_auto,
+    ) == 0
+
+    result = _report(ctx)["results"][-1]  # type: ignore[index]
+    assert result["evidence"]["answered_automatically"] == [
+        "was this robot already rooted and running Valetudo -> yes",
+        "Leave its existing rooted firmware untouched and adopt it as-is -> yes",
+    ]
+
+
+def test_the_arming_phrase_is_never_one_of_the_answered_questions(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It is asked before the answers are installed, so no scenario definition can ever reach it."""
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    _prepare_valetudo_state(ctx)
+    _set_robot_identity(ctx)
+    _attest_stock_capture(ctx)
+    ctx.need_robot().remember_serial("R22400000USA00000AA", verified=True)
+    monkeypatch.setattr(B, "_perform", lambda *_a, **_k: {})
+
+    with pytest.raises(Die, match="not armed"):
+        B.bench(
+            ctx,
+            ["run", "decline-restore", "--campaign", "rc", "--allow-destructive"],
+            auto_fn=_noop_auto,
+        )
+
+
+def test_legacy_root_adoption_is_answered_from_its_premise_not_the_workspace(
+    make_ctx: CtxFactory,
+) -> None:
+    """Its starting contract FORBIDS the rooted marker — the robot was rooted before this tool saw
+    it. Reading the answer off state denies the premise, declines the adoption the scenario exists
+    to qualify, and leaves root-origin unset so it can never pass."""
+    ctx = make_ctx(robot_name="bench")
+    assert not ctx.need_robot().state_has("rooted")
+    scenario = next(item for item in B.SCENARIOS if item.key == "legacy-root-adoption")
+
+    answers = B._scenario_answers(ctx, scenario)
+
+    rooted = next(a for a in answers if "already rooted" in a.match)
+    assert rooted.value is True
+    assert any("adopt it as-is" in a.match and a.value is True for a in answers)
+
+
+@pytest.mark.parametrize("key", sorted(B._ADOPTION_OFFER_SCENARIOS))
+def test_answering_yes_to_already_rooted_always_offers_the_adoption_answer_too(
+    make_ctx: CtxFactory, key: str,
+) -> None:
+    """The second question only appears when the first was yes, and answering the first without
+    the second leaves recon waiting on a prompt the conductor promised to handle."""
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("rooted")
+    scenario = next(item for item in B.SCENARIOS if item.key == key)
+
+    answers = B._scenario_answers(ctx, scenario)
+
+    if next(a for a in answers if "already rooted" in a.match).value is True:
+        assert any("adopt it as-is" in a.match for a in answers)

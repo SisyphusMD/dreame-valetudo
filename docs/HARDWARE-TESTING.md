@@ -38,19 +38,41 @@ dreame-valetudo bench plan
 dreame-valetudo bench campaign --allow-destructive
 ```
 
-`bench campaign` is the whole session in one command. It walks the scenario table in order and, for
-each one, re-reads what this robot can currently qualify — running what is eligible and explaining
-every skip with the same reason `bench plan` would give. Before a scenario that needs your hands it
-says what to do and what to answer, waits for the robot's own AP when the scenario needs it (polling
-for the Valetudo header, so the router answering that address cannot satisfy it), and pauses for
-Enter. A scenario that stops does not end the session. Eligibility is re-read between scenarios
-rather than planned up front, because the scenarios move the robot's lifecycle as they run.
+`bench campaign` is the whole session in one command. It re-reads what this robot can currently
+qualify before every scenario — running what is eligible and explaining every skip with the same
+reason `bench plan` would give — and reports how far through it is as it goes. Eligibility is read
+between scenarios rather than planned up front, because the scenarios move the robot's lifecycle as
+they run. Of the eligible ones it prefers whichever needs the surface you are already on, so cable
+work, AP work, and host-only work arrive in groups instead of a scenario at a time. A scenario that
+stops does not end the session.
+
+Each scenario announces where you have to be — cable, the robot's own AP, your ordinary home
+network, or nowhere at all — and, when that differs from the last one, the step between the two.
+The AP and home surfaces are then POLLED (for the Valetudo header, so the router answering that
+address cannot satisfy it), so their arrival is detected rather than announced. It pauses for Enter
+only where a person must still act and nothing is watching for it.
+
+**It answers what it can already work out, and asks you only what you alone can settle.** Whether
+the robot was already rooted comes from its own markers; which SSH key a rekey scenario should
+authorize is a key generated for that scenario under the robot's workspace, novel by construction
+rather than chosen from a list; the deliberately wrong serial is derived from the recorded one.
+Every such answer is printed with the reason it was given and recorded in `report.json` under
+`answered_automatically`, because an answer that arrives silently is indistinguishable from a person
+having given it. Deliberately never answered: the stock-firmware attestation, the brick-risk accept,
+the confirmations immediately before a write, the checks that the robot on this AP is the right one,
+and the H3 arming phrase.
 
 Without `--allow-destructive` it skips everything that writes firmware. Those scenarios still stop
-to have their arming phrase typed out, which nothing can answer on your behalf. The
+to have their arming phrase typed out, which nothing can answer on your behalf — including the ones
+that refuse before they open the USB device, because the refusal is the thing under test and a gate
+cannot be assumed sound in order to skip the confirmation that exists for it failing. The
 terminal-loss scenarios are named at the end instead of run: closing the terminal is the test, so a
 conductor hosting them would be taken down with the run it is judging. Individual scenarios are
 still available as `bench run <scenario>`.
+
+`DREAME_SSHKEY` still wins if you set it, and `DREAME_NO_BROWSER=1` (which a campaign sets for
+itself) makes the phases print a URL instead of opening it, so nothing takes the foreground away
+from the terminal you are reading instructions in.
 
 `bench plan` is the state-aware conductor view. It reads the selected robot's saved lifecycle and
 the campaign report, then labels each scenario PASS, READY, WAIT, RECORD, or SPECIAL and

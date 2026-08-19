@@ -19,7 +19,9 @@ import termios
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import ClassVar, NoReturn
@@ -157,6 +159,33 @@ def next_idle_deadline(
     return next_deadline(attached, deadline, now, timeout), last_probe, attached
 
 
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """A question whose answer the caller has already worked out.
+
+    `match` is a substring of the prompt; `value` is a bool for confirm() and a str for ask(),
+    where "" means take the offered default. Several answers may share a `match` — they fire in
+    order, which is how a caller drives a question that is deliberately asked twice.
+    """
+
+    match: str
+    value: str | bool
+    reason: str
+    times: int = 1
+
+
+@dataclass(slots=True)
+class _Slot:
+    answer: Answer
+    left: int
+
+
+@dataclass(slots=True)
+class _AnswerFrame:
+    slots: list[_Slot]
+    fired: list[str] = field(default_factory=list)
+
+
 class Console:
     """Human-facing IO. Subclass to script prompts / capture output in tests."""
 
@@ -192,6 +221,7 @@ class Console:
         self._lock = threading.RLock()
         self._active: _LiveProgress | None = None
         self._last_line_blank = False
+        self._answers: _AnswerFrame | None = None
 
     # -- public vocabulary ------------------------------------------------------------------
 
@@ -298,7 +328,55 @@ class Console:
             # worth failing a run over.
             pass
 
+    @contextmanager
+    def answering(self, answers: Sequence[Answer]) -> Iterator[list[str]]:
+        """Answer matching questions automatically for the duration of the block.
+
+        For questions the caller has ALREADY determined — not a way past ones it has not. Every hit
+        is echoed with its reason and collected in the yielded list, because an answer that arrives
+        silently is indistinguishable from a person having given it, and a physical observation
+        nobody made must never be able to record itself as observed.
+        """
+        if self._answers is not None:
+            raise RuntimeError("answering() is already active; nesting would hide the outer rules")
+        frame = _AnswerFrame([_Slot(item, item.times) for item in answers])
+        self._answers = frame
+        try:
+            yield frame.fired
+        finally:
+            self._answers = None
+
+    def _answered(
+        self, prompt: str, *, boolean: bool = False, sensitive: bool = False,
+    ) -> tuple[bool, str | bool]:
+        """Consume a pre-determined answer for `prompt`, or report that there is none."""
+        frame = self._answers
+        if frame is None:
+            return False, ""
+        for slot in frame.slots:
+            if slot.left <= 0 or slot.answer.match not in prompt:
+                continue
+            value = slot.answer.value
+            # A confirm() must never be satisfied by a string meant for an ask(), or the wrong
+            # question silently takes an answer shaped for another one.
+            if isinstance(value, bool) is not boolean:
+                continue
+            slot.left -= 1
+            if sensitive:
+                shown = "<not recorded>"
+            elif boolean:
+                shown = "yes" if value else "no"
+            else:
+                shown = str(value) or "the offered default"
+            self.info(f"Answered automatically: {shown} — {slot.answer.reason}")
+            frame.fired.append(f"{slot.answer.match} -> {shown}")
+            return True, value
+        return False, ""
+
     def confirm(self, prompt: str) -> bool:
+        handled, value = self._answered(prompt, boolean=True)
+        if handled:
+            return bool(value)
         self._suspend_progress()
         _bookmark(prompt)
         answer = self._prompt(self._c("1;35", f"?? {prompt} [y/N] "))
@@ -316,6 +394,10 @@ class Console:
         is a separate concern from hiding it from the person holding the robot, and the logging
         subclasses are what act on this.
         """
+        handled, value = self._answered(prompt, sensitive=sensitive)
+        if handled:
+            answer = str(value)
+            return default if default is not None and not answer.strip() else answer
         self._suspend_progress()
         _bookmark(prompt)
         # The default is rendered but never becomes part of `prompt`, which the run log records
