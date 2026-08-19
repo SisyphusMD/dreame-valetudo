@@ -45,7 +45,9 @@ def test_detect_install_method_uses_the_frozen_executable_for_deb(
     isolated.write_text("")
     monkeypatch.setattr(U, "__file__", str(isolated))
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", "/usr/bin/dreame-valetudo")
+    # The packaged launcher lives inside its bundle; /usr/bin only holds a symlink to it, and
+    # the bootloader resolves that away before this ever sees sys.executable.
+    monkeypatch.setattr(sys, "executable", "/usr/lib/dreame-valetudo/app/dreame-valetudo")
     monkeypatch.setattr(sys, "argv", ["dreame-valetudo"])
     monkeypatch.setattr(U.sys, "platform", "linux")
     (tmp_path / "usr/bin").mkdir(parents=True)
@@ -72,7 +74,7 @@ def test_frozen_linux_rpm_install_uses_the_available_package_manager(
     (tmp_path / "usr/bin" / tool).write_text("")
     monkeypatch.setattr(U, "__file__", str(isolated))
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", "/usr/bin/dreame-valetudo")
+    monkeypatch.setattr(sys, "executable", "/usr/lib/dreame-valetudo/app/dreame-valetudo")
     monkeypatch.setattr(U.sys, "platform", "linux")
 
     assert U.detect_install_method({}, tmp_path) == method

@@ -12,6 +12,8 @@ build
 dist
 out
 out-*
+deb-extract
+extract-*
 root
 *.pkg
 *.rpm

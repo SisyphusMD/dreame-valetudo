@@ -127,13 +127,8 @@ jobs:
           read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           echo "using sunxi $SREF, pyusb $PYUSB"
-          # Held at 6.22.0. 6.22.0 added a onefile bootloader check (GHSA-9fxf-4qw3-ghmr) that
-          # 6.22.1 activated on POSIX: a onefile child requires its parent to be running the same
-          # executable. Under BuildKit's QEMU emulation the parent is the injected emulator, so
-          # every frozen binary the arm64 leg builds refuses to start. See the pyinstaller clamp in
-          # .renovaterc.json; SisyphusMD/whiskerless hit this first and documents when to lift it.
           # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.22.0"
+          PYINSTALLER="6.22.2"
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
@@ -148,38 +143,59 @@ jobs:
             --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
             --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
             -f packaging/deb.Dockerfile --target export --output type=local,dest=out .
-          chmod +x out/dreame-valetudo out/dreame-fastboot out/sunxi-fel
-          ./out/dreame-valetudo version                        # the frozen binary runs
+          chmod +x out/dreame-valetudo/dreame-valetudo out/dreame-fastboot/dreame-fastboot out/sunxi-fel
+          ./out/dreame-valetudo/dreame-valetudo version        # the frozen launcher runs
           rm -rf dist && mkdir dist
-          cp out/dreame-valetudo out/dreame-fastboot dist/
+          # -a, not -r: a bundle may contain symlinks, and a plain recursive copy would replace
+          # each with a copy of its target, so the package would no longer be what was built.
+          cp -a out/dreame-valetudo out/dreame-fastboot dist/
           cp out/sunxi-fel ./sunxi-fel
           # Build two ordered RC package revisions so the distro smoke tests exercise an actual
           # package-manager upgrade, not merely a reinstall. docker create+cp is required because
           # the DinD daemon cannot bind-mount the job workspace.
+          # rc.0 is the pre-onedir fixture the transition case upgrades FROM (see nfpm-legacy-layout.yaml).
           CID=$(docker create -e DEB_ARCH=amd64 -e GLIBC_FLOOR -w /w --entrypoint /bin/sh "$NFPM" -c '
             set -e
             VERSION=0.0.0-rc.1 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci-old.deb
             VERSION=0.0.0-rc.2 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci.deb
             VERSION=0.0.0-rc.1 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci-old.rpm
             VERSION=0.0.0-rc.2 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm
+            VERSION=0.0.0-rc.0 nfpm package -p deb -f packaging/nfpm-legacy-layout.yaml -t /w/ci-legacy.deb
+            VERSION=0.0.0-rc.0 nfpm package -p rpm -f packaging/nfpm-legacy-layout.yaml -t /w/ci-legacy.rpm
           ')
           docker cp . "$CID":/w
           docker start -a "$CID"
-          docker cp "$CID":/w/ci-old.deb ./ci-old.deb
-          docker cp "$CID":/w/ci.deb ./ci.deb
-          docker cp "$CID":/w/ci-old.rpm ./ci-old.rpm
-          docker cp "$CID":/w/ci.rpm ./ci.rpm
+          for artifact in ci-old.deb ci.deb ci-old.rpm ci.rpm ci-legacy.deb ci-legacy.rpm; do
+            docker cp "$CID":"/w/$artifact" "./$artifact"
+          done
           docker rm "$CID" >/dev/null
           docker image rm "$NFPM" >/dev/null 2>&1 || true
           deb_contents="$(dpkg-deb -c ci.deb)"
           for required in \
             ./usr/bin/dreame-valetudo \
             ./usr/lib/dreame-valetudo/dreame-fastboot \
-            ./usr/lib/dreame-valetudo/sunxi-fel; do
+            ./usr/lib/dreame-valetudo/sunxi-fel \
+            ./usr/lib/dreame-valetudo/app/dreame-valetudo \
+            ./usr/lib/dreame-valetudo/fastboot/dreame-fastboot; do
             grep -Fq "$required" <<<"$deb_contents"
           done
+          # The two entry points are symlinks into the bundles; a packager that turned either into
+          # a copy would leave it running without the contents directory beside it.
+          for link in \
+            './usr/bin/dreame-valetudo -> /usr/lib/dreame-valetudo/app/dreame-valetudo' \
+            './usr/lib/dreame-valetudo/dreame-fastboot -> /usr/lib/dreame-valetudo/fastboot/dreame-fastboot'; do
+            grep -Fq "$link" <<<"$deb_contents"
+          done
+          # nfpm assembles the package outside the build image, so this is the only step that
+          # compares what installs against what was frozen — entry types and all.
+          rm -rf deb-extract && mkdir deb-extract
+          dpkg-deb -x ci.deb deb-extract
+          python3 packaging/check-package-parity.py \
+            out/dreame-valetudo deb-extract/usr/lib/dreame-valetudo/app
+          python3 packaging/check-package-parity.py \
+            out/dreame-fastboot deb-extract/usr/lib/dreame-valetudo/fastboot
           set +e
-          fastboot_out="$(./out/dreame-fastboot devices 2>&1)"
+          fastboot_out="$(./out/dreame-fastboot/dreame-fastboot devices 2>&1)"
           fastboot_rc=$?
           set -e
           if (( fastboot_rc > 1 )) \
@@ -215,7 +231,8 @@ jobs:
           export UBUNTU_FLOOR_IMAGE UBUNTU_CURRENT_IMAGE
           export FEDORA_FLOOR_IMAGE FEDORA_CURRENT_IMAGE
           export RHEL_FLOOR_IMAGE RHEL_MIDDLE_IMAGE RHEL_CURRENT_IMAGE OPENSUSE_IMAGE
-          bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm
+          bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm \
+            ci-legacy.deb ci-legacy.rpm
           VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
           rm -rf homebrew-smoke-result
           docker buildx build --platform linux/amd64 --build-arg TEST_TAG="v$VERSION" \

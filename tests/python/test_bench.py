@@ -8,6 +8,7 @@ import inspect
 import io
 import json
 import re
+import sys
 import tarfile
 from dataclasses import replace
 from pathlib import Path
@@ -1154,6 +1155,89 @@ def test_hardware_fingerprint_ignores_cwd_files_named_like_literal_arguments(
     monkeypatch.chdir(cwd)
 
     assert B._hardware_fingerprint(ctx) == before
+
+
+def _frozen_bundle(root: Path, name: str) -> Path:
+    """A PyInstaller onedir bundle: a near-generic launcher stub beside its contents directory."""
+    contents = root / "_internal"
+    contents.mkdir(parents=True)
+    launcher = root / name
+    launcher.write_bytes(b"launcher stub")
+    launcher.chmod(0o755)
+    (contents / "base_library.zip").write_bytes(b"stdlib")
+    (contents / "libpython.so.1.0").write_bytes(b"runtime")
+    (contents / "libpython.so").symlink_to("libpython.so.1.0")
+    return launcher
+
+
+def test_runtime_fingerprint_covers_a_frozen_bundle_beyond_its_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing on a developer machine is frozen, so only an explicit fake reaches this branch. Under
+    # onedir the launcher is near-generic: fingerprinting it alone would let two different builds
+    # share one campaign and merge their hardware results.
+    launcher = _frozen_bundle(tmp_path / "app", "dreame-valetudo")
+    contents = launcher.parent / "_internal"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(launcher))
+    monkeypatch.setattr(sys, "_MEIPASS", str(contents), raising=False)
+    baseline = B._runtime_fingerprint()
+
+    (contents / "base_library.zip").write_bytes(b"a different stdlib")
+    changed_contents = B._runtime_fingerprint()
+    (contents / "libpython.so").unlink()
+    (contents / "libpython.so").symlink_to("elsewhere.so")
+    changed_link = B._runtime_fingerprint()
+    launcher.write_bytes(b"another launcher stub")
+    changed_launcher = B._runtime_fingerprint()
+
+    assert len({baseline, changed_contents, changed_link, changed_launcher}) == 4
+
+
+def test_hardware_fingerprint_covers_the_whole_onedir_client_bundle(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    # The transport resolves to a launcher, but the USB stack it loads is the rest of the tree.
+    ctx = make_ctx()
+    launcher = _frozen_bundle(tmp_path / "fastboot", "dreame-fastboot")
+    link = tmp_path / "dreame-fastboot"
+    link.symlink_to(launcher)
+    ctx._fastboot = Fastboot(  # type: ignore[attr-defined]
+        ctx.runner, ctx.console, Transport("binary", (str(link),)),
+    )
+    ctx.ws.sunxi_fel.write_bytes(b"sunxi")
+    ctx.ws.dist.mkdir(parents=True)
+    ctx.payload_bin.write_bytes(b"payload")
+    ctx.fsbl_bin.write_bytes(b"fsbl")
+    baseline = B._hardware_fingerprint(ctx)
+
+    (launcher.parent / "_internal" / "libpython.so.1.0").write_bytes(b"a different runtime")
+
+    assert B._hardware_fingerprint(ctx) != baseline
+
+
+def test_hardware_fingerprint_still_hashes_a_standalone_helper_as_one_file(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    # sunxi-fel and a macOS onefile client are single binaries that live in a directory of
+    # unrelated helpers; that directory must never be mistaken for a bundle and hashed whole.
+    ctx = make_ctx()
+    helpers = tmp_path / "helpers"
+    helpers.mkdir()
+    fastboot = helpers / "dreame-fastboot"
+    fastboot.write_bytes(b"onefile client")
+    ctx._fastboot = Fastboot(  # type: ignore[attr-defined]
+        ctx.runner, ctx.console, Transport("binary", (str(fastboot),)),
+    )
+    ctx.ws.sunxi_fel.write_bytes(b"sunxi")
+    ctx.ws.dist.mkdir(parents=True)
+    ctx.payload_bin.write_bytes(b"payload")
+    ctx.fsbl_bin.write_bytes(b"fsbl")
+    baseline = B._hardware_fingerprint(ctx)
+
+    (helpers / "unrelated-neighbour").write_bytes(b"not part of the client")
+
+    assert B._hardware_fingerprint(ctx) == baseline
 
 
 def test_campaign_refuses_a_changed_hardware_helper_stack(

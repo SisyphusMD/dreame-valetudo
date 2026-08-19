@@ -65,10 +65,113 @@ def test_ci_checks_each_required_deb_binary_independently() -> None:
         "./usr/bin/dreame-valetudo",
         "./usr/lib/dreame-valetudo/dreame-fastboot",
         "./usr/lib/dreame-valetudo/sunxi-fel",
+        "./usr/lib/dreame-valetudo/app/dreame-valetudo",
+        "./usr/lib/dreame-valetudo/fastboot/dreame-fastboot",
     ):
         assert path in text
     assert "for required in" in text
     assert 'grep -Fq "$required"' in text
+    # Both entry points must arrive as links INTO the bundles: a copy would run without the
+    # contents directory beside it.
+    for link in (
+        "./usr/bin/dreame-valetudo -> /usr/lib/dreame-valetudo/app/dreame-valetudo",
+        ("./usr/lib/dreame-valetudo/dreame-fastboot"
+         " -> /usr/lib/dreame-valetudo/fastboot/dreame-fastboot"),
+    ):
+        assert link in text
+    assert 'grep -Fq "$link"' in text
+
+
+def test_linux_freezes_onedir_while_the_shared_build_scripts_default_to_onefile() -> None:
+    # Both scripts are also called by release-macos.yml, which signs, bundles and notarizes a
+    # single file. The mode therefore has to be a parameter the Linux image passes, never a new
+    # default — and ordinary macOS CI does not assemble the .pkg, so nothing else would notice.
+    dockerfile = (_ROOT / "packaging" / "deb.Dockerfile").read_text()
+    macos = _MACOS.read_text()
+
+    for script in ("build-bundle.sh", "build-fastboot-client.sh"):
+        text = (_ROOT / "packaging" / script).read_text()
+        assert 'MODE="${BUNDLE_MODE:-onefile}"' in text
+        # The tool identifies an installed bundle by this directory name, so the build pins it
+        # rather than inheriting whatever PyInstaller currently defaults to.
+        assert "--contents-directory _internal" in text
+        assert f"BUNDLE_MODE=onedir bash packaging/{script}" in dockerfile
+
+    assert "BUNDLE_MODE" not in macos
+    bench = (_ROOT / "dreame_valetudo" / "bench.py").read_text()
+    assert '_BUNDLE_CONTENTS_DIR = "_internal"' in bench
+
+
+def test_packages_install_bundle_trees_reachable_through_symlinks() -> None:
+    nfpm = (_ROOT / "packaging" / "nfpm.yaml").read_text()
+    contents = nfpm.split("contents:\n", 1)[1].split("\nscripts:", 1)[0]
+
+    for entry in (
+        "  - src: ./dist/dreame-valetudo",
+        "    dst: /usr/lib/dreame-valetudo/app\n    type: tree",
+        ("  - src: /usr/lib/dreame-valetudo/app/dreame-valetudo\n"
+         "    dst: /usr/bin/dreame-valetudo\n    type: symlink"),
+        "    dst: /usr/lib/dreame-valetudo/fastboot\n    type: tree",
+        ("  - src: /usr/lib/dreame-valetudo/fastboot/dreame-fastboot\n"
+         "    dst: /usr/lib/dreame-valetudo/dreame-fastboot\n    type: symlink"),
+    ):
+        assert entry in contents
+    # An explicit mode on a tree is applied to every member of it, which would hand the whole
+    # bundle whatever bit the launcher needs.
+    assert "type: tree\n    file_info" not in contents
+
+
+def test_the_package_matrix_upgrades_from_the_pre_onedir_layout() -> None:
+    # Every other case upgrades one current-layout package to another, so nothing else exercises
+    # the transition real users take: two regular files become symlinks, two directories appear.
+    smoke = _LINUX_PACKAGES.read_text()
+    workflow = _CI.read_text()
+    legacy = (_ROOT / "packaging" / "nfpm-legacy-layout.yaml").read_text()
+
+    assert "Debian 13 (upgrade from the pre-onedir layout)" in smoke
+    assert "Fedora 44 (upgrade from the pre-onedir layout)" in smoke
+    assert "<legacy.deb> <legacy.rpm>" in smoke
+    assert "nfpm-legacy-layout.yaml -t /w/ci-legacy.deb" in workflow
+    assert "nfpm-legacy-layout.yaml -t /w/ci-legacy.rpm" in workflow
+    assert "ci-legacy.deb ci-legacy.rpm" in workflow
+    for entry in ("type: tree", "type: symlink"):
+        assert entry not in legacy
+
+
+def test_every_release_deb_is_compared_against_the_tree_that_was_built() -> None:
+    # nfpm runs outside the build image. Without this, a package that dropped bundled data would
+    # still install, still report its version and still pass the host smoke.
+    for workflow in (_CI, _PUBLISH):
+        text = workflow.read_text()
+        assert "dpkg-deb -x" in text
+        assert text.count("packaging/check-package-parity.py") == 2
+        assert "/usr/lib/dreame-valetudo/app" in text
+        assert "/usr/lib/dreame-valetudo/fastboot" in text
+    # A recursive copy that dereferenced the bundles' symlinks would package something the build
+    # never produced, and the parity check is what would report it.
+    assert "cp -a out/dreame-valetudo out/dreame-fastboot dist/" in _CI.read_text()
+    assert 'cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/' in _PUBLISH.read_text()
+
+
+def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
+    # The hold existed only because a onefile child could not start under the emulated arm64 leg.
+    # Onedir has no child process, so the constraint is gone at its root rather than waived.
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    for rule in config["packageRules"]:
+        assert "pyinstaller" not in rule.get("matchDepNames", [])
+    pins = {}
+    for workflow in (_CI, _PUBLISH, _MACOS):
+        text = workflow.read_text()
+        assert "Held at 6.22.0" not in text
+        found = re.search(
+            r"# renovate: datasource=pypi depName=pyinstaller\s*\n[^\n]*?(\d+\.\d+(?:\.\d+)?)",
+            text,
+        )
+        assert found is not None, workflow.name
+        pins[workflow.name] = found.group(1)
+    # One depName across three files is one grouped Renovate PR. The clamp scoped the Forgejo pair
+    # away from the macOS one, which is exactly how they could drift apart unnoticed.
+    assert len(set(pins.values())) == 1, pins
 
 
 def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:

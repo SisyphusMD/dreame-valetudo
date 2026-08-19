@@ -125,11 +125,26 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
 ## Build and compatibility contracts
 
 - **The bundle is built per arch (PyInstaller can't cross-compile).** Each channel
-  freezes Python + the package into a self-contained `dreame-valetudo` binary, plus a separate
-  `dreame-fastboot` client (pyusb frozen in) and a prebuilt `sunxi-fel`. The main binary finds its
-  sibling helpers via the tool's own libexec search (`find_helper`) — the `.deb` at
-  `/usr/lib/dreame-valetudo` needs no wrapper; the `.pkg`/brew set `DREAME_LIBEXEC`. Build scripts:
+  freezes Python + the package into a self-contained `dreame-valetudo` artifact, plus a separate
+  `dreame-fastboot` client (pyusb frozen in) and a prebuilt `sunxi-fel`. The main tool finds its
+  sibling helpers via the tool's own libexec search (`find_helper`) — the `.deb`/`.rpm` at
+  `/usr/lib/dreame-valetudo` need no wrapper; the `.pkg`/brew set `DREAME_LIBEXEC`. Build scripts:
   `packaging/build-bundle.sh` (main) + `packaging/build-fastboot-client.sh` (client).
+- **`BUNDLE_MODE` selects onefile or onedir, and Linux is the only caller that asks for onedir.**
+  A onefile app re-executes itself as a child, and PyInstaller's bootloader requires that child's
+  parent to be running the same executable (GHSA-9fxf-4qw3-ghmr). Inside BuildKit's QEMU emulation
+  the kernel names the injected emulator as the parent, so *no* onefile binary the arm64 release
+  leg builds can start — which took out rc.13's Linux assets entirely. A onedir bundle spawns no
+  child, so the check never runs: the protection is not disabled, the two-process model it guards
+  is simply absent. The scripts default to onefile because `release-macos.yml` calls the same two
+  and signs, bundles and notarizes a single file; `deb.Dockerfile` is the one caller that passes
+  `BUNDLE_MODE=onedir`. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
+  and `.../fastboot`) reached through a symlink to its launcher, because `find_helper` wants a
+  runnable FILE at `/usr/lib/dreame-valetudo/dreame-fastboot` and the bootloader resolves symlinks
+  before looking for its contents directory. `packaging/check-package-parity.py` compares each
+  installed tree against the tree that was built, entry types included — nfpm assembles the package
+  outside the build image, so nothing else in the release path would notice a bundle that lost a
+  file.
 - **The `.pkg` native-library bundling is the only piece not dry-runnable off-CI.**
   `release-macos.yml` rewrites `sunxi-fel`'s libusb reference to its co-located `@loader_path`
   dylib. PyInstaller's pyusb hook separately embeds libusb inside the frozen `dreame-fastboot`
@@ -143,7 +158,9 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   It's arch-specific (amd64/arm64; 32-bit armhf Pis aren't built — use the source tarball + `uv`/
   `pipx` there). The arm64 PyInstaller freeze under QEMU is the slowest step; if it's ever too slow
   or flaky, move the arm64 `.deb` to a GitHub native `ubuntu-24.04-arm` runner (mirroring the `.pkg`
-  job's "GitHub builds what the cluster can't" pattern).
+  job's "GitHub builds what the cluster can't" pattern). Native arm64 is also the durable answer to
+  the class of problem rc.13 hit: emulation is a proxy for the artifact that ships, and it is the
+  only pre-release check that architecture gets.
 - **Python 3.11.0 is the source-install floor; current CPython is bundled for package users.** The
   full suite runs on the literal floor, while the ordinary and bundle jobs use the exact current
   release pinned in `constants.py`. Updating bundled Python therefore does not raise the source

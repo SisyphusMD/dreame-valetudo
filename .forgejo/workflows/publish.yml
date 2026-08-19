@@ -52,13 +52,8 @@ jobs:
           export VERSION="${GITHUB_REF_NAME#v}"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
-          # Held at 6.22.0. 6.22.0 added a onefile bootloader check (GHSA-9fxf-4qw3-ghmr) that
-          # 6.22.1 activated on POSIX: a onefile child requires its parent to be running the same
-          # executable. Under BuildKit's QEMU emulation the parent is the injected emulator, so
-          # every frozen binary the arm64 leg builds refuses to start. See the pyinstaller clamp in
-          # .renovaterc.json; SisyphusMD/whiskerless hit this first and documents when to lift it.
           # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.22.0"
+          PYINSTALLER="6.22.2"
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
           # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
@@ -94,10 +89,22 @@ jobs:
               --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
               -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
             rm -rf dist && mkdir dist
-            cp "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
+            # -a, not -r: a bundle may contain symlinks, and a plain recursive copy would replace
+            # each with a copy of its target, so the package would no longer be what was built.
+            cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
             cp "out-$arch/sunxi-fel" ./sunxi-fel
             nfpm_pkg deb "$arch" "dreame-valetudo_$arch.deb"
             nfpm_pkg rpm "$arch" "dreame-valetudo.$rpmarch.rpm"
+            # nfpm assembles the package outside the build image, so this is the only step that
+            # compares what installs against what was frozen — entry types and all. Removed again
+            # before the next arch, whose nfpm run copies this workspace into its container.
+            rm -rf "extract-$arch" && mkdir "extract-$arch"
+            dpkg-deb -x "dreame-valetudo_$arch.deb" "extract-$arch"
+            python3 packaging/check-package-parity.py \
+              "out-$arch/dreame-valetudo" "extract-$arch/usr/lib/dreame-valetudo/app"
+            python3 packaging/check-package-parity.py \
+              "out-$arch/dreame-fastboot" "extract-$arch/usr/lib/dreame-valetudo/fastboot"
+            rm -rf "extract-$arch"
           }
           build_pkgs linux/amd64 amd64 x86_64 "$MANYLINUX_AMD64"
           build_pkgs linux/arm64 arm64 aarch64 "$MANYLINUX_ARM64"

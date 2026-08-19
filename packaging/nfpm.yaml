@@ -1,15 +1,20 @@
 # nfpm config for the Debian/Ubuntu/Raspberry Pi .deb.
 #   DEB_ARCH=arm64 VERSION=1.2.3 nfpm package -p deb -f packaging/nfpm.yaml
 #
-# The .deb is SELF-CONTAINED: it ships a single Python-free `dreame-valetudo` binary (the
-# interpreter + the whole package frozen in by PyInstaller), the `dreame-fastboot` libusb client
-# (pyusb frozen in), and a prebuilt `sunxi-fel` — all built per arch in CI. So it needs no python3
-# / python3-usb (bundled) or jq (fix-impl patches JSON in-process); it still needs the ubiquitous
-# base-repo libusb + curl the tool loads/shells at runtime. Because it ships compiled binaries it
-# is architecture-specific (amd64/arm64).
+# The .deb is SELF-CONTAINED: it ships a Python-free `dreame-valetudo` bundle (the interpreter +
+# the whole package frozen in by PyInstaller), the `dreame-fastboot` libusb client (pyusb frozen
+# in), and a prebuilt `sunxi-fel` — all built per arch in CI. So it needs no python3 / python3-usb
+# (bundled) or jq (fix-impl patches JSON in-process); it still needs the ubiquitous base-repo
+# libusb + curl the tool loads/shells at runtime. Because it ships compiled binaries it is
+# architecture-specific (amd64/arm64).
 #
-# The main binary at /usr/bin finds its sibling helpers at /usr/lib/dreame-valetudo via the tool's
-# own libexec search (find_helper) — no wrapper or DREAME_LIBEXEC needed.
+# Each frozen tool is a PyInstaller onedir tree (see packaging/build-bundle.sh for why Linux does
+# not use onefile), so each gets its OWN directory and is reached through a symlink to its
+# launcher. Keeping the trees apart is what leaves /usr/lib/dreame-valetudo itself an ordinary
+# helper directory: the tool's libexec search (find_helper) wants a runnable FILE at
+# /usr/lib/dreame-valetudo/dreame-fastboot, which a symlink satisfies and a directory does not.
+# The bootloader resolves symlinks before looking for its contents directory, so no wrapper and no
+# DREAME_LIBEXEC are needed for either link.
 name: dreame-valetudo
 arch: "${DEB_ARCH}"
 platform: linux
@@ -38,14 +43,20 @@ depends:
   - tmux                 # every run is wrapped in a session so a lost terminal can't end it
 
 contents:
+  # No file_info on the trees: an explicit mode there is applied to EVERY member, which would make
+  # the whole bundle executable and world-readable alike. The built modes are the right ones.
   - src: ./dist/dreame-valetudo              # self-contained main bundle (Python frozen in)
+    dst: /usr/lib/dreame-valetudo/app
+    type: tree
+  - src: /usr/lib/dreame-valetudo/app/dreame-valetudo
     dst: /usr/bin/dreame-valetudo
-    file_info:
-      mode: 0755
+    type: symlink
   - src: ./dist/dreame-fastboot              # fastboot libusb client (pyusb frozen in)
+    dst: /usr/lib/dreame-valetudo/fastboot
+    type: tree
+  - src: /usr/lib/dreame-valetudo/fastboot/dreame-fastboot
     dst: /usr/lib/dreame-valetudo/dreame-fastboot
-    file_info:
-      mode: 0755
+    type: symlink
   - src: ./sunxi-fel                         # built per arch in CI, bundled so nothing compiles at runtime
     dst: /usr/lib/dreame-valetudo/sunxi-fel
     file_info:

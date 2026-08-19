@@ -24,6 +24,22 @@ def _requirements(path: Path) -> list[str]:
     return _VERSION.findall(result.stdout)
 
 
+def _is_elf(path: Path) -> bool:
+    with path.open("rb") as stream:
+        return stream.read(4) == b"\x7fELF"
+
+
+def _tree_elfs(root: Path) -> list[tuple[str, Path]]:
+    """Every ELF inside a onedir bundle. Symlinks are skipped: their target is walked anyway, and
+    auditing the same file twice would only make the reported label arbitrary."""
+    found: list[tuple[str, Path]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file() or not _is_elf(path):
+            continue
+        found.append((f"{root.name}/{path.relative_to(root).as_posix()}", path))
+    return found
+
+
 def _embedded_elfs(bundle: Path, destination: Path) -> list[tuple[str, Path]]:
     # PyInstaller is deliberately a release-build dependency, not a project runtime dependency.
     from PyInstaller.archive.readers import ArchiveReadError, CArchiveReader  # noqa: PLC0415
@@ -57,9 +73,12 @@ def main() -> int:
         destination = Path(temporary)
         candidates: list[tuple[str, Path]] = []
         for artifact_index, artifact in enumerate(args.artifacts):
-            with artifact.open("rb") as stream:
-                is_elf = stream.read(4) == b"\x7fELF"
-            if is_elf:
+            # A onedir bundle arrives as a directory; a onefile bundle and a plain helper both
+            # arrive as a single ELF, the first of which also carries its payload inside itself.
+            if artifact.is_dir():
+                candidates.extend(_tree_elfs(artifact))
+                continue
+            if _is_elf(artifact):
                 candidates.append((artifact.name, artifact))
             candidates.extend(_embedded_elfs(artifact, destination / str(artifact_index)))
 

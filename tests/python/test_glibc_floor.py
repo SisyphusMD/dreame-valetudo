@@ -112,3 +112,29 @@ def test_glibc_audit_keeps_extractions_from_multiple_bundles_separate(
     assert module.main() == 0
     assert len(destinations) == 2
     assert destinations[0] != destinations[1]
+
+
+def test_glibc_audit_walks_a_onedir_bundle_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_script()
+    bundle = tmp_path / "dreame-valetudo"
+    (bundle / "_internal").mkdir(parents=True)
+    (bundle / "dreame-valetudo").write_bytes(b"\x7fELF")
+    (bundle / "_internal" / "libpython.so").write_bytes(b"\x7fELF")
+    (bundle / "_internal" / "base_library.zip").write_bytes(b"PK\x03\x04")
+    (bundle / "_internal" / "libpython-link.so").symlink_to("libpython.so")
+    audited: list[str] = []
+
+    def _requirements(path: Path) -> list[str]:
+        audited.append(path.name)
+        return ["2.35"] if path.name == "libpython.so" else ["2.17"]
+
+    monkeypatch.setattr(module, "_requirements", _requirements)
+    monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(bundle)])
+
+    # The launcher alone is within the floor: only walking the contents directory finds the ELF
+    # that is not, and the symlink beside it must not be audited a second time under another name.
+    assert module.main() == 1
+    assert sorted(audited) == ["dreame-valetudo", "libpython.so"]
+    assert "GLIBC_2.35 (dreame-valetudo/_internal/libpython.so)" in capsys.readouterr().out
