@@ -64,4 +64,4 @@ ignore_missing_imports = true
 # disagreement means contributors lint with a different binary than the gate. A floor is
 # permanently satisfied, which leaves pep621 nothing to raise and no way for the lockfile to move
 # in the same PR as the annotated workflow literals.
-dev = ["pytest==9.1.1", "ruff==0.16.3", "mypy==2.3.1"]
+dev = ["pytest==9.1.1", "ruff==0.16.4", "mypy==2.3.1"]
