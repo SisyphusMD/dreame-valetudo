@@ -448,11 +448,24 @@ def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() ->
     assert 'r.get("conclusion") == "success"' in bridge
 
 
-def test_homebrew_templates_use_the_replicated_release_tarball() -> None:
+def test_homebrew_templates_build_from_the_pypi_sdist() -> None:
+    """Same source as the sibling project's formula, which is what let `update-tap.sh` become one
+    vendored script instead of two that drift.
+
+    The sdist FILENAME is PEP 625-normalised — `dreame_valetudo`, with an underscore — while the
+    directory segment keeps the published name. The hyphenated filename 404s, which a project
+    whose name has no hyphen would never discover.
+    """
     for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
         formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
-        assert "forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/" in formula
-        assert "github.com/SisyphusMD/dreame-valetudo/releases/download/" in formula
+        assert (
+            "files.pythonhosted.org/packages/source/d/dreame-valetudo/"
+            "dreame_valetudo-REPLACE_VERSION.tar.gz"
+        ) in formula, name
+        # A release-asset url and a mirror line are what the PyPI sdist replaced; a formula
+        # carrying both would be served two different archives for one checksum.
+        assert "releases/download/" not in formula, name
+        assert "\n  mirror " not in formula, name
         assert "/archive/" not in formula
         assert "refresh-pins.sh" in formula
 

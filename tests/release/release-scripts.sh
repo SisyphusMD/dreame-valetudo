@@ -195,6 +195,11 @@ for forge in forgejo github; do
 done
 echo "  tag grammar: a tag outside stable/rc is refused before any API call OK"
 
+tap_runnable=true
+python3 -c 'import build' 2>/dev/null || tap_runnable=false
+if [ "$tap_runnable" != true ]; then
+  echo '  Homebrew formula: SKIPPED — no build frontend, so the sdist cannot be built offline'
+else
 # ---- Homebrew formula: the checksum comes from a LOCAL rebuild, and both remotes must match it --
 # The formula is generated from a throwaway copy of this tree so the rc case can restamp the
 # version, and so the rebuild that update-tap.sh performs is compared against an independent build
@@ -204,6 +209,15 @@ mkdir -p "$source_tree"
 cp -R "$root/src" "$root/libexec" "$root/packaging" "$root/docs" "$source_tree/"
 cp "$root/pyproject.toml" "$root/uv.lock" "$root/README.md" "$root/LICENSE" "$root/CHANGELOG.md" \
   "$source_tree/"
+# A git repo, because update-tap.sh builds the sdist from `git archive` of the tag rather than the
+# working tree — hatchling would otherwise sweep untracked neighbours into it and change the hash.
+git -C "$source_tree" init -q
+git -C "$source_tree" add -A
+git -C "$source_tree" -c user.email=t@t -c user.name=t commit -qm fixture
+# update-tap.sh builds an sdist, which needs a build frontend AND fetches the backend into an
+# isolated environment — both of which mean network. This file's contract is that it runs offline
+# with curl stubbed, so the tap section is SKIPPED rather than being made to reach out. CI installs
+# `build` (see the tap jobs in publish.yml), so it runs there.
 
 stamp_version() {
   python3 - "$source_tree/pyproject.toml" "$1" <<'PY'
@@ -219,10 +233,16 @@ open(path, "w", encoding="utf-8").write(text)
 PY
 }
 
-# An independent build of the same tree is what both remotes are required to be serving.
+# An independent build of the same tree is what PyPI is required to be serving. Built the same way
+# update-tap.sh builds its copy, so a mismatch means the artifact differs rather than the method.
 build_expected() {
-  VERSION="$1" bash "$source_tree/packaging/build-tarball.sh" >/dev/null
-  mv "$source_tree/dreame-valetudo-$1.tar.gz" "$tmp/expected.tar.gz"
+  git -C "$source_tree" add -A
+  git -C "$source_tree" -c user.email=t@t -c user.name=t commit -qm "stamp $1" --allow-empty
+  rm -rf "$tmp/expected-build"
+  python3 -m build --sdist --outdir "$tmp/expected-build" "$source_tree" >/dev/null
+  # PEP 625: the sdist filename normalises `-` to `_`, and the version to PEP 440.
+  pypi_v="$(printf '%s' "$1" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
+  mv "$tmp/expected-build/dreame_valetudo-$pypi_v.tar.gz" "$tmp/expected.tar.gz"
 }
 
 cat > "$tmp/curl" <<'STUB'
@@ -237,10 +257,8 @@ for argument in "$@"; do
   previous="$argument"
 done
 [ -n "$out" ] || exit 2
-case "$url" in
-  *forgejo.bryantserver.com*) source=$TAP_FORGEJO ;;
-  *) source=$TAP_GITHUB ;;
-esac
+# One source now: the formula builds from the PyPI sdist, so that is the only download to serve.
+source=$TAP_PYPI
 [ -n "$source" ] || exit 22
 cp "$source" "$out"
 STUB
@@ -253,7 +271,7 @@ version="9.7.0"
 stamp_version "$version"
 tap="$tmp/tap"
 build_expected "$version"
-export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
+export TAP_PYPI="$tmp/expected.tar.gz"
 
 : > "$calls"
 bash "$source_tree/packaging/update-tap.sh" "v$version" "$tap" >/dev/null \
@@ -262,19 +280,24 @@ stable="$tap/Formula/dreame-valetudo.rb"
 digest="$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')"
 grep -Fq "sha256 \"$digest\"" "$stable" \
   || fail "formula checksum does not match an independent build of the same source"
-grep -Fq "releases/download/v$version/dreame-valetudo-$version.tar.gz" "$stable" \
-  || fail "stable formula does not use the versioned release asset"
-grep -Fq 'github.com/SisyphusMD/dreame-valetudo/releases/download/' "$stable" \
-  || fail "stable formula has no GitHub mirror"
+pypi_v="$(printf '%s' "$version" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
+grep -Fq "files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz" \
+  "$stable" || fail "stable formula does not build from the PyPI sdist"
+# The release-asset url and its GitHub mirror are what the sdist replaced. A formula carrying both
+# would be served two different archives against one checksum.
+! grep -q 'releases/download/' "$stable" \
+  || fail "stable formula still points at a release asset"
+! grep -q '^  mirror ' "$stable" \
+  || fail "stable formula still carries a mirror line"
 # ANY marker, matched as a pattern rather than a hand-kept list — the list going stale is the bug
 # render-formula.sh exists to make impossible, and a named-marker check here would go stale the same
 # way. A bare `REPLACE_BOTTLE_BLOCK` parses as a Ruby constant, so Homebrew fails at install time.
 ! grep -q 'REPLACE_' "$stable" \
   || fail "stable formula retained an unsubstituted placeholder"
-for registry in forgejo.bryantserver.com github.com; do
-  grep -Fq "$registry/SisyphusMD/dreame-valetudo/releases/download/v$version/" "$calls" \
-    || fail "update-tap did not check the $registry copy the formula points at"
-done
+# One copy to check now, and it is the one the formula names: the checksum must come from a local
+# build and be CONFIRMED against what PyPI actually serves, never taken from the download.
+grep -Fq "files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz" \
+  "$calls" || fail "update-tap did not verify the PyPI sdist the formula points at"
 
 # A stable tag also RE-POINTS the rc formula at the same stable tarball (fall-through), so the rc
 # brew channel keeps resolving after this version's superseded rc releases are pruned.
@@ -284,25 +307,23 @@ rc_fallthrough="$tap/Formula/dreame-valetudo-rc.rb"
 for formula in "$stable" "$rc_fallthrough"; do
   grep -Fq "sha256 \"$digest\"" "$formula" \
     || fail "$formula checksum does not match the stable build"
-  grep -Fq "url \"https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v$version/dreame-valetudo-$version.tar.gz\"" "$formula" \
-    || fail "$formula does not point its url at the stable release asset"
-  grep -Fq "mirror \"https://github.com/SisyphusMD/dreame-valetudo/releases/download/v$version/dreame-valetudo-$version.tar.gz\"" "$formula" \
-    || fail "$formula does not mirror the stable release asset on GitHub"
+  grep -Fq "url \"https://files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz\"" "$formula" \
+    || fail "$formula does not point its url at the stable PyPI sdist"
   ! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$formula" \
     || fail "$formula retained an unsubstituted placeholder"
 done
-echo "  Homebrew formula: checksum from the local rebuild, both published copies confirmed OK"
+echo "  Homebrew formula: checksum from the local rebuild, PyPI confirmed to serve it OK"
 echo "  Homebrew formula: a stable tag writes both formulas, rc falling through to the stable OK"
 
 # A registry that cannot serve the tag, or serves other bytes, must not yield a formula at all.
 : > "$calls"
-TAP_FORGEJO="" bash "$source_tree/packaging/update-tap.sh" "v$version" "$tmp/unavailable-tap" \
+TAP_PYPI="" bash "$source_tree/packaging/update-tap.sh" "v$version" "$tmp/unavailable-tap" \
   >/dev/null 2>&1 && fail "update-tap wrote a formula while the primary registry had no copy"
 [ ! -e "$tmp/unavailable-tap/Formula" ] || fail "update-tap left a formula behind on failure"
 
 printf 'a different published tarball\n' > "$tmp/other.tar.gz"
 : > "$calls"
-TAP_GITHUB="$tmp/other.tar.gz" bash "$source_tree/packaging/update-tap.sh" "v$version" \
+TAP_PYPI="$tmp/other.tar.gz" bash "$source_tree/packaging/update-tap.sh" "v$version" \
   "$tmp/mismatch-tap" >/dev/null 2>&1 \
   && fail "update-tap accepted a mirror serving bytes other than the locally built tarball"
 echo "  Homebrew formula: a missing or dissenting published copy fails closed OK"
@@ -313,12 +334,13 @@ echo "  Homebrew formula: a missing or dissenting published copy fails closed OK
 next_rc="9.8.0-rc.1"
 stamp_version "$next_rc"
 build_expected "$next_rc"
-export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
+export TAP_PYPI="$tmp/expected.tar.gz"
 bash "$source_tree/packaging/update-tap.sh" "v$next_rc" "$tap" >/dev/null \
   || fail "update-tap.sh exited nonzero for a valid rc formula"
 rc="$tap/Formula/dreame-valetudo-rc.rb"
-grep -Fq "dreame-valetudo-$next_rc.tar.gz" "$rc" \
-  || fail "rc formula did not strip only the tag's leading v from the asset name"
+next_rc_pypi="$(printf '%s' "$next_rc" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
+grep -Fq "dreame_valetudo-$next_rc_pypi.tar.gz" "$rc" \
+  || fail "rc formula does not name the PEP 440 sdist for this candidate"
 grep -Fq "sha256 \"$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')\"" "$rc" \
   || fail "rc formula checksum does not match the rc source rebuild"
 
@@ -327,11 +349,13 @@ grep -Fq "sha256 \"$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')\""
 # tap-write concurrency group serialises writers without saying anything about version order.
 stamp_version "$version-rc.1"
 build_expected "$version-rc.1"
-export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
-if bash "$source_tree/packaging/update-tap.sh" "v$version-rc.1" "$tap" >/dev/null 2>&1; then
-  fail "update-tap.sh published an older tag over a newer formula"
-fi
-grep -Fq "dreame-valetudo-$next_rc.tar.gz" "$rc" \
+export TAP_PYPI="$tmp/expected.tar.gz"
+# SKIPPED, not failed. A late rerun for an older tag is a normal thing to happen — tap-bottles.yml
+# documents a manual one — so it leaves the newer formula alone and exits clean rather than
+# painting a release red for behaving correctly.
+bash "$source_tree/packaging/update-tap.sh" "v$version-rc.1" "$tap" >/dev/null 2>&1 \
+  || fail "update-tap.sh failed instead of skipping a stale pass"
+grep -Fq "dreame_valetudo-$next_rc_pypi.tar.gz" "$rc" \
   || fail "the refused pass modified the formula anyway"
 echo "  Homebrew formula: a late pass for an older tag is refused, not published OK"
 stamp_version "$version"
@@ -346,12 +370,13 @@ template="$source_tree/packaging/homebrew/dreame-valetudo.rb"
 cp "$template" "$tmp/template.rb"
 sed 's/REPLACE_TARBALL_SHA256/missing-checksum-placeholder/' "$tmp/template.rb" > "$template"
 build_expected "$version"
-export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
+export TAP_PYPI="$tmp/expected.tar.gz"
 if bash "$source_tree/packaging/update-tap.sh" "v$version" "$tmp/broken-tap" >/dev/null 2>&1; then
   fail "update-tap accepted a formula template whose checksum placeholder was missing"
 fi
 cp "$tmp/template.rb" "$template"
 echo "  Homebrew formula: rc channel, tag grammar, and fail-closed template OK"
+fi
 
 # The whole point of the rewrite: no immutable-asset publisher may remove published bytes, ever.
 # (prune-superseded-rcs.sh, exercised below with its OWN stub, is the one script that DOES delete —

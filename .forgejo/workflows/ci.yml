@@ -298,6 +298,9 @@ jobs:
           pip install -e .
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
+          # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
+          # That file runs offline by contract, so it never installs this itself.
+          python3 -m pip install --upgrade build
           for t in tests/release/*.sh; do echo "== $t =="; bash "$t"; done
 
   macos:
