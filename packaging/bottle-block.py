@@ -106,11 +106,12 @@ def render(tags: dict[str, tuple[str, str]], root_url: str, indent: str = "  ") 
     # tag alone left the hashes ragged in a file that ends up committed to the tap.
     prefixes = {t: f"cellar: {_cellar_literal(tags[t][1])}, {t}:" for t in ordered}
     width = max(len(x) for x in prefixes.values())
+    # Padded to `width`, not width+1: the literal space in the format string supplies the
+    # separator, so the extra column put two spaces after the longest tag.
     lines = [f"{indent}bottle do", f'{indent}  root_url "{root_url}"']
-    for tag in ordered:
-        # Padded to `width`, not width+1: the literal space in the format string supplies the
-        # separator, so the extra column put two spaces after the longest tag.
-        lines.append(f'{indent}  sha256 {prefixes[tag]:{width}} "{tags[tag][0]}"')
+    lines += [
+        f'{indent}  sha256 {prefixes[tag]:{width}} "{tags[tag][0]}"' for tag in ordered
+    ]
     lines.append(f"{indent}end")
     return "\n".join(lines)
 

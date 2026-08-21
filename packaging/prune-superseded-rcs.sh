@@ -58,6 +58,18 @@
 # Env: CLUSTER_TOKEN, NAS_TOKEN, GH_TOKEN. Stdlib shell + curl + jq only.
 set -uo pipefail
 
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# For ignored_asset (release-common) over _IGNORED_ASSETS (asset-roles) — one definition of which
+# assets sit outside the cross-registry quorum, shared with reconcile. extglob because the role
+# patterns use `!(...)`.
+shopt -s extglob
+# shellcheck source=/dev/null
+. "$here/project.env"
+# shellcheck source=/dev/null
+. "$here/release-common.sh"
+# shellcheck source=/dev/null
+. "$here/asset-roles.sh"
+
 REPO="SisyphusMD/dreame-valetudo"
 CLUSTER_HOST="forgejo.bryantserver.com"
 NAS_HOST="forgejo.nas.bryantserver.com"
@@ -181,6 +193,16 @@ stable_present_everywhere() {
         end' <<<"$json" 2>/dev/null)" \
       || { echo "::warning::prune: stable $stem does not serve a clean, non-empty asset set on $registry; keeping its rc" >&2
            ok=0; continue; }
+    # Assets outside the quorum model are dropped BEFORE the signature is built. Homebrew bottles
+    # go to GitHub and the cluster Forgejo and never to the NAS — by design — so comparing raw
+    # sets made every bottled stable look permanently half-fanned-out, and its superseded
+    # candidates were kept forever against the retention policy.
+    names="$(while IFS= read -r _n; do
+      [ -n "$_n" ] || continue
+      ignored_asset "$_n" || printf '%s\n' "$_n"
+    done <<<"$names")"
+    [ -n "$names" ] || { echo "::warning::prune: stable $stem serves only ignored assets on $registry; keeping its rc" >&2
+                         ok=0; continue; }
     # First qualifying registry sets the baseline; every other must match it byte for byte. A
     # different set anywhere means the stable is not uniformly fanned out yet, so the rc is kept.
     if [ "$have_signature" -eq 0 ]; then
