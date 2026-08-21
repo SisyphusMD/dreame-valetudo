@@ -9,11 +9,11 @@ on:
   pull_request:
     paths:
       - .forgejo/workflows/dustbuilder-forms.yml
-      - dreame_valetudo/dustbuilder.py
-      - dreame_valetudo/cli.py
-      - dreame_valetudo/phases/image.py
-      - dreame_valetudo/phases/recon.py
-      - dreame_valetudo/profiles.py
+      - src/dreame_valetudo/dustbuilder.py
+      - src/dreame_valetudo/cli.py
+      - src/dreame_valetudo/phases/image.py
+      - src/dreame_valetudo/phases/recon.py
+      - src/dreame_valetudo/models.py
       - libexec/dustbuilder-forms/**
       - libexec/verify_valetudo_contract.py
       - pyproject.toml
@@ -21,11 +21,11 @@ on:
     branches: [main]
     paths:
       - .forgejo/workflows/dustbuilder-forms.yml
-      - dreame_valetudo/dustbuilder.py
-      - dreame_valetudo/cli.py
-      - dreame_valetudo/phases/image.py
-      - dreame_valetudo/phases/recon.py
-      - dreame_valetudo/profiles.py
+      - src/dreame_valetudo/dustbuilder.py
+      - src/dreame_valetudo/cli.py
+      - src/dreame_valetudo/phases/image.py
+      - src/dreame_valetudo/phases/recon.py
+      - src/dreame_valetudo/models.py
       - libexec/dustbuilder-forms/**
       - libexec/verify_valetudo_contract.py
       - pyproject.toml

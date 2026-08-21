@@ -59,7 +59,9 @@ def detect_install_method(env: Mapping[str, str], root: Path = Path("/")) -> str
     generic hint) rather than a wrong one."""
     # .git is a directory in a normal clone but a pointer FILE in a worktree/submodule checkout —
     # all of them are source checkouts.
-    if (Path(__file__).resolve().parent.parent / ".git").exists():
+    # parents[2], not parent.parent: the package sits under src/, so the checkout root is two
+    # levels up from the package directory.
+    if (Path(__file__).resolve().parents[2] / ".git").exists():
         return "source"
     if getattr(sys, "frozen", False):
         exe = sys.executable or ""

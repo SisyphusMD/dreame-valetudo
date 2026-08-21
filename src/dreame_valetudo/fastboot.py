@@ -45,7 +45,10 @@ def _libexec_candidates(env: Mapping[str, str]) -> list[Path]:
     meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller bundle root
     if meipass:
         cands.append(Path(meipass) / "libexec")
-    cands += [pkg / "libexec", pkg.parent / "libexec", *(Path(p) for p in _SYSTEM_LIBEXEC)]
+    # pkg/libexec is where the wheel force-includes it; pkg.parent and its parent cover a
+    # source checkout, whose libexec/ is at the repo root with the package under src/.
+    cands += [pkg / "libexec", pkg.parent / "libexec", pkg.parent.parent / "libexec",
+              *(Path(p) for p in _SYSTEM_LIBEXEC)]
     return cands
 
 
@@ -54,7 +57,9 @@ def resolve_libexec(env: Mapping[str, str]) -> Path:
     for c in _libexec_candidates(env):
         if (c / "fastboot-libusb.py").is_file():
             return c
-    return Path(__file__).resolve().parent.parent / "libexec"  # fall back; clear error at use
+    # parents[2]: in a source checkout libexec/ sits at the repo root, and the package is now
+    # one level deeper under src/.
+    return Path(__file__).resolve().parents[2] / "libexec"  # fall back; clear error at use
 
 
 def find_helper(name: str, env: Mapping[str, str]) -> Path | None:

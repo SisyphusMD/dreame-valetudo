@@ -13,7 +13,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-CONSTANTS="dreame_valetudo/constants.py"
+CONSTANTS="src/dreame_valetudo/constants.py"
 BREW_FORMULAE="packaging/homebrew"
 
 read_pin() {

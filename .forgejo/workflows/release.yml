@@ -136,7 +136,7 @@ jobs:
           set -euo pipefail
           # The release is exactly these five files and nothing else. Hashing the patch here, before
           # any third-party tool is installed, is what the tag job later reproduces byte-for-byte.
-          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
@@ -217,7 +217,7 @@ jobs:
           bash packaging/promote-changelog.sh "$version" "$QUALIFIED_DATE"
           python3 packaging/stamp-version.py "$version"
           sed -i -E "s#(releases/download/)[^/]+/#\1${tag}/#g" README.md
-          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"

@@ -90,7 +90,8 @@ def find_installs(env: Mapping[str, str], root: Path = Path("/")) -> list[Instal
     if pipx.is_dir():
         found.append(Install("pipx", pipx, ["pipx", "uninstall", "dreame-valetudo"]))
 
-    checkout = Path(__file__).resolve().parent.parent
+    # parents[2]: package -> src -> checkout root.
+    checkout = Path(__file__).resolve().parents[2]
     if (checkout / ".git").exists():
         found.append(Install("source checkout", checkout, [],
                              "delete the clone yourself when you're done with it"))
