@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
@@ -736,3 +737,420 @@ def test_layout_doc_covers_every_registered_layout() -> None:
     for layout in M.LAYOUTS:
         assert f"| {layout.version} " in doc, f"layout v{layout.version} not in docs/LAYOUT.md"
         assert layout.since in doc, f"layout v{layout.version} since={layout.since} not documented"
+
+
+def test_custom_path_detection_fails_closed_when_paths_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = tmp_path / "custom"
+    original = Path.resolve
+
+    def fail_configured(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == configured:
+            raise OSError("unreadable mount")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_configured)
+    assert M._uses_custom(_env(tmp_path, DREAME_WORK=str(configured)), "DREAME_WORK", "work")
+
+
+def test_session_path_falls_back_for_a_broken_or_non_directory_legacy_target(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    work = tmp_path / "dreame-valetudo" / "work"
+    old = tmp_path / "dreame-valetudo-work"
+    old.symlink_to(tmp_path / "missing", target_is_directory=True)
+    assert M.pre_migration_session_path(env, work) == work
+    old.unlink()
+    target = tmp_path / "file"
+    target.write_text("not a workspace")
+    old.symlink_to(target)
+    assert M.pre_migration_session_path(env, work) == work
+
+
+def test_backup_name_normalization_still_drops_the_legacy_infix_for_unparsed_names() -> None:
+    assert M._normalize_backup_name("dreame-unparsed-backup-20200101-010203") == (
+        "dreame-unparsed-20200101-010203"
+    )
+
+
+def test_copied_tree_verification_rejects_shape_type_link_and_content_drift(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "file").write_text("same")
+    assert not M._copied_tree_matches(src, dst)
+    (dst / "file").mkdir()
+    assert not M._copied_tree_matches(src, dst)
+    (dst / "file").rmdir()
+    (dst / "file").write_text("different")
+    assert not M._copied_tree_matches(src, dst)
+    (src / "file").unlink()
+    (dst / "file").unlink()
+    (src / "link").symlink_to("one")
+    (dst / "link").symlink_to("two")
+    assert not M._copied_tree_matches(src, dst)
+
+
+def test_abandoned_file_staging_is_unlinked_before_cross_device_retry(tmp_path: Path) -> None:
+    dst = tmp_path / "current"
+    staging = tmp_path / ".current.migration-old.payload"
+    staging.write_text("partial")
+    M._remove_abandoned_staging(dst)
+    assert not staging.exists()
+
+
+def test_safe_move_refuses_existing_destinations_and_propagates_real_io_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "source"
+    dst = tmp_path / "destination"
+    src.write_bytes(SENTINEL)
+    dst.write_bytes(b"existing")
+    console = ScriptedConsole()
+    assert M._safe_move(src, dst, console) is False
+    assert src.read_bytes() == SENTINEL
+    dst.unlink()
+    monkeypatch.setattr(
+        M, "rename_no_replace",
+        lambda _src, _dst: (_ for _ in ()).throw(OSError(errno.EACCES, "denied")),
+    )
+    with pytest.raises(OSError, match="denied"):
+        M._safe_move(src, dst, console)
+
+
+def test_cross_device_symlink_move_preserves_the_link_without_following_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.write_text("outside")
+    src = tmp_path / "legacy-link"
+    dst = tmp_path / "current-link"
+    src.symlink_to(target)
+    monkeypatch.setattr(M, "rename_no_replace", _cross_device_then_publish)
+    assert M._safe_move(src, dst, ScriptedConsole()) is True
+    assert dst.is_symlink() and dst.readlink() == target
+    assert not src.exists() and not src.is_symlink()
+
+
+def test_merge_restores_the_canonical_copy_when_collision_publish_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_text("legacy")
+    dst.write_text("current")
+
+    def fail(_src: Path, _dst: Path, _console: ScriptedConsole) -> bool:
+        raise OSError("publish failed")
+
+    monkeypatch.setattr(M, "_safe_move", fail)
+    with pytest.raises(OSError, match="publish failed"):
+        M._safe_merge(src, dst, ScriptedConsole())
+    assert dst.read_text() == "current"
+    assert src.read_text() == "legacy"
+
+
+def test_work_symlink_to_a_file_is_left_in_place(tmp_path: Path) -> None:
+    target = tmp_path / "not-a-directory"
+    target.write_text("file")
+    src = tmp_path / "legacy"
+    src.symlink_to(target)
+    dst = tmp_path / "current"
+    console = ScriptedConsole()
+    assert M._move_work_symlink(src, dst, console) is False
+    assert src.is_symlink() and not dst.exists()
+    assert "not a directory" in console.text()
+
+
+def test_work_symlink_reports_destination_publish_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    src.symlink_to(target, target_is_directory=True)
+    dst = tmp_path / "current"
+    original = Path.symlink_to
+
+    def fail_publish(path: Path, *args: object, **kwargs: object) -> None:
+        if path == dst:
+            raise OSError("read-only destination")
+        original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "symlink_to", fail_publish)
+    console = ScriptedConsole()
+    assert M._move_work_symlink(src, dst, console) is False
+    assert src.is_symlink() and "Could not relocate" in console.text()
+
+
+def test_regular_file_and_backup_symlink_keep_layout_unstamped(tmp_path: Path) -> None:
+    old = tmp_path / "dreame-valetudo-work"
+    old.write_text("not a directory")
+    backup_target = tmp_path / "backup-target"
+    backup_target.mkdir()
+    legacy_backup = tmp_path / "dreame-r2416-link-backup-20200101-000000"
+    legacy_backup.symlink_to(backup_target, target_is_directory=True)
+    console = ScriptedConsole()
+    assert M.migrate(_env(tmp_path), console) is False
+    assert old.is_file() and legacy_backup.is_symlink()
+    assert not (tmp_path / "dreame-valetudo/.layout").exists()
+    assert "not a directory" in console.text() and "backup symlink" in console.text()
+
+
+def test_layout_marker_reader_accepts_objects_and_ignores_other_json_roots(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    marker = tmp_path / "dreame-valetudo" / ".layout"
+    marker.parent.mkdir()
+    marker.write_text(json.dumps({"layout_version": 1}))
+    assert M._read_marker(env) == {"layout_version": 1}
+    marker.write_text("[]")
+    assert M._read_marker(env) == {}
+
+
+def test_copied_tree_verification_accepts_matching_directories_and_symlinks(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    for root in (src, dst):
+        (root / "nested").mkdir(parents=True)
+        (root / "nested" / "file").write_text("same")
+        (root / "link").symlink_to("nested/file")
+    assert M._copied_tree_matches(src, dst) is True
+
+
+def test_safe_move_handles_exclusive_rename_collision_without_copying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "source"
+    dst = tmp_path / "destination"
+    src.write_text("source")
+    monkeypatch.setattr(
+        M, "rename_no_replace",
+        lambda _src, _dst: (_ for _ in ()).throw(FileExistsError(errno.EEXIST, "exists")),
+    )
+    assert M._safe_move(src, dst, ScriptedConsole()) is False
+    assert src.read_text() == "source"
+
+
+def test_safe_merge_refuses_when_backup_slot_is_already_taken(tmp_path: Path) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_text("legacy")
+    dst.write_text("current")
+    dst.with_name(dst.name + M._BAK_SUFFIX).write_text("older")
+    assert M._safe_merge(src, dst, ScriptedConsole()) is False
+    assert src.read_text() == "legacy" and dst.read_text() == "current"
+
+
+def test_work_symlink_can_replace_a_lock_only_canonical_placeholder(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    src.symlink_to(target, target_is_directory=True)
+    dst = tmp_path / "current"
+    dst.mkdir()
+    (dst / ".lock").write_text("held")
+    seen: list[Path] = []
+
+    assert M._move_work_symlink(src, dst, ScriptedConsole(), seen.append) is True
+    assert seen == [target]
+    assert dst.is_symlink() and dst.resolve() == target
+
+
+def test_work_symlink_preservation_failure_keeps_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    src.symlink_to(target, target_is_directory=True)
+    dst = tmp_path / "current"
+    real_resolve = Path.resolve
+
+    def fail_destination(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == dst:
+            raise OSError("unreadable")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_destination)
+    with pytest.raises(Die, match="did not preserve its target"):
+        M._move_work_symlink(src, dst, ScriptedConsole())
+    assert src.is_symlink() and not dst.exists()
+
+
+def test_copied_tree_verification_rejects_directory_file_and_special_type_substitution(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+
+    (src / "nested").mkdir()
+    (dst / "nested").symlink_to(tmp_path)
+    assert M._copied_tree_matches(src, dst) is False
+
+    (src / "nested").rmdir()
+    (dst / "nested").unlink()
+    (src / "item").write_text("data")
+    (dst / "item").symlink_to(src / "item")
+    assert M._copied_tree_matches(src, dst) is False
+
+    (src / "item").unlink()
+    (dst / "item").unlink()
+    os.mkfifo(src / "pipe")
+    os.mkfifo(dst / "pipe")
+    assert M._copied_tree_matches(src, dst) is False
+
+
+def test_cross_device_publish_propagates_a_noncollision_error_and_keeps_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "source"
+    dst = tmp_path / "destination"
+    src.write_bytes(SENTINEL)
+    calls = 0
+
+    def fail_publish(_src: Path, _dst: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.EXDEV, "cross-device")
+        raise OSError(errno.EIO, "publish failed")
+
+    monkeypatch.setattr(M, "rename_no_replace", fail_publish)
+    with pytest.raises(OSError, match="publish failed"):
+        M._safe_move(src, dst, ScriptedConsole())
+
+    assert src.read_bytes() == SENTINEL
+    assert not dst.exists()
+
+
+def test_work_symlink_leaves_a_conflicting_unresolvable_destination_untouched(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    src.symlink_to(target, target_is_directory=True)
+    dst = tmp_path / "current"
+    dst.symlink_to(tmp_path / "missing", target_is_directory=True)
+
+    assert M._move_work_symlink(src, dst, ScriptedConsole()) is False
+    assert src.is_symlink() and dst.is_symlink()
+
+
+def test_redundant_work_symlink_removal_failure_is_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.symlink_to(target, target_is_directory=True)
+    dst.symlink_to(target, target_is_directory=True)
+    real_unlink = Path.unlink
+
+    def fail_source(path: Path, *args: object, **kwargs: object) -> None:
+        if path == src:
+            raise OSError("read-only parent")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_source)
+    console = ScriptedConsole()
+    assert M._move_work_symlink(src, dst, console) is False
+    assert "Could not remove redundant" in console.text()
+
+
+def test_relocated_work_symlink_reports_when_only_legacy_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.symlink_to(target, target_is_directory=True)
+    real_unlink = Path.unlink
+
+    def fail_source(path: Path, *args: object, **kwargs: object) -> None:
+        if path == src:
+            raise OSError("read-only parent")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_source)
+    console = ScriptedConsole()
+    assert M._move_work_symlink(src, dst, console) is False
+    assert dst.is_symlink() and src.is_symlink()
+    assert "could not remove" in console.text()
+
+
+def test_custom_workspace_paths_leave_legacy_work_and_backups_visible_for_retry(tmp_path: Path) -> None:
+    _seed_v0(tmp_path)
+    custom_work = tmp_path / "custom-work"
+    custom_backups = tmp_path / "custom-backups"
+    console = ScriptedConsole()
+    env = _env(
+        tmp_path, DREAME_WORK=str(custom_work), DREAME_BACKUPS=str(custom_backups),
+    )
+
+    assert M.migrate(env, console) is False
+
+    assert (tmp_path / "dreame-valetudo-work").is_dir()
+    assert (tmp_path / _BK0).is_dir()
+    assert "DREAME_WORK is set" in console.text()
+    assert "DREAME_BACKUPS is set" in console.text()
+
+
+def test_safe_merge_restores_the_previous_destination_when_publish_declines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "legacy"
+    dst = tmp_path / "current"
+    src.write_text("legacy")
+    dst.write_text("current")
+    monkeypatch.setattr(M, "_safe_move", lambda *_args, **_kwargs: False)
+
+    assert M._safe_merge(src, dst, ScriptedConsole()) is False
+    assert dst.read_text() == "current"
+    assert src.read_text() == "legacy"
+
+
+def test_failed_legacy_backup_move_keeps_layout_unstamped_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_v0(tmp_path)
+    real_move = M._safe_move
+
+    def fail_backup(src: Path, dst: Path, console: ScriptedConsole, *args: object, **kwargs: object) -> bool:
+        if "backup" in src.name:
+            return False
+        return real_move(src, dst, console, *args, **kwargs)
+
+    monkeypatch.setattr(M, "_safe_move", fail_backup)
+    assert M.migrate(_env(tmp_path), ScriptedConsole()) is False
+    assert (tmp_path / _BK0).is_dir()
+    assert not (tmp_path / "dreame-valetudo" / ".layout").exists()
+
+
+def test_refresh_decrypt_failure_removes_every_staged_generation_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "robot" / "recon"
+    recon.mkdir(parents=True)
+    names = M.RECOVERY_DUMP_NAMES[:2]
+    for name in names:
+        (recon / f"{name}.bin").write_bytes(b"sealed")
+    monkeypatch.setattr(M.dust_decrypt, "recover_shared_keystream_files", lambda _paths: b"key")
+    calls = 0
+
+    def decrypt(_source: object, write: Callable[[bytes], int], _key: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("second slice failed")
+        write(b"decrypted")
+
+    monkeypatch.setattr(M.dust_decrypt, "xor_file", decrypt)
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole(), refresh=True) == 0
+    assert not list(recon.glob("*.refresh.tmp"))
+    assert not list(recon.glob("*.dd.gz"))

@@ -265,6 +265,27 @@ def test_wait_fastboot_uses_the_resolved_system_transport() -> None:
     ]
 
 
+def test_system_fastboot_wait_times_out_without_a_device() -> None:
+    runner = RecordingRunner(lambda argv: Result(argv, 0, "", ""))
+    fastboot = Fastboot(runner, Console(color=False), Transport("system", ("fastboot",)))
+    fel = Fel(runner, Console(color=False), SUNXI, fastboot, sleep=lambda _seconds: None)
+
+    assert fel.wait_fastboot(secs=2) is False
+    assert runner.transcript() == ["fastboot devices", "fastboot devices"]
+
+
+def test_fel_boot_refuses_when_the_payload_never_enumerates() -> None:
+    fel, runner = _fel(
+        lambda argv: Result(argv, 1 if "wait" in argv else 0, "", "not found"),
+    )
+
+    with pytest.raises(Die, match="never appeared in fastboot"):
+        fel.fel_boot_fastboot(
+            Path("/dist"), "fsbl_ddr4.bin", "payload.bin", "0x28000", "0x4a000000",
+        )
+    assert runner.transcript()[-1] == "python3 /x/fastboot-libusb.py wait 90"
+
+
 def test_a_sunxi_fel_that_cannot_load_is_not_a_live_device() -> None:
     """The .pkg shipped a sunxi-fel missing a library. Its loader error says nothing about "not
     found", so the poll read it as a device that had appeared: "FEL up", then an unexplained

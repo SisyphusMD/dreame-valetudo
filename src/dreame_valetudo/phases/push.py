@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import manifest
-from ..console import Die, UserAbort, abort, die, warn_if_low_disk
+from ..console import Die, UserAbort, abort, die, safety_stop, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..models import known_model_key_for_code, load_model_spec
@@ -482,7 +482,7 @@ def _bind_live_robot(ctx: Context, identity: dict[str, str]) -> None:
             die("Could not read this robot's factory SoC id, so it cannot be confirmed as the "
                 "selected robot — no backup or install was attempted.")
         if known_cpuid.lower() != live_cpuid.lower():
-            die("SAFETY STOP: the connected robot is not the selected robot — its factory SoC id "
+            safety_stop("SAFETY STOP: the connected robot is not the selected robot — its factory SoC id "
                 "differs from the one recorded for this workspace. Join the selected robot's "
                 "Wi-Fi AP and re-run; no backup or install was attempted.")
         return
@@ -499,7 +499,7 @@ def _bind_live_robot(ctx: Context, identity: dict[str, str]) -> None:
     live_serial = valid_serial(identity.get("factory_serial", ""))
     if known_serial is not None and live_serial is not None:
         if known_serial.value != live_serial:
-            die("SAFETY STOP: the connected robot's serial is not the one recorded for this "
+            safety_stop("SAFETY STOP: the connected robot's serial is not the one recorded for this "
                 "robot. If you are on the right AP and typed the label wrong, correct the saved "
                 "serial first; no backup or install was attempted.")
         return
@@ -574,7 +574,7 @@ def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]
         return identity
     exact_key = known_model_key_for_code(reported)
     if exact_key != ctx.model_spec.key:
-        die(f"SAFETY STOP: the selected robot is {ctx.model_spec.model} "
+        safety_stop(f"SAFETY STOP: the selected robot is {ctx.model_spec.model} "
             f"({ctx.model_spec.model_code}), but the connected robot reports {reported}. Join the "
             "selected robot's Wi-Fi AP and re-run.")
     ctx.console.info(f"Live model verified: {reported} matches {ctx.model_spec.model}.")

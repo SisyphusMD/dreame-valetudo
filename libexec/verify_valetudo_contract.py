@@ -62,7 +62,7 @@ DDR_RULE = (
     "All the other bots use `ddr4`."
 )
 
-# Actionable model-specific text in the Supported Robots page. Every fastboot model_spec is listed
+# Actionable model-specific text in the Supported Robots page. Every fastboot model spec is listed
 # explicitly so a newly added model cannot silently inherit an empty contract. These are semantic
 # anchors, not whole-page bytes: layout, photos, and ordinary prose edits do not turn CI red.
 MODEL_SECTION_MARKERS: dict[str, tuple[str, ...]] = {

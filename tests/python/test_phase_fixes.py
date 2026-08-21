@@ -17,6 +17,7 @@ from conftest import CtxFactory, dreame_ap_prefix
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.log import scrub
+from dreame_valetudo.phases import fixes as fixes_mod
 from dreame_valetudo.phases.fixes import (
     _DIAGNOSE_REMOTE,
     diagnose,
@@ -755,3 +756,81 @@ def test_diagnose_uses_the_selected_robots_key_not_the_workspace_default(
     ssh_calls = [c for c in ctx.runner.calls if c and c[0] == "ssh"]  # type: ignore[attr-defined]
     assert ssh_calls
     assert all(str(first) in call and str(second) not in call for call in ssh_calls)
+
+
+def test_ap_guard_refuses_a_reachable_non_robot(make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 0, "", ""))
+    monkeypatch.setattr(fixes_mod, "is_dreame_ap", lambda *_args, **_kwargs: False)
+    with pytest.raises(Die, match="NOT a Dreame robot"):
+        fixes_mod._require_robot_ap(ctx, None)
+    assert len(ctx.runner.transcript()) == 1  # type: ignore[attr-defined]
+
+
+def test_fix_did_refuses_an_empty_factory_identity(make_ctx: CtxFactory) -> None:
+    ctx = _bind_recon_robot(make_ctx(responder=_did_responder("")))
+    with pytest.raises(Die, match=r"Couldn't read.*did.txt"):
+        fix_did(ctx)
+    assert not any("did.update" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_fix_key_refuses_when_secure_storage_has_no_key(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        return _matching_fix_robot(argv) or Result(argv, 0, "", "")
+
+    ctx = _bind_recon_robot(make_ctx(responder=responder))
+    with pytest.raises(Die, match="Couldn't read a MI_KEY"):
+        fix_key(ctx)
+    assert not any("key_orig.txt" in _remote(call) for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_impl_resolution_treats_an_empty_model_assignment_as_unreadable(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 0, "model=   \ndid=1\n", ""))
+    assert fixes_mod.resolved_impl_class(ctx, None) == ("", None)
+
+
+@pytest.mark.parametrize(
+    ("config_result", "message"),
+    [
+        (Result(("ssh",), 1, "", "read failed"), "Couldn't read"),
+        (Result(("ssh",), 0, "not-json", ""), "isn't valid JSON"),
+    ],
+)
+def test_fix_impl_refuses_unreadable_or_invalid_valetudo_config(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+    config_result: Result, message: str,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(fixes_mod, "_require_robot_ap", lambda *_args: None)
+    monkeypatch.setattr(fixes_mod, "_require_selected_robot", lambda *_args: None)
+    monkeypatch.setattr(
+        fixes_mod, "resolved_impl_class",
+        lambda *_args: ("dreame.vacuum.r2416", ctx.model_spec.impl_class),
+    )
+    monkeypatch.setattr(fixes_mod, "robot_ssh", lambda *_args, **_kwargs: config_result)
+    with pytest.raises(Die, match=message):
+        fix_impl(ctx)
+
+
+def test_fix_impl_refuses_a_live_model_without_a_known_implementation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(fixes_mod, "_require_robot_ap", lambda *_args: None)
+    monkeypatch.setattr(fixes_mod, "_require_selected_robot", lambda *_args: None)
+    monkeypatch.setattr(fixes_mod, "resolved_impl_class", lambda *_args: ("unknown.model", None))
+    with pytest.raises(Die, match="isn't one this tool knows"):
+        fix_impl(ctx)
+
+
+@pytest.mark.parametrize("dreame", [False, True])
+def test_diagnose_distinguishes_unreachable_and_router_hosts(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, dreame: bool,
+) -> None:
+    probe_rc = 0 if dreame else 255
+    ctx = make_ctx(responder=lambda argv: Result(argv, probe_rc, "", "unreachable"))
+    if dreame:
+        monkeypatch.setattr(fixes_mod, "is_dreame_ap", lambda *_args, **_kwargs: False)
+    diagnose(ctx)
+    report = (ctx.ws.base / "diagnose.log").read_text()
+    expected = "NOT a Dreame robot" if dreame else "UNREACHABLE"
+    assert expected in report

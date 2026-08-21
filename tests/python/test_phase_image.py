@@ -22,6 +22,7 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
 from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
+from dreame_valetudo.phases import image as image_module
 from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
 from dreame_valetudo.phases.manage import clean
 from dreame_valetudo.run import Result
@@ -123,6 +124,46 @@ def test_dustbuilder_prints_the_url_when_the_desktop_launcher_fails(
 
     assert attempted == [(ctx.system, ctx.dustbuilder_page)]
     assert f"Open this yourself: {ctx.dustbuilder_page}" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_dustbuilder_refuses_missing_config_before_key_or_browser_side_effects(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    with pytest.raises(Die, match="No config value"):
+        _open_dustbuilder(ctx)
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_existing_builder_receipt_can_be_reopened_and_warns_for_an_already_rooted_robot(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("rooted")
+    receipt = robot.recon_dir / ".submitted"
+    receipt.write_text("earlier")
+    monkeypatch.setattr(image_module, "open_url", lambda *_args, **_kwargs: False)
+    _open_dustbuilder(ctx)
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "ALREADY ROOTED" in text
+    assert "already opened the builder" in text
+    assert "Open this yourself" in text
+    assert receipt.read_text() == "earlier"
+
+    ctx.console._confirms.append(True)  # type: ignore[attr-defined]
+    monkeypatch.setattr(image_module, "open_url", lambda *_args, **_kwargs: True)
+    _open_dustbuilder(ctx)
+    assert receipt.read_text() != "earlier"
+
+
+def test_declining_to_open_a_first_builder_session_stops_without_a_receipt(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[False])
+    with pytest.raises(Die, match="re-run"):
+        _open_dustbuilder(ctx)
+    assert not (ctx.need_robot().recon_dir / ".submitted").exists()
 
 
 def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory, tmp_path: Path) -> None:
@@ -274,6 +315,21 @@ def test_a_browser_deduplicated_download_is_visible_to_the_watcher(
     assert ctx.need_robot().state_has("image")
 
 
+def test_a_zip_landing_in_the_robot_firmware_dir_survives_the_atomic_swap(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _staging_ctx(make_ctx, tmp_path, [True, True])
+    robot = ctx.need_robot()
+    robot.fw_dir.mkdir(parents=True)
+    built = robot.fw_dir / "dreame.vacuum.r9316_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, built)
+
+    image(ctx)
+
+    assert built.is_file()
+    assert str(built) in (robot.state_get("image") or "")
+
+
 def test_an_image_marker_with_missing_files_restages_without_force(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:
@@ -287,6 +343,42 @@ def test_an_image_marker_with_missing_files_restages_without_force(
     assert ctx.need_robot().state_has("image")
     assert all((ctx.need_robot().fw_dir / name).is_file() for name in _FEL)
     assert "staged-image record is incomplete" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_complete_image_marker_skips_every_network_and_unpack_command(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.fw_dir.mkdir(parents=True)
+    for name in image_module.FEL_IMAGE_FILES:
+        (robot.fw_dir / name).write_bytes(b"staged")
+    (robot.fw_dir / image_module.STAGED_IMAGE_MANIFEST).write_text("{}")
+    robot.state_set("image", f"model={ctx.model_spec.key} from build.zip")
+    image(ctx)
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+    assert "already staged" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_unsupported_model_warning_is_advisory_and_staging_continues(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    unpack = _two_build_responder(_FEL, 0)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv and argv[0] == "curl" and any("unsupported.txt" in item for item in argv):
+            return Result(argv, 0, "r9316\n", "")
+        return unpack(argv)
+
+    ctx = _reject_ctx(
+        make_ctx, tmp_path, identity=True, zip_=False, confirms=[True, True], responder=responder,
+    )
+    (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
+    built = tmp_path / "home/Downloads/dreame.vacuum.r9316_1782_fel_ng.zip"
+    _lands_during_the_wait(ctx, built)
+    image(ctx)
+    assert "unsupported list" in ctx.console.text()  # type: ignore[attr-defined]
+    assert ctx.need_robot().state_has("image")
 
 
 def test_image_stages_the_exact_model_not_its_lookalike(
@@ -472,3 +564,27 @@ def test_an_interrupted_publish_never_destroys_the_previous_image(
     ]
     assert survivors, "the previous build was destroyed by the interrupted publish"
     assert not robot.state_has("image")  # root() re-runs image() rather than flashing a gap
+
+
+def test_rejected_config_uses_physical_serial_guidance_and_prints_saved_pdf_diagnostics(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench", interactive=False)
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    (robot.recon_dir / "identity.txt").write_text(
+        "serialno: not supported\n"
+        "toc0hash: 0011\n"
+        "toc1hash: 2233\n"
+        "dustversion: 42\n"
+        "ramsize: 1024\n"
+        "toc1version: 7\n"
+    )
+
+    image_module._config_rejected_help(ctx)
+
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "physical serial under the dustbin" in text
+    assert "Saved diagnostics" in text
+    assert "dustversion" in text and "ramsize" in text and "toc1version" in text

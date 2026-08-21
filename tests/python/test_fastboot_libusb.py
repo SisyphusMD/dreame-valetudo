@@ -16,9 +16,11 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import runpy
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -447,3 +449,236 @@ def test_the_deadline_trips_when_the_wall_clock_steps_backwards(
     monkeypatch.setattr(fbl.time, "time", lambda: 1000.0)  # stepped back an hour mid-wait
     mono["now"] += 9.0
     assert expired() is True
+
+
+def test_reconstruct_rejects_a_corrupt_sparse_header() -> None:
+    with pytest.raises(fbl.FastbootError, match="bad sparse header"):
+        fbl._reconstruct([b"\x00" * fbl.SPARSE_HDR])
+
+
+class _ProtocolEndpoint:
+    def __init__(self, packets: list[bytes] | None = None) -> None:
+        self.packets = list(packets or [])
+        self.writes: list[tuple[bytes, int | None]] = []
+
+    def read(self, _size: int, timeout: int | None = None) -> bytes:
+        return self.packets.pop(0)
+
+    def write(self, data: object, timeout: int | None = None) -> None:
+        self.writes.append((bytes(data), timeout))
+
+
+def _protocol_client(packets: list[bytes]) -> Any:
+    client = fbl.Fastboot.__new__(fbl.Fastboot)
+    client.ep_in = _ProtocolEndpoint(packets)
+    client.ep_out = _ProtocolEndpoint()
+    return client
+
+
+def test_response_reader_surfaces_info_text_and_ignores_zero_length_packets() -> None:
+    client = _protocol_client([b"", b"INFOsettling", b"TEXTdetail", b"OKAYdone"])
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert client._read() == ("OKAY", b"done")
+    assert "(bootloader) settling" in err.getvalue()
+    assert "detail" in err.getvalue()
+
+
+def test_command_encodes_text_and_protocol_operations_reject_non_okay_replies() -> None:
+    client = _protocol_client([b"OKAYvalue"])
+    assert client.command("getvar:config") == ("OKAY", b"value")
+    assert client.ep_out.writes[0][0] == b"getvar:config"
+
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("FAIL", b"denied")
+    with pytest.raises(fbl.FastbootError, match="getvar config"):
+        client.getvar("config")
+    with pytest.raises(fbl.FastbootError, match="oem prep"):
+        client.oem("prep")
+    client.download = lambda _blob: None
+    with pytest.raises(fbl.FastbootError, match="flash boot1"):
+        client._flash_one("boot1", b"image")
+
+
+def test_download_validates_handshake_size_and_terminal_status() -> None:
+    client = _protocol_client([])
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("FAIL", b"denied")
+    with pytest.raises(fbl.FastbootError, match="download rejected"):
+        client.download(b"payload")
+
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("DATA", b"00000001")
+    with pytest.raises(fbl.FastbootError, match="device wants 1 bytes"):
+        client.download(b"payload")
+
+    client = _protocol_client([b"FAILtransfer"])
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("DATA", b"00000007")
+    with pytest.raises(fbl.FastbootError, match="download failed"):
+        client.download(b"payload")
+    assert client.ep_out.writes == [(b"payload", fbl.DATA_TIMEOUT)]
+
+
+def test_flash_refuses_empty_images_and_tolerates_an_unreadable_download_limit(tmp_path: Path) -> None:
+    client = _protocol_client([])
+    empty = tmp_path / "empty.img"
+    empty.write_bytes(b"")
+    with pytest.raises(fbl.FastbootError, match="empty image"):
+        client.flash("boot1", str(empty))
+
+    image = tmp_path / "image.img"
+    image.write_bytes(b"payload")
+    client.getvar = lambda _var: (_ for _ in ()).throw(fbl.FastbootError("unsupported"))
+    flashed: list[bytes] = []
+    client._flash_one = lambda _part, blob, _note="": flashed.append(bytes(blob))
+    client.flash("boot1", str(image))
+    assert flashed == [b"payload"]
+
+
+def test_upload_rejects_non_data_and_zero_length_chunks_do_not_complete_early(tmp_path: Path) -> None:
+    client = _protocol_client([])
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("FAIL", b"denied")
+    with pytest.raises(fbl.FastbootError, match="upload rejected"):
+        client.upload(str(tmp_path / "out"))
+
+    client = _upload_client(fbl, b"00000003", [b"", b"abc", b"OKAY"])
+    out = tmp_path / "out"
+    assert client.upload(str(out)) == 3
+    assert out.read_bytes() == b"abc"
+
+
+def test_reboot_sends_the_command_even_when_the_device_disconnects() -> None:
+    client = _protocol_client([])
+    client._read = lambda timeout=5000: (_ for _ in ()).throw(fbl.usb.core.USBError("gone"))
+    client.reboot()
+    assert client.ep_out.writes == [(b"reboot", fbl.CMD_TIMEOUT)]
+
+
+class _MainFastboot:
+    def getvar(self, var: str) -> str:
+        return var + "-value"
+
+    def oem(self, arg: str) -> None:
+        self.oem_arg = arg
+
+    def flash(self, part: str, path: str) -> None:
+        self.flash_args = (part, path)
+
+    def upload(self, path: str) -> int:
+        self.upload_path = path
+        return 7
+
+    def reboot(self) -> None:
+        self.rebooted = True
+
+
+@pytest.mark.parametrize(
+    ("argv", "fragment"),
+    [
+        (["getvar", "config"], "OKAY config-value"),
+        (["oem", "prep", "now"], "OKAY"),
+        (["flash", "boot1", "image"], "OKAY flashed boot1 <- image"),
+        (["upload", "out"], "OKAY uploaded 7 bytes -> out"),
+        (["get_staged", "out"], "OKAY uploaded 7 bytes -> out"),
+        (["reboot"], "OKAY reboot sent"),
+    ],
+)
+def test_main_dispatches_each_supported_usb_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    argv: list[str], fragment: str,
+) -> None:
+    monkeypatch.setattr(fbl, "Fastboot", _MainFastboot)
+    assert fbl.main(argv) == 0
+    assert fragment in capsys.readouterr().out
+
+
+def test_main_usage_unknown_devices_and_wait_outcomes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert fbl.main([]) == 2
+    monkeypatch.setattr(fbl, "Fastboot", _MainFastboot)
+    assert fbl.main(["unknown"]) == 2
+    monkeypatch.setattr(fbl, "find_device", lambda: (None, None, None))
+    assert fbl.main(["devices"]) == 1
+    monkeypatch.setattr(fbl, "expires_after", lambda _seconds: iter([False, True]).__next__)
+    assert fbl.main(["wait", "1"]) == 1
+    monkeypatch.setattr(fbl, "find_device", lambda: (object(), None, None))
+    monkeypatch.setattr(fbl, "expires_after", lambda _seconds: lambda: False)
+    assert fbl.main(["wait", "1"]) == 0
+    captured = capsys.readouterr()
+    assert "unknown command" in captured.err
+    assert "FAILED no device" in captured.err
+    assert "OKAY fastboot device present" in captured.out
+
+
+def test_successful_protocol_operations_return_bootloader_payloads() -> None:
+    client = _protocol_client([])
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("OKAY", b"value")
+    assert client.getvar("config") == "value"
+    assert client.oem("prep") == "value"
+    client.download = lambda _blob: None
+    client._flash_one("boot1", b"image")
+
+
+def test_command_accepts_bytes_without_reencoding() -> None:
+    client = _protocol_client([b"OKAYdone"])
+    assert client.command(b"raw-command") == ("OKAY", b"done")
+    assert client.ep_out.writes[0][0] == b"raw-command"
+
+
+def test_download_and_flash_complete_on_okay_terminal_replies() -> None:
+    client = _protocol_client([b"OKAYdone"])
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("DATA", b"00000007")
+    client.download(b"payload")
+    assert client.ep_out.writes == [(b"payload", fbl.DATA_TIMEOUT)]
+
+    client.command = lambda command, timeout=fbl.CMD_TIMEOUT: ("OKAY", b"")
+    client.download = lambda _blob: None
+    client._flash_one("boot1", b"image")
+
+
+def test_sparse_selftest_round_trips_a_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    image = tmp_path / "image.bin"
+    image.write_bytes(bytes(8192))
+    assert fbl.main(["sparse-selftest", str(image), "8192"]) == 0
+    output = capsys.readouterr().out
+    assert "round-trip=True" in output and "=> OK" in output
+
+
+def test_main_normalizes_missing_arguments_to_failed_status(capsys: pytest.CaptureFixture[str]) -> None:
+    assert fbl.main(["getvar"]) == 1
+    assert "FAILED" in capsys.readouterr().err
+
+
+def test_acquire_treats_an_incomplete_endpoint_pair_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def configuration() -> object:
+        return object()
+
+    def dispose(device: object) -> None:
+        disposed.append(device)
+
+    device = SimpleNamespace(get_active_configuration=configuration)
+    interface = SimpleNamespace(bInterfaceNumber=1)
+    disposed: list[object] = []
+    monkeypatch.setattr(fbl, "find_device", lambda: (device, object(), interface))
+    monkeypatch.setattr(fbl.usb.util, "find_descriptor", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(fbl.usb.util, "dispose_resources", dispose, raising=False)
+
+    client = fbl.Fastboot.__new__(fbl.Fastboot)
+    with pytest.raises(fbl._NotAcquired, match="no bulk endpoint pair"):
+        client._acquire()
+    assert disposed == [device]
+
+
+def test_main_devices_prints_a_present_fastboot_interface(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(fbl, "find_device", lambda: (object(), object(), object()))
+    assert fbl.main(["devices"]) == 0
+    assert "libusb\tfastboot" in capsys.readouterr().out
+
+
+def test_script_entry_point_exits_with_main_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", [str(_LIBEXEC)])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(_LIBEXEC), run_name="__main__")
+    assert exc.value.code == 2

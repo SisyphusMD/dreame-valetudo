@@ -153,7 +153,7 @@ class Context:
             robot_env=self.env.get("DREAME_ROBOT"), config_env=self.env.get("DREAME_CONFIG")
         )
 
-    # --- derived per-model_spec values ---
+    # --- derived per-model spec values ---
     @property
     def valetudo_version(self) -> str:
         return self.env.get("VALETUDO_VERSION") or VALETUDO_VERSION_DEFAULT

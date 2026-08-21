@@ -105,6 +105,10 @@ def changelog_delta(text: str, last: str, current: str) -> str:
 
 # A user who skipped many releases gets the newest few sections, not an unbounded dump at launch.
 _MAX_SECTIONS = 3
+# …and a bound on the OUTPUT, because capping sections bounds nothing when one section is long: a
+# single un-graduated [Unreleased] has already run to 166 lines, which is not "what's new", it is a
+# wall of text between the user and the command they typed.
+_MAX_LINES = 40
 
 
 def _cap_delta(delta: str) -> tuple[str, int]:
@@ -113,6 +117,14 @@ def _cap_delta(delta: str) -> tuple[str, int]:
     if len(secs) <= _MAX_SECTIONS:
         return delta, 0
     return "\n\n".join(body for _v, body in secs[:_MAX_SECTIONS]), len(secs) - _MAX_SECTIONS
+
+
+def _cap_lines(text: str) -> tuple[str, int]:
+    """(the first ``_MAX_LINES`` lines of ``text``, how many lines were dropped)."""
+    lines = text.splitlines()
+    if len(lines) <= _MAX_LINES:
+        return text, 0
+    return "\n".join(lines[:_MAX_LINES]), len(lines) - _MAX_LINES
 
 
 def show_whats_new(env: Mapping[str, str], console: Console) -> None:
@@ -125,10 +137,16 @@ def show_whats_new(env: Mapping[str, str], console: Console) -> None:
         delta = changelog_delta(_changelog_text(), last, __version__)
         if delta:
             shown, dropped = _cap_delta(delta)
+            shown, trimmed = _cap_lines(shown)
             console.say(f"Updated to dreame-valetudo {__version__} (was {last}) — what's new:")
             console.block(shown)
-            if dropped:
-                console.detail(f"(+{dropped} older release(s) not shown — full history: "
+            if dropped or trimmed:
+                more = []
+                if dropped:
+                    more.append(f"{dropped} older release(s)")
+                if trimmed:
+                    more.append(f"{trimmed} more line(s)")
+                console.detail(f"(+{' and '.join(more)} not shown — full history: "
                                "https://github.com/SisyphusMD/dreame-valetudo/blob/main/"
                                "CHANGELOG.md)")
     _write_last_version(env, __version__)

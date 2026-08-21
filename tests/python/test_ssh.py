@@ -621,3 +621,72 @@ def test_the_ap_hint_names_the_vpn_that_takes_the_robots_address() -> None:
     every "join the AP" instruction sends the operator to re-check something already correct."""
     assert "VPN" in AP_VPN_HINT
     assert ROBOT_AP_IP in AP_VPN_HINT
+
+
+def test_ap_wait_announces_steps_and_declines_after_timeout(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(confirms=[False])
+    monkeypatch.setattr(ssh_mod, "_AP_WAIT_POLLS", 1)
+    monkeypatch.setattr(ssh_mod, "_AP_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(ssh_mod, "ap_reachable", lambda _ctx: False)
+    assert ssh_mod.offer_ap_wait(ctx, announce=True) is False
+    assert "hold the two OUTER buttons" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_key_descriptions_fail_closed_for_invalid_and_unreadable_material(tmp_path: Path) -> None:
+    assert ssh_mod.key_fingerprint("!!!") == "unreadable"
+    assert "unrecognized" in ssh_mod.describe_key_line("not-a-key")
+    missing = tmp_path / "missing.pub"
+    assert ssh_mod.describe_pubkey_file(missing) is None
+    comments = tmp_path / "comments.pub"
+    comments.write_text("# only comments\n\n")
+    assert ssh_mod.describe_pubkey_file(comments) is None
+
+
+def test_key_resolution_skips_an_empty_pointer_and_finds_default_pair(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    work.mkdir()
+    ssh_mod._pointer(work).write_text("\n")
+    default = _keypair(home / ".ssh", "id_ed25519")
+    assert resolve_sshkey({}, home, work) == default
+
+
+def test_key_half_validation_names_inspection_empty_and_nonregular_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = tmp_path / "unreadable"
+    monkeypatch.setattr(
+        Path, "stat", lambda _path: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(Die, match="cannot be inspected safely"):
+        ssh_mod._key_half_status(unreadable, private=True)
+    monkeypatch.undo()
+
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(Die, match="regular file"):
+        ssh_mod._key_half_status(directory, private=False)
+    empty = tmp_path / "empty"
+    empty.write_text("")
+    empty.chmod(0o600)
+    with pytest.raises(Die, match="is empty"):
+        ssh_mod._key_half_status(empty, private=True)
+
+
+def test_public_identity_rejects_malformed_invalid_and_empty_blobs() -> None:
+    with pytest.raises(Die, match="one complete"):
+        ssh_mod._public_identity("bad", source="test")
+    with pytest.raises(Die, match="invalid key blob"):
+        ssh_mod._public_identity("ssh-ed25519 !!!", source="test")
+
+
+def test_keypair_validation_rejects_missing_public_half_without_commands(tmp_path: Path) -> None:
+    key = tmp_path / "id"
+    key.write_text("private")
+    key.chmod(0o600)
+    runner = RecordingRunner()
+    with pytest.raises(Die, match="incomplete SSH key pair"):
+        ssh_mod._validated_ssh_keypair(runner, key)
+    assert runner.transcript() == []

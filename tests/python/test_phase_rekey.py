@@ -25,6 +25,7 @@ import subprocess
 import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import CFG, FB, CtxFactory, dreame_ap_prefix, stage_dist
@@ -52,6 +53,7 @@ from dreame_valetudo.phases.rekey import (
 )
 from dreame_valetudo.phases.restore import _DUST_XOR
 from dreame_valetudo.run import Result
+from dreame_valetudo.workspace import Robot
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ext4-misc-1mib.img.gz"
 _EXT4_IMAGE = gzip.decompress(FIXTURE.read_bytes())
@@ -1518,3 +1520,444 @@ def test_reaching_something_that_is_not_the_robot_offers_another_round(
     assert any(kind == "confirm" and "check the key again" in msg for kind, msg in lines)
     # Two rounds actually ran: the offer is not merely printed, it re-checks.
     assert sum("NOT a refusal by the robot" in msg for _kind, msg in lines) == 2
+
+
+def test_flash_range_reader_rejects_past_end_and_short_slices(tmp_path: Path) -> None:
+    dump = tmp_path / "slice.bin"
+    dump.write_bytes(b"short")
+    with pytest.raises(ValueError, match="shorter than expected"):
+        rekey_module._read_flash_range([dump], b"\x00", 0, 10)
+    with pytest.raises(ValueError, match="extends past"):
+        rekey_module._read_flash_range([], b"\x00", 0, 1)
+
+
+def test_rollback_slots_never_overwrite_and_refuse_after_99(tmp_path: Path) -> None:
+    assert rekey_module._rollback_slot(tmp_path).name == "misc-before-rekey-1.img"
+    for index in range(1, 100):
+        (tmp_path / f"misc-before-rekey-{index}.img").write_bytes(b"copy")
+    with pytest.raises(Die, match="already holds 99 rollback copies"):
+        rekey_module._rollback_slot(tmp_path)
+
+
+def test_interrupted_recovery_refuses_unreadable_marker_and_operator_decline(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[False])
+    with pytest.raises(Die, match="unreadable attempt marker"):
+        rekey_module._recover_interrupted(ctx, ctx.need_robot(), CFG, tmp_path, "not-json")
+
+    rollback = tmp_path / "misc-before-rekey-1.img"
+    rollback.write_bytes(b"pristine")
+    marker = json.dumps({"rollback": rollback.name})
+    with pytest.raises(Die, match="Stopped, and nothing was written"):
+        rekey_module._recover_interrupted(ctx, ctx.need_robot(), CFG, tmp_path, marker)
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_enter_fel_and_pull_slice_fail_before_any_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(rekey_module, "wait_for_fel", lambda _ctx: False)
+    with pytest.raises(Die, match="No FEL device"):
+        rekey_module._enter_fel(ctx, CFG, "read the partition")
+    assert not any("flash" in call for call in ctx.runner.transcript())  # type: ignore[attr-defined]
+
+    with pytest.raises(Die, match="did not read back completely"):
+        rekey_module._pull_slice(ctx, tmp_path, 0)
+    assert not any(" flash " in f" {call} " for call in ctx.runner.transcript())  # type: ignore[attr-defined]
+
+
+def test_key_composition_rejects_malformed_public_key_and_detects_existing_keep() -> None:
+    with pytest.raises(Die, match="not a recognizable"):
+        rekey_module._compose([], "malformed", keep_existing=False)
+    line = "ssh-ed25519 AAAA owner"
+    assert rekey_module._compose([line], line, keep_existing=True) == (
+        [line], [], "already-authorized",
+    )
+
+
+def test_ask_serial_refuses_empty_input(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=[""])
+    with pytest.raises(UserAbort, match="No serial entered"):
+        rekey_module._ask_serial(ctx, None)
+
+
+def test_askpass_restores_preexisting_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SSH_ASKPASS", "old-helper")
+    monkeypatch.setenv("SSH_ASKPASS_REQUIRE", "prefer")
+    monkeypatch.setenv("DISPLAY", ":9")
+    with _password_askpass(tmp_path, "QUJDRA=="):
+        assert os.environ["SSH_ASKPASS_REQUIRE"] == "force"
+    assert os.environ["SSH_ASKPASS"] == "old-helper"
+    assert os.environ["SSH_ASKPASS_REQUIRE"] == "prefer"
+    assert os.environ["DISPLAY"] == ":9"
+
+
+def test_serial_authentication_reports_missing_ssh_and_unreachable_ap(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    missing = make_ctx(responder=lambda argv: Result(argv, 127, "", "ssh missing"))
+    with pytest.raises(Die, match="Could not run ssh"):
+        rekey_module._authenticate_with_serial(missing, tmp_path, "SERIAL")
+
+    unreachable = make_ctx(responder=lambda argv: Result(argv, 255, "", "network unreachable"))
+    with pytest.raises(Die, match="Could not reach the robot"):
+        rekey_module._authenticate_with_serial(unreachable, tmp_path, "SERIAL")
+
+
+def test_key_publish_failure_cleans_staging_and_reports_ambiguous_swap(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    results = iter([
+        Result(("ssh",), 0, "", ""),
+        Result(("ssh",), 0, "", ""),
+        Result(("ssh",), 1, "", "publish failed"),
+        Result(("ssh",), 0, "", ""),
+    ])
+    monkeypatch.setattr(rekey_module, "_password_run", lambda *_args, **_kwargs: next(results))
+    assert rekey_module._write_keys_over_ssh(
+        make_ctx(), tmp_path, "QUJDRA==", b"ssh-ed25519 AAAA\n",
+    ) is False
+
+
+def test_dropbear_refresh_failure_removes_staged_copy(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def failed(_ctx: Context, command: str, **_kwargs: object) -> Result:
+        calls.append(command)
+        return Result(("ssh",), 1, "", "failed")
+
+    monkeypatch.setattr(rekey_module, "_password_run", failed)
+    rekey_module._refresh_dropbear_copy(make_ctx(), tmp_path, "QUJDRA==")
+    assert calls[-1].startswith("rm -f")
+
+
+def test_rekey_requires_config_and_interactive_terminal_without_commands(make_ctx: CtxFactory) -> None:
+    no_config = make_ctx(robot_name="bench")
+    no_config.need_robot().state_set("rooted")
+    with pytest.raises(Die, match="No config value"):
+        rekey(no_config)
+    assert no_config.runner.transcript() == []  # type: ignore[attr-defined]
+
+    noninteractive = make_ctx(robot_name="bench", interactive=False)
+    noninteractive.need_robot().state_set("rooted")
+    noninteractive.need_robot().recon_dir.mkdir(parents=True)
+    (noninteractive.need_robot().recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    with pytest.raises(Die, match="requires an interactive terminal"):
+        rekey(noninteractive)
+    assert noninteractive.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [(None, "identified itself as a Valetudo robot"), ("2026.08.0", "answered as a Valetudo")],
+)
+def test_serial_authentication_distinguishes_a_router_from_a_valetudo_password_refusal(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    header: str | None, message: str,
+) -> None:
+    ctx = make_ctx(
+        responder=lambda argv: Result(argv, 255, "", "Permission denied (password).")
+    )
+    monkeypatch.setattr(rekey_module, "valetudo_version_header", lambda _runner: header)
+
+    with pytest.raises(rekey_module._WrongSerial, match=message):
+        rekey_module._authenticate_with_serial(ctx, tmp_path, "SERIAL")
+
+    assert len(ctx.runner.transcript()) == 2  # type: ignore[attr-defined]
+
+
+def test_serial_authentication_echoes_transport_detail_before_reporting_unreachable(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 255, "", "  route   unavailable  "))
+
+    with pytest.raises(Die, match="Could not reach the robot"):
+        rekey_module._authenticate_with_serial(ctx, tmp_path, "SERIAL")
+
+    assert "route unavailable" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_key_publish_staging_failure_cleans_up_without_publishing(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    commands: list[str] = []
+
+    def respond(_ctx: Context, command: str, **_kwargs: object) -> Result:
+        commands.append(command)
+        return Result(("ssh",), 1 if command.startswith("cat >") else 0, "", "stage failed")
+
+    monkeypatch.setattr(rekey_module, "_password_run", respond)
+    with pytest.raises(Die, match="Nothing it serves was touched"):
+        rekey_module._write_keys_over_ssh(
+            make_ctx(), tmp_path, "QUJDRA==", b"ssh-ed25519 AAAA\n",
+        )
+
+    assert commands == [f"cat > {_MISC_STAGED}", f"rm -f {_MISC_STAGED} {_DROPBEAR_STAGED}"]
+
+
+def test_uncertain_key_replacement_preserves_pointer_but_withholds_authorization(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    old = _sshkey(tmp_path, "old")
+    robot.state_set("sshkey", str(old))
+    robot.state_set("sshkey-authorized", "old")
+
+    rekey_module._report_key_refused(ctx, robot, tmp_path / "new", "uncertain")
+
+    assert robot.state_get("sshkey") == str(old)
+    assert robot.state_get("sshkey-authorized") == "old"
+    assert "whether ANY key" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_key_confirmation_surfaces_auth_guidance_and_records_no_success(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    key = _sshkey(tmp_path, "new")
+    monkeypatch.setattr(rekey_module, "is_dreame_ap", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        rekey_module, "robot_ssh",
+        lambda *_args, **_kwargs: Result(("ssh",), 255, "", "Permission denied"),
+    )
+    monkeypatch.setattr(rekey_module, "ssh_failure_guidance", lambda *_args: "Use the right key.")
+
+    rekey_module._confirm_key_works(ctx, robot, key)
+
+    assert robot.state_get("sshkey-authorized") is None
+    assert "Use the right key" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_usb_rekey_prepares_missing_tools_before_fastboot_validation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_rooted_robot(ctx)
+    called: list[str] = []
+    monkeypatch.setattr(rekey_module, "_sunxi_ready", lambda _ctx: False)
+    monkeypatch.setattr(rekey_module, "doctor", lambda _ctx: called.append("doctor"))
+    monkeypatch.setattr(rekey_module, "stage1_ready", lambda _ctx: False)
+    monkeypatch.setattr(rekey_module, "fetch_stage1", lambda _ctx: called.append("fetch"))
+    monkeypatch.setattr(
+        rekey_module, "check_fastboot_client",
+        lambda _ctx: (_ for _ in ()).throw(Die("fastboot unavailable")),
+    )
+
+    with pytest.raises(Die, match="fastboot unavailable"):
+        rekey(ctx)
+
+    assert called == ["doctor", "fetch"]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def _usb_rekey_context(make_ctx: CtxFactory, tmp_path: Path, *, confirms: list[bool] | None = None) -> Context:
+    key = _sshkey(tmp_path, "id_branch", blob="BBBB", comment="branch@test")
+    ctx = make_ctx(
+        robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+        responder=_responder(sealed=_sealed_flash_slice()), confirms=confirms,
+    )
+    _prepare_rooted_robot(ctx)
+    return ctx
+
+
+def test_usb_rekey_refuses_a_partition_table_without_misc(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path)
+    monkeypatch.setattr(rekey_module, "_parse_gpt", lambda _head: ({}, 0))
+
+    with pytest.raises(Die, match="no 'misc' partition"):
+        rekey(ctx)
+
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_usb_rekey_refuses_misc_beyond_the_readable_window(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path)
+    past_end = len(RECOVERY_DUMP_NAMES) * _DUMP_BYTES
+    monkeypatch.setattr(
+        rekey_module, "_parse_gpt",
+        lambda _head: ({"misc": SimpleNamespace(start=past_end, size=_MISC_SIZE)}, 0),
+    )
+
+    with pytest.raises(Die, match="past the readable flash window"):
+        rekey(ctx)
+
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_usb_rekey_reads_each_slice_needed_to_reach_misc(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path)
+    monkeypatch.setattr(
+        rekey_module, "_parse_gpt",
+        lambda _head: ({
+            "misc": SimpleNamespace(start=_DUMP_BYTES + _MISC_START, size=_MISC_SIZE),
+        }, 0),
+    )
+
+    rekey(ctx, dry_run=True)
+
+    assert ("oem", "stage1") in _fb(ctx)
+    assert any(RECOVERY_DUMP_NAMES[1] in " ".join(call) for call in _fb(ctx))
+
+
+def test_usb_rekey_keeps_the_pristine_copy_when_authorized_keys_is_unreadable(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path)
+    monkeypatch.setattr(
+        rekey_module, "find_root_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad ext4 metadata")),
+    )
+
+    with pytest.raises(Die, match=r"does not hold an editable.*bad ext4 metadata"):
+        rekey(ctx)
+
+    assert _rollbacks(ctx)
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_usb_rekey_refuses_a_patch_that_does_not_read_back(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path)
+    monkeypatch.setattr(rekey_module, "replace_root_file", lambda image, _slot, _content: image)
+
+    with pytest.raises(Die, match="did not read back as written"):
+        rekey(ctx)
+
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_usb_rekey_reports_a_workspace_marker_failure_after_a_confirmed_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path, confirms=[True])
+    robot = ctx.need_robot()
+    real_state_set = Robot.state_set
+
+    def fail_authorized(self: Robot, name: str, value: str = "done") -> None:
+        if self.work == robot.work and name == "sshkey-authorized":
+            raise OSError("workspace full")
+        real_state_set(self, name, value)
+
+    monkeypatch.setattr(Robot, "state_set", fail_authorized)
+    with pytest.raises(Die, match=r"flashed OKAY.*workspace full"):
+        rekey(ctx)
+
+    assert any(call[0] == "flash" for call in _fb(ctx))
+    assert _fb(ctx)[-1] == ("reboot",)
+
+
+def test_usb_rekey_reports_a_postflash_key_rejection_without_retrying_the_write(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path, confirms=[True])
+    monkeypatch.setattr(rekey_module, "_verify_over_ap", lambda *_args: "rejected")
+
+    rekey(ctx)
+
+    assert "did NOT accept the key" in ctx.console.text()  # type: ignore[attr-defined]
+    assert sum(call[0] == "flash" for call in _fb(ctx)) == 1
+
+
+def test_interrupted_recovery_restores_the_key_pointer_that_preceded_the_flash(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    old = _sshkey(tmp_path, "id_old")
+    ctx = _usb_rekey_context(make_ctx, tmp_path, confirms=[True])
+    robot = ctx.need_robot()
+    pristine = robot.work / "rekey-rollback" / "misc-before-rekey-1.img"
+    pristine.parent.mkdir(parents=True, exist_ok=True)
+    pristine.write_bytes(_EXT4_IMAGE)
+    robot.state_set("rekey-attempt", json.dumps({
+        "rollback": pristine.name, "config": CFG, "previous_sshkey": str(old),
+    }))
+
+    rekey(ctx)
+
+    assert robot.state_get("sshkey") == str(old)
+    assert robot.state_get("rekey-attempt") is None
+
+
+def test_over_ssh_refuses_to_replace_keys_when_the_persistent_file_cannot_be_read(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB")
+    ctx = make_ctx(
+        robot_name="bench", env={"DREAME_SSHKEY": str(key)}, asks=[_SERIAL], confirms=[True],
+    )
+    _prepare_rooted_robot(ctx)
+    robot = _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+    robot.files.pop(_MISC_KEYS)
+
+    with pytest.raises(Die, match=r"could not be read.*nothing was changed"):
+        rekey(ctx, over_ssh=True)
+
+    assert f"cat > {_MISC_STAGED}" not in _remote_commands(ctx)
+
+
+def test_over_ssh_operator_decline_writes_nothing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = _sshkey(tmp_path, "id_new", blob="BBBB")
+    ctx = make_ctx(
+        robot_name="bench", env={"DREAME_SSHKEY": str(key)}, asks=[_SERIAL], confirms=[False],
+    )
+    _prepare_rooted_robot(ctx)
+    _FakeRobot(password=_password_candidates(_SERIAL)[0]).install(ctx)
+
+    with pytest.raises(UserAbort, match="nothing was written"):
+        rekey(ctx, over_ssh=True)
+
+    assert f"cat > {_MISC_STAGED}" not in _remote_commands(ctx)
+
+
+def test_already_authorized_usb_key_reports_a_live_rejection(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    key = _sshkey(
+        tmp_path, "id_same", algo=_EXISTING_ALGO, blob=_EXISTING_BLOB, comment="mine",
+    )
+    ctx = make_ctx(
+        robot_name="bench", env={"DREAME_SSHKEY": str(key)},
+        responder=_responder(sealed=_sealed_flash_slice()),
+    )
+    _prepare_rooted_robot(ctx)
+    monkeypatch.setattr(rekey_module, "_verify_over_ap", lambda *_args: "rejected")
+
+    rekey(ctx)
+
+    assert "SSH still refused" in ctx.console.text()  # type: ignore[attr-defined]
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_usb_rekey_operator_decline_leaves_only_the_pristine_local_copy(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _usb_rekey_context(make_ctx, tmp_path, confirms=[False])
+
+    with pytest.raises(UserAbort, match="nothing was written"):
+        rekey(ctx)
+
+    assert _rollbacks(ctx)
+    assert not any(call[0] == "flash" for call in _fb(ctx))
+
+
+def test_rekey_robot_state_reports_absence_and_the_recorded_authorization(
+    make_ctx: CtxFactory,
+) -> None:
+    robot = make_ctx(robot_name="bench").need_robot()
+    assert rekey_module.rekey_robot_state(robot) is None
+    robot.state_set("sshkey-authorized", "id_new over-ssh")
+    assert rekey_module.rekey_robot_state(robot) == "id_new over-ssh"

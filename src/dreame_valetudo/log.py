@@ -58,7 +58,7 @@ _MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]
 
 # Fixed public identifiers can share the shape of a miio key. An exact-literal allowlist preserves
 # diagnostic meaning without exempting arbitrary credential-shaped strings. Drift guards cover the
-# dump names and every model_spec-derived value.
+# dump names and every model spec-derived value.
 _PUBLIC_TOKENS = frozenset({
     *RECOVERY_DUMP_NAMES, "toc0hash", "toc1hash",
     *(load_model_spec(key).fsbl_addr for key in SUPPORTED_MODELS),

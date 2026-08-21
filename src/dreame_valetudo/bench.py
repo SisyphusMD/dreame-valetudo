@@ -2687,7 +2687,7 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         # The operator cannot make this mistake on demand: selection loads the workspace's saved
         # model_key and ignores DREAME_MODEL, so a probe that asked them to pick the wrong model
         # could never start. Swap to a confusable model here, after selection, touching only this
-        # process's model_spec — the workspace's own binding on disk is left exactly as it was.
+        # process's model spec — the workspace's own binding on disk is left exactly as it was.
         # Derive the probe from the model the completed RECON is bound to, never from the current
         # selection. `model` can change a workspace's saved model after recon, and a probe derived
         # from that could land back on the recon-bound model — root's authorization would match and
@@ -3910,7 +3910,7 @@ class _CampaignState:
             ctx.console.ask("Press Enter when you are ready to start this scenario.")
         self.surface = surface
         self.attempted += 1
-        # wrong-model-root deliberately swaps in a confusable model_spec to prove the flash gate
+        # wrong-model-root deliberately swaps in a confusable model spec to prove the flash gate
         # catches it. That was self-limiting while every scenario was its own process; sharing one
         # context across a session leaves the wrong model selected for everything after it.
         selected = ctx.model_spec

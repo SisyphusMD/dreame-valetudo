@@ -12,7 +12,7 @@ import re
 import shutil
 from pathlib import Path
 
-from ..console import Die, die, warn_if_low_disk
+from ..console import Die, die, safety_stop, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry, wait_for_fel
@@ -98,7 +98,7 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
             found[model_spec.key] = model_spec
     if not found:
         if not ctx.interactive and requires_positive_model_verification(ctx.model_spec.key):
-            die(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
+            safety_stop(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
                 "but this bootloader did not report a recognisable model. Re-run interactively "
                 "and verify the physical label before flashing.")
         ctx.console.info("This bootloader does not report a recognisable model, so the chosen "
@@ -106,7 +106,7 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
         return
     if len(found) != 1:
         if not ctx.interactive and requires_positive_model_verification(ctx.model_spec.key):
-            die(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
+            safety_stop(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
                 "but this bootloader reported ambiguous model identifiers. Re-run interactively "
                 "and verify the physical label before flashing.")
         ctx.console.info("This bootloader reports ambiguous model identifiers, so the chosen "
@@ -114,7 +114,7 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
         return
     reported = next(iter(found.values()))
     if reported.key != ctx.model_spec.key:
-        die(f"SAFETY STOP: the chosen model is {ctx.model_spec.model}, but the bootloader reports "
+        safety_stop(f"SAFETY STOP: the chosen model is {ctx.model_spec.model}, but the bootloader reports "
             f"{reported.model}. Choose {reported.model} to fix the mismatch.")
     ctx.console.info(f"Bootloader model verified: {ctx.model_spec.model}.")
 
@@ -299,7 +299,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         prior_file = ctx.robot.recon_dir / "config.txt"
         prior = parse_config(prior_file.read_text()) if prior_file.is_file() else None
         if prior and prior != cfg:
-            die(f"SAFETY STOP: this robot dir is {prior} but the connected device is {cfg} — "
+            safety_stop(f"SAFETY STOP: this robot dir is {prior} but the connected device is {cfg} — "
                 "different robot. Resume the right one, or start fresh.")
         if prior is None and existing is not None and existing.work != ctx.robot.work:
             ctx.console.warn(f"This robot is already set up as '{existing.display_name()}' — using "

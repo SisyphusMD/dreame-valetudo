@@ -61,6 +61,18 @@ def test_run_redirect_missing_tool_is_rc_127(tmp_path: Path) -> None:
     assert "command not found" in r.stderr
 
 
+def test_run_redirect_reports_permission_denial_and_honors_check(tmp_path: Path) -> None:
+    script = tmp_path / "not-executable"
+    script.write_text("#!/bin/sh\n")
+    out = tmp_path / "out.bin"
+
+    result = SubprocessRunner().run_redirect([str(script)], stdout_path=str(out), check=False)
+    assert result.returncode == 126
+    assert "permission denied" in result.stderr
+    with pytest.raises(RunError, match="permission denied"):
+        SubprocessRunner().run_redirect([str(script)], stdout_path=str(out))
+
+
 def test_subprocess_timeout_is_a_clean_rc_124_with_partial_diagnostics() -> None:
     # The partial output only exists if the child finished printing before the deadline, and
     # interpreter startup alone can exceed a tens-of-milliseconds deadline on a busy runner.
@@ -170,6 +182,15 @@ def test_recording_runner_check_raises_on_scripted_failure() -> None:
         rr.run(["fbt", "flash", "toc1", "x"])
     # ...but the failed call is still recorded (so a transcript check sees it).
     assert rr.calls == [("fbt", "flash", "toc1", "x")]
+
+
+def test_recording_redirect_honors_scripted_failure_and_check(tmp_path: Path) -> None:
+    rr = RecordingRunner()
+    rr.redirect_responder = lambda argv, _out, _in: Result(argv, 7, "", "write failed")
+
+    with pytest.raises(RunError, match="write failed"):
+        rr.run_redirect(["tool", "dump"], stdout_path=str(tmp_path / "dump"))
+    assert rr.calls == [("tool", "dump")]
 
 
 def test_transcript_normalizes_tool_to_basename() -> None:

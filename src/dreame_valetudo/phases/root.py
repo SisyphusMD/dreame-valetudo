@@ -13,7 +13,7 @@ import signal
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 
-from ..console import abort, die
+from ..console import abort, die, safety_stop
 from ..constants import (
     ADOPTED_ROOT,
     CURRENT_ROOT,
@@ -115,14 +115,14 @@ def _check_image_built_for(dust: str, expect_cfg: str) -> None:
     between the staged image and the robot it was built for.
     """
     if len(dust) != 8 or not _HEX_DIGITS.issuperset(dust) or len(expect_cfg) < 8:
-        die(
+        safety_stop(
             "SAFETY STOP: the staged image's check.txt is not the expected 8-hex identity token. "
             "Its target robot cannot be verified, so refusing to flash. Re-run 'image --force' "
             "to stage a current build; if the builder changed this format, update the tool first."
         )
     built_for = int(dust, 16) ^ _DUST_XOR
     if built_for != int(expect_cfg[:8], 16):
-        die(f"SAFETY STOP: the staged image was built for config {built_for:08x}… but this robot's "
+        safety_stop(f"SAFETY STOP: the staged image was built for config {built_for:08x}… but this robot's "
             f"recon identity is {expect_cfg[:8].lower()}…. Wrong image for this robot — refusing "
             "to flash. Re-run 'image --force' to stage this robot's own build.")
 
@@ -137,22 +137,22 @@ def _check_staged_integrity(ctx: Context) -> None:
     robot = ctx.need_robot()
     marker = robot.state_get("image") or ""
     if f"model={ctx.model_spec.key}" not in marker:
-        die("SAFETY STOP: the staged image is not recorded for the currently selected model. "
+        safety_stop("SAFETY STOP: the staged image is not recorded for the currently selected model. "
             "Re-run 'image --force' before flashing.")
     path = robot.fw_dir / STAGED_IMAGE_MANIFEST
     try:
         data = json.loads(path.read_text())
         files = data["files"]
     except (OSError, ValueError, KeyError, TypeError):
-        die("SAFETY STOP: the staged image has no readable integrity record. Re-run "
+        safety_stop("SAFETY STOP: the staged image has no readable integrity record. Re-run "
             "'image --force' before flashing.")
     if data.get("model_key") != ctx.model_spec.key or not isinstance(files, dict):
-        die("SAFETY STOP: the staged image integrity record belongs to another model. Re-run "
+        safety_stop("SAFETY STOP: the staged image integrity record belongs to another model. Re-run "
             "'image --force' before flashing.")
     for name in FEL_IMAGE_FILES:
         expected = files.get(name)
         if not isinstance(expected, str) or sha256_of(robot.fw_dir / name) != expected:
-            die(f"SAFETY STOP: staged {name} changed after extraction. Refusing to flash; re-run "
+            safety_stop(f"SAFETY STOP: staged {name} changed after extraction. Refusing to flash; re-run "
                 "'image --force' to stage a clean build.")
 
 
@@ -160,7 +160,7 @@ def _check_staged_integrity(ctx: Context) -> None:
 def root(ctx: Context, *, force: bool = False) -> None:
     robot = ctx.need_robot()
     if robot.state_has("flash-attempt") and not force:
-        die("SAFETY STOP: a prior flash attempt did not reach a durable completion marker. The "
+        safety_stop("SAFETY STOP: a prior flash attempt did not reach a durable completion marker. The "
             "robot may already be fully or partly flashed, so this tool will not repeat the write "
             "automatically. Inspect the robot and recovery evidence first; use 'root --force' only "
             "after deliberately deciding that another complete flash is safe.")
@@ -174,7 +174,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
             "'dreame-valetudo restore' without --force; it will resume observation without "
             "writing firmware again.")
     if restore_attempt is not None and not robot.state_has("restored-stock"):
-        die("SAFETY STOP: a prior stock-restore attempt did not record completion. Complete the "
+        safety_stop("SAFETY STOP: a prior stock-restore attempt did not record completion. Complete the "
             "stock recovery with 'dreame-valetudo restore --force' before starting another root.")
     if robot.state_get("root-origin") == ADOPTED_ROOT and not force:
         ctx.console.warn("This robot's existing root was deliberately adopted without reflashing. "
@@ -186,7 +186,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
                          "flash again.")
         return
     if not robot.state_has("recon"):
-        die("SAFETY STOP: this robot has no completed reconnaissance record. A failed or "
+        safety_stop("SAFETY STOP: this robot has no completed reconnaissance record. A failed or "
             "interrupted recon cannot authorize a flash; re-run recon successfully first.")
 
     # Both authorization checks run before the first runner call, so a robot the completed recon
@@ -199,14 +199,14 @@ def root(ctx: Context, *, force: bool = False) -> None:
     recon_models = [field.removeprefix("model=") for field in recon_state.split()
                     if field.startswith("model=")]
     if len(recon_models) != 1 or recon_models[0] != ctx.model_spec.key:
-        die("SAFETY STOP: the completed recon is not bound to the currently selected model. A "
+        safety_stop("SAFETY STOP: the completed recon is not bound to the currently selected model. A "
             "legacy, missing, duplicate, or mismatched model authorization cannot permit a "
             "hardware write; run 'dreame-valetudo recon --force' for this model first.")
     expect_cfg = robot.config(
         robot_env=ctx.env.get("DREAME_ROBOT"), config_env=ctx.env.get("DREAME_CONFIG")
     )
     if not expect_cfg:
-        die(f"SAFETY STOP: no recorded config value to verify the connected robot against "
+        safety_stop(f"SAFETY STOP: no recorded config value to verify the connected robot against "
             f"(missing/unreadable {robot.recon_dir / 'config.txt'}). Refusing to flash blind — "
             "re-run recon for this robot first.")
 
@@ -228,7 +228,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
         if (robot.fw_dir / name).stat().st_size < minimum
     ]
     if undersized:
-        die("SAFETY STOP: the staged image contains implausibly short files: "
+        safety_stop("SAFETY STOP: the staged image contains implausibly short files: "
             f"{', '.join(undersized)}. Refusing to flash; re-run 'image --force' to stage a "
             "complete build.")
     _check_staged_integrity(ctx)
@@ -294,7 +294,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     # Restore the narrower form only if a bench run actually shows the suffix changing across
     # sessions on one robot.
     if live_cfg != expect_cfg:
-        die(f"SAFETY STOP: connected robot config={live_cfg} but this image was built for "
+        safety_stop(f"SAFETY STOP: connected robot config={live_cfg} but this image was built for "
             f"{expect_cfg}. Wrong robot or wrong image — refusing to flash. (Different robot? Use "
             "DREAME_ROBOT=<name>.)")
     ctx.console.info(f"Robot identity confirmed (config={live_cfg}).")
