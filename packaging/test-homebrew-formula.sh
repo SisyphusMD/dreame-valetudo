@@ -61,13 +61,13 @@ path = Pathname.new(ARGV[1]).realpath.to_s
 url = "file://#{URI::DEFAULT_PARSER.escape(path)}"
 sha = ARGV[2]
 text = formula.read
+# One url, one sha256, and NO mirror: the formula builds from the PyPI sdist, which has a single
+# canonical location. A mirror line here would mean two archives answering to one checksum.
 unless [text.scan(/^  url ".*"$/).length,
-        text.scan(/^  mirror ".*"$/).length,
-        text.scan(/^  sha256 ".*"$/).length] == [1, 1, 1]
-  abort "Homebrew formula template did not contain exactly one URL, mirror, and SHA"
+        text.scan(/^  sha256 ".*"$/).length] == [1, 1] && text.scan(/^  mirror ".*"$/).empty?
+  abort "Homebrew formula template did not contain exactly one URL and SHA, and no mirror"
 end
 text.sub!(/^  url ".*"$/, "  url \"#{url}\"")
-text.sub!(/^  mirror ".*"\n/, "")
 text.sub!(/^  sha256 ".*"$/, "  sha256 \"#{sha}\"")
 formula.write(text)
 RB

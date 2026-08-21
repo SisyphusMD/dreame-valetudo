@@ -36,6 +36,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # CURRENT tooling, FULL history. Not `ref: $TAG`: this workflow is the documented repair
+          # path for an older release, and checking that tag out would run ITS update-tap.sh —
+          # which for anything already published takes two arguments, while this calls it with
+          # three and would exit on usage. The current helper archives `refs/tags/$TAG` itself, so
+          # all it needs from the checkout is that the tag ref is present.
+          fetch-depth: 0
+          persist-credentials: false
       # Retried in-step: a transient versions-manifest fetch failure took all five CI
       # jobs down together on 2026-08-17, and Forgejo exposes no rerun endpoint, so
       # recovery has to happen inside the job. The guard is `!= 'success'`, not
