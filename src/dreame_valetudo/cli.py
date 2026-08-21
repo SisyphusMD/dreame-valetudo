@@ -21,7 +21,7 @@ from .bench import (
     bench_needs_robot,
     validate_bench_args,
 )
-from .console import Console, Die, UserAbort, die, idle_timeout
+from .console import Console, Die, SafetyStop, UserAbort, die, idle_timeout, safety_stop
 from .constants import ADOPTED_ROOT, RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from .context import Context
 from .dustbuilder import verify_all_forms, verify_form
@@ -500,7 +500,7 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         restore(ctx)
         return
     if restore_attempt is not None:
-        die("SAFETY STOP: a prior stock-restore attempt did not record completion. Do not let "
+        safety_stop("SAFETY STOP: a prior stock-restore attempt did not record completion. Do not let "
             "automatic rooting or installation continue from an uncertain firmware state. "
             "Inspect the robot, then run 'dreame-valetudo restore --force' only after deliberately "
             "deciding to repeat the complete stock restore.")
@@ -580,8 +580,18 @@ def _model_lines() -> str:
     return "\n".join(lines)
 
 
-def usage(console: Console) -> None:
-    console.info(
+def usage(console: Console, only: str | None = None) -> None:
+    """The runbook. With ``only``, just the line(s) for that command.
+
+    `<command> --help` used to print the entire global usage — every model, every verb —
+    which answers a narrower question than the one that was asked. The text is the same
+    text; this only decides how much of it is relevant.
+    """
+    _emit_usage(console, only)
+
+
+def _emit_usage(console: Console, only: str | None = None) -> None:
+    rendered = (
         "\nDreame -> Valetudo rooting runbook (macOS/Linux, idempotent)\n\n"
         f"{_model_lines()}\n\n"
         "  dreame-valetudo            no args: pick a model + robot, then drive every phase\n"
@@ -614,6 +624,7 @@ def usage(console: Console) -> None:
         "  dreame-valetudo verify-forms check every fastboot model's live form (CI/maintenance)\n"
         "  dreame-valetudo bench ...    run and record a hardware qualification campaign\n"
         "  dreame-valetudo install-udev  Linux only, one-time, needs sudo: grant sudo-less USB access\n"
+        "  dreame-valetudo uninstall  find every copy of this tool and remove the ones you pick\n"
         "  dreame-valetudo version    print the version\n"
         "  dreame-valetudo help       this help\n\n"
         "  Env overrides: DREAME_MODEL, DREAME_ROBOT, DREAME_WORK, DREAME_BACKUPS, DREAME_SSHKEY,\n"
@@ -621,6 +632,18 @@ def usage(console: Console) -> None:
         "                 DREAME_NO_TMUX, DREAME_IDLE_TIMEOUT, DREAME_NO_UPDATE_CHECK,\n"
         "                 DREAME_NO_DECRYPT, DREAME_NO_UDEV_CHECK, DREAME_FASTBOOT.\n"
     )
+    if only is None:
+        console.info(rendered)
+        return
+    # The whole command TOKEN, not a prefix: `verify-form --help` also matched the `verify-forms`
+    # line and answered with a command the user did not ask about.
+    wanted = [ln for ln in rendered.splitlines()
+              if ln.split()[1:2] == [only] and ln.strip().startswith("dreame-valetudo ")]
+    if not wanted:
+        console.info(rendered)
+        return
+    console.info("\n" + "\n".join(wanted)
+                 + "\n\n  dreame-valetudo help    every command\n")
 
 
 def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
@@ -1123,7 +1146,9 @@ def _run(
         # silently ignored must not create the workspace, run the first-launch layout migration, or
         # reach the robot picker — which persists whatever name it is given.
         if any(argument in {"-h", "--help"} for argument in args[1:]):
-            usage(con)
+            # `<command> --help` answers about that command; a bare `--help` answers about all of
+            # them. Both come from the same runbook text.
+            usage(con, only=cmd if cmd in _KNOWN_COMMANDS and cmd != "help" else None)
             return 0, None
         if cmd not in _KNOWN_COMMANDS:
             con.err(f"Unknown command: {cmd}")
@@ -1238,6 +1263,14 @@ def _run(
         if log is not None:
             log.finish(0)
         return 0, log.path if log else None
+    except SafetyStop as exc:
+        con.err(str(exc))
+        if log is not None:
+            con.info(f"A scrubbed log of this run was saved to {log.path}")
+            con.info("You can share it to report the problem: "
+                     "https://github.com/SisyphusMD/dreame-valetudo/issues")
+            log.finish(2)
+        return 2, log.path if log else None
     # Expected failures still surface cleanly even when they occur after an earlier phase wrote
     # durable state or a destructive operation partially completed.
     except (Die, ValueError, RunError, OSError) as exc:
