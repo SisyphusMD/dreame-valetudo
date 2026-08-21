@@ -3,6 +3,9 @@
 name = "dreame-valetudo"
 version = "0.2.1"
 description = "Guided, idempotent tool to root supported Dreame robot vacuums and install Valetudo"
+# Rendered as the PyPI project page. Without it the page is blank, which for a tool that rewrites
+# a robot's firmware is the last place to leave someone without context.
+readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
@@ -10,6 +13,15 @@ requires-python = ">=3.11"
 # libusb client, which runs as a subprocess (via `uv run --with pyusb`, a pyusb-capable python, or
 # the frozen dreame-fastboot binary). PYUSB_VERSION is pinned in constants.py (Renovate-tracked).
 dependencies = []
+
+# Source points at Forgejo because that is where the code actually lives and where releases are
+# cut; GitHub is a push-mirror. Homepage, docs and issues point at GitHub because that is where
+# users are. Same split as whiskerless.
+[project.urls]
+Homepage = "https://github.com/SisyphusMD/dreame-valetudo"
+Documentation = "https://github.com/SisyphusMD/dreame-valetudo/tree/main/docs"
+Source = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
+Issues = "https://github.com/SisyphusMD/dreame-valetudo/issues"
 
 [project.scripts]
 dreame-valetudo = "dreame_valetudo.cli:main"
