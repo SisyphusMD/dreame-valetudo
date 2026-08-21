@@ -220,3 +220,57 @@ def test_fetch_valetudo_can_explicitly_accept_an_unverified_override(
     ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
     assert ctx.valetudo_bin.read_bytes() == b"custom valetudo"
+
+
+@pytest.mark.parametrize("staged_kind", ["file", "directory", "symlink"])
+def test_stage1_reextract_clears_every_kind_of_abandoned_staging_path(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, staged_kind: str,
+) -> None:
+    ctx = make_ctx()
+    digest = hashlib.sha256(b"archive").hexdigest()
+    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    ctx.ws.dist.mkdir(parents=True)
+    staged = ctx.ws.dist / ".stage1-extract"
+    if staged_kind == "file":
+        staged.write_text("abandoned")
+    elif staged_kind == "directory":
+        staged.mkdir()
+        (staged / "partial").write_text("abandoned")
+    else:
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        staged.symlink_to(target, target_is_directory=True)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("payload")
+            (target / ctx.fsbl_name).write_text("fsbl")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    fetch_mod.fetch_stage1(ctx)
+    assert ctx.payload_bin.read_text() == "payload"
+    assert not staged.exists()
+
+
+def test_stage1_extract_refuses_an_archive_missing_the_profile_fsbl(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"archive").hexdigest())
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("payload")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    with pytest.raises(Die, match=r"didn't yield.*fsbl"):
+        fetch_mod.fetch_stage1(ctx)
+    assert not (ctx.ws.dist / ".stage1-extract").exists()

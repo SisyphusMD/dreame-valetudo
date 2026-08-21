@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .. import manifest
-from ..console import abort, die, warn_if_low_disk
+from ..console import abort, die, safety_stop, warn_if_low_disk
 from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING
 from ..context import Context
 from ..fel import print_fel_entry, wait_for_fel
@@ -720,7 +720,7 @@ def _verified_recovery_provenance(
     if (parse_config(stored_config) != stored_config
             or not same_robot_config(stored_config, config)
             or provenance["model_key"] != ctx.model_spec.key):
-        die("SAFETY STOP: the recovery capture provenance belongs to a different robot or model. "
+        safety_stop("SAFETY STOP: the recovery capture provenance belongs to a different robot or model. "
             "Refusing to build a stock restore kit from it.")
     if provenance["firmware_state"] != "stock-user-attested":
         die("This recovery capture was not attested as untouched factory firmware when it was "
@@ -825,7 +825,7 @@ def _finish_restore_boot_check(ctx: Context, robot: Robot, config: str) -> None:
             "restore-attempt",
             f"{RESTORE_BOOT_PENDING} returned-to-fel model={ctx.model_spec.key} config={config}",
         )
-        die("SAFETY STOP: the robot returned to FEL after every stock flash reported OKAY. Stock "
+        safety_stop("SAFETY STOP: the robot returned to FEL after every stock flash reported OKAY. Stock "
             "boot is not recorded complete. The restore kit deliberately uses one authenticated "
             "generation in both A/B slots; another captured generation is not flashed unless it "
             "has an independently complete matching trust chain. Preserve the workspace and "
@@ -1056,7 +1056,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     """Restore the normal DustBuilder-rooting path to the robot's captured stock firmware."""
     robot = ctx.need_robot()
     if robot.state_has("flash-attempt") and not force:
-        die("SAFETY STOP: a prior rooting attempt did not record completion. The robot may contain "
+        safety_stop("SAFETY STOP: a prior rooting attempt did not record completion. The robot may contain "
             "a mixture of rooted and stock firmware, so stock restore requires an explicit "
             "'dreame-valetudo restore --force' decision.")
     if robot.state_has("restored-stock") and not force:
@@ -1080,7 +1080,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         _finish_restore_boot_check(ctx, robot, config)
         return
     if restore_attempt is not None and not force:
-        die("SAFETY STOP: a prior stock-restore attempt did not record completion. The robot may "
+        safety_stop("SAFETY STOP: a prior stock-restore attempt did not record completion. The robot may "
             "be partly restored, so this tool will not write again automatically. Inspect the "
             "robot and run 'restore --force' only after deliberately deciding to repeat it.")
     if ctx.model_spec.method != "fastboot":
@@ -1125,7 +1125,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         ctx.fastboot.report_failure(result)
         die("Couldn't read the connected robot's config identity — aborting before any write.")
     if not same_robot_config(live_config, config):
-        die("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
+        safety_stop("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
             "— refusing to restore.")
     ctx.console.info("Robot and restore-kit identity confirmed.")
     if not stock_restore_kit_valid(kit, config, ctx.model_spec.key):

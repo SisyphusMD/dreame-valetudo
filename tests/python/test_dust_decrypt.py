@@ -121,3 +121,20 @@ def test_dense_slice_alone_is_rejected() -> None:
         dust_decrypt.decrypt_dump(cipher)
     with pytest.raises(ValueError):
         dust_decrypt.recover_shared_keystream([cipher])
+
+
+def test_fill_probe_rejects_a_dense_sample() -> None:
+    assert dust_decrypt._xored_sample_has_fill(b"\x01" * 100, b"\x00") is False
+
+
+def test_shared_recovery_rejects_a_digest_valid_key_without_zero_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = b"\x00"
+    monkeypatch.setattr(dust_decrypt, "_vote_keystream", lambda _dumps, _blocks: key)
+    monkeypatch.setattr(
+        dust_decrypt, "DUST_KEYSTREAM_SHA256", hashlib.sha256(key).hexdigest(),
+    )
+
+    with pytest.raises(ValueError, match="no slice is dominated"):
+        dust_decrypt._recover_shared_keystream([b"\x01" * 100])

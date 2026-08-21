@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import CtxFactory
 
+from dreame_valetudo import dustbuilder as D
 from dreame_valetudo.dustbuilder import (
     CHECKER_MODEL_CHOICES,
     FORM_GUIDES,
@@ -13,6 +15,7 @@ from dreame_valetudo.dustbuilder import (
     form_snapshot,
     forms_verified_on,
     guide_index_snapshot,
+    verify_all_forms,
     verify_form,
 )
 from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
@@ -132,6 +135,13 @@ def test_checker_snapshot_also_preserves_instructions_outside_the_form() -> None
     assert "dynamicNoise" not in snapshot
 
 
+def test_checker_snapshot_preserves_checker_links_and_normalizes_their_labels() -> None:
+    snapshot = checker_snapshot(
+        '<a href="dreame_gen3.pdf">  Dreame <strong>recovery</strong> guide </a>'
+    )
+    assert "link=dreame_gen3.pdf\tlabel=Dreame recovery guide" in snapshot
+
+
 def test_guide_index_snapshot_ignores_unrelated_links_and_pins_relevant_labels() -> None:
     snapshot = guide_index_snapshot(
         '<a href="https://t.me/dust_announce">Telegram</a>'
@@ -194,3 +204,129 @@ def test_selected_form_verifier_honors_the_page_override(
 
     assert verify_form(ctx) is True
     assert calls == [("curl", "-fsSL", "-m", "20", override)]
+
+
+def test_unknown_model_has_no_invented_form_guidance() -> None:
+    with pytest.raises(ValueError, match="No DustBuilder form guide for unknown"):
+        D.form_guide("unknown")
+
+
+def test_missing_or_empty_verification_stamp_is_reported_as_unknown(tmp_path: Path) -> None:
+    assert forms_verified_on(tmp_path) == "unknown"
+    stamp = tmp_path / "dustbuilder-forms" / "verified-on.txt"
+    stamp.parent.mkdir()
+    stamp.write_text("\n")
+    assert forms_verified_on(tmp_path) == "unknown"
+
+
+def test_snapshot_preserves_constraints_that_change_what_users_may_submit() -> None:
+    snapshot = form_snapshot(
+        '<input name="config" placeholder="32 hex" maxlength="32" required readonly>'
+        '<input type="file" name="backup" accept=".tar.gz" disabled>'
+    )
+
+    assert "placeholder=32 hex" in snapshot
+    assert "maxlength=32" in snapshot and "required=yes" in snapshot
+    assert "readonly=yes" in snapshot
+    assert "accept=.tar.gz" in snapshot and "disabled=yes" in snapshot
+
+
+def test_selected_form_verifier_reports_three_empty_or_failed_fetches(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(
+        model="x40-ultra",
+        responder=lambda argv: Result(argv, 0, "   ", ""),
+    )
+
+    assert verify_form(ctx) is False
+    assert len(ctx.runner.calls) == 3  # type: ignore[attr-defined]
+    assert "couldn't fetch" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_selected_form_verifier_refuses_to_compare_without_a_committed_golden(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    html = '<input name="voucher" value="roborock">'
+    ctx = make_ctx(model="x40-ultra", responder=lambda argv: Result(argv, 0, html, ""))
+    ctx._libexec = tmp_path / "empty-libexec"
+
+    assert verify_form(ctx) is False
+    assert "missing form golden" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_all_form_verification_checks_every_surface_and_reports_success(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    checked: list[str] = []
+
+    def profile_ok(_ctx, model_spec, *, url=None):
+        checked.append(model_spec.key)
+        return True
+
+    monkeypatch.setattr(D, "_verify_model_form", profile_ok)
+    monkeypatch.setattr(D, "_verify_checker_form", lambda _ctx: True)
+    monkeypatch.setattr(D, "_verify_guide_index", lambda _ctx: True)
+
+    assert verify_all_forms(ctx) is True
+    assert checked == [
+        key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"
+    ]
+    assert "all" in ctx.console.text().lower()  # type: ignore[attr-defined]
+
+
+def test_all_form_verification_accumulates_profile_checker_and_guide_failures(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    calls: list[str] = []
+
+    def profile_result(_ctx, model_spec, *, url=None):
+        calls.append(model_spec.key)
+        return model_spec.key != "x40-ultra"
+
+    monkeypatch.setattr(D, "_verify_model_form", profile_result)
+    monkeypatch.setattr(D, "_verify_checker_form", lambda _ctx: False)
+    monkeypatch.setattr(D, "_verify_guide_index", lambda _ctx: False)
+
+    assert verify_all_forms(ctx) is False
+    assert len(calls) == len(FORM_GUIDES)
+    assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("verifier", [D._verify_checker_form, D._verify_guide_index])
+def test_shared_form_verifiers_report_fetch_failure(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, verifier,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(D, "_fetch", lambda *_args: None)
+
+    assert verifier(ctx) is False
+
+
+@pytest.mark.parametrize(
+    "verifier, success_message",
+    [(D._verify_checker_form, "Config-support checker: matches"),
+     (D._verify_guide_index, "Dreame guide index: links match")],
+)
+def test_shared_form_verifiers_report_golden_match(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, verifier, success_message: str,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(D, "_fetch", lambda *_args: "<html></html>")
+    monkeypatch.setattr(D, "_matches_golden", lambda *_args, **_kwargs: True)
+
+    assert verifier(ctx) is True
+    assert success_message in ctx.console.text()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("verifier", [D._verify_checker_form, D._verify_guide_index])
+def test_shared_form_verifiers_propagate_semantic_golden_mismatch(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, verifier,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(D, "_fetch", lambda *_args: "<html></html>")
+    monkeypatch.setattr(D, "_matches_golden", lambda *_args, **_kwargs: False)
+
+    assert verifier(ctx) is False

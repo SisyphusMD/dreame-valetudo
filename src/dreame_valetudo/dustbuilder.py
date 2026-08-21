@@ -273,7 +273,7 @@ def _matches_golden(
     return False
 
 
-def _verify_profile_form(ctx: Context, model_spec: ModelSpec, *, url: str | None = None) -> bool:
+def _verify_model_form(ctx: Context, model_spec: ModelSpec, *, url: str | None = None) -> bool:
     page = url or model_spec.dustbuilder_page
     html = _fetch(ctx, model_spec.model, page)
     if html is None:
@@ -317,7 +317,7 @@ def _verify_guide_index(ctx: Context) -> bool:
 
 def verify_form(ctx: Context) -> bool:
     """Check the selected model's live page; never called by the rooting flow."""
-    return _verify_profile_form(ctx, ctx.model_spec, url=ctx.dustbuilder_page)
+    return _verify_model_form(ctx, ctx.model_spec, url=ctx.dustbuilder_page)
 
 
 def verify_all_forms(ctx: Context) -> bool:
@@ -329,7 +329,7 @@ def verify_all_forms(ctx: Context) -> bool:
         if model_spec.method != "fastboot":
             continue
         checked += 1
-        if not _verify_profile_form(ctx, model_spec):
+        if not _verify_model_form(ctx, model_spec):
             ok = False
     checked += 1
     if not _verify_checker_form(ctx):

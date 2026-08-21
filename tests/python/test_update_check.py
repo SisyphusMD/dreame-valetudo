@@ -55,6 +55,23 @@ def test_detect_install_method_uses_the_frozen_executable_for_deb(
     assert U.detect_install_method({}, tmp_path) == "deb"
 
 
+def test_non_frozen_install_detection_uses_argv_and_can_report_brew_or_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated = tmp_path / "installed/update_check.py"
+    isolated.parent.mkdir()
+    isolated.write_text("")
+    monkeypatch.setattr(U, "__file__", str(isolated))
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setattr(sys, "argv", ["/opt/homebrew/bin/dreame-valetudo"])
+    assert U.detect_install_method({}, tmp_path) == "brew"
+
+    monkeypatch.setattr(sys, "argv", ["dreame-valetudo"])
+    monkeypatch.setattr(sys, "executable", "")
+    monkeypatch.setattr(U.sys, "platform", "darwin")
+    assert U.detect_install_method({}, tmp_path) == "unknown"
+
+
 @pytest.mark.parametrize(
     ("tool", "method", "command"),
     [

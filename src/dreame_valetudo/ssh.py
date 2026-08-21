@@ -358,7 +358,7 @@ def _public_identity(value: str, *, source: str) -> tuple[str, bytes]:
         blob = base64.b64decode(fields[1], validate=True)
     except (binascii.Error, ValueError) as exc:
         raise Die(f"The SSH public key {source} has an invalid key blob.") from exc
-    if not blob:
+    if not blob:  # pragma: no cover - split() requires a non-empty base64 token before decoding
         die(f"The SSH public key {source} has an empty key blob.")
     return fields[0], blob
 

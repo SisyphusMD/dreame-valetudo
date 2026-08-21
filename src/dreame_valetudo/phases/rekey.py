@@ -34,7 +34,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
-from ..console import Die, abort, die
+from ..console import Die, abort, die, safety_stop
 from ..constants import (
     RECOVERY_DUMP_BYTES,
     RECOVERY_DUMP_NAMES,
@@ -337,7 +337,7 @@ def _enter_fel(ctx: Context, config: str, purpose: str) -> str:
     # rescue. `restore` writes this same partition on the same basis. Re-proved on the write session
     # too, because the operator handles the robot in between.
     if not same_robot_config(live_config, config):
-        die(f"SAFETY STOP: connected robot config={live_config} but this workspace's robot is "
+        safety_stop(f"SAFETY STOP: connected robot config={live_config} but this workspace's robot is "
             f"{config}. Wrong robot — refusing to touch its keys. (Different robot? Use "
             "DREAME_ROBOT=<name>.)")
     ctx.console.info("Robot identity confirmed.")

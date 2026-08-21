@@ -15,7 +15,7 @@ import pytest
 from conftest import FB, CtxFactory
 
 import dreame_valetudo.phases.restore as restore_mod
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING, STAGE1_SHA256
 from dreame_valetudo.phases.restore import (
     prepare_stock_restore_kit,
@@ -353,6 +353,395 @@ def _hardware_responder(config: str = _CONFIG, *, returns_to_fel: bool = False):
         return Result(argv, 0, "OKAY\n", "")
 
     return answer
+
+
+def _valid_gpt_head() -> bytearray:
+    head = bytearray(64 * 512)
+    head[510:512] = b"\x55\xaa"
+    definitions = (
+        ("boot1", 40, 2),
+        ("rootfs1", 42, 4),
+        ("boot2", 46, 2),
+        ("rootfs2", 48, 4),
+        ("private", 52, 2),
+        ("misc", 54, 2),
+    )
+    entries = b"".join(_partition_entry(*definition) for definition in definitions)
+    entries += bytes(12 * 128 - len(entries))
+    head[2 * 512:2 * 512 + len(entries)] = entries
+    header = bytearray(512)
+    header[:8] = b"EFI PART"
+    struct.pack_into("<I", header, 8, 0x00010000)
+    struct.pack_into("<I", header, 12, 92)
+    struct.pack_into("<QQQQ", header, 24, 1, 4095, 34, 4000)
+    struct.pack_into("<QIII", header, 72, 2, 12, 128, zlib.crc32(entries) & 0xFFFFFFFF)
+    struct.pack_into("<I", header, 16, zlib.crc32(header[:92]) & 0xFFFFFFFF)
+    head[512:1024] = header
+    return head
+
+
+def _reseal_gpt(head: bytearray) -> None:
+    header = bytearray(head[512:1024])
+    count, size = struct.unpack_from("<II", header, 80)
+    entries_lba = struct.unpack_from("<Q", header, 72)[0]
+    entries = head[entries_lba * 512:entries_lba * 512 + count * size]
+    struct.pack_into("<I", header, 88, zlib.crc32(entries) & 0xFFFFFFFF)
+    struct.pack_into("<I", header, 16, 0)
+    header_size = struct.unpack_from("<I", header, 12)[0]
+    if 0 < header_size <= len(header):
+        struct.pack_into("<I", header, 16, zlib.crc32(header[:header_size]) & 0xFFFFFFFF)
+    head[512:1024] = header
+
+
+def test_gpt_parser_requires_a_protective_mbr() -> None:
+    head = _valid_gpt_head()
+    head[510:512] = b"\0\0"
+
+    with pytest.raises(Die, match="protective MBR"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_requires_the_primary_header() -> None:
+    head = _valid_gpt_head()
+    head[512:520] = b"NOT GPT!"
+
+    with pytest.raises(Die, match="no GPT header"):
+        restore_mod._parse_gpt(head)
+
+
+@pytest.mark.parametrize("header_size", [91, 513])
+def test_gpt_parser_rejects_header_sizes_outside_the_uefi_bounds(header_size: int) -> None:
+    head = _valid_gpt_head()
+    struct.pack_into("<I", head, 512 + 12, header_size)
+
+    with pytest.raises(Die, match="invalid GPT header size"):
+        restore_mod._parse_gpt(head)
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        (2, 4095, 34, 4000),
+        (1, 4000, 34, 4000),
+        (1, 4095, 4001, 4000),
+    ],
+)
+def test_gpt_parser_rejects_impossible_disk_geometry(
+    geometry: tuple[int, int, int, int],
+) -> None:
+    head = _valid_gpt_head()
+    struct.pack_into("<QQQQ", head, 512 + 24, *geometry)
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="invalid GPT disk geometry"):
+        restore_mod._parse_gpt(head)
+
+
+@pytest.mark.parametrize("count, size", [(0, 128), (129, 128), (12, 127), (12, 1025)])
+def test_gpt_parser_rejects_unsupported_entry_tables(count: int, size: int) -> None:
+    head = _valid_gpt_head()
+    struct.pack_into("<II", head, 512 + 80, count, size)
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="unsupported GPT entry table"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_rejects_a_partition_table_checksum_mismatch() -> None:
+    head = _valid_gpt_head()
+    head[2 * 512] ^= 1
+
+    with pytest.raises(Die, match="partition-table checksum"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_rejects_a_partition_with_a_backwards_range() -> None:
+    head = _valid_gpt_head()
+    struct.pack_into("<QQ", head, 2 * 512 + 32, 50, 49)
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="invalid GPT partition range"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_rejects_a_non_utf16_partition_name() -> None:
+    head = _valid_gpt_head()
+    head[2 * 512 + 56:2 * 512 + 58] = b"\x00\xd8"
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="invalid GPT partition name"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_rejects_a_partition_outside_the_usable_range() -> None:
+    head = _valid_gpt_head()
+    struct.pack_into("<QQ", head, 2 * 512 + 32, 30, 31)
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="outside the disk's usable range"):
+        restore_mod._parse_gpt(head)
+
+
+def test_gpt_parser_rejects_duplicate_partition_names() -> None:
+    head = _valid_gpt_head()
+    first_name = head[2 * 512 + 56:2 * 512 + 128]
+    second = 2 * 512 + 128
+    head[second + 56:second + 128] = first_name
+    _reseal_gpt(head)
+
+    with pytest.raises(Die, match="duplicate GPT partition 'boot1'"):
+        restore_mod._parse_gpt(head)
+
+
+def test_required_partition_gate_reports_every_missing_boot_critical_name() -> None:
+    partitions, _disk_bytes = restore_mod._parse_gpt(_valid_gpt_head())
+    del partitions["boot1"]
+    del partitions["misc"]
+
+    with pytest.raises(Die, match="boot1, misc"):
+        restore_mod._required_partitions(partitions, 64 * 512)
+
+
+def test_required_partition_gate_rejects_a_capture_that_ends_mid_partition() -> None:
+    partitions, _disk_bytes = restore_mod._parse_gpt(_valid_gpt_head())
+
+    with pytest.raises(Die, match="does not reach the end"):
+        restore_mod._required_partitions(partitions, 53 * 512)
+
+
+def test_required_partition_gate_refuses_unequal_boot_copies() -> None:
+    partitions, _disk_bytes = restore_mod._parse_gpt(_valid_gpt_head())
+    partitions["boot2"] = restore_mod._Partition("boot2", 46 * 512, 3 * 512)
+
+    with pytest.raises(Die, match="boot A/B partitions have different sizes"):
+        restore_mod._required_partitions(partitions, 64 * 512)
+
+
+def test_required_partition_gate_refuses_unequal_rootfs_copies() -> None:
+    partitions, _disk_bytes = restore_mod._parse_gpt(_valid_gpt_head())
+    partitions["rootfs2"] = restore_mod._Partition("rootfs2", 48 * 512, 5 * 512)
+
+    with pytest.raises(Die, match="rootfs A/B partitions have different sizes"):
+        restore_mod._required_partitions(partitions, 64 * 512)
+
+
+def test_required_partition_gate_refuses_overlapping_critical_partitions() -> None:
+    partitions, _disk_bytes = restore_mod._parse_gpt(_valid_gpt_head())
+    partitions["boot2"] = restore_mod._Partition("boot2", 45 * 512, 2 * 512)
+
+    with pytest.raises(Die, match="overlapping boot-critical"):
+        restore_mod._required_partitions(partitions, 64 * 512)
+
+
+def test_recovery_source_digest_rejects_corrupt_gzip_and_wrong_expanded_size(
+    tmp_path: Path,
+) -> None:
+    corrupt = tmp_path / "corrupt.dd.gz"
+    corrupt.write_bytes(b"not gzip")
+    with pytest.raises(Die, match="corrupt or truncated"):
+        restore_mod._source_digest(corrupt, 4)
+
+    short = tmp_path / "short.dd.gz"
+    with gzip.open(short, "wb") as stream:
+        stream.write(b"abc")
+    with pytest.raises(Die, match="expands to 3 bytes; expected exactly 4"):
+        restore_mod._source_digest(short, 4)
+
+
+@pytest.mark.parametrize(
+    "encoded, offset, limit, message",
+    [
+        (b"", 0, 0, "truncated"),
+        (b"\x80", 0, 1, "invalid"),
+        (b"\x85\0\0\0\0\0", 0, 6, "invalid"),
+        (b"\x82\x01", 0, 2, "invalid"),
+        (b"\x81\x7f", 0, 2, "non-minimal"),
+    ],
+)
+def test_der_length_rejects_truncated_invalid_and_nonminimal_encodings(
+    encoded: bytes, offset: int, limit: int, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        restore_mod._der_length(encoded, offset, limit)
+
+
+def test_der_children_reject_a_child_that_exceeds_its_parent() -> None:
+    with pytest.raises(ValueError, match="child exceeds"):
+        restore_mod._der_children(b"\x04\x02A", 0, 3)
+
+
+@pytest.mark.parametrize(
+    "certificate, message",
+    [
+        (b"", "not a DER sequence"),
+        (b"\x30\x02\0", "exceeds its container"),
+        (_der(0x30, _der(0x30, b"")), "unexpected outer shape"),
+    ],
+)
+def test_certificate_parser_rejects_truncation_and_wrong_outer_shape(
+    certificate: bytes, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        restore_mod._certificate_parts(certificate, 0, len(certificate), "test")
+
+
+def _certificate_with(tbs_children: bytes, *, signature: bytes = b"\0") -> bytes:
+    return _der(
+        0x30,
+        _der(0x30, tbs_children) + _der(0x30, b"") + _der(0x03, signature),
+    )
+
+
+@pytest.mark.parametrize(
+    ("certificate", "message"),
+    [
+        (
+            _certificate_with(_der(0x30, b"") * 6),
+            "has no public key",
+        ),
+        (
+            _certificate_with(_der(0x30, b"") * 6 + _der(0x30, _der(0x30, b""))),
+            "invalid public-key bit string",
+        ),
+        (
+            _certificate_with(
+                _der(0x30, b"") * 6
+                + _der(0x30, _der(0x03, b"\0" + _der(0x04, b"not-rsa")))
+            ),
+            "invalid RSA public key",
+        ),
+        (
+            _certificate_with(
+                _der(0x30, b"") * 6
+                + _der(0x30, _der(0x03, b"\0" + _der(0x30, _der_integer(b"short"))))
+            ),
+            "invalid RSA public key",
+        ),
+        (
+            _certificate_with(
+                _der(0x30, b"") * 6
+                + _der(
+                    0x30,
+                    _der(
+                        0x03,
+                        b"\0" + _der(
+                            0x30,
+                            _der_integer(b"short") + _der_integer(b"\x01\0\x01"),
+                        ),
+                    ),
+                )
+            ),
+            "expected RSA-2048 key",
+        ),
+        (
+            _certificate_with(
+                _der(0x30, b"") * 6
+                + _der(
+                    0x30,
+                    _der(
+                        0x03,
+                        b"\0" + _der(
+                            0x30,
+                            _der_integer(_TEST_RSA_MODULUS) + _der_integer(b"\x01\0\x01"),
+                        ),
+                    ),
+                ),
+                signature=b"\0short",
+            ),
+            "invalid RSA signature field",
+        ),
+    ],
+)
+def test_certificate_parser_names_each_unsupported_key_shape(
+    certificate: bytes, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        restore_mod._certificate_parts(certificate, 0, len(certificate), "test")
+
+
+@pytest.mark.parametrize(
+    "image, message",
+    [
+        (b"", "no Android header"),
+        (b"ANDROID!" + bytes(0x7F8), "unsupported Android header"),
+    ],
+)
+def test_android_boot_parser_rejects_missing_and_unsupported_headers(
+    image: bytes, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        restore_mod._android_boot_logical_bytes(image)  # type: ignore[arg-type]
+
+
+def test_android_boot_parser_rejects_logical_content_past_the_partition() -> None:
+    image = bytearray(0x800)
+    image[:8] = b"ANDROID!"
+    struct.pack_into("<I", image, 0x08, 0x1000)
+    struct.pack_into("<I", image, 0x24, 0x800)
+
+    with pytest.raises(ValueError, match="exceeds its partition"):
+        restore_mod._android_boot_logical_bytes(image)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "partition, image",
+    [
+        ("boot", b"unsigned"),
+        ("rootfs", b"not-squashfs"),
+        ("unknown", b"data"),
+    ],
+)
+def test_partition_binding_rejects_unsigned_or_unsupported_images(
+    tmp_path: Path, partition: str, image: bytes,
+) -> None:
+    path = tmp_path / f"{partition}.img"
+    path.write_bytes(image)
+
+    assert restore_mod._partition_verified_pins(path, partition) == set()
+
+
+def test_stock_restore_kit_validation_fails_closed_for_missing_and_malformed_manifests(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    assert not stock_restore_kit_valid(missing, _CONFIG, "x40-ultra")
+
+    missing.mkdir()
+    assert not stock_restore_kit_valid(missing, _CONFIG, "x40-ultra")
+
+    (missing / "manifest.json").write_text("{")
+    assert not stock_restore_kit_valid(missing, _CONFIG, "x40-ultra")
+
+
+def test_restore_kit_discovery_matches_only_the_same_stable_robot_identity(tmp_path: Path) -> None:
+    stable_variant = _CONFIG[:8] + "0" * 24
+    matching = tmp_path / f"dreame-r2416-{stable_variant}-stock-recovery"
+    matching.mkdir()
+    (tmp_path / f"dreame-r2416-{'0' * 32}-stock-recovery").mkdir()
+    (tmp_path / f"dreame-r2338-{_CONFIG}-stock-recovery").mkdir()
+    (tmp_path / "notes").mkdir()
+
+    assert restore_mod._matching_restore_kits(tmp_path, "r2416", _CONFIG) == [matching]
+
+
+def test_portable_recovery_archive_requires_exact_members_and_sizes(tmp_path: Path) -> None:
+    archive = tmp_path / restore_mod.RECOVERY_BACKUP_ZIP
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("wrong.bin", b"1234")
+
+    with pytest.raises(Die, match="three exact sealed slices"):
+        restore_mod._extract_recovery_archive(tmp_path, 4)
+
+    assert not list(tmp_path.glob(".recovery-archive.*.partial"))
+
+
+def test_portable_recovery_archive_rejects_corrupt_zip_bytes(tmp_path: Path) -> None:
+    (tmp_path / restore_mod.RECOVERY_BACKUP_ZIP).write_bytes(b"not a zip")
+
+    with pytest.raises(Die, match="corrupt or unreadable"):
+        restore_mod._extract_recovery_archive(tmp_path, 4)
+
+    assert not list(tmp_path.glob(".recovery-archive.*.partial"))
 
 
 def test_the_disk_advisory_reserves_what_extraction_actually_writes(
@@ -1298,3 +1687,882 @@ def test_restore_refuses_noninteractive_execution_before_hardware(make_ctx: CtxF
         restore(ctx)
 
     assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_prepare_refuses_a_robot_without_recorded_identity_before_any_effect(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+
+    with pytest.raises(Die, match="No recorded config identity"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+    assert not ctx.backups_dir.exists()
+
+
+def test_prepare_refuses_ambiguous_same_robot_kits_before_any_effect(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    ctx.backups_dir.mkdir(parents=True)
+    for suffix in (_CONFIG, _CONFIG[:8] + "0" * 24):
+        (ctx.backups_dir / f"dreame-r2416-{suffix}-stock-recovery").mkdir()
+
+    with pytest.raises(Die, match="Multiple stock restore kits"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_prepare_preserves_an_existing_invalid_kit_instead_of_rebuilding_over_it(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    kit = ctx.backups_dir / f"dreame-r2416-{_CONFIG}-stock-recovery"
+    kit.mkdir(parents=True)
+    evidence = kit / "partial.img"
+    evidence.write_bytes(b"preserve")
+
+    with pytest.raises(Die, match="incomplete or changed"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    assert evidence.read_bytes() == b"preserve"
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("marker", [".decrypt-refresh", restore_mod.RECOVERY_REFRESH_FILE])
+def test_prepare_refuses_an_incomplete_recovery_generation_before_publication(
+    make_ctx: CtxFactory, marker: str,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    recon = ctx.need_robot().recon_dir
+    recon.mkdir(parents=True)
+    (recon / marker).write_text("in progress")
+
+    with pytest.raises(Die, match="incomplete"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=_CHUNK)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+    assert not ctx.backups_dir.exists()
+
+
+def test_pending_restore_without_identity_refuses_before_any_hardware(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    ctx.need_robot().state_set("restore-attempt", RESTORE_BOOT_PENDING)
+
+    with pytest.raises(Die, match="no recorded robot identity"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_uart_model_refuses_fastboot_restore_before_any_hardware(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(
+        model="z10-pro", robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG},
+    )
+
+    with pytest.raises(Die, match="uses UART"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_restore_refuses_a_final_kit_validation_failure_before_any_hardware(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    kit = ctx.backups_dir / "kit"
+    monkeypatch.setattr(restore_mod, "prepare_stock_restore_kit", lambda _ctx: kit)
+    monkeypatch.setattr(restore_mod, "stock_restore_kit_valid", lambda *_args: False)
+
+    with pytest.raises(Die, match="final identity/integrity check"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_restore_honors_operator_refusal_before_any_hardware(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, confirms=[False],
+    )
+    kit = ctx.backups_dir / "kit"
+    monkeypatch.setattr(restore_mod, "prepare_stock_restore_kit", lambda _ctx: kit)
+    monkeypatch.setattr(restore_mod, "stock_restore_kit_valid", lambda *_args: True)
+
+    with pytest.raises(UserAbort, match="nothing was written"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_restore_refuses_missing_fel_before_unlock_or_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, confirms=[True],
+    )
+    kit = ctx.backups_dir / "kit"
+    monkeypatch.setattr(restore_mod, "prepare_stock_restore_kit", lambda _ctx: kit)
+    monkeypatch.setattr(restore_mod, "stock_restore_kit_valid", lambda *_args: True)
+    monkeypatch.setattr(restore_mod, "stage1_ready", lambda _ctx: True)
+    monkeypatch.setattr(restore_mod, "check_fastboot_client", lambda _ctx: None)
+    monkeypatch.setattr(restore_mod, "print_fel_entry", lambda *_args: None)
+    monkeypatch.setattr(restore_mod, "wait_for_fel", lambda _ctx: False)
+
+    with pytest.raises(Die, match="No FEL device"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+    assert not ctx.need_robot().state_has("restore-attempt")
+
+
+def test_recorded_stock_cleanup_failure_refuses_before_any_hardware(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    ctx.need_robot().state_set("restored-stock", "complete")
+    monkeypatch.setattr(
+        restore_mod, "_reconcile_restored_state",
+        lambda _robot: (_ for _ in ()).throw(OSError("read-only state")),
+    )
+
+    with pytest.raises(Die, match="cleanup failed"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_pending_restore_boot_check_requires_interactive_physical_confirmation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, interactive=False,
+    )
+    ctx.need_robot().state_set("restore-attempt", RESTORE_BOOT_PENDING)
+    monkeypatch.setattr(restore_mod, "_watch_for_automatic_fel", lambda _ctx: False)
+
+    with pytest.raises(Die, match="physical confirmation"):
+        restore(ctx)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def _valid_toc0() -> bytes:
+    image = bytearray(restore_mod._TOC0_BYTES)
+    image[:8] = b"TOC0.GLH"
+    struct.pack_into("<I", image, 8, restore_mod._TOC0_HEAD_MAGIC)
+    struct.pack_into("<I", image, 24, 2)
+    struct.pack_into("<I", image, 28, len(image))
+    struct.pack_into(
+        "<II", image, restore_mod._TOC0_SPL_DESCRIPTOR + 8,
+        restore_mod._TOC0_SPL_OFFSET, restore_mod._TOC0_SPL_BYTES,
+    )
+    image[restore_mod._TOC0_SPL_OFFSET:restore_mod._TOC0_SPL_OFFSET + 4] = b"SPL!"
+    struct.pack_into("<I", image, 12, restore_mod._TOC_ADD_SUM_STAMP)
+    checksum = sum(
+        struct.unpack_from("<I", image, offset)[0]
+        for offset in range(0, len(image), 4)
+    ) & 0xFFFFFFFF
+    struct.pack_into("<I", image, 12, checksum)
+    return bytes(image)
+
+
+def test_stock_header_parser_rejects_an_invalid_toc0_container() -> None:
+    with pytest.raises(Die, match="toc0 main copy has an invalid container"):
+        restore_mod._stock_toc_images(bytes(0x400000), 0x300000)
+
+
+def test_stock_header_parser_requires_exactly_two_toc1_copies() -> None:
+    head = bytearray(0x400000)
+    toc0 = _valid_toc0()
+    head[restore_mod._TOC0_MAIN:restore_mod._TOC0_MAIN + len(toc0)] = toc0
+    head[restore_mod._TOC0_BACKUP:restore_mod._TOC0_BACKUP + len(toc0)] = toc0
+
+    with pytest.raises(Die, match=r"Expected two stock toc1 copies.*found 0"):
+        restore_mod._stock_toc_images(head, 0x300000)
+
+
+def test_rsa_verifier_rejects_wrong_exponent_and_signature_width() -> None:
+    modulus = b"\xff" * 256
+
+    assert not restore_mod._rsa_pkcs1_sha256_valid(b"data", modulus, 3, bytes(256))
+    assert not restore_mod._rsa_pkcs1_sha256_valid(b"data", modulus, 65537, bytes(255))
+
+
+def test_certificate_content_pin_requires_one_named_uppercase_digest() -> None:
+    with pytest.raises(ValueError, match="does not contain one content pin"):
+        restore_mod._certificate_partition_pin(b"no pin", "boot")
+
+    marker = b"\x06\x04boot\x04\x42\x08\x40"
+    with pytest.raises(ValueError, match="content pin is malformed"):
+        restore_mod._certificate_partition_pin(marker + b"g" * 64, "boot")
+
+
+def test_boot_binding_rejects_a_header_without_a_certificate_descriptor(tmp_path: Path) -> None:
+    image = bytearray(0x1000)
+    image[:8] = b"ANDROID!"
+    struct.pack_into("<I", image, 0x24, 0x800)
+    path = tmp_path / "boot.img"
+    path.write_bytes(image)
+
+    assert restore_mod._partition_verified_pins(path, "boot") == set()
+
+
+@pytest.mark.parametrize("used", [0x50, 0x200000])
+def test_rootfs_binding_rejects_impossible_logical_sizes(tmp_path: Path, used: int) -> None:
+    image = bytearray(0x2000)
+    image[:4] = b"hsqs"
+    struct.pack_into("<Q", image, 0x28, used)
+    path = tmp_path / "rootfs.img"
+    path.write_bytes(image)
+
+    assert restore_mod._partition_verified_pins(path, "rootfs") == set()
+
+
+def test_rootfs_binding_requires_at_least_one_verification_sample(tmp_path: Path) -> None:
+    image = bytearray(0x2000)
+    image[:4] = b"hsqs"
+    struct.pack_into("<Q", image, 0x28, 0x1000)
+    path = tmp_path / "rootfs.img"
+    path.write_bytes(image)
+
+    assert restore_mod._partition_verified_pins(path, "rootfs") == set()
+
+
+def test_partition_extraction_rechecks_source_length_before_returning_artifacts(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.dd.gz"
+    with gzip.open(source, "wb") as stream:
+        stream.write(b"abc")
+    destination = tmp_path / "out"
+    destination.mkdir()
+
+    with pytest.raises(Die, match="changed while the restore kit was built"):
+        restore_mod._extract_partitions(
+            [source], {"misc": restore_mod._Partition("misc", 0, 3)}, destination,
+            chunk_bytes=4, source_digests={source: hashlib.sha256(b"abc").hexdigest()},
+        )
+
+
+def test_partition_extraction_rejects_an_incomplete_output_slice(tmp_path: Path) -> None:
+    source = tmp_path / "source.dd.gz"
+    with gzip.open(source, "wb") as stream:
+        stream.write(b"abcd")
+    destination = tmp_path / "out"
+    destination.mkdir()
+
+    with pytest.raises(Die, match="Extracted misc has the wrong size"):
+        restore_mod._extract_partitions(
+            [source], {"misc": restore_mod._Partition("misc", 10, 1)}, destination,
+            chunk_bytes=4, source_digests={source: hashlib.sha256(b"abcd").hexdigest()},
+        )
+
+
+def test_sealed_dump_validation_fails_closed_on_metadata_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "dustx100.bin"
+    path.write_bytes(b"data")
+    real_stat = Path.stat
+
+    def fail_stat(target: Path, *args: object, **kwargs: object):
+        if target == path:
+            raise OSError("unreadable metadata")
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+
+    assert not restore_mod._sealed_dump_valid(path, 4)
+
+
+def test_missing_portable_recovery_archive_is_a_clean_noop(tmp_path: Path) -> None:
+    assert restore_mod._extract_recovery_archive(tmp_path, 4) is False
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_portable_archive_preserves_an_existing_invalid_sealed_slice(tmp_path: Path) -> None:
+    archive = tmp_path / restore_mod.RECOVERY_BACKUP_ZIP
+    names = tuple(f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
+    with zipfile.ZipFile(archive, "w") as output:
+        for name in names:
+            output.writestr(name, b"data")
+    existing = tmp_path / names[0]
+    existing.write_bytes(b"bad")
+
+    with pytest.raises(Die, match="Existing sealed recovery slice is invalid"):
+        restore_mod._extract_recovery_archive(tmp_path, 4)
+
+    assert existing.read_bytes() == b"bad"
+
+
+def test_invalid_recovery_provenance_is_preserved_and_reported(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: (_ for _ in ()).throw(ValueError("bad schema")),
+    )
+
+    with pytest.raises(Die, match="provenance record is invalid: bad schema"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, _CHUNK)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_recovery_provenance_requires_structured_source_records(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: {
+            "config": _CONFIG,
+            "model_key": "x40-ultra",
+            "firmware_state": "stock-user-attested",
+            "sources": [],
+        },
+    )
+
+    with pytest.raises(Die, match="source records are invalid"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, _CHUNK)
+
+
+def test_automatic_fel_watch_warns_when_the_helper_is_unavailable(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(restore_mod, "_sunxi_ready", lambda _ctx: False)
+
+    assert restore_mod._watch_for_automatic_fel(ctx) is False
+    assert "automatic USB fallback cannot be checked" in ctx.console.text()  # type: ignore[attr-defined]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_confirmed_stock_boot_keeps_attempt_marker_when_completion_cannot_be_saved(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("restore-attempt", RESTORE_BOOT_PENDING)
+    monkeypatch.setattr(restore_mod, "_watch_for_automatic_fel", lambda _ctx: False)
+    original = type(robot).state_set
+
+    def fail_completion(target: object, name: str, value: str = "") -> None:
+        if name == "restored-stock":
+            raise OSError("read-only state")
+        original(target, name, value)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(type(robot), "state_set", fail_completion)
+
+    with pytest.raises(Die, match="completion could not be recorded"):
+        restore_mod._finish_restore_boot_check(ctx, robot, _CONFIG)
+
+    assert robot.state_has("restore-attempt")
+    assert not robot.state_has("restored-stock")
+
+
+def test_confirmed_stock_boot_reports_cleanup_failure_after_durable_completion(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("restore-attempt", RESTORE_BOOT_PENDING)
+    monkeypatch.setattr(restore_mod, "_watch_for_automatic_fel", lambda _ctx: False)
+    monkeypatch.setattr(
+        restore_mod, "_reconcile_restored_state",
+        lambda _robot: (_ for _ in ()).throw(OSError("read-only state")),
+    )
+
+    with pytest.raises(Die, match="superseded rooted-state cleanup failed"):
+        restore_mod._finish_restore_boot_check(ctx, robot, _CONFIG)
+
+    assert robot.state_has("restored-stock")
+    assert robot.state_has("restore-attempt")
+
+
+def _tiny_decrypted_capture(ctx: object, chunk_bytes: int = 4) -> list[Path]:
+    recon = ctx.need_robot().recon_dir  # type: ignore[attr-defined]
+    recon.mkdir(parents=True, exist_ok=True)
+    paths = [recon / f"{name}.dd.gz" for name in RECOVERY_DUMP_NAMES]
+    for index, path in enumerate(paths):
+        with gzip.open(path, "wb") as stream:
+            stream.write(bytes([index]) * chunk_bytes)
+    return paths
+
+
+def test_prepare_preserves_invalid_sealed_slices_before_decryption_or_publication(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    recon = ctx.need_robot().recon_dir
+    recon.mkdir(parents=True)
+    evidence = recon / f"{RECOVERY_DUMP_NAMES[0]}.bin"
+    evidence.write_bytes(b"short")
+
+    with pytest.raises(Die, match="Invalid sealed recovery slices were preserved"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert evidence.read_bytes() == b"short"
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+    assert not ctx.backups_dir.exists()
+
+
+def test_prepare_refuses_when_decryption_produces_no_complete_generation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    ctx.need_robot().recon_dir.mkdir(parents=True)
+    monkeypatch.setattr(restore_mod, "decrypt_recovery_backup", lambda *_args, **_kwargs: 0)
+
+    with pytest.raises(Die, match="No complete decrypted pre-root recovery capture"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+    assert not ctx.backups_dir.exists()
+
+
+def test_prepare_rechecks_that_provenance_left_a_complete_generation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    paths = _tiny_decrypted_capture(ctx)
+
+    def remove_after_check(*_args, **_kwargs):
+        paths[-1].unlink()
+        return "captured-same-session", None
+
+    monkeypatch.setattr(restore_mod, "_verified_recovery_provenance", remove_after_check)
+
+    with pytest.raises(Die, match="provenance check did not leave a complete"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert not ctx.backups_dir.exists()
+
+
+def test_prepare_rechecks_decrypted_hash_records_after_provenance_validation(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    paths = _tiny_decrypted_capture(ctx)
+    wrong = {
+        path.name: {"bytes": 4, "sha256": "0" * 64}
+        for path in paths
+    }
+    monkeypatch.setattr(
+        restore_mod, "_verified_recovery_provenance",
+        lambda *_args: ("captured-same-session", wrong),
+    )
+
+    with pytest.raises(Die, match="changed after their provenance check"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert list(ctx.backups_dir.iterdir()) == []
+
+
+def test_restore_provisions_missing_host_helpers_before_refusing_absent_fel(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, confirms=[True],
+    )
+    events: list[str] = []
+    kit = ctx.backups_dir / "kit"
+    monkeypatch.setattr(restore_mod, "prepare_stock_restore_kit", lambda _ctx: kit)
+    monkeypatch.setattr(restore_mod, "stock_restore_kit_valid", lambda *_args: True)
+    monkeypatch.setattr(restore_mod, "_sunxi_ready", lambda _ctx: False)
+    monkeypatch.setattr(restore_mod, "doctor", lambda _ctx: events.append("doctor"))
+    monkeypatch.setattr(restore_mod, "stage1_ready", lambda _ctx: False)
+    monkeypatch.setattr(restore_mod, "fetch_stage1", lambda _ctx: events.append("fetch"))
+    monkeypatch.setattr(restore_mod, "check_fastboot_client", lambda _ctx: None)
+    monkeypatch.setattr(restore_mod, "print_fel_entry", lambda *_args: None)
+    monkeypatch.setattr(restore_mod, "wait_for_fel", lambda _ctx: False)
+
+    with pytest.raises(Die, match="No FEL device"):
+        restore(ctx)
+
+    assert events == ["doctor", "fetch"]
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_restore_records_host_marker_failure_after_every_okay_flash(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG},
+        responder=_hardware_responder(), confirms=[True],
+    )
+    kit = ctx.backups_dir / "kit"
+    monkeypatch.setattr(restore_mod, "prepare_stock_restore_kit", lambda _ctx: kit)
+    monkeypatch.setattr(restore_mod, "stock_restore_kit_valid", lambda *_args: True)
+    _stage1(ctx)
+    robot = ctx.need_robot()
+    original = type(robot).state_set
+
+    def fail_pending(target: object, name: str, value: str = "") -> None:
+        if name == "restore-attempt" and value.startswith(RESTORE_BOOT_PENDING):
+            raise OSError("read-only state")
+        original(target, name, value)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(type(robot), "state_set", fail_pending)
+
+    with pytest.raises(Die, match="completion could not be recorded"):
+        restore(ctx)
+
+    fastboot = [call[2:] for call in ctx.runner.calls if call[:2] == FB]  # type: ignore[attr-defined]
+    assert [call[:2] for call in fastboot if call and call[0] == "flash"] == [
+        ("flash", "private"),
+        ("flash", "misc"),
+        ("flash", "boot2"),
+        ("flash", "rootfs2"),
+        ("flash", "boot1"),
+        ("flash", "rootfs1"),
+        ("flash", "toc1"),
+    ]
+    assert fastboot[-1] == ("reboot",)
+    assert robot.state_has("restore-attempt")
+    assert not robot.state_has("restored-stock")
+
+
+def _provenance(
+    *, sources: object, firmware_state: str = "stock-user-attested",
+) -> dict[str, object]:
+    return {
+        "config": _CONFIG,
+        "model_key": "x40-ultra",
+        "firmware_state": firmware_state,
+        "binding": "captured-same-session",
+        "sources": sources,
+    }
+
+
+def test_provenance_attempts_portable_archive_recovery_when_sealed_slices_are_missing(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    expected = {"dustx100.bin": {"bytes": 4, "sha256": "a" * 64}}
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance", lambda _path: _provenance(sources={"sealed": expected}),
+    )
+    attempted: list[Path] = []
+    monkeypatch.setattr(
+        restore_mod, "_extract_recovery_archive",
+        lambda path, _size: attempted.append(path) or False,
+    )
+    monkeypatch.setattr(restore_mod, "recovery_source_records", lambda *_args, **_kwargs: {})
+
+    with pytest.raises(Die, match="No complete recovery source generation"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+    assert attempted == [ctx.need_robot().recon_dir]
+
+
+def test_provenance_reports_an_unreadable_sealed_source_before_decryption(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: _provenance(sources={"sealed": {}}),
+    )
+    monkeypatch.setattr(
+        restore_mod, "recovery_source_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("truncated")),
+    )
+
+    with pytest.raises(Die, match=r"sealed recovery source is corrupt.*truncated"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_provenance_rejects_sealed_bytes_that_do_not_match_the_record(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    recon = ctx.need_robot().recon_dir
+    recon.mkdir(parents=True)
+    (recon / f"{RECOVERY_DUMP_NAMES[0]}.bin").write_bytes(b"changed")
+    expected = {"recorded": {"bytes": 4, "sha256": "a" * 64}}
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance", lambda _path: _provenance(sources={"sealed": expected}),
+    )
+    monkeypatch.setattr(
+        restore_mod, "recovery_source_records",
+        lambda *_args, **_kwargs: {"sealed": {"different": {}}},
+    )
+
+    with pytest.raises(Die, match="sealed recovery sources do not match"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_provenance_reports_unreadable_decrypted_sources_without_sealed_fallback(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: _provenance(sources={"decrypted": {}}),
+    )
+    calls = 0
+
+    def records(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if kwargs.get("include_decrypted") is False:
+            return {}
+        raise ValueError("bad gzip")
+
+    monkeypatch.setattr(restore_mod, "recovery_source_records", records)
+
+    with pytest.raises(Die, match=r"decrypted recovery source is corrupt.*bad gzip"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+    assert calls == 2
+
+
+def _sealed_refresh_case(
+    ctx: object, monkeypatch: pytest.MonkeyPatch, refreshed,
+) -> None:
+    ctx.need_robot().recon_dir.mkdir(parents=True, exist_ok=True)  # type: ignore[attr-defined]
+    expected = {"slice": {"bytes": 4, "sha256": "a" * 64}}
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance", lambda _path: _provenance(sources={"sealed": expected}),
+    )
+    calls = 0
+
+    def records(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"sealed": expected} if calls == 1 else refreshed()
+
+    monkeypatch.setattr(restore_mod, "recovery_source_records", records)
+
+
+def test_verified_sealed_refresh_requires_decryption_to_finish_atomically(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    _sealed_refresh_case(ctx, monkeypatch, dict)
+
+    def leave_pending(_recon, _env, _console, *, refresh=False):
+        assert refresh is True
+        (_recon / ".decrypt-refresh").write_text("pending")
+        return 0
+
+    monkeypatch.setattr(restore_mod, "decrypt_recovery_backup", leave_pending)
+
+    with pytest.raises(Die, match="could not be decrypted completely"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_verified_sealed_refresh_reports_unreadable_regenerated_sources(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    _sealed_refresh_case(
+        ctx, monkeypatch,
+        lambda: (_ for _ in ()).throw(ValueError("bad regenerated gzip")),
+    )
+    monkeypatch.setattr(restore_mod, "decrypt_recovery_backup", lambda *_args, **_kwargs: 3)
+
+    with pytest.raises(Die, match=r"refreshed recovery source is corrupt.*bad regenerated gzip"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_verified_sealed_refresh_rechecks_sealed_sources_after_decryption(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    _sealed_refresh_case(ctx, monkeypatch, lambda: {"sealed": {"changed": {}}})
+    monkeypatch.setattr(restore_mod, "decrypt_recovery_backup", lambda *_args, **_kwargs: 3)
+
+    with pytest.raises(Die, match="sealed recovery sources changed"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_verified_sealed_refresh_requires_all_decrypted_slices(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    expected = {"slice": {"bytes": 4, "sha256": "a" * 64}}
+    _sealed_refresh_case(ctx, monkeypatch, lambda: {"sealed": expected})
+    monkeypatch.setattr(restore_mod, "decrypt_recovery_backup", lambda *_args, **_kwargs: 3)
+
+    with pytest.raises(Die, match="did not produce all three decrypted slices"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_provenance_without_any_complete_matching_generation_is_refused(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: _provenance(sources={"decrypted": {"expected": {}}}),
+    )
+    monkeypatch.setattr(restore_mod, "recovery_source_records", lambda *_args, **_kwargs: {})
+
+    with pytest.raises(Die, match="No complete recovery source generation matches"):
+        restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4)
+
+
+def test_matching_decrypted_provenance_is_returned_without_touching_sealed_sources(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen")
+    decrypted = {"slice": {"bytes": 4, "sha256": "a" * 64}}
+    monkeypatch.setattr(
+        restore_mod, "read_recovery_provenance",
+        lambda _path: _provenance(sources={"decrypted": decrypted}),
+    )
+
+    def records(*_args: object, **kwargs: object) -> dict[str, object]:
+        return {"decrypted": decrypted} if kwargs.get("include_decrypted", True) else {}
+
+    monkeypatch.setattr(restore_mod, "recovery_source_records", records)
+
+    assert restore_mod._verified_recovery_provenance(ctx, _CONFIG, 4) == (
+        "captured-same-session",
+        decrypted,
+    )
+
+
+def _stub_prepare_validation(
+    ctx: object, monkeypatch: pytest.MonkeyPatch, *, binding: str | None,
+) -> dict[str, restore_mod._Partition]:
+    _tiny_decrypted_capture(ctx)
+    partitions = {
+        name: restore_mod._Partition(name, index + 4, 1)
+        for index, name in enumerate(("boot1", "rootfs1", "boot2", "rootfs2", "private", "misc"))
+    }
+    monkeypatch.setattr(
+        restore_mod, "_verified_recovery_provenance", lambda *_args: (binding, None),
+    )
+    monkeypatch.setattr(restore_mod, "_parse_gpt", lambda _head: (partitions, 12))
+    monkeypatch.setattr(restore_mod, "_required_partitions", lambda *_args: partitions)
+    monkeypatch.setattr(
+        restore_mod, "_stock_toc_images",
+        lambda *_args: restore_mod._StockHeaders(toc0=(b"a", b"a"), toc1=(b"b", b"b")),
+    )
+    monkeypatch.setattr(restore_mod, "warn_if_low_disk", lambda *_args: None)
+    return partitions
+
+
+def test_legacy_capture_origin_must_match_the_selected_robot_name_before_publication(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, asks=["another robot"],
+    )
+    _stub_prepare_validation(ctx, monkeypatch, binding=None)
+
+    with pytest.raises(Die, match="Recovery origin was not attested"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert list(ctx.backups_dir.iterdir()) == []
+    assert ctx.runner.calls == []  # type: ignore[attr-defined]
+
+
+def test_legacy_capture_is_not_adopted_when_provenance_cannot_be_saved(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, asks=["kitchen"], confirms=[True],
+    )
+    _stub_prepare_validation(ctx, monkeypatch, binding=None)
+    monkeypatch.setattr(
+        restore_mod, "write_recovery_provenance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read-only state")),
+    )
+
+    with pytest.raises(Die, match="Could not seal the recovery provenance"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert list(ctx.backups_dir.iterdir()) == []
+
+
+def test_legacy_capture_is_rechecked_after_its_provenance_is_sealed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(
+        robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG}, asks=["kitchen"], confirms=[True],
+    )
+    _stub_prepare_validation(ctx, monkeypatch, binding=None)
+    monkeypatch.setattr(
+        restore_mod, "write_recovery_provenance",
+        lambda *_args, **_kwargs: {"sources": {"decrypted": {"changed": {}}}},
+    )
+
+    with pytest.raises(Die, match="changed while their provenance was being sealed"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert list(ctx.backups_dir.iterdir()) == []
+
+
+def test_prepare_refuses_reserved_headers_beyond_the_bounded_capture_prefix(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    partitions = _stub_prepare_validation(ctx, monkeypatch, binding="captured-same-session")
+    shifted = {
+        name: restore_mod._Partition(name, part.start + 1, part.size)
+        for name, part in partitions.items()
+    }
+    monkeypatch.setattr(restore_mod, "_parse_gpt", lambda _head: (shifted, 12))
+    monkeypatch.setattr(restore_mod, "_required_partitions", lambda *_args: shifted)
+
+    with pytest.raises(Die, match="larger than the supported 64 MiB safety bound"):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+
+@pytest.mark.parametrize(
+    "boot_magic, rootfs_magic, message",
+    [(b"BADBOOT!", b"hsqs", "no Android boot header"),
+     (b"ANDROID!", b"bad!", "no SquashFS header")],
+)
+def test_prepare_rejects_extracted_partitions_without_stock_filesystem_headers(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+    boot_magic: bytes, rootfs_magic: bytes, message: str,
+) -> None:
+    ctx = make_ctx(robot_name="kitchen", env={"DREAME_CONFIG": _CONFIG})
+    partitions = _stub_prepare_validation(ctx, monkeypatch, binding="captured-same-session")
+
+    def extract(_sources, _partitions, destination: Path, **_kwargs):
+        outputs: dict[str, tuple[Path, str]] = {}
+        for name in partitions:
+            path = destination / f"{name}.img"
+            if name.startswith("boot"):
+                path.write_bytes(boot_magic)
+            elif name.startswith("rootfs"):
+                path.write_bytes(rootfs_magic)
+            else:
+                path.write_bytes(b"data")
+            outputs[name] = path, hashlib.sha256(path.read_bytes()).hexdigest()
+        return outputs
+
+    monkeypatch.setattr(restore_mod, "_extract_partitions", extract)
+    monkeypatch.setattr(restore_mod, "_select_stock_generation", lambda *_args: (b"toc1", 1, True))
+
+    with pytest.raises(Die, match=message):
+        prepare_stock_restore_kit(ctx, chunk_bytes=4)
+
+    assert list(ctx.backups_dir.iterdir()) == []
+
+
+def test_portable_archive_reuses_valid_existing_slices_without_clobbering(tmp_path: Path) -> None:
+    archive = tmp_path / restore_mod.RECOVERY_BACKUP_ZIP
+    names = tuple(f"{name}.bin" for name in RECOVERY_DUMP_NAMES)
+    with zipfile.ZipFile(archive, "w") as output:
+        for name in names:
+            output.writestr(name, b"data")
+    existing = tmp_path / names[0]
+    existing.write_bytes(b"data")
+
+    assert restore_mod._extract_recovery_archive(tmp_path, 4) is True
+    assert existing.read_bytes() == b"data"
+    assert all((tmp_path / name).read_bytes() == b"data" for name in names)

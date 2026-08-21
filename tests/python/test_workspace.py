@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ import pytest
 from conftest import CFG
 
 from dreame_valetudo import workspace as workspace_module
+from dreame_valetudo.console import Die
 from dreame_valetudo.workspace import (
     Robot,
     Workspace,
@@ -301,3 +303,71 @@ def test_missing_linux_renameat2_wrapper_is_a_clean_os_error(
 
     assert exc.value.errno == errno.ENOSYS
     assert "renameat2" in str(exc.value)
+
+
+def test_linux_exclusive_rename_uses_renameat2_without_clobbering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class Rename:
+        argtypes: object = None
+        restype: object = None
+
+        def __call__(self, *args: object) -> int:
+            calls.append(args)
+            return 0
+
+    monkeypatch.setattr(workspace_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        workspace_module.ctypes, "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(renameat2=Rename()),
+    )
+    workspace_module.rename_no_replace(tmp_path / "source", tmp_path / "destination")
+    assert calls and calls[0][-1] == 1
+
+
+def test_exclusive_rename_refuses_an_unsupported_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workspace_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        workspace_module.ctypes, "CDLL", lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    with pytest.raises(OSError) as exc:
+        workspace_module.rename_no_replace(tmp_path / "source", tmp_path / "destination")
+    assert exc.value.errno == errno.ENOTSUP
+
+
+def test_staged_publish_refuses_a_destination_that_appears_before_publish(tmp_path: Path) -> None:
+    destination = tmp_path / "backup"
+    with (
+        pytest.raises(Die, match="already exists"),
+        workspace_module.staged_publish(destination, exists_message="already exists") as staging,
+    ):
+        (staging / "manifest.json").write_text("{}")
+        destination.mkdir()
+    assert destination.is_dir()
+    assert not list(tmp_path.glob(".backup.*.partial"))
+
+
+def test_recovery_zip_rejects_wrong_member_names_and_sizes(tmp_path: Path) -> None:
+    wrong_names = tmp_path / "wrong-names.zip"
+    with zipfile.ZipFile(wrong_names, "w") as archive:
+        archive.writestr("unexpected.bin", b"x")
+    assert recovery_zip_valid(wrong_names) is False
+
+    wrong_sizes = tmp_path / "wrong-sizes.zip"
+    with zipfile.ZipFile(wrong_sizes, "w") as archive:
+        for name in workspace_module.RECOVERY_DUMP_NAMES:
+            archive.writestr(f"{name}.bin", b"short")
+    assert recovery_zip_valid(wrong_sizes) is False
+
+
+def test_identity_ignores_malformed_and_blank_lines(tmp_path: Path) -> None:
+    robot = Robot(tmp_path / "robot")
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "identity.txt").write_text(
+        "malformed\n: missing-key\nempty:   \nserialno: SERIAL123\n"
+    )
+    assert robot.identity() == {"serialno": "SERIAL123"}

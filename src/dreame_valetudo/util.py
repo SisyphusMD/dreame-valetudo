@@ -109,7 +109,10 @@ def sha256_of(path: str | Path) -> str:
 def same_robot_config(a: str, b: str) -> bool:
     """Whether two factory 'config' identities name the same robot.
 
-    Compared on the stable 8-hex prefix — the tail changes from session to session. Full-config
-    comparison is reserved for root's strict flash gate.
+    Compared on the stable 8-hex prefix only. The tail is NOT known to vary between sessions —
+    root's destructive gate deliberately requires full 32-hex equality and says so, because that
+    claim has no supporting evidence and narrowing it would cut a wrong-robot check from 128 bits
+    to 32. This looser form is for non-destructive association, where a false negative costs a
+    re-prompt rather than a robot.
     """
     return a[:8].lower() == b[:8].lower()

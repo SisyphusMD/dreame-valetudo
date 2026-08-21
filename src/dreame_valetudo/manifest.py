@@ -173,9 +173,9 @@ def retag_robot(
         return 0
     for d in entries:
         mf = d / "manifest.json"
-        if not mf.is_file():
-            continue
         try:
+            if not mf.is_file():
+                continue
             data = json.loads(mf.read_text())
         except (OSError, ValueError):
             continue

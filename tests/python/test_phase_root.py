@@ -840,3 +840,96 @@ def test_root_skips_when_already_rooted(make_ctx: CtxFactory) -> None:
     robot.state_set("rooted")
     root(ctx)  # no --force
     assert ctx.runner.calls == []
+
+
+def test_flash_window_tolerates_signal_install_and_restore_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fail(_sig: signal.Signals, _handler: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise OSError("signal unavailable")
+
+    monkeypatch.setattr(root_module.signal, "signal", fail)
+    with _mask_interrupts():
+        pass
+    assert calls == len(_FLASH_WINDOW_SIGNALS)
+
+
+def test_flash_window_finishes_even_when_original_signal_handlers_cannot_be_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: list[signal.Signals] = []
+
+    def fail_restore(sig: signal.Signals, handler: object) -> object:
+        if handler is signal.SIG_IGN:
+            installed.append(sig)
+            return signal.SIG_DFL
+        raise OSError("handler table unavailable")
+
+    monkeypatch.setattr(root_module.signal, "signal", fail_restore)
+
+    with _mask_interrupts():
+        assert installed == list(_FLASH_WINDOW_SIGNALS)
+
+
+def test_staged_integrity_refuses_a_manifest_for_another_model_without_commands(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("image", f"model={ctx.model_spec.key}")
+    robot.fw_dir.mkdir(parents=True)
+    (robot.fw_dir / STAGED_IMAGE_MANIFEST).write_text(
+        json.dumps({"model_key": "d10s-plus", "files": {}})
+    )
+
+    with pytest.raises(Die, match="belongs to another model"):
+        root_module._check_staged_integrity(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_staged_integrity_refuses_wrong_model_marker_and_missing_manifest(
+    make_ctx: CtxFactory,
+) -> None:
+    wrong = make_ctx(robot_name="bench")
+    wrong.need_robot().state_set("image", "model=d10s-plus")
+    with pytest.raises(Die, match="not recorded for the currently selected model"):
+        root_module._check_staged_integrity(wrong)
+
+    missing = make_ctx(robot_name="bench")
+    missing.need_robot().state_set("image", f"model={missing.model_spec.key}")
+    with pytest.raises(Die, match="no readable integrity record"):
+        root_module._check_staged_integrity(missing)
+
+
+def test_root_refuses_missing_recorded_config_before_provisioning(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("recon", f"backup=not-requested model={ctx.model_spec.key}")
+
+    with pytest.raises(Die, match="no recorded config value"):
+        root(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_root_reports_every_missing_image_when_image_phase_returns_without_staging(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    robot.state_set("recon", f"backup=not-requested model={ctx.model_spec.key}")
+    monkeypatch.setattr(root_module, "_sunxi_ready", lambda _ctx: True)
+    monkeypatch.setattr(root_module, "image", lambda _ctx: None)
+
+    with pytest.raises(Die, match=r"Run 'image'.*missing"):
+        root(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]

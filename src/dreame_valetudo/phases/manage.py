@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .. import manifest
-from ..console import die
+from ..console import abort, die
 from ..context import Context
 from ..installs import find_installs
 from ..models import known_model_key_for_dir
@@ -217,7 +217,9 @@ def uninstall(ctx: Context) -> None:
         ctx.console.info("Some of these need root — sudo will ask for your password.")
     plural = "install" if len(removable) == 1 else f"{len(removable)} installs"
     if not ctx.console.confirm(f"Remove {plural} now?"):
-        die("Aborted — nothing was removed.")
+        # abort(), not die(): declining at a confirmation is a decision, not a
+        # failure, and every other confirmation in this project exits 0 for it.
+        abort("Aborted — nothing was removed.")
 
     failed = []
     for i in removable:

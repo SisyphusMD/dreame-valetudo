@@ -151,6 +151,18 @@ def test_status_identifies_a_robot_returned_to_stock(make_ctx: CtxFactory) -> No
     assert any("[x] restored-stock" in msg for _kind, msg in ctx.console.lines)  # type: ignore[attr-defined]
 
 
+def test_status_names_the_prompt_where_an_interrupted_run_paused(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.state_set("model_key", "x40-ultra")
+    robot.state_set("recon")
+    robot.state_set("pending", "  Flash   the robot now?  \n")
+
+    status(ctx)
+
+    assert _said(ctx, 'paused at: "Flash the robot now?"')
+
+
 def test_status_prioritizes_a_stock_flash_awaiting_boot_confirmation(
     make_ctx: CtxFactory,
 ) -> None:

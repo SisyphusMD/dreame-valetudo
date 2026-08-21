@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from conftest import CFG, CtxFactory
 
+from dreame_valetudo import cli
 from dreame_valetudo.cli import _dispatch, select_model, select_robot
 from dreame_valetudo.console import Die, reset_print_once
 from dreame_valetudo.phases.misc import _summary
@@ -188,6 +189,54 @@ def test_select_model_non_interactive_requires_env(make_ctx: CtxFactory) -> None
     ctx = make_ctx(interactive=False, env={})
     with pytest.raises(Die, match="isn't a terminal"):
         select_model(ctx)
+
+
+def test_new_robot_name_reprompts_after_a_name_without_usable_characters(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["---", "kitchen", "1"])
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
+    assert "no usable characters" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_noninteractive_picker_refuses_multiple_robots_without_an_override(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(interactive=False)
+    for name in ("one", "two"):
+        Robot(ctx.ws.robots_dir / name).state_set("model_key", "x40-ultra")
+    with pytest.raises(Die, match="Multiple robots"):
+        select_robot(ctx)
+
+
+def test_robot_picker_rejects_an_out_of_range_choice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["99"])
+    Robot(ctx.ws.robots_dir / "one").state_set("model_key", "x40-ultra")
+    with pytest.raises(Die, match="Invalid choice"):
+        select_robot(ctx)
+
+
+def test_uncommitted_robot_cleanup_only_removes_the_exact_name_only_shape(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="temporary")
+    created = ctx.need_robot().work
+    assert cli._discard_uncommitted_robot(ctx, None) is None
+    extra = created / "evidence"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("keep")
+    cli._discard_uncommitted_robot(ctx, created)
+    assert created.is_dir()
+
+
+def test_bench_robot_cleanup_refuses_unexpected_markers_and_accepts_model_only(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="temporary")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "evidence")
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+    assert robot.work.is_dir()
+    robot.state_clear("recon")
+    robot.state_set("model_key", "x40-ultra")
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+    assert not robot.work.exists()
+    assert ctx.robot is None
 
 
 def test_select_robot_from_env(make_ctx: CtxFactory) -> None:

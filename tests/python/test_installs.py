@@ -87,3 +87,18 @@ def test_a_source_checkout_has_no_command_to_run(tmp_path: Path) -> None:
     src = next(i for i in find_installs({"HOME": str(tmp_path)}, tmp_path)
                if i.kind == "source checkout")
     assert src.removal == [] and src.note
+
+
+def test_user_level_tool_installs_are_found_under_the_configured_home(tmp_path: Path) -> None:
+    home = tmp_path / "person"
+    _mk(
+        home,
+        ".local/share/uv/tools/dreame-valetudo",
+        ".local/pipx/venvs/dreame-valetudo",
+    )
+
+    installs = find_installs({"HOME": str(home)}, tmp_path)
+
+    by_kind = {install.kind: install for install in installs}
+    assert by_kind["uv tool"].removal == ["uv", "tool", "uninstall", "dreame-valetudo"]
+    assert by_kind["pipx"].removal == ["pipx", "uninstall", "dreame-valetudo"]
