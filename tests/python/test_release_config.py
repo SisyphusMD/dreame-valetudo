@@ -405,10 +405,20 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
         rule
         for rule in config["packageRules"]
         if rule.get("matchManagers") == ["dockerfile"]
-        and rule.get("matchFileNames") == ["packaging/package-smoke.Dockerfile"]
+        and "packaging/package-smoke.Dockerfile" in rule.get("matchFileNames", [])
     ]
     assert len(disabled) == 1
     assert disabled[0]["enabled"] is False
+    # BOTH smoke Dockerfiles. install-smoke.Dockerfile carries the synthetic depNames whose
+    # allowedVersions rules pin the compatibility floors; the built-in dockerfile manager would
+    # see a plain `debian` instead and let those floors drift in a PR of their own.
+    assert "packaging/install-smoke.Dockerfile" in disabled[0]["matchFileNames"]
+    annotated = [
+        m
+        for m in config["customManagers"]
+        if any("install-smoke" in pattern for pattern in m.get("managerFilePatterns", []))
+    ]
+    assert annotated, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
 
 
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:

@@ -8,7 +8,7 @@
 # is covered with its own STATEFUL stub whose DELETEs actually mutate what the next GET returns, so
 # removal is proven by re-reading the live list and git refs (and the release-before-tag order and the
 # git-refs delete endpoint the real forges require), never by trusting the HTTP code. Run directly:
-# bash tests/integration/release-scripts.sh
+# bash tests/release/release-scripts.sh
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -201,7 +201,7 @@ echo "  tag grammar: a tag outside stable/rc is refused before any API call OK"
 # of the same source (which also proves the tarball is byte-reproducible).
 source_tree="$tmp/source-tree"
 mkdir -p "$source_tree"
-cp -R "$root/dreame_valetudo" "$root/libexec" "$root/packaging" "$root/docs" "$source_tree/"
+cp -R "$root/src" "$root/libexec" "$root/packaging" "$root/docs" "$source_tree/"
 cp "$root/pyproject.toml" "$root/uv.lock" "$root/README.md" "$root/LICENSE" "$root/CHANGELOG.md" \
   "$source_tree/"
 
@@ -266,7 +266,10 @@ grep -Fq "releases/download/v$version/dreame-valetudo-$version.tar.gz" "$stable"
   || fail "stable formula does not use the versioned release asset"
 grep -Fq 'github.com/SisyphusMD/dreame-valetudo/releases/download/' "$stable" \
   || fail "stable formula has no GitHub mirror"
-! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$stable" \
+# ANY marker, matched as a pattern rather than a hand-kept list — the list going stale is the bug
+# render-formula.sh exists to make impossible, and a named-marker check here would go stale the same
+# way. A bare `REPLACE_BOTTLE_BLOCK` parses as a Ruby constant, so Homebrew fails at install time.
+! grep -q 'REPLACE_' "$stable" \
   || fail "stable formula retained an unsubstituted placeholder"
 for registry in forgejo.bryantserver.com github.com; do
   grep -Fq "$registry/SisyphusMD/dreame-valetudo/releases/download/v$version/" "$calls" \
@@ -304,16 +307,33 @@ TAP_GITHUB="$tmp/other.tar.gz" bash "$source_tree/packaging/update-tap.sh" "v$ve
   && fail "update-tap accepted a mirror serving bytes other than the locally built tarball"
 echo "  Homebrew formula: a missing or dissenting published copy fails closed OK"
 
-stamp_version "$version-rc.1"
-build_expected "$version-rc.1"
+# The NEXT version's candidate, not this one's. The stable pass above re-pointed the rc formula at
+# 9.7.0 (the documented fall-through), so a 9.7.0-rc.1 arriving afterwards really would move the rc
+# channel backward — the guard below is asserted separately for exactly that.
+next_rc="9.8.0-rc.1"
+stamp_version "$next_rc"
+build_expected "$next_rc"
 export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
-bash "$source_tree/packaging/update-tap.sh" "v$version-rc.1" "$tap" >/dev/null \
+bash "$source_tree/packaging/update-tap.sh" "v$next_rc" "$tap" >/dev/null \
   || fail "update-tap.sh exited nonzero for a valid rc formula"
 rc="$tap/Formula/dreame-valetudo-rc.rb"
-grep -Fq "dreame-valetudo-$version-rc.1.tar.gz" "$rc" \
+grep -Fq "dreame-valetudo-$next_rc.tar.gz" "$rc" \
   || fail "rc formula did not strip only the tag's leading v from the asset name"
 grep -Fq "sha256 \"$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')\"" "$rc" \
   || fail "rc formula checksum does not match the rc source rebuild"
+
+# A LATE pass for an older tag must not publish over the newer formula. `tap-bottles.yml`
+# documents a manual rerun for a partial bottle set, so this arrives in practice — and the
+# tap-write concurrency group serialises writers without saying anything about version order.
+stamp_version "$version-rc.1"
+build_expected "$version-rc.1"
+export TAP_FORGEJO="$tmp/expected.tar.gz" TAP_GITHUB="$tmp/expected.tar.gz"
+if bash "$source_tree/packaging/update-tap.sh" "v$version-rc.1" "$tap" >/dev/null 2>&1; then
+  fail "update-tap.sh published an older tag over a newer formula"
+fi
+grep -Fq "dreame-valetudo-$next_rc.tar.gz" "$rc" \
+  || fail "the refused pass modified the formula anyway"
+echo "  Homebrew formula: a late pass for an older tag is refused, not published OK"
 stamp_version "$version"
 
 : > "$calls"
