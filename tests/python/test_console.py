@@ -15,14 +15,25 @@ from dreame_valetudo.console import (
     Answer,
     Console,
     Die,
+    SafetyStop,
     bookmark_prompts_in,
     next_deadline,
+    safety_stop,
     warn_if_low_disk,
 )
 
 
 def _console() -> Console:
     return Console(color=False)
+
+
+def test_safety_stop_is_still_caught_as_die() -> None:
+    try:
+        safety_stop("SAFETY STOP: test refusal")
+    except Die as exc:
+        assert isinstance(exc, SafetyStop)
+    else:
+        pytest.fail("safety_stop did not raise")
 
 
 @pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES", " Yes "])
@@ -268,6 +279,34 @@ def test_warn_if_low_disk_warns_when_short(tmp_path: Path, capsys: pytest.Captur
     assert "Low disk space" in capsys.readouterr().out
 
 
+def test_disk_advisory_probes_the_nearest_existing_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "not-created" / "nested"
+    probed: list[Path] = []
+
+    def disk_usage(path: Path):
+        probed.append(path)
+        return type("Usage", (), {"free": 1 << 60})()
+
+    monkeypatch.setattr(console.shutil, "disk_usage", disk_usage)
+
+    warn_if_low_disk(_console(), missing, need_bytes=1)
+
+    assert probed == [tmp_path]
+
+
+def test_disk_advisory_is_nonfatal_when_free_space_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(_path: Path):
+        raise OSError("unmounted")
+
+    monkeypatch.setattr(console.shutil, "disk_usage", fail)
+
+    warn_if_low_disk(_console(), tmp_path, need_bytes=1 << 60)
+
+
 def test_output_survives_a_dead_tty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ignoring SIGHUP keeps the process alive through a closed terminal, but the tty is gone —
     an unguarded print would then raise OSError between two partition writes and abort the flash
@@ -321,6 +360,19 @@ def test_the_bookmark_survives_an_unanswered_question(tmp_path: Path,
     with pytest.raises(KeyboardInterrupt):
         _console().confirm("Flash X40 Ultra now?")
     assert (state / "pending").read_text().strip() == "Flash X40 Ultra now?"
+
+
+def test_prompt_bookmark_storage_failures_never_block_a_safety_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = tmp_path / "state"
+    bookmark_prompts_in(state)
+    monkeypatch.setattr(Path, "write_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        PermissionError("read-only state"),
+    ))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    assert _console().confirm("Flash now?") is False
 
 
 # --- the idle clock: driven by attachment, never by how long the question has been open --------
@@ -502,3 +554,218 @@ def test_answers_do_not_outlive_their_block() -> None:
         pass
     with pytest.raises(AssertionError):
         console.confirm("anything at all?")
+
+
+def test_answering_blocks_cannot_nest_and_hide_outer_safety_rules() -> None:
+    console = _Recording()
+    with (
+        console.answering([Answer("outer", True, "known")]),
+        pytest.raises(RuntimeError, match="already active"),
+        console.answering([Answer("inner", True, "known")]),
+    ):
+        pass
+
+    with console.answering([Answer("outer", True, "known")]):
+        assert console.confirm("outer question") is True
+
+
+def test_discard_pending_input_flushes_only_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flushed: list[tuple[object, int]] = []
+
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+    stdin = Tty()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(console.termios, "tcflush", lambda stream, mode: flushed.append((stream, mode)))
+
+    _console().discard_pending_input()
+
+    assert flushed == [(stdin, console.termios.TCIFLUSH)]
+
+
+def test_discard_pending_input_is_nonfatal_when_the_terminal_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(sys, "stdin", Tty())
+    monkeypatch.setattr(
+        console.termios, "tcflush", lambda *_args: (_ for _ in ()).throw(OSError("gone")),
+    )
+
+    _console().discard_pending_input()
+
+
+def test_colored_phase_styles_the_heading_and_rule(capsys: pytest.CaptureFixture[str]) -> None:
+    Console(color=True, width=40).phase("Restore")
+
+    out = capsys.readouterr().out
+    assert "\033[1;36mRestore\033[0m" in out
+    assert "\033[2m" in out
+
+
+def test_replay_preserves_raw_terminal_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BinaryOutput:
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+        def isatty(self) -> bool:
+            return False
+
+    output = BinaryOutput()
+    monkeypatch.setattr(sys, "stdout", output)
+
+    _console().replay(b"\x1b[2Jscreen\xff")
+
+    assert output.buffer.getvalue() == b"\x1b[2Jscreen\xff"
+
+
+def test_replay_degrades_to_replacement_text_without_a_binary_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+
+    _console().replay(b"screen\xff")
+
+    assert output.getvalue() == "screen�"
+
+
+def test_tty_prompt_eof_terminates_the_prompt_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(console.select, "select", lambda *_args: ([True], [], []))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin())
+    console.idle_timeout(10.0, lambda: True)
+    try:
+        assert _console().confirm("Flash now?") is False
+    finally:
+        console._IDLE_TIMEOUT.clear()
+        console._IDLE_PROBE.clear()
+
+    assert capsys.readouterr().out.endswith("\n")
+
+
+def test_tty_progress_draws_in_place_then_clears_and_records_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = Tty()
+    monkeypatch.setattr(sys, "stdout", output)
+    con = Console(color=True, width=80)
+
+    with con.progress("Flashing safely"):
+        console.time.sleep(0.15)
+
+    rendered = output.getvalue()
+    assert "Flashing safely" in rendered
+    assert "\r\033[2K" in rendered
+    assert "— done" in rendered
+    assert con._active is None
+
+
+def test_piped_progress_heartbeat_keeps_long_operations_visibly_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OneHeartbeat:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait(self, _interval: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+        def is_set(self) -> bool:
+            return False
+
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+    con = Console(color=False)
+    progress = console._LiveProgress(con, "Long backup", clock=lambda: 61.0)
+    progress._t0 = 0.0
+    progress._stop = OneHeartbeat()  # type: ignore[assignment]
+
+    progress._run()
+
+    assert "... Long backup (1m01s)" in output.getvalue()
+
+
+def test_erase_line_is_nonfatal_when_a_tty_disappears_mid_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeadTty:
+        def isatty(self) -> bool:
+            return True
+
+        def write(self, _text: str) -> int:
+            raise OSError("gone")
+
+        def flush(self) -> None:
+            raise OSError("gone")
+
+    stream = DeadTty()
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    Console(color=False).erase_line()
+
+
+def test_bookmark_update_is_a_noop_when_no_robot_is_selected(tmp_path: Path) -> None:
+    console._BOOKMARK.clear()
+    console._bookmark("unbound question")
+    assert not list(tmp_path.iterdir())
+
+
+def test_progress_display_thread_swallows_broken_output_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Broken(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+        def write(self, _text: str) -> int:
+            raise OSError("terminal gone")
+
+    class OneFrame:
+        def __init__(self) -> None:
+            self.waited = False
+
+        def wait(self, _interval: float) -> bool:
+            if self.waited:
+                return True
+            self.waited = True
+            return False
+
+        def is_set(self) -> bool:
+            return False
+
+    monkeypatch.setattr(sys, "stdout", Broken())
+    con = Console(color=True)
+    progress = console._LiveProgress(con, "work")
+    progress._stop = OneFrame()  # type: ignore[assignment]
+    progress._run()
+
+
+def test_progress_display_rechecks_stop_after_acquiring_the_console_lock() -> None:
+    class StopUnderLock:
+        def wait(self, _interval: float) -> bool:
+            return False
+
+        def is_set(self) -> bool:
+            return True
+
+    con = Console(color=False)
+    progress = console._LiveProgress(con, "finished elsewhere")
+    progress._stop = StopUnderLock()  # type: ignore[assignment]
+
+    progress._run()
+
+    assert con._active is None

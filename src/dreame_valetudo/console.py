@@ -31,12 +31,20 @@ class Die(Exception):
     """Abort with a message. Caught in main() -> print + exit 1."""
 
 
+class SafetyStop(Die):
+    """A refusal by a safety gate, not a failure."""
+
+
 class UserAbort(Die):
     """A deliberate user stop: successful, quiet, and not an issue-reporting failure."""
 
 
 def die(message: str) -> NoReturn:
     raise Die(message)
+
+
+def safety_stop(message: str) -> NoReturn:
+    raise SafetyStop(message)
 
 
 def abort(message: str) -> NoReturn:
