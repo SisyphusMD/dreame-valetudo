@@ -3,7 +3,7 @@
 name = "dreame-valetudo"
 version = "0.2.1"
 description = "Guided, idempotent tool to root supported Dreame robot vacuums and install Valetudo"
-license = "AGPL-3.0-or-later"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # The package itself imports no third-party runtime deps: pyusb is needed only by the fastboot
