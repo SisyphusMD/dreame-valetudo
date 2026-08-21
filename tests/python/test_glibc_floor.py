@@ -25,7 +25,11 @@ def test_glibc_audit_accepts_a_requirement_at_the_declared_floor(
     artifact = tmp_path / "tool"
     artifact.write_bytes(b"\x7fELF")
     monkeypatch.setattr(module, "_embedded_elfs", lambda _bundle, _destination: [])
-    monkeypatch.setattr(module, "_requirements", lambda _path: ["2.17", "2.28", "2.27"])
+    monkeypatch.setattr(
+        module,
+        "_requirements",
+        lambda _path: [("GLIBC", "2.17"), ("GLIBC", "2.28"), ("GLIBC", "2.27")],
+    )
     monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(artifact)])
 
     assert module.main() == 0
@@ -39,13 +43,13 @@ def test_glibc_audit_accepts_an_architecture_with_an_older_requirement(
     artifact = tmp_path / "tool"
     artifact.write_bytes(b"\x7fELF")
     monkeypatch.setattr(module, "_embedded_elfs", lambda _bundle, _destination: [])
-    monkeypatch.setattr(module, "_requirements", lambda _path: ["2.17"])
+    monkeypatch.setattr(module, "_requirements", lambda _path: [("GLIBC", "2.17")])
     monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(artifact)])
 
     assert module.main() == 0
     output = capsys.readouterr().out
     assert "maximum requirement is GLIBC_2.17" in output
-    assert "within the declared GLIBC_2.28 floor" in output
+    assert "within GLIBC_2.28 for the GLIBC_2.28 floor" in output
 
 
 def test_glibc_audit_rejects_a_newer_embedded_requirement(
@@ -55,11 +59,14 @@ def test_glibc_audit_rejects_a_newer_embedded_requirement(
     artifact = tmp_path / "tool"
     artifact.write_bytes(b"\x7fELF")
     monkeypatch.setattr(module, "_embedded_elfs", lambda _bundle, _destination: [])
-    monkeypatch.setattr(module, "_requirements", lambda _path: ["2.28", "2.35"])
+    monkeypatch.setattr(module, "_requirements", lambda _path: [("GLIBC", "2.28"), ("GLIBC", "2.35")])
     monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(artifact)])
 
     assert module.main() == 1
-    assert "declared GLIBC_2.28 floor, but release artifacts require GLIBC_2.35" in capsys.readouterr().out
+    assert (
+        "declared GLIBC_2.28 floor allows GLIBC_2.28, but release artifacts require GLIBC_2.35"
+        in capsys.readouterr().out
+    )
 
 
 def test_glibc_audit_checks_the_archive_inside_an_elf_executable(
@@ -78,7 +85,7 @@ def test_glibc_audit_checks_the_archive_inside_an_elf_executable(
     monkeypatch.setattr(
         module,
         "_requirements",
-        lambda path: ["2.35"] if path == embedded else ["2.14"],
+        lambda path: [("GLIBC", "2.35")] if path == embedded else [("GLIBC", "2.14")],
     )
     monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(artifact)])
 
@@ -102,7 +109,7 @@ def test_glibc_audit_keeps_extractions_from_multiple_bundles_separate(
         return [(f"{bundle.name}:libpython.so", destination / "0")]
 
     monkeypatch.setattr(module, "_embedded_elfs", embedded)
-    monkeypatch.setattr(module, "_requirements", lambda _path: ["2.28"])
+    monkeypatch.setattr(module, "_requirements", lambda _path: [("GLIBC", "2.28")])
     monkeypatch.setattr(
         sys,
         "argv",
@@ -126,9 +133,9 @@ def test_glibc_audit_walks_a_onedir_bundle_directory(
     (bundle / "_internal" / "libpython-link.so").symlink_to("libpython.so")
     audited: list[str] = []
 
-    def _requirements(path: Path) -> list[str]:
+    def _requirements(path: Path) -> list[tuple[str, str]]:
         audited.append(path.name)
-        return ["2.35"] if path.name == "libpython.so" else ["2.17"]
+        return [("GLIBC", "2.35")] if path.name == "libpython.so" else [("GLIBC", "2.17")]
 
     monkeypatch.setattr(module, "_requirements", _requirements)
     monkeypatch.setattr(sys, "argv", [str(_SCRIPT), "2.28", str(bundle)])
