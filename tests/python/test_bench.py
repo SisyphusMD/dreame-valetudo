@@ -208,7 +208,7 @@ def _phase_source() -> str:
     search for it fails unless the `"..."\\n    "..."` seams are closed first.
     """
     joined = []
-    for path in sorted((Path(__file__).parents[2] / "dreame_valetudo").rglob("*.py")):
+    for path in sorted((Path(__file__).parents[2] / "src" / "dreame_valetudo").rglob("*.py")):
         if path.name == "bench.py":
             continue
         text = path.read_text()

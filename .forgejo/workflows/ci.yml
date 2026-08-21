@@ -89,7 +89,7 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "pytest==$PYTEST" -e .
-          python -m compileall -q dreame_valetudo libexec docs/research/tools \
+          python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
             packaging/stamp-version.py \
             packaging/build-source-tar.py \
             packaging/check-doc-links.py \

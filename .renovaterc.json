@@ -9,7 +9,7 @@
   "fetchChangeLogs": "pr",
   "postUpgradeTasks": {
     "commands": ["bash packaging/refresh-pins.sh"],
-    "fileFilters": ["dreame_valetudo/constants.py", "packaging/homebrew/*.rb"],
+    "fileFilters": ["src/dreame_valetudo/constants.py", "packaging/homebrew/*.rb"],
     "executionMode": "branch"
   },
   "enabledManagers": ["pep621", "github-actions", "dockerfile", "custom.regex"],
@@ -28,7 +28,7 @@
     {
       "customType": "regex",
       "description": "The Valetudo release-asset digests, each annotated with the release it came from. `github-release-attachments` resolves each arch's sha256 from the release itself, so a version bump carries its three digests in the same PR instead of leaving them describing the previous one. Each match spans ONE digest plus its own `# <version>` annotation: Renovate replaces currentValue inside the matched text, so the version has to sit within each dependency's own region, and the three regions must not overlap. Capturing one shared version for all three digests fails the whole branch update with 'currentValue not found in string to replace'.",
-      "managerFilePatterns": ["/dreame_valetudo/constants\\.py$/"],
+      "managerFilePatterns": ["/src/dreame_valetudo/constants\\.py$/"],
       "matchStrings": [
         "\"(?:aarch64|armv7|armv7-lowmem)\": \"(?<currentDigest>[0-9a-f]{64})\",\\s*#\\s*(?<currentValue>[0-9][\\w.-]*)"
       ],

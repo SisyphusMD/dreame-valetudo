@@ -85,7 +85,7 @@ jobs:
           set -euo pipefail
           # The rc stamp is exactly these three files and nothing else. Hashing the patch here,
           # before any third-party tool is installed, is what the tag job reproduces byte-for-byte.
-          printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
@@ -155,7 +155,7 @@ jobs:
           python3 packaging/check-release-boundary.py "$version"
           python3 packaging/stamp-version.py "$version"
           python3 packaging/stamp-version.py "$version" --check
-          printf '%s\n' dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
@@ -176,7 +176,7 @@ jobs:
           # out the tag, so the built artifacts still report the rc version.
           git config user.name "forgejo-actions[bot]"
           git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add pyproject.toml dreame_valetudo/__init__.py uv.lock
+          git add pyproject.toml src/dreame_valetudo/__init__.py uv.lock
           git commit -m "prerelease: ${VERSION}"
           python3 packaging/stamp-version.py "$VERSION" --check
           git tag -a -m "prerelease: ${VERSION}" "$TAG"

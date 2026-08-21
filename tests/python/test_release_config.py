@@ -98,7 +98,7 @@ def test_linux_freezes_onedir_while_the_shared_build_scripts_default_to_onefile(
         assert f"BUNDLE_MODE=onedir bash packaging/{script}" in dockerfile
 
     assert "BUNDLE_MODE" not in macos
-    bench = (_ROOT / "dreame_valetudo" / "bench.py").read_text()
+    bench = (_ROOT / "src" / "dreame_valetudo" / "bench.py").read_text()
     assert '_BUNDLE_CONTENTS_DIR = "_internal"' in bench
 
 
@@ -200,10 +200,10 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     assert "macos-15-intel" in macos
     assert "macos-26\n" in macos
     assert "macos-26-intel" in macos
-    assert "ruff check dreame_valetudo libexec tests/python" in macos
+    assert "ruff check src/dreame_valetudo libexec tests/python" in macos
     assert "mypy" in macos
     assert "pytest -q tests/python" in macos
-    assert "tests/integration/*.sh" in macos
+    assert "tests/release/*.sh" in macos
     assert "permissions:" not in macos
     assert "persist-credentials: false" in macos
 
@@ -327,11 +327,11 @@ def test_every_version_bound_digest_is_refreshed_automatically() -> None:
     # Per branch, not per update: several deps can land in one branch and the refresher reads
     # whatever versions the branch ended up with.
     assert task["executionMode"] == "branch"
-    assert "dreame_valetudo/constants.py" in task["fileFilters"]
+    assert "src/dreame_valetudo/constants.py" in task["fileFilters"]
     assert any(f.startswith("packaging/homebrew/") for f in task["fileFilters"])
 
     refresher = (_ROOT / "packaging" / "refresh-pins.sh").read_text()
-    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    constants = (_ROOT / "src" / "dreame_valetudo" / "constants.py").read_text()
     for name in sorted(set(re.findall(r"^(\w*SHA256)\b", constants, re.M))):
         if name in _STATIC_DIGESTS:
             continue
@@ -355,7 +355,7 @@ def test_the_cpython_pin_is_proposed_without_its_tag_prefix() -> None:
     assert extracted is not None and extracted.group("version") == "3.14.7"
 
     # Every consumer writes the bare value, so a `v`-prefixed proposal would break all of them.
-    for path in (_CI, _MACOS_CI, _ROOT / "dreame_valetudo" / "constants.py"):
+    for path in (_CI, _MACOS_CI, _ROOT / "src" / "dreame_valetudo" / "constants.py"):
         assert not re.search(r'"v\d+\.\d+\.\d+"', path.read_text())
 
 
@@ -375,7 +375,7 @@ def test_the_cpython_tag_pin_governs_only_what_ships() -> None:
     # .pkg, so it must move with the bundle pin and its reviewed checksum, not on its own.
     macos = _MACOS.read_text()
     assert "depName=python/cpython" in macos
-    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    constants = (_ROOT / "src" / "dreame_valetudo" / "constants.py").read_text()
     assert "depName=python/cpython" in constants
     bundled = re.search(r'BUNDLE_PYTHON_VERSION = "([^"]+)"', constants)
     assert bundled is not None
@@ -434,7 +434,7 @@ def test_homebrew_templates_use_the_replicated_release_tarball() -> None:
     series = ".".join(
         re.search(  # type: ignore[union-attr]
             r'^BUNDLE_PYTHON_VERSION = "([^"]+)"',
-            (_ROOT / "dreame_valetudo" / "constants.py").read_text(), re.M,
+            (_ROOT / "src" / "dreame_valetudo" / "constants.py").read_text(), re.M,
         ).group(1).split(".")[:2]
     )
     for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):

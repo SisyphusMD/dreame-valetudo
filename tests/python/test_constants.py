@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dreame_valetudo.constants import VALETUDO_SHA256, VALETUDO_VERSION_DEFAULT
 
-_CONSTANTS = Path(__file__).resolve().parents[2] / "dreame_valetudo" / "constants.py"
+_CONSTANTS = Path(__file__).resolve().parents[2] / "src" / "dreame_valetudo" / "constants.py"
 _ANNOTATED_DIGEST = re.compile(
     r'"(?P<arch>[\w-]+)": "(?P<digest>[0-9a-f]{64})",\s*#\s*(?P<version>[0-9][\w.-]*)'
 )

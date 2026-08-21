@@ -57,16 +57,16 @@ jobs:
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           mypy
           python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
       - name: Check shell scripts
-        run: shellcheck --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh
+        run: shellcheck --severity=warning packaging/*.sh tests/release/*.sh docs/research/tools/*.sh
       - name: Run integration scripts with native tmux
         run: |
-          for t in tests/integration/*.sh; do
+          for t in tests/release/*.sh; do
             echo "== $t =="
             bash "$t"
           done

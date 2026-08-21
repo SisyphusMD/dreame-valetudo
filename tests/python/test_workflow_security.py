@@ -82,7 +82,7 @@ def test_sunxi_tools_is_pinned_to_one_exact_upstream_commit() -> None:
     assert len(matching) == 1
     assert any("constants.py" in note for note in matching[0]["prBodyNotes"])
 
-    constants = (_ROOT / "dreame_valetudo" / "constants.py").read_text()
+    constants = (_ROOT / "src" / "dreame_valetudo" / "constants.py").read_text()
     ref = re.search(r'^SUNXI_TOOLS_REF = "([^"]+)"', constants, re.M)
     assert ref is not None
     assert re.fullmatch(r"[0-9a-f]{40}", ref.group(1)), "must be a full commit, never a branch"
