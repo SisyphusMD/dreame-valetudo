@@ -110,6 +110,9 @@ from one).
    |---|---|
    | `CLUSTER_FORGEJO_REPO_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `dreame-valetudo` (release commit/tag + create/append the Forgejo release). |
    | `NAS_FORGEJO_REPO_WRITE_PAT` | PAT on the NAS Forgejo, repo write (NAS release + the bridged `.pkg`). |
+| `CLUSTER_FORGEJO_REGISTRY_PUSH_PAT` | `publish` | Package-registry write on the cluster instance. Separate from the repo PAT: the registry is a different blast radius, and it is the one credential that can overwrite what subscribers install. Org-scoped. |
+| `GPG_SIGNING_KEY` | `publish` | The namespace signing key's private half (`CCE50015D058E9BF`), shared with the sibling project because the registry groups packages by OWNER — a per-project key would buy no isolation. `publish` FAILS CLOSED without it rather than shipping unsigned packages. Org-scoped. |
+| `PYPI_API_TOKEN` | `publish` | Uploads the sdist and wheel. Project-scoped by PyPI, so the sibling's token cannot be reused. **Not yet set:** the `pypi` job skips with a warning until it exists, and the Homebrew formula keeps building from the release asset until the first upload succeeds. |
    | `GH_REPO_WRITE_PAT` | GitHub PAT, Contents: read & write (create the GitHub release). Same PAT as the GitHub push-mirror. |
    | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `homebrew-tap` (the `homebrew-tap` job pushes the updated formula — the stable formula for a stable tag, the `dreame-valetudo-rc` formula for a prerelease tag). |
 
@@ -138,7 +141,15 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   child, so the check never runs: the protection is not disabled, the two-process model it guards
   is simply absent. The scripts default to onefile because `release-macos.yml` calls the same two
   and signs, bundles and notarizes a single file; `deb.Dockerfile` is the one caller that passes
-  `BUNDLE_MODE=onedir`. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
+  `BUNDLE_MODE=onedir`.
+
+  **The other way out, taken by the sibling project.** whiskerless hit this identical bug — it cost
+  that project's `v0.2.0-rc.18` Linux artifacts as it cost this one's rc.13 — and escaped it by
+  PINNING PyInstaller at 6.22.0, before the parent-executable check took effect on POSIX in 6.22.1,
+  keeping onefile and therefore a single-file download. The cost is a standing version pin, watched
+  by `whiskerless/packaging/check-pyinstaller-pin.sh`. Onedir was chosen here instead because it
+  removes the constraint at its root rather than waiting upstream out — but if a standalone Linux
+  binary ever becomes a channel worth having, that pin is how. See project-standard/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
   and `.../fastboot`) reached through a symlink to its launcher, because `find_helper` wants a
   runnable FILE at `/usr/lib/dreame-valetudo/dreame-fastboot` and the bootloader resolves symlinks
   before looking for its contents directory. `packaging/check-package-parity.py` compares each
@@ -188,3 +199,85 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   `.deb` test runs on
   current Debian and Ubuntu LTS plus Debian 12 and Ubuntu 22.04 compatibility floors. Physical USB
   access and the udev rule still require a real host.
+
+## Secrets
+
+Derived from the workflows, not maintained by hand — if this list and
+`grep -rhoE 'secrets\.[A-Z0-9_]+' .forgejo/workflows .github/workflows` disagree, the workflows are
+right. Structure mirrors whiskerless's equivalent section so the two are readable side by side.
+
+### On Forgejo (`forgejo.bryantserver.com/SisyphusMD/dreame-valetudo` → Settings → Actions → Secrets)
+
+| Secret | Used by | What it is |
+|---|---|---|
+| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs`, `dustbuilder-forms` | Repo-write PAT on the cluster instance: pushes the release commit and tag, creates releases, prunes superseded candidates. |
+| `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish` | Separate PAT scoped to `SisyphusMD/homebrew-tap`. Deliberately not the repo PAT: the tap is a different blast radius. |
+| `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
+| `GH_REPO_WRITE_PAT` | `publish`, `prune-rcs` | Creates and prunes releases on the GitHub mirror, which the Forgejo runner cannot do with its own token. |
+
+### On GitHub (`github.com/SisyphusMD/dreame-valetudo` → Settings → Secrets and variables → Actions)
+
+Only `release-macos.yml` runs there, because the signed and notarized `.pkg` needs Apple's toolchain
+on a real macOS runner.
+
+| Secret | What it is |
+|---|---|
+| `MACOS_APP_CERT_P12` / `MACOS_APP_IDENTITY` | Developer ID Application certificate (base64 `.p12`) and the identity string to sign the binaries with. |
+| `MACOS_INSTALLER_CERT_P12` / `MACOS_INSTALLER_IDENTITY` | Developer ID Installer certificate and identity, for the `.pkg` itself. |
+| `MACOS_CERT_PASSWORD` | Password for both `.p12` imports. |
+| `MACOS_NOTARY_KEY_P8` / `MACOS_NOTARY_KEY_ID` / `MACOS_NOTARY_ISSUER` | App Store Connect API key, key id and issuer id, for `notarytool`. |
+| `GITHUB_TOKEN` | Automatic. Attaches the built `.pkg` to the release. |
+
+`*.p12` and `*.p8` are in `.gitignore` for a reason: those two files are exactly what a release
+engineer ends up holding locally, and neither belongs in a repository.
+
+## apt / dnf repositories — enabled
+
+Both projects now publish signed apt and dnf repositories, so users get `apt install
+dreame-valetudo` or `dnf install dreame-valetudo` and automatic updates. Direct `.deb`/`.rpm`
+downloads remain, for machines that would rather not add a repository.
+
+| Piece | State |
+|---|---|
+| `publish-registry.sh` | Vendored from project-standard. Called by `publish.yml` after the packages are built and smoke-tested. |
+| `sisyphusmd.repo`, `sisyphusmd-testing.repo` | Shipped, and pointing at a key that exists (`CCE50015D058E9BF`). |
+| `sisyphusmd-signing-key.asc` | The public half, vendored so both projects trust the same namespace key. |
+| Qualification | The install matrix installs from both repositories every release — `apt-repo` and `dnf-repo` channels, on both architectures. |
+
+**A candidate never reaches a subscriber who asked for releases.** deb and rpm version ordering
+cannot express that on its own (`0.3.0~rc.1` sorts below `0.3.0`, which only helps once `0.3.0`
+exists), so the two audiences are separated by DISTRIBUTION instead: a candidate goes to `testing`
+only, a release to both. The install matrix picks its `.repo` file to match, or an rc run would
+qualify the previous stable and leave the testing channel untested.
+
+**The trust root is the Forgejo host that also serves the packages**, which is why
+`repo_gpgcheck=0` and why the package signature — ours, not the registry's — is what actually
+authenticates a download. That weakness is documented rather than hidden, and it is identical in
+both projects by design; read the `.repo` comments before changing either.
+
+### Generating the signing key
+
+The workflow **fails closed** if `GPG_SIGNING_KEY` is absent — it refuses to publish unsigned
+packages rather than quietly shipping them. So packaging signing is wired but inert until the secret
+exists. To create it:
+
+```bash
+# RSA 4096, no expiry, no passphrase — CI cannot answer a prompt, and an expiring key silently
+# breaks every subscriber's update on a date nobody has written down.
+gpg --batch --quick-generate-key "Dreame Valetudo <SisyphusMD@users.noreply.github.com>" rsa4096 sign never
+gpg --armor --export-secret-keys <KEYID>   # -> the GPG_SIGNING_KEY secret, Forgejo org scope
+gpg --armor --export <KEYID> > packaging/sisyphusmd-signing-key.asc   # the PUBLIC half, committed
+```
+
+Commit only the **public** half. The private key lives in the Forgejo secret and nowhere else — the
+workflow writes it to a `mktemp` path outside the build context, copies it into the packaging
+container separately from the source tree, and force-removes both on EXIT so a failed build cannot
+leave it in a stopped container on a reused Docker host.
+
+Then flip on the repository channel: wire `publish-registry.sh` into `publish.yml`, point the
+`.repo` files' `gpgkey` at the committed public key, and remove their NOT-LIVE banners.
+
+**Before you do, decide where that key's trust is rooted.** Whiskerless serves its public key from
+the same Forgejo host that serves the packages, which is why it runs `repo_gpgcheck=0` — a host
+compromise would hand out both the packages and the key that vouches for them. It is documented
+there rather than hidden, and it is worth fixing in **both** projects rather than reproducing here.

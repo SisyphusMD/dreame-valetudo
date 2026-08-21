@@ -47,11 +47,22 @@ version="${tag#v}"
 # PEP 440, the same normalization update-tap.sh applies: the tag says 0.2.0-rc.1
 # and the formula's URL says 0.2.0rc1. The bottle filename follows the formula.
 pypi_version="$(printf '%s' "$version" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
-# The TAG spelling, which is what update-tap.sh puts in the formula's url. `pypi_version`
-# normalises `0.3.0-rc.1` to `0.3.0rc1` for the Python side; searching the formula for that
-# spelling meant the readiness loop could never match a prerelease, so every rc bottle build
-# waited the full thirty minutes and then failed on a tap that had published correctly.
-tarball_version="$version"
+# WHERE the formula installs from, which is what decides the version spelling in its url — and
+# so the spelling this readiness check has to search for.
+#
+# `pypi`: the project publishes to PyPI and the formula builds from the sdist, whose filename PyPI
+# normalises to PEP 440 (`0.2.0rc1`). Not a choice; PyPI names that file.
+# `release-asset`: the project does not publish to PyPI, and the formula builds from an asset this
+# release named for its tag (`0.3.0-rc.1`).
+#
+# Hardcoding either spelling made every prerelease bottle build in the OTHER project wait the full
+# thirty minutes and then fail against a tap that had published correctly. The two only differ for
+# release candidates — a stable `0.3.0` is spelled the same either way.
+case "${PROJECT_FORMULA_SOURCE:-release-asset}" in
+  pypi)          tarball_version="$pypi_version" ;;
+  release-asset) tarball_version="$version" ;;
+  *) echo "project.env: PROJECT_FORMULA_SOURCE must be 'pypi' or 'release-asset'" >&2; exit 2 ;;
+esac
 root_url="https://forgejo.bryantserver.com/${OWNER}/${PKG}/releases/download/${tag}"
 
 case "$tag" in

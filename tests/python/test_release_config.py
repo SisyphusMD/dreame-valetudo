@@ -717,9 +717,11 @@ def test_readme_source_install_names_every_host_runtime_dependency() -> None:
 
 def test_readme_covers_rpm_candidate_switching_and_manual_removal() -> None:
     readme = _README.read_text()
-    assert "sudo dnf install ./dreame-valetudo.<arch>.rpm" in readme
-    assert "sudo dnf downgrade ./dreame-valetudo.<arch>.rpm" in readme
-    assert "sudo zypper install --oldpackage ./dreame-valetudo.<arch>.rpm" in readme
+    # Assets carry the version now, matching the sibling project, so the copyable instruction has
+    # to name a file that will actually exist on disk after the download.
+    assert "sudo dnf install ./dreame-valetudo-<version>.<arch>.rpm" in readme
+    assert "sudo dnf downgrade ./dreame-valetudo-<version>.<arch>.rpm" in readme
+    assert "sudo zypper install --oldpackage ./dreame-valetudo-<version>.<arch>.rpm" in readme
     assert "sudo dnf remove dreame-valetudo" in readme
 
 
