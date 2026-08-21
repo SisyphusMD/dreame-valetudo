@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -49,8 +52,10 @@ def test_reconcile_requires_both_github_qualified_macos_packages() -> None:
     reconcile = _job(_PUBLISH.read_text(), "reconcile")
 
     assert "fail=0" in reconcile
-    assert 'index("dreame-valetudo-macos-arm64.pkg")' in reconcile
-    assert 'index("dreame-valetudo-macos-x86_64.pkg")' in reconcile
+    # Per-ARCH, and by suffix because the filenames now carry the version. Still not a blanket
+    # `.pkg` match: one arch qualifying must never stand in for the other.
+    assert 'any(endswith("-macos-arm64.pkg"))' in reconcile
+    assert 'any(endswith("-macos-x86_64.pkg"))' in reconcile
     assert 'endswith(".pkg")' not in reconcile
     assert "current tag's two GitHub-qualified .pkgs were not published" in reconcile
     assert "fail=1" in reconcile
@@ -292,27 +297,38 @@ def test_pinned_toolchain_matches_the_lockfile() -> None:
         )
 
 
-def test_no_dependency_is_held_back_for_hand_updating() -> None:
-    """Nothing may require a person to edit a file to make its bump mergeable.
+def test_every_hold_says_what_CI_cannot_reach() -> None:
+    """A hold must carry its reason, and the only admissible reason is that green says nothing.
 
-    Every hold here existed because something bound to the version — a digest, a lockfile — had no
-    datasource and could not move with it, so the branch arrived half-applied. Refreshing those
-    from the version removes the reason, and a hold with no reason is just a chore.
+    The holds this test originally banned outright existed because something bound to the version —
+    a digest, a lockfile — had no datasource and could not move with it, so the branch arrived
+    half-applied. `refresh-pins.sh` removed that reason, and a hold with no reason is just a chore.
+
+    But a blanket ban was too strong, and the config quietly disagreed with itself for it: two rules
+    described their bumps as hand-reviewed while nothing implemented that. Some dependencies are
+    genuinely outside what CI can exercise — pyusb's descriptor and bulk-transfer paths are stubbed
+    out of the unit tests entirely, so a green run is silent about the code that writes to flash.
+    Automerging on a signal that cannot see the risk is worse than holding.
+
+    So: hold if you must, but say what CI cannot reach, in `prBodyNotes`, where the reviewer sees it.
     """
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    held = [
-        rule.get("matchDepNames") or rule.get("matchManagers") or rule.get("description", "?")
+    undocumented = [
+        rule.get("matchDepNames") or rule.get("matchManagers") or rule.get("description", "?")[:60]
         for rule in config["packageRules"]
-        if rule.get("automerge") is False
+        if rule.get("automerge") is False and not rule.get("prBodyNotes")
     ]
-    assert held == [], f"held for hand review: {held}"
+    assert undocumented == [], f"held with no stated reason: {undocumented}"
 
-    blanket = [
-        rule
-        for rule in config["packageRules"]
-        if rule.get("automerge") is True and "patch" in rule.get("matchUpdateTypes", [])
-    ]
-    assert len(blanket) == 1, "nothing automerges a green patch bump any more"
+
+def test_renovate_automerges_patch_minor_and_digest_on_green() -> None:
+    """The same set as the sibling, asserted the same way in both repos. Every dependency that
+    ships or builds the tool is exercised by a CI job and Renovate only automerges on green, so a
+    breaking bump fails the PR before it can merge."""
+    config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    blanket = [r for r in config["packageRules"] if r.get("automerge") is True]
+    assert len(blanket) == 1, "more than one blanket automerge rule"
+    assert sorted(blanket[0]["matchUpdateTypes"]) == ["digest", "minor", "patch"]
 
 
 def test_every_version_bound_digest_is_refreshed_automatically() -> None:
@@ -401,6 +417,9 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
     assert digest.group(1) in _CI.read_text()
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
+    # BOTH smoke Dockerfiles: install-smoke.Dockerfile carries the synthetic depNames whose
+    # allowedVersions rules pin the compatibility floors, and the built-in dockerfile manager
+    # would see a plain `debian` instead and let those floors drift in their own PR.
     disabled = [
         rule
         for rule in config["packageRules"]
@@ -409,10 +428,8 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
     ]
     assert len(disabled) == 1
     assert disabled[0]["enabled"] is False
-    # BOTH smoke Dockerfiles. install-smoke.Dockerfile carries the synthetic depNames whose
-    # allowedVersions rules pin the compatibility floors; the built-in dockerfile manager would
-    # see a plain `debian` instead and let those floors drift in a PR of their own.
     assert "packaging/install-smoke.Dockerfile" in disabled[0]["matchFileNames"]
+
     annotated = [
         m
         for m in config["customManagers"]
@@ -469,11 +486,13 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
     # directly. Only the workflow_dispatch-only release/prerelease gates, never fork-triggered,
     # share packaging/shellcheck-all.sh.
     assert f'SHELLCHECK="{pins["SHELLCHECK"]}"' in ci
-    glob = "packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh"
-    assert glob in ci
-    # The two must not drift: a script covered by one gate and not the other goes unchecked
-    # on whichever path the change happens to take.
-    assert glob in _SHELLCHECK_ALL.read_text()
+    # Both gates DISCOVER their inputs rather than enumerating them. A hand-maintained glob left a
+    # script added outside packaging/, tests/release/ or docs/research/tools/ unchecked, and the
+    # only symptom was silence. The two must still not drift from each other: a script covered by
+    # one gate and not the other goes unchecked on whichever path the change happens to take.
+    assert "git ls-files '*.sh'" in ci
+    assert "git ls-files '*.sh'" in _SHELLCHECK_ALL.read_text()
+    assert "packaging/*.sh" not in ci, "back to a hand-maintained list"
     assert "apt-get install -y shellcheck" not in ci
     assert '-v "$PWD:' not in ci
     assert 'docker create -w /work "$SHELLCHECK"' in ci
@@ -506,7 +525,13 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
         text = workflow.read_text()
         gate = text[text.index("      - name: Test gate") :]
         assert "apt-get install -y -qq tmux" in gate
-        assert 'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .' in gate
+        # pytest-cov is in this list because the release path gates coverage too, not only ci.yml:
+        # CI runs on a branch and a release is cut from a tag, so a gate that lives only in CI does
+        # not constrain what a release may ship.
+        assert (
+            'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .'
+            in gate
+        )
 
 
 def test_both_release_gates_stamp_every_version_record_including_the_lock() -> None:
@@ -727,8 +752,8 @@ def test_readme_source_install_names_every_host_runtime_dependency() -> None:
 
 def test_readme_covers_rpm_candidate_switching_and_manual_removal() -> None:
     readme = _README.read_text()
-    # Assets carry the version now, matching the sibling project, so the copyable instruction has
-    # to name a file that will actually exist on disk after the download.
+    # Assets carry the version now, matching whiskerless, so the copyable instruction has to name
+    # a file that will actually exist on disk after the download.
     assert "sudo dnf install ./dreame-valetudo-<version>.<arch>.rpm" in readme
     assert "sudo dnf downgrade ./dreame-valetudo-<version>.<arch>.rpm" in readme
     assert "sudo zypper install --oldpackage ./dreame-valetudo-<version>.<arch>.rpm" in readme
@@ -749,3 +774,348 @@ def test_gitignore_covers_release_and_device_artifacts_created_in_the_repo() -> 
         "/sunxi-fel",
         "/notes.md",
     } <= patterns
+
+
+def test_every_shipped_python_file_is_linted() -> None:
+    """A new shipped .py must not escape ruff by nobody remembering to add it to a list.
+
+    CI globs the tracked set instead of enumerating it; this pins the one deliberate exclusion so
+    widening it is a visible edit rather than a silent one.
+    """
+    workflow = (_ROOT / ".forgejo" / "workflows" / "ci.yml").read_text()
+    assert "ruff check $(git ls-files '*.py'" in workflow, "ruff no longer discovers its own inputs"
+    excluded = [
+        line for line in workflow.splitlines()
+        if "ruff check $(git ls-files" in line
+    ]
+    assert len(excluded) == 1
+    assert "grep -v '^docs/research/tools/'" in excluded[0], "the only permitted exclusion changed"
+
+
+def test_every_release_path_gates_coverage_not_just_ci() -> None:
+    """ci.yml runs on a branch; a release is cut from a tag. A non-regression gate that lives only
+    in CI does not constrain what a release is allowed to ship, which is how a coverage regression
+    could have shipped from this repository while every branch build stayed green."""
+    for workflow in (_CI, _RELEASE, _PRERELEASE):
+        text = workflow.read_text()
+        assert "--cov-fail-under=99" in text, workflow
+        # The Runner seam is held at 100 separately: averaged into the repository number, a
+        # regression in the one place every external command passes through would be invisible.
+        assert "coverage report --include='*/run.py' --fail-under=100" in text, workflow
+
+
+# --- the apt/dnf repository channel -------------------------------------------------
+#
+# dnf accepts a package signed by ANY key listed in `gpgkey`, so what these files trust is the
+# whole security property of the channel. The key is scoped to the SisyphusMD NAMESPACE, not to
+# this project: Forgejo's package registry group is per-owner, every project here publishes into
+# the same group, and a shared group would force every project's key into every .repo file anyway
+# — at which point any one of them could sign a package named for another.
+_REPO_FILES = sorted((_ROOT / "packaging").glob("*.repo"))
+_OUR_KEY_URL = (
+    "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
+    "/raw/branch/main/packaging/sisyphusmd-signing-key.asc"
+)
+_SIGNING_KEY_ID = "CCE50015D058E9BF"
+_FORGEJO_REGISTRY_KEY = "/api/packages/SisyphusMD/rpm/repository.key"
+
+
+def _gpgkey_urls(text: str) -> list[str]:
+    """Every key the file trusts, including INI continuation lines.
+
+    An indented line after `gpgkey=` continues the value, which is exactly how a second key gets
+    added without touching the `gpgkey=` line itself — so reading only that one line would miss it.
+    """
+    urls: list[str] = []
+    collecting = False
+    for line in text.splitlines():
+        if line.startswith("gpgkey="):
+            collecting = True
+            urls += line[len("gpgkey=") :].split()
+        elif collecting and line[:1] in (" ", "\t"):
+            urls += line.split()
+        elif collecting:
+            collecting = False
+    return urls
+
+
+def test_both_repository_channels_are_shipped() -> None:
+    assert {p.name for p in _REPO_FILES} == {"sisyphusmd.repo", "sisyphusmd-testing.repo"}
+
+
+def test_every_dnf_config_trusts_our_key_alone() -> None:
+    for path in _REPO_FILES:
+        text = path.read_text(encoding="utf-8")
+        config = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        assert _gpgkey_urls(config) == [_OUR_KEY_URL], path.name
+        # Forgejo keeps its registry keys in its database in plaintext, on the same host that
+        # serves the packages — listing it would make one host's compromise sufficient to install
+        # arbitrary code on every subscriber.
+        assert _FORGEJO_REGISTRY_KEY not in config, path.name
+        assert "gpgcheck=1" in config, path.name
+        # Exact value, not merely absent: flipping this to 1 makes dnf verify the index against
+        # Forgejo's key, which these files deliberately do not list — so the repository breaks.
+        assert "repo_gpgcheck=0" in config, path.name
+
+
+def test_the_pinned_key_is_the_one_this_repository_ships() -> None:
+    """The URL could be right while the file behind it is some other key."""
+    key = _ROOT / "packaging" / "sisyphusmd-signing-key.asc"
+    assert key.exists(), "the signing key the .repo files pin is not in the repository"
+    if not shutil.which("gpg"):
+        return
+    # A throwaway GNUPGHOME. `gpg` opens — and creates — its trust database before it will look
+    # at anything, so without this the test depends on the caller having a writable ~/.gnupg and
+    # quietly writes to it when they do. It fails in a sandbox for a reason that has nothing to do
+    # with the key it is checking.
+    with tempfile.TemporaryDirectory() as home:
+        proc = subprocess.run(
+            ["gpg", "--homedir", home, "--show-keys", "--with-colons", str(key)],
+            capture_output=True, text=True, check=False,
+        )
+    assert proc.returncode == 0, proc.stderr
+    fingerprints = [ln.split(":")[9] for ln in proc.stdout.splitlines() if ln.startswith("fpr:")]
+    assert any(f.endswith(_SIGNING_KEY_ID) for f in fingerprints), fingerprints
+
+
+def test_every_dnf_config_names_a_distribution_the_publisher_writes() -> None:
+    """A baseurl pointing at a group nothing publishes to is a repository that resolves, returns
+    an empty index, and reports no candidate."""
+    publisher = (_ROOT / "packaging" / "publish-registry.sh").read_text(encoding="utf-8")
+    for path in _REPO_FILES:
+        baseurl = next(
+            ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.startswith("baseurl=")
+        )
+        distribution = baseurl.rstrip("/").rsplit("/", 1)[1]
+        assert re.search(rf'dists="[^"]*\b{distribution}\b', publisher), (
+            f"{path.name} points at '{distribution}', which publish-registry.sh never writes to"
+        )
+
+
+def test_publishing_refuses_to_ship_unsigned_packages() -> None:
+    """Unsigned packages install fine, so nothing downstream notices — but subscribers running
+    `gpgcheck=1` get a channel that fails for them and for nobody else."""
+    text = _PUBLISH.read_text()
+    assert 'GPG_SIGNING_KEY:?' in text
+    assert "NFPM_SIGNING_KEY_FILE" in text
+    # The key is written outside the workspace: `docker cp . :/w` sends the whole tree.
+    assert 'KEYFILE="$(mktemp)"' in text
+    assert "::warning::GPG_SIGNING_KEY is not set" not in text
+
+
+def test_the_registry_publish_runs_but_never_on_a_failed_build() -> None:
+    releases = _job(_PUBLISH.read_text(), "releases")
+    assert "packaging/publish-registry.sh forgejo.bryantserver.com" in releases
+    # A separate token: `write:repository` cannot upload a package to Forgejo's registry.
+    assert "CLUSTER_FORGEJO_REGISTRY_PUSH_PAT" in releases
+    assert "!cancelled() && steps.build.outcome == 'success'" in releases
+
+
+# --- Homebrew bottles -----------------------------------------------------------------
+#
+# A bottle's keg is rooted at `<formula>/<version>/` and its filename embeds the formula name, so a
+# `dreame-valetudo` bottle cannot be renamed into a `dreame-valetudo-rc` one — which is why a stable
+# tag builds two sets. The failure mode that matters is a formula advertising checksums for files
+# that are not there: unlike a MISSING block, which falls back to building from source, a wrong one
+# fails every install outright.
+_TEMPLATES = sorted((_ROOT / "packaging" / "homebrew").glob("*.rb"))
+_RENDERER = _ROOT / "packaging" / "render-formula.sh"
+
+
+def _render(template: Path, block: Path | None = None) -> str:
+    argv = [str(_RENDERER), str(template), "0.3.0", "deadbeef"]
+    if block is not None:
+        argv.append(str(block))
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def test_every_formula_template_renders_with_no_marker_left() -> None:
+    """A surviving `REPLACE_BOTTLE_BLOCK` is a bare word, which Ruby parses as a constant — so
+    Homebrew fails to load the formula at install time rather than anything failing here."""
+    assert _TEMPLATES
+    for template in _TEMPLATES:
+        assert "REPLACE_" not in _render(template), template.name
+
+
+def test_every_formula_template_renders_with_a_bottle_block(tmp_path: Path) -> None:
+    block = tmp_path / "block"
+    block.write_text(
+        '  bottle do\n    root_url "https://example.invalid"\n'
+        '    sha256 cellar: :any_skip_relocation, arm64_sequoia: "aa"\n  end\n'
+    )
+    for template in _TEMPLATES:
+        rendered = _render(template, block)
+        assert "bottle do" in rendered, template.name
+        assert "REPLACE_" not in rendered, template.name
+
+
+def test_the_tap_updater_refuses_a_bottle_pass_that_produced_no_block() -> None:
+    """Publishing a formula with no block reports success and leaves every user building from
+    source — the exact failure the second pass exists to remove."""
+    text = (_ROOT / "packaging" / "update-tap.sh").read_text()
+    assert 'if [ -n "$manifests" ] && ! grep -Fq "bottle do" "$out"; then' in text
+    # --expect-tags is what makes a platform whose bottle never arrived visible at all.
+    assert "--expect-tags 4" in text
+
+
+def test_every_job_that_writes_the_tap_shares_one_concurrency_group() -> None:
+    """Two of them cloning the same tip means the loser pushes a non-fast-forward and the tap keeps
+    whichever formula lost the race."""
+    publish = _PUBLISH.read_text()
+    for job in ("homebrew-tap", "homebrew-bottles"):
+        assert "group: tap-write" in _job(publish, job), job
+    assert "group: tap-write" in (_ROOT / ".forgejo" / "workflows" / "tap-bottles.yml").read_text()
+
+
+def test_a_stable_tag_bottles_both_formulae() -> None:
+    bottles = _job(_PUBLISH.read_text(), "homebrew-bottles")
+    assert "*-rc.*) expected=4 ;;" in bottles
+    assert "*)      expected=8 ;;" in bottles
+
+
+def test_the_formulae_build_sunxi_fel_at_the_pinned_commit() -> None:
+    """The bottle carries sunxi-fel, so the formula's pin has to be the same one everything else
+    builds from — a formula a commit behind produces a bottle nobody else's build matches.
+
+    Pinned by git revision rather than an archive checksum on purpose: the commit IS the content
+    hash, so there is no second digest for refresh-pins.sh to keep in step and nothing to drift.
+    """
+    ref = re.search(
+        r'^SUNXI_TOOLS_REF = "([0-9a-f]{40})"',
+        (_ROOT / "src" / "dreame_valetudo" / "constants.py").read_text(),
+        re.M,
+    )
+    assert ref, "SUNXI_TOOLS_REF is not a 40-character commit in constants.py"
+    for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
+        assert 'resource "sunxi-tools"' in formula, name
+        assert f'revision: "{ref.group(1)}"' in formula, name
+        # An archive URL would reintroduce the checksum this pin exists to avoid.
+        assert "sunxi-tools.git" in formula, name
+
+
+def test_the_formulae_do_not_pip_install_the_c_resource() -> None:
+    """`virtualenv_install_with_resources` installs EVERY resource, and sunxi-tools is a C program.
+    Reaching for the convenience wrapper here fails the build at `pip install sunxi-tools`."""
+    for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
+        called = [
+            line for line in formula.splitlines()
+            if line.strip().startswith("virtualenv_install_with_resources")
+        ]
+        assert called == [], f"{name} calls the wrapper: {called}"
+        assert 'resources.reject { |r| r.name == "sunxi-tools" }' in formula, name
+
+
+def test_the_formulae_hand_the_tool_its_own_helper_directory() -> None:
+    """find_helper() consults DREAME_LIBEXEC first; without the wrapper the brew install would fall
+    through to the system prefixes and find either nothing or another install's sunxi-fel."""
+    for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
+        assert "bin.write_env_script" in formula, name
+        assert "DREAME_LIBEXEC:" in formula, name
+
+
+def test_the_caveats_no_longer_promise_a_first_run_source_build() -> None:
+    """That warning was the cost this change removes, and it needed a compiler and a network at
+    exactly the moment the host is joined to the robot's own AP, which has no internet."""
+    for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
+        assert "builds sunxi-fel from source" not in formula, name
+
+
+def test_the_infra_retry_watches_every_github_workflow() -> None:
+    """A runner fault is not selective about which workflow it lands on, so a partial watch list is
+    just an undetected flake somewhere else. The sibling project's list had drifted to three of
+    seven, missing its two longest-running workflows — the same test lives in both repos."""
+    # Read with a regex rather than a YAML parser: this project has no runtime dependencies and
+    # its dev set is pinned deliberately, so a parser is not worth adding for one list of strings.
+    retry = _ROOT / ".github" / "workflows" / "retry-infra-failures.yml"
+    block = re.search(r"^    workflows:\n((?:\s*- .+\n)+)", retry.read_text(), re.M)
+    assert block, "the retry workflow has no `workflows:` watch list"
+    watched = set(re.findall(r'- "([^"]+)"', block.group(1)))
+    present = {}
+    for path in sorted((_ROOT / ".github" / "workflows").glob("*.yml")):
+        found = re.search(r"^name:\s*(.+)$", path.read_text(), re.M)
+        if found:
+            present[found.group(1).strip()] = path.name
+    # Itself excluded: a retry workflow retrying its own runner failure would recurse.
+    unwatched = {n: f for n, f in present.items() if n not in watched and f != retry.name}
+    assert unwatched == {}, f"GitHub workflows with no infra-retry cover: {unwatched}"
+    assert watched <= set(present), f"watches workflows that do not exist: {watched - set(present)}"
+
+
+def test_the_infra_triage_is_the_shared_one() -> None:
+    """The discriminator is subtle enough that two copies would drift into two policies — and the
+    dangerous direction of drift is the generous one, which launders flaky tests into green builds
+    with nobody noticing because the build is green."""
+    retry = (_ROOT / ".github" / "workflows" / "retry-infra-failures.yml").read_text()
+    assert "packaging/triage-infra-failure.py" in retry
+    assert (_ROOT / "packaging" / "triage-infra-failure.py").exists()
+    # The attempt-specific endpoint: plain /jobs returns the LATEST attempt, so after a retry it
+    # reports the retry's green jobs and the triage sees nothing to explain.
+    assert "attempts/$ATTEMPT/jobs" in retry
+
+
+# --- the install matrix ---------------------------------------------------------------
+_INSTALL_MATRIX = _ROOT / ".forgejo" / "workflows" / "install-matrix.yml"
+_INSTALL_SMOKE = _ROOT / "packaging" / "install-smoke.Dockerfile"
+
+
+def test_every_channel_the_matrix_builds_has_a_target() -> None:
+    """A channel named in the workflow but absent from the Dockerfile fails the build and is
+    noticed. The dangerous direction is the other one: a target nobody builds looks like coverage
+    in the file and tests nothing at all."""
+    workflow = _INSTALL_MATRIX.read_text()
+    listed = set(re.search(r'channels="([^"]+)"', workflow).group(1).split())
+    extra = re.search(r'channels="\$channels ([a-z-]+)"', workflow)
+    if extra:
+        listed.add(extra.group(1))
+    targets = set(re.findall(r"AS ([a-z0-9-]+)-result", _INSTALL_SMOKE.read_text()))
+    assert listed - targets == set(), f"workflow builds channels with no target: {listed - targets}"
+    assert targets - listed == set(), f"Dockerfile targets nothing builds: {targets - listed}"
+
+
+def test_the_matrix_covers_the_channels_that_had_nothing_proving_them() -> None:
+    """The two that justified writing this: a repository is a URL every subscriber's package
+    manager resolves on every update, and a bottle falls back to a SOURCE BUILD when its checksums
+    are stale — quietly, and green."""
+    workflow = _INSTALL_MATRIX.read_text()
+    for channel in ("apt-repo", "dnf-repo", "bottle-pour", "tarball"):
+        assert channel in workflow, channel
+
+
+def test_the_bottle_channel_refuses_a_source_build() -> None:
+    """`brew install` succeeding proves nothing on its own — it succeeds by building from source
+    when no bottle matches, which is exactly the failure this channel exists to catch."""
+    smoke = _INSTALL_SMOKE.read_text()
+    assert 'grep -qi "pouring dreame-valetudo"' in smoke
+    # sunxi-fel rides inside the bottle now; a poured install that lacks it means the formula
+    # change silently stopped working and the first-run source build is back.
+    assert "libexec/tools/sunxi-fel" in smoke
+    # And NOT by counting installed dependencies. `dtc` and `pkg-config` are ordinary
+    # `depends_on`, so Homebrew installs them for a poured bottle too; the count grew on a correct
+    # pour and failed the channel one line after the log had already proven it poured.
+    assert "build-only deps appeared" not in smoke
+
+
+def test_a_stable_tag_is_installed_from_the_stable_distribution() -> None:
+    """publish-registry.sh puts a candidate in `testing` and a release in BOTH. Testing a stable
+    through `testing` would leave the distribution real users are on unexercised by a matrix that
+    claims to cover every channel."""
+    workflow = _INSTALL_MATRIX.read_text()
+    assert "*-rc.*) DIST=testing; REPOFILE=sisyphusmd-testing.repo ;;" in workflow
+    assert "*)      DIST=stable;  REPOFILE=sisyphusmd.repo ;;" in workflow
+    # The .repo file has to travel with the distribution, or the rc matrix installs the stable
+    # repository and qualifies the previous release while the testing channel goes untested.
+    assert '--build-arg REPOFILE="$REPOFILE"' in workflow
+
+
+def test_every_channel_proves_itself_with_an_exported_file() -> None:
+    """buildx caches aggressively, so an exit status can be a cache hit for a build that did
+    nothing. The marker file is the only thing that cannot be."""
+    assert '[ -f "out/$channel/passed" ]' in _INSTALL_MATRIX.read_text()
+    exported = re.findall(r"COPY --from=([a-z0-9-]+) [^\n]*passed", _INSTALL_SMOKE.read_text())
+    assert len(exported) >= 9, f"only {len(exported)} channels export a marker"

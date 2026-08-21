@@ -51,7 +51,7 @@ jobs:
           # call; only homebrew-core formulae are installed, so drop the stray tap instead.
           brew untap aws/tap 2>/dev/null || true
           brew install libusb dtc pkg-config libevent
-          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
+          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
           # sunxi-fel builds native to the runner from the package's single source-of-truth pin.
           SREF="$(read_pin SUNXI_TOOLS_REF)"
           git clone https://github.com/linux-sunxi/sunxi-tools.git /tmp/sunxi-tools
@@ -136,7 +136,10 @@ jobs:
           set -euo pipefail
           trap 'rm -f notary.p8' EXIT
           VERSION="${GITHUB_REF_NAME#v}"
-          PKG="dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          # Versioned, like every other asset and like whiskerless's: two .pkg downloads in
+          # ~/Downloads that cannot be told apart is a real cost, and the second overwrites
+          # the first. reconcile matches by role, so older releases keep their old names.
+          PKG="dreame-valetudo-${VERSION}-macos-${{ matrix.arch }}.pkg"
           # Sign the native Mach-O bits with the hardened runtime (required for notarization).
           for f in ./*.dylib tmux sunxi-fel dreame-fastboot dreame-valetudo; do
             codesign --force --options runtime --timestamp \
@@ -163,17 +166,19 @@ jobs:
           xcrun notarytool submit "$PKG" \
             --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
           xcrun stapler staple "$PKG"
+          # Later steps in this job need the exact name; GitHub expressions cannot strip the `v`.
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
 
       - name: Install, exercise, and uninstall the signed package
         run: >-
           bash packaging/test-macos-package.sh
-          "dreame-valetudo-macos-${{ matrix.arch }}.pkg"
+          "${{ env.PKG }}"
           "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pkg-${{ matrix.arch }}
-          path: dreame-valetudo-macos-${{ matrix.arch }}.pkg
+          path: ${{ env.PKG }}
 
   current:
     name: Test floor-built pkg (${{ matrix.arch }}, macOS 26 current)
@@ -197,10 +202,15 @@ jobs:
           name: pkg-${{ matrix.arch }}
           path: .
       - name: Install, exercise, and uninstall the floor-built signed package
-        run: >-
-          bash packaging/test-macos-package.sh
-          "dreame-valetudo-macos-${{ matrix.arch }}.pkg"
-          "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
+        run: |
+          set -euo pipefail
+          # A separate job, so the build job's $GITHUB_ENV is gone and the name must be recovered.
+          # Exactly one .pkg is downloaded here; refuse rather than test an arbitrary one.
+          shopt -s nullglob
+          pkgs=(*-macos-${{ matrix.arch }}.pkg)
+          [ "${#pkgs[@]}" -eq 1 ] || { echo "::error::expected 1 pkg, found ${#pkgs[@]}"; exit 1; }
+          bash packaging/test-macos-package.sh \
+            "${pkgs[0]}" "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
 
   publish:
     name: Append the signed .pkgs to the GitHub + Forgejo releases

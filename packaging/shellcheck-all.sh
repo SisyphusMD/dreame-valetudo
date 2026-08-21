@@ -6,8 +6,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # renovate: datasource=docker depName=koalaman/shellcheck
 SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
-cid=$(docker create -w /work "$SHELLCHECK" \
-  --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
+# Every tracked *.sh, not three globbed directories: a script added anywhere else used to go
+# unchecked because nobody widened the list.
+mapfile -t scripts < <(git ls-files '*.sh')
+cid=$(docker create -w /work "$SHELLCHECK" --severity=warning "${scripts[@]}")
 docker cp . "$cid":/work
 check_rc=0
 docker start -a "$cid" || check_rc=$?

@@ -101,6 +101,21 @@ for formula in "$BREW_FORMULAE"/*.rb; do
   note "$(basename "$formula") -> pyusb ${PYUSB_PIN} ($PYUSB_FRESH)"
 done
 
+# --- sunxi-tools: the formulae build sunxi-fel, so the commit has to move with the pin -----------
+# No digest to compute or verify: a git revision IS the content hash, which is the whole reason the
+# resource is pinned by commit rather than by an archive tarball. One substitution, nothing to drift.
+SUNXI_PIN="$(read_pin SUNXI_TOOLS_REF)"
+[ -n "$SUNXI_PIN" ] || { echo "could not read SUNXI_TOOLS_REF" >&2; exit 1; }
+for formula in "$BREW_FORMULAE"/*.rb; do
+  [ -f "$formula" ] || continue
+  grep -q 'resource "sunxi-tools"' "$formula" || continue
+  grep -q "revision: \"${SUNXI_PIN}\"" "$formula" && continue
+  tmp="$(mktemp)"
+  sed -E "s|^(        revision: \")[0-9a-f]{40}(\")|\1${SUNXI_PIN}\2|" "$formula" >"$tmp"
+  mv "$tmp" "$formula"
+  note "$(basename "$formula") -> sunxi-tools ${SUNXI_PIN}"
+done
+
 # --- tmux: bundled only by the .pkg, which has no package manager to get it from ------------------
 TMUX_VERSION="$(read_pin TMUX_VERSION)"
 TMUX_CURRENT="$(read_pin TMUX_SHA256)"

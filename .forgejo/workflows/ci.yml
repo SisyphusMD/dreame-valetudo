@@ -34,7 +34,9 @@ jobs:
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
+            --severity=warning $(git ls-files '*.sh' | tr '\n' ' '))
+          # Every tracked *.sh, not three globbed directories: a shell script added
+          # anywhere else used to go unchecked because nobody widened the list.
           docker cp . "$cid":/work
           check_rc=0
           docker start -a "$cid" || check_rc=$?
@@ -62,13 +64,47 @@ jobs:
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          # `-e .` is not optional under the src/ layout: the package is no longer
+          # importable from the working directory, which is the whole point — a module
+          # missing from the built wheel can no longer pass the tests from the checkout.
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .
+          # Every tracked *.py rather than a hand-maintained list: a new shipped file used to
+          # escape lint simply because nobody remembered to add it here. docs/research/tools is
+          # excluded deliberately — it is reproduction scratch for the self-root write-up, held
+          # to compileall below rather than to the shipped code's rule set.
+          ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/' | tr '\n' ' ')
           mypy
           python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
+
+      - name: Coverage does not regress
+        # A measured non-regression floor, not an aspirational number: the suite measures above 99%,
+        # rounded down to 99 so ordinary reporting precision cannot make the gate unstable.
+        # `run.py` (the Runner seam every external command funnels through) is held at 100
+        # separately, because averaging it into the total would hide a regression there.
+        run: |
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          # The Runner seam every external command funnels through, held at 100 separately so a
+          # regression there cannot hide inside the repository average.
+          coverage report --include='*/run.py' --fail-under=100
+
+      - name: Shared packaging helpers match project-standard
+        # Change a shared helper in project-standard and re-vendor both projects; editing the copy
+        # here is how these two drifted apart in the first place.
+        run: python3 packaging/check-standard-sync.py
+
+      - name: Cited external sources still resolve
+        # The profile table came verbatim from Valetudo's supported-robots page; the FEL/fastboot
+        # sequence came from the gen3 brief. A rotted URL leaves those claims with no way back to
+        # their evidence. Ported from whiskerless.
+        run: bash packaging/check-external-links.sh
+
+      - name: .gitignore contains the shared base
+        run: python3 packaging/check-gitignore-base.py .
 
   python-floor:
     # The package metadata promises source compatibility with Python 3.11. Running only the frozen
@@ -124,7 +160,7 @@ jobs:
       - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
         run: |
           set -euo pipefail
-          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
+          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           echo "using sunxi $SREF, pyusb $PYUSB"
           # renovate: datasource=pypi depName=pyinstaller
@@ -262,7 +298,7 @@ jobs:
           pip install -e .
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
-          for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done
+          for t in tests/release/*.sh; do echo "== $t =="; bash "$t"; done
 
   macos:
     # By the time the Linux suites finish, the mirrored macOS workflow normally has too. This keeps

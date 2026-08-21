@@ -18,7 +18,7 @@ priority: optional
 maintainer: "Cody Bryant <SisyphusMD@users.noreply.github.com>"
 vendor: SisyphusMD
 homepage: https://github.com/SisyphusMD/dreame-valetudo
-license: AGPL-3.0-or-later
+license: GPL-3.0-or-later
 description: |
   Pre-onedir installed layout, used only as the starting point of the upgrade smoke test.
 

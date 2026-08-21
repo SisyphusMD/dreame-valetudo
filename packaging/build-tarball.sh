@@ -19,7 +19,7 @@ stage="$stage_root/$name"
 mkdir -p "$stage"
 # The importable package, its libexec data, and build metadata. Documentation is copied only from
 # the reviewed allowlist below; a new capture or bench note must be deliberately admitted.
-cp -R dreame_valetudo libexec pyproject.toml uv.lock README.md LICENSE CHANGELOG.md "$stage/"
+cp -R src libexec pyproject.toml uv.lock README.md LICENSE CHANGELOG.md "$stage/"
 copy_doc_list() {
   local list=$1 doc
   while IFS= read -r doc; do
