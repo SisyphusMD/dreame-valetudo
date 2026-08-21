@@ -42,7 +42,16 @@ trap cleanup EXIT
 VERSION="$version" bash packaging/build-tarball.sh >/dev/null
 sha=$(shasum -a 256 "$tarball" | awk '{print $1}')
 rendered="$tmp/$formula.rb"
-cp "$template" "$rendered"
+# Rendered, not copied. The template now carries a `REPLACE_BOTTLE_BLOCK` marker, and a plain copy
+# leaves it in place as a bare word — which Homebrew reads as an undefined Ruby constant and dies
+# on, failing every formula smoke. `render-formula.sh` with no block turns it into a blank line,
+# exactly as update-tap.sh's no-bottle pass does. No bottle block here on purpose: this smoke
+# exists to prove the SOURCE build still works, which is the thing a bottle skips.
+bash packaging/render-formula.sh "$template" "$version" "$sha" > "$rendered"
+if grep -Fq "REPLACE_BOTTLE_BLOCK" "$rendered"; then
+  echo "formula rendering left the bottle marker in place" >&2
+  exit 1
+fi
 brew ruby - "$rendered" "$tarball" "$sha" <<'RB'
 require "pathname"
 require "uri"

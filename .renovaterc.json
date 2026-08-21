@@ -48,7 +48,7 @@
     {
       "customType": "regex",
       "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the two files that carry such a pin outside a workflow: packaging/shellcheck-all.sh, and package-smoke.Dockerfile's base image, which has to move with the qualification image ci.yml pins.",
-      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/"],
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]
@@ -63,7 +63,7 @@
     {
       "description": "package-smoke.Dockerfile's base image is claimed by the annotation-driven regex manager so it stays one dependency with ci.yml's qualification pin. Left enabled, the built-in dockerfile manager would also claim it as a separate `ubuntu` dep that updates in its own PR — and since publish.yml is the only thing that builds this file, that PR would automerge on a CI run that never touched it.",
       "matchManagers": ["dockerfile"],
-      "matchFileNames": ["packaging/package-smoke.Dockerfile"],
+      "matchFileNames": ["packaging/package-smoke.Dockerfile", "packaging/install-smoke.Dockerfile"],
       "enabled": false
     },
     {
