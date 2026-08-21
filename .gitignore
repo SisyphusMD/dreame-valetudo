@@ -56,3 +56,15 @@ root/
 /notes.md
 notary.p8
 *.p12
+
+# Shared base (packaging/gitignore.base).
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv*/
+venv/
+.coverage
+htmlcov/
+.DS_Store
+*.key
+*.p8
