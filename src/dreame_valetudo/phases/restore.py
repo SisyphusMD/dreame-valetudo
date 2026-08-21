@@ -719,7 +719,7 @@ def _verified_recovery_provenance(
     stored_config = provenance["config"]
     if (parse_config(stored_config) != stored_config
             or not same_robot_config(stored_config, config)
-            or provenance["model_key"] != ctx.profile.key):
+            or provenance["model_key"] != ctx.model_spec.key):
         die("SAFETY STOP: the recovery capture provenance belongs to a different robot or model. "
             "Refusing to build a stock restore kit from it.")
     if provenance["firmware_state"] != "stock-user-attested":
@@ -823,7 +823,7 @@ def _finish_restore_boot_check(ctx: Context, robot: Robot, config: str) -> None:
     if _watch_for_automatic_fel(ctx):
         robot.state_set(
             "restore-attempt",
-            f"{RESTORE_BOOT_PENDING} returned-to-fel model={ctx.profile.key} config={config}",
+            f"{RESTORE_BOOT_PENDING} returned-to-fel model={ctx.model_spec.key} config={config}",
         )
         die("SAFETY STOP: the robot returned to FEL after every stock flash reported OKAY. Stock "
             "boot is not recorded complete. The restore kit deliberately uses one authenticated "
@@ -843,7 +843,7 @@ def _finish_restore_boot_check(ctx: Context, robot: Robot, config: str) -> None:
     try:
         robot.state_set(
             "restored-stock",
-            f"model={ctx.profile.key} config={config} boot=operator-confirmed",
+            f"model={ctx.model_spec.key} config={config} boot=operator-confirmed",
         )
     except OSError as exc:
         die("Stock boot was confirmed, but completion could not be recorded. The restore-attempt "
@@ -866,14 +866,14 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
     config = ctx.robot_config()
     if config is None:
         die("No recorded config identity for this robot; cannot bind a stock restore kit.")
-    matches = _matching_restore_kits(ctx.backups_dir, ctx.profile.model_code, config)
+    matches = _matching_restore_kits(ctx.backups_dir, ctx.model_spec.model_code, config)
     if len(matches) > 1:
         die("Multiple stock restore kits match this robot's stable identity. Preserve all of them "
             "for inspection and remove the ambiguity before restoring.")
     final = (matches[0] if matches else
-             ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, config)}-stock-recovery")
+             ctx.backups_dir / f"{robot_tag(ctx.model_spec.model_code, config)}-stock-recovery")
     if final.exists():
-        if stock_restore_kit_valid(final, config, ctx.profile.key):
+        if stock_restore_kit_valid(final, config, ctx.model_spec.key):
             return final
         die(f"The existing stock restore kit is incomplete or changed: {final}. Preserve it for "
             "inspection, move it aside, then re-run to rebuild from the recon capture.")
@@ -965,7 +965,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             adopted = write_recovery_provenance(
                 robot.recon_dir,
                 config=config,
-                model_key=ctx.profile.key,
+                model_key=ctx.model_spec.key,
                 binding="legacy-user-confirmed",
                 firmware_state="stock-user-attested",
                 expected_bytes=chunk_bytes,
@@ -1020,9 +1020,9 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
             {
                 "backup_type": "stock-restore-kit",
                 "restore_kit_version": 3,
-                "model": ctx.profile.model,
-                "model_key": ctx.profile.key,
-                "model_code": ctx.profile.model_code,
+                "model": ctx.model_spec.model,
+                "model_key": ctx.model_spec.key,
+                "model_code": ctx.model_spec.model_code,
                 "config": config,
                 "source_binding": source_binding,
                 "firmware_state": "stock-user-attested",
@@ -1083,11 +1083,11 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("SAFETY STOP: a prior stock-restore attempt did not record completion. The robot may "
             "be partly restored, so this tool will not write again automatically. Inspect the "
             "robot and run 'restore --force' only after deliberately deciding to repeat it.")
-    if ctx.profile.method != "fastboot":
-        die(f"{ctx.profile.model} uses UART; this restore path is only for MR813 fastboot models.")
+    if ctx.model_spec.method != "fastboot":
+        die(f"{ctx.model_spec.model} uses UART; this restore path is only for MR813 fastboot models.")
     kit = prepare_stock_restore_kit(ctx)
     config = ctx.robot_config()
-    if config is None or not stock_restore_kit_valid(kit, config, ctx.profile.key):
+    if config is None or not stock_restore_kit_valid(kit, config, ctx.model_spec.key):
         die("The stock restore kit failed its final identity/integrity check.")
 
     ctx.console.phase("Restore the captured stock firmware — DESTRUCTIVE")
@@ -1101,7 +1101,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     model_hazard_check(ctx)
     if not ctx.interactive:
         die("Stock restore is destructive and requires interactive confirmation.")
-    if not ctx.console.confirm(f"Restore {ctx.profile.model} to its captured stock firmware now?"):
+    if not ctx.console.confirm(f"Restore {ctx.model_spec.model} to its captured stock firmware now?"):
         abort("Aborted — nothing was written to the robot.")
 
     if not _sunxi_ready(ctx):
@@ -1116,8 +1116,8 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         ctx.ws.dist,
         ctx.fsbl_name,
         "payload.bin",
-        ctx.profile.fsbl_addr,
-        ctx.profile.payload_addr,
+        ctx.model_spec.fsbl_addr,
+        ctx.model_spec.payload_addr,
     )
     result = ctx.fastboot.fbt("getvar", "config", check=False)
     live_config = parse_config(result.stdout + result.stderr)
@@ -1128,7 +1128,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("SAFETY STOP: the connected robot does not match this stock restore kit. Wrong robot "
             "— refusing to restore.")
     ctx.console.info("Robot and restore-kit identity confirmed.")
-    if not stock_restore_kit_valid(kit, config, ctx.profile.key):
+    if not stock_restore_kit_valid(kit, config, ctx.model_spec.key):
         die("The stock restore kit changed while hardware was being prepared. Refusing every write; "
             "preserve the kit for inspection and start again with verified artifacts.")
 
@@ -1140,7 +1140,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     ctx.console.warn("Do NOT press Ctrl+C or unplug USB until every flash reports OKAY. Interrupt "
                      "signals are ignored during the write sequence.")
     with _mask_interrupts():
-        robot.state_set("restore-attempt", f"model={ctx.profile.key} config={live_config}")
+        robot.state_set("restore-attempt", f"model={ctx.model_spec.key} config={live_config}")
         # A forced repeat supersedes the prior success. The attempt is durable first, so a failure
         # while clearing the old completion still leaves the newer restore attempt authoritative.
         robot.state_clear("restored-stock")
@@ -1161,7 +1161,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         try:
             robot.state_set(
                 "restore-attempt",
-                f"{RESTORE_BOOT_PENDING} model={ctx.profile.key} config={live_config}",
+                f"{RESTORE_BOOT_PENDING} model={ctx.model_spec.key} config={live_config}",
             )
         except OSError as exc:
             marker_error = exc

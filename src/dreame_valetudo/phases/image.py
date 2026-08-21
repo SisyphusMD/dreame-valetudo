@@ -32,7 +32,7 @@ from .recon import read_identity_from_robot
 
 def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     say, info, warn = ctx.console.say, ctx.console.info, ctx.console.warn
-    guide = form_guide(ctx.profile.dust_code)
+    guide = form_guide(ctx.model_spec.dust_code)
     say("Build the rooted image on the dustbuilder — fill the web form TOP-TO-BOTTOM as below")
     verified = forms_verified_on(ctx.libexec)
     warn(f"DustBuilder form instructions last verified: {verified}. The site can change "
@@ -159,11 +159,11 @@ def _config_rejected_help(ctx: Context) -> None:
     else:
         ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
                          "--force' (keep the recovery backup on) to build it, then come back.")
-    choice = checker_model_choice(ctx.profile.dust_code)
+    choice = checker_model_choice(ctx.model_spec.dust_code)
     if choice is None:
-        ctx.console.warn(f"   {'Model radio':<22} no '{ctx.profile.dust_code.upper()}' choice "
+        ctx.console.warn(f"   {'Model radio':<22} no '{ctx.model_spec.dust_code.upper()}' choice "
                          f"exists on the current form. Email check@dontvacuum.me with model "
-                         f"{ctx.profile.dust_code} before choosing a different revision.")
+                         f"{ctx.model_spec.dust_code} before choosing a different revision.")
     else:
         ctx.console.info(f"   {'Model radio':<22} SELECT '{choice}'")
     ctx.console.info(f"   {'Config value':<22} {cfg or '(re-run recon to capture)'}")
@@ -184,7 +184,7 @@ def _config_rejected_help(ctx: Context) -> None:
     ctx.console.info("Processing can take up to 24 hours. Then retry the original DustBuilder "
                      "form with the same config value.")
     ctx.console.info("If it is still rejected, email check@dontvacuum.me with subject 'config'. "
-                     f"Include model {ctx.profile.dust_code}, the config value above, and the last "
+                     f"Include model {ctx.model_spec.dust_code}, the config value above, and the last "
                      "6 digits of the physical under-dustbin serial. Then re-run "
                      "'dreame-valetudo' once the FEL build is accepted.")
 
@@ -213,7 +213,7 @@ def _matching_zips(ctx: Context, robot: Robot) -> list[Path]:
     for d in (ctx.home / "Downloads", robot.fw_dir):
         if d.is_dir():
             out += [c for c in d.glob("*_fel_ng*.zip")
-                    if zip_matches_model(c, ctx.profile.model_code)]
+                    if zip_matches_model(c, ctx.model_spec.model_code)]
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
@@ -249,7 +249,7 @@ def image(ctx: Context, *, force: bool = False) -> None:
         missing = [name for name in FEL_IMAGE_FILES if not (robot.fw_dir / name).is_file()]
         marker = robot.state_get("image") or ""
         provenance_missing = (
-            f"model={ctx.profile.key}" not in marker
+            f"model={ctx.model_spec.key}" not in marker
             or not (robot.fw_dir / STAGED_IMAGE_MANIFEST).is_file()
         )
         if not missing and not provenance_missing:
@@ -272,9 +272,9 @@ def image(ctx: Context, *, force: bool = False) -> None:
         ["curl", "-fsSL", "-m", "10", "https://builder.dontvacuum.me/unsupported.txt"], check=False
     )
     if unsup.ok and re.search(
-        rf"\b({ctx.profile.model_code}|{ctx.profile.dust_code})\b", unsup.stdout, re.IGNORECASE
+        rf"\b({ctx.model_spec.model_code}|{ctx.model_spec.dust_code})\b", unsup.stdout, re.IGNORECASE
     ):
-        ctx.console.warn(f"{ctx.profile.model_code}/{ctx.profile.dust_code} appears on the "
+        ctx.console.warn(f"{ctx.model_spec.model_code}/{ctx.model_spec.dust_code} appears on the "
                          "dustbuilder's unsupported list — the build may be rejected.")
 
     _open_dustbuilder(ctx)
@@ -353,10 +353,10 @@ def image(ctx: Context, *, force: bool = False) -> None:
         for name in FEL_IMAGE_FILES
     }
     (robot.fw_dir / STAGED_IMAGE_MANIFEST).write_text(
-        json.dumps({"model_key": ctx.profile.key, "files": member_digests}, sort_keys=True) + "\n"
+        json.dumps({"model_key": ctx.model_spec.key, "files": member_digests}, sort_keys=True) + "\n"
     )
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
-    robot.state_set("image", f"model={ctx.profile.key} from {zip_path} sha256={digest}")
+    robot.state_set("image", f"model={ctx.model_spec.key} from {zip_path} sha256={digest}")
     robot.remember_image()
     ctx.console.say("Image staged. Next: root (DESTRUCTIVE)")

@@ -30,6 +30,12 @@ from .hazards import model_hazard_check
 from .installs import find_installs
 from .log import BufferingConsole, LoggingConsole, LoggingRunner, RunLog, tail_transcript
 from .migrate import migrate, pre_migration_lock_path, pre_migration_session_path, report
+from .models import (
+    DEFAULT_MODEL_KEY,
+    SUPPORTED_MODELS,
+    load_model_spec,
+    model_key_for_dir,
+)
 from .phases.doctor import doctor
 from .phases.fetch import fetch
 from .phases.fixes import diagnose, fix_did, fix_impl, fix_key, fix_wifi
@@ -42,12 +48,6 @@ from .phases.rekey import rekey
 from .phases.restore import restore
 from .phases.root import root
 from .platform_env import apply_library_path
-from .profiles import (
-    DEFAULT_MODEL_KEY,
-    SUPPORTED_MODELS,
-    load_profile,
-    model_key_for_dir,
-)
 from .run import RunError, Runner, SubprocessRunner
 from .session import (
     IN_SESSION,
@@ -158,18 +158,18 @@ def _profile_key_for_invocation(cmd: str, rest: Sequence[str], env: Mapping[str,
 def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True) -> bool:
     forced = ctx.env.get("DREAME_MODEL") if use_env else None
     if forced:
-        ctx.profile = load_profile(forced)
-        ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+        ctx.model_spec = load_model_spec(forced)
+        ctx.console.once(f"model-hazard:{ctx.model_spec.key}", lambda: model_hazard_check(ctx))
         if ctx.robot is not None:
-            ctx.robot.state_set("model_key", ctx.profile.key)
-        ctx.console.info(f"Model: {ctx.profile.model} (from DREAME_MODEL)")
+            ctx.robot.state_set("model_key", ctx.model_spec.key)
+        ctx.console.info(f"Model: {ctx.model_spec.model} (from DREAME_MODEL)")
         return True
     if not ctx.interactive:
         raise Die("stdin isn't a terminal — set DREAME_MODEL=<key> (one of: "
                   f"{' '.join(SUPPORTED_MODELS)}).")
     ctx.console.say("Which Dreame robot are you rooting?")
     for i, key in enumerate(SUPPORTED_MODELS, 1):
-        p = load_profile(key)
+        p = load_model_spec(key)
         suffix = " (UART - guided manual, not yet automated)" if p.method == "uart" else ""
         ctx.console.info(f"   {i}) {p.model}{suffix}")
     back = ", b=back" if allow_back else ""
@@ -179,16 +179,16 @@ def select_model(ctx: Context, *, allow_back: bool = False, use_env: bool = True
     # ASCII-digits only (str.isdigit accepts superscripts/other Unicode digits that int() rejects).
     if not re.fullmatch(r"[0-9]+", choice) or not (1 <= int(choice) <= len(SUPPORTED_MODELS)):
         raise Die(f"Invalid choice: {choice}")
-    ctx.profile = load_profile(SUPPORTED_MODELS[int(choice) - 1])
-    ctx.console.info(f"Model: {ctx.profile.model}")
-    ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+    ctx.model_spec = load_model_spec(SUPPORTED_MODELS[int(choice) - 1])
+    ctx.console.info(f"Model: {ctx.model_spec.model}")
+    ctx.console.once(f"model-hazard:{ctx.model_spec.key}", lambda: model_hazard_check(ctx))
     if ctx.robot is not None:
-        ctx.robot.state_set("model_key", ctx.profile.key)
+        ctx.robot.state_set("model_key", ctx.model_spec.key)
     return True
 
 
 def _bind_robot(ctx: Context) -> bool:
-    """Resolve the profile, then record which robot this run is on.
+    """Resolve the model_spec, then record which robot this run is on.
 
     Recorded as early as the robot is known, so a second invocation can say WHICH robot is busy
     rather than refusing anonymously. The blank-name path has no robot until recon reads the device
@@ -207,12 +207,12 @@ def _profile_for_work(ctx: Context) -> bool:
     ):
         key = model_key_for_dir(robot.work)
         try:
-            ctx.profile = load_profile(key)
+            ctx.model_spec = load_model_spec(key)
         except ValueError:
             raise Die(f"Robot '{robot.display_name()}' ({robot.work.name}) uses unknown saved "
                       f"model '{key}'. Upgrade dreame-valetudo to work with this robot.") from None
-        ctx.console.info(f"Model: {ctx.profile.model}")
-        ctx.console.once(f"model-hazard:{ctx.profile.key}", lambda: model_hazard_check(ctx))
+        ctx.console.info(f"Model: {ctx.model_spec.model}")
+        ctx.console.once(f"model-hazard:{ctx.model_spec.key}", lambda: model_hazard_check(ctx))
         return True
     return select_model(ctx, allow_back=robot is not None)
 
@@ -358,7 +358,7 @@ def _pcb_help(ctx: Context) -> None:
 def _auto_intro(ctx: Context) -> None:
     def full() -> None:
         named = f" '{ctx.robot_label()}'" if ctx.robot is not None else ""
-        ctx.console.say(f"{ctx.profile.model} — new robot{named}. The road ahead (every stage is "
+        ctx.console.say(f"{ctx.model_spec.model} — new robot{named}. The road ahead (every stage is "
                         "guided and resumable):")
         ctx.console.steps([
             "Recon (read-only): validate the USB path and record the robot's identity.",
@@ -382,7 +382,7 @@ def _pause(ctx: Context) -> None:
 
 
 def uart(ctx: Context) -> None:
-    p = ctx.profile
+    p = ctx.model_spec
     c = ctx.console
     c.phase(f"{p.model} — UART serial-shell method (this model does NOT use fastboot)")
     c.info("More hands-on than fastboot. Beyond the Dreame Breakout PCB you also need:")
@@ -470,14 +470,14 @@ def uart(ctx: Context) -> None:
 
 
 def auto(ctx: Context, rest: Sequence[str]) -> None:
-    if ctx.profile.method == "uart":
+    if ctx.model_spec.method == "uart":
         uart(ctx)
         return
     # A named-but-not-yet-reconned robot is still a fresh start — show the new-robot guidance, not
     # "resuming" (recon is the first hardware phase, so its marker is what distinguishes the two).
     if (ctx.robot is not None
             and (ctx.robot.state_has("recon") or ctx.robot.state_has("rooted"))):
-        ctx.console.say(f"{ctx.profile.model} — robot '{ctx.robot.display_name()}', resuming: "
+        ctx.console.say(f"{ctx.model_spec.model} — robot '{ctx.robot.display_name()}', resuming: "
                         "every remaining phase runs guided, in order.")
     else:
         _auto_intro(ctx)
@@ -489,7 +489,7 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
         # generic auto --force is not the explicit root --force decision that stop requires.
         root(ctx)
     if robot is not None and robot.state_has("restored-stock"):
-        ctx.console.say(f"{ctx.profile.model} — robot '{robot.display_name()}' is restored to "
+        ctx.console.say(f"{ctx.model_spec.model} — robot '{robot.display_name()}' is restored to "
                         "stock. No rooting step will run automatically.")
         ctx.console.info("To root it again intentionally, run: dreame-valetudo root --force")
         return
@@ -560,11 +560,11 @@ def auto(ctx: Context, rest: Sequence[str]) -> None:
 
 
 def _model_lines() -> str:
-    """The Supported-models roster, generated from the profiles table so it can never drift."""
+    """The Supported-models roster, generated from the model specs table so it can never drift."""
     fastboot, uart_models = [], []
     key_width = max(len(key) for key in SUPPORTED_MODELS)
     for key in SUPPORTED_MODELS:
-        p = load_profile(key)
+        p = load_model_spec(key)
         if p.method == "uart":
             uart_models.append(f"    {key:<{key_width}}  {p.model}  ({p.dust_code})")
         else:
@@ -687,8 +687,8 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     select_robot(ctx)
     # Checked the moment the model is known. The single-purpose branches below return early, so a
     # guard placed after them would never see several of the commands it exists to stop.
-    if cmd in _FASTBOOT_ONLY and ctx.profile.method != "fastboot":
-        raise Die(f"{ctx.profile.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
+    if cmd in _FASTBOOT_ONLY and ctx.model_spec.method != "fastboot":
+        raise Die(f"{ctx.model_spec.model} uses the UART method, not fastboot — run 'dreame-valetudo' "
                   f"(no args) for its guided flow, not 'dreame-valetudo {cmd}'.")
     if cmd == "diagnose":
         diagnose(ctx)
@@ -710,9 +710,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
                       "the physical robot model is immutable and every image/restore record is "
                       "bound to the saved model.")
         # The command exists specifically to replace a saved choice, so it must not silently load it.
-        prior_model = ctx.profile.key
+        prior_model = ctx.model_spec.key
         select_model(ctx, use_env=False)
-        if ctx.profile.key != prior_model and robot.state_has("image"):
+        if ctx.model_spec.key != prior_model and robot.state_has("image"):
             robot.remember_image()
             robot.state_clear("image")
             ctx.console.warn("The model changed, so the previously staged firmware was disarmed. "
@@ -1200,8 +1200,8 @@ def _run(
 
         # Expected input, command, and filesystem failures must surface as clean errors, so context
         # construction and dispatch both stay inside this handler.
-        profile = load_profile(_profile_key_for_invocation(cmd, args[1:], resolved_env))
-        ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, profile=profile)
+        model_spec = load_model_spec(_profile_key_for_invocation(cmd, args[1:], resolved_env))
+        ctx = Context(runner=run, console=con, env=resolved_env, ws=ws, model_spec=model_spec)
 
         if cmd == "bench":
             validate_bench_args(ctx, args[1:])

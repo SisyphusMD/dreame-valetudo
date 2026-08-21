@@ -12,7 +12,7 @@ from dreame_valetudo import __version__, cli
 from dreame_valetudo.cli import main
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import ADOPTED_ROOT, SUNXI_TOOLS_REF
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
 
@@ -200,7 +200,7 @@ def test_saved_robot_model_is_loaded_before_campaign_binding_check(
     monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
     monkeypatch.setattr(
         cli, "bench",
-        lambda ctx, _rest, *, auto_fn: selected.append(ctx.profile.key) or 0,
+        lambda ctx, _rest, *, auto_fn: selected.append(ctx.model_spec.key) or 0,
     )
 
     assert main(
@@ -590,9 +590,9 @@ def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("model", "secure_boot"),
     [
-        (profile.key, profile.secure_boot == "yes")
-        for profile in (load_profile(key) for key in SUPPORTED_MODELS)
-        if profile.method == "uart"
+        (model_spec.key, model_spec.secure_boot == "yes")
+        for model_spec in (load_model_spec(key) for key in SUPPORTED_MODELS)
+        if model_spec.method == "uart"
     ],
 )
 def test_uart_walkthrough_pins_the_complete_upstream_contract(

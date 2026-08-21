@@ -21,9 +21,9 @@ from conftest import CFG, CtxFactory, stage_dist
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
 from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
 from dreame_valetudo.phases.manage import clean
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
 from dreame_valetudo.workspace import Robot
@@ -31,7 +31,7 @@ from dreame_valetudo.workspace import Robot
 _IDENT = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
 
 _FASTBOOT_MODELS = tuple(
-    key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"
+    key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"
 )
 
 
@@ -44,7 +44,7 @@ def test_every_model_checklist_is_static_and_matches_its_exact_guide(
 
     _print_checklist(ctx, "00112233445566778899aabbccddeeff", Path("/tmp/upload.pub"))
 
-    guide = FORM_GUIDES[ctx.profile.dust_code]
+    guide = FORM_GUIDES[ctx.model_spec.dust_code]
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert f"Firmware version ..... SELECT '{guide.firmware_label}'" in text
     assert ("Prepackage Valetudo" in text) is guide.prepackage_valetudo

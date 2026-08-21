@@ -470,7 +470,7 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
 
     _silent = _ap_up_robot_silent()
@@ -487,7 +487,7 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
     assert not any(c[0] in {"git", "make", "tar"} for c in calls)
-    assert not any(ctx.profile.stage1_url in c for c in calls)
+    assert not any(ctx.model_spec.stage1_url in c for c in calls)
 
 
 def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
@@ -506,7 +506,7 @@ def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
     assert "robot's Wi-Fi AP" in message
     assert "dreame-valetudo push" in message
     assert "download only Valetudo" in message
-    assert not any(ctx.profile.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert not any(ctx.model_spec.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_push_retries_the_download_after_leaving_the_robot_ap(
@@ -517,7 +517,7 @@ def test_push_retries_the_download_after_leaving_the_robot_ap(
     ctx = _ctx(make_ctx)
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
     robot = _text(did="12345")
     ctx.runner.redirect_responder = _redirect()
@@ -842,7 +842,7 @@ def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
 def test_push_accepts_a_robot_that_carries_no_recovery_pems(
     make_ctx: CtxFactory, failure: str,
 ) -> None:
-    # Only three fastboot profiles are hardware-verified, so an absent /etc/*.pem is an unknown,
+    # Only three fastboot model specs are hardware-verified, so an absent /etc/*.pem is an unknown,
     # not a defect: validate the PEMs when the robot has them, never demand them.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
@@ -1010,7 +1010,7 @@ def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
     ctx.runner.responder = _text(key="")  # type: ignore[attr-defined]
     ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
 
-    assert ctx.profile.key_in_secure_storage == "no"
+    assert ctx.model_spec.key_in_secure_storage == "no"
     assert push(ctx) is True
 
     published = next(ctx.backups_dir.iterdir())
@@ -1227,7 +1227,7 @@ def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
     published = next(ctx.backups_dir.iterdir())
     saved = json.loads((published / "manifest.json").read_text())
     assert saved["config"] == CFG
-    assert saved["model_key"] == ctx.profile.key
+    assert saved["model_key"] == ctx.model_spec.key
     assert saved["valetudo_version"] is None
     assert robot.state_get("factory-backup") == published.name
     assert robot.state_get("valetudo") == "adopted-existing"
@@ -1496,7 +1496,7 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     assert (backups[0] / "id_dreame").read_text() == "PRIV"      # private half preserved off-workdir
     assert (backups[0] / "id_dreame.pub").read_text() == "PUB"
     m = json.loads((backups[0] / "manifest.json").read_text())   # provenance manifest written
-    assert m["model"] == ctx.profile.model
+    assert m["model"] == ctx.model_spec.model
     assert m["robot"] == "r2416-abcdef012345"
     assert m["live_model"] == "dreame.vacuum.r2416"
     assert m["live_did"] == "-117604433"

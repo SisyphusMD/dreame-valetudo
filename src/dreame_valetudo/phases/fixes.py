@@ -14,8 +14,8 @@ from ..console import die
 from ..constants import ROBOT_AP_IP
 from ..context import Context
 from ..log import scrub
+from ..models import impl_class_for_model
 from ..platform_env import open_url
-from ..profiles import impl_class_for_model
 from ..ssh import (
     AP_VPN_HINT,
     is_dreame_ap,
@@ -77,7 +77,7 @@ def _require_selected_robot(ctx: Context, key: Path | None, command: str) -> Non
     strongest available automatic binding is live model.
     """
     expected_config = ctx.robot_config()
-    if expected_config is None and ctx.profile.method == "fastboot":
+    if expected_config is None and ctx.model_spec.method == "fastboot":
         die(f"No recorded config identity for the selected robot; re-run recon before {command}.")
     _live_robot_identity(ctx, key)
 
@@ -198,7 +198,7 @@ def resolved_impl_class(ctx: Context, key: Path | None) -> tuple[str, str | None
 
     Shared with the hardware bench, which verifies the pin fix-impl wrote: a bench that re-derived
     the expected class on its own could drift from this rule and certify the wrong value. An empty
-    model means device.conf was unreadable, and the caller falls back to the selected profile; a
+    model means device.conf was unreadable, and the caller falls back to the selected model_spec; a
     model with a None class is one this tool has no mapping for.
     """
     conf = robot_ssh(ctx.runner, _TARGET, f"cat {_DEVICE_CONF} 2>/dev/null", key=key, check=False)
@@ -226,7 +226,7 @@ def fix_impl(ctx: Context) -> None:
                 "hand-editing robot.implementation in /data/valetudo_config.json.")
         ctx.console.info(f"Matching Valetudo implementation: {impl}")
     else:
-        impl = ctx.profile.impl_class
+        impl = ctx.model_spec.impl_class
         ctx.console.warn(f"No readable model= at {_DEVICE_CONF} — falling back to the selected "
                          f"model's implementation: {impl} (override with DREAME_MODEL=<key>).")
 

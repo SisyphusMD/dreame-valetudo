@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from .context import Context
-from .profiles import SUPPORTED_MODELS, Profile, load_profile
+from .models import SUPPORTED_MODELS, ModelSpec, load_model_spec
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,18 +273,18 @@ def _matches_golden(
     return False
 
 
-def _verify_profile_form(ctx: Context, profile: Profile, *, url: str | None = None) -> bool:
-    page = url or profile.dustbuilder_page
-    html = _fetch(ctx, profile.model, page)
+def _verify_profile_form(ctx: Context, model_spec: ModelSpec, *, url: str | None = None) -> bool:
+    page = url or model_spec.dustbuilder_page
+    html = _fetch(ctx, model_spec.model, page)
     if html is None:
         return False
     if _matches_golden(
-        ctx, label=profile.model, url=page,
-        golden_name=f"{profile.dust_code}.txt", actual=form_snapshot(html),
+        ctx, label=model_spec.model, url=page,
+        golden_name=f"{model_spec.dust_code}.txt", actual=form_snapshot(html),
     ):
-        guide = form_guide(profile.dust_code)
+        guide = form_guide(model_spec.dust_code)
         extra = ", Prepackage Valetudo present" if guide.prepackage_valetudo else ""
-        ctx.console.info(f"{profile.model}: matches ({guide.firmware_label}{extra})")
+        ctx.console.info(f"{model_spec.model}: matches ({guide.firmware_label}{extra})")
         return True
     return False
 
@@ -317,7 +317,7 @@ def _verify_guide_index(ctx: Context) -> bool:
 
 def verify_form(ctx: Context) -> bool:
     """Check the selected model's live page; never called by the rooting flow."""
-    return _verify_profile_form(ctx, ctx.profile, url=ctx.dustbuilder_page)
+    return _verify_profile_form(ctx, ctx.model_spec, url=ctx.dustbuilder_page)
 
 
 def verify_all_forms(ctx: Context) -> bool:
@@ -325,11 +325,11 @@ def verify_all_forms(ctx: Context) -> bool:
     ok = True
     checked = 0
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        if profile.method != "fastboot":
+        model_spec = load_model_spec(key)
+        if model_spec.method != "fastboot":
             continue
         checked += 1
-        if not _verify_profile_form(ctx, profile):
+        if not _verify_profile_form(ctx, model_spec):
             ok = False
     checked += 1
     if not _verify_checker_form(ctx):

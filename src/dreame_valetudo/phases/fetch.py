@@ -55,7 +55,7 @@ def fetch_stage1(ctx: Context) -> None:
     dist = ctx.ws.dist
     dist.mkdir(parents=True, exist_ok=True)
     tgz = ctx.stage1_tgz
-    download(ctx.runner, ctx.console, ctx.profile.stage1_url, tgz)
+    download(ctx.runner, ctx.console, ctx.model_spec.stage1_url, tgz)
     got = sha256_of(tgz)
     if got != STAGE1_SHA256:
         tgz.unlink(missing_ok=True)
@@ -110,11 +110,11 @@ def fetch_valetudo(ctx: Context) -> None:
         vbin.chmod(vbin.stat().st_mode | 0o111)
     digest_stamp = vbin.with_name(f"{vbin.name}.sha256")
     pinned = (
-        VALETUDO_SHA256.get(ctx.profile.arch)
+        VALETUDO_SHA256.get(ctx.model_spec.arch)
         if ctx.valetudo_version == VALETUDO_VERSION_DEFAULT else None
     )
     want = pinned or valetudo_published_sha256(
-        ctx.runner, ctx.valetudo_version, ctx.profile.arch
+        ctx.runner, ctx.valetudo_version, ctx.model_spec.arch
     )
     if want:
         got = sha256_of(vbin)
@@ -122,7 +122,7 @@ def fetch_valetudo(ctx: Context) -> None:
             vbin.unlink(missing_ok=True)
             digest_stamp.unlink(missing_ok=True)
             die(
-                f"Valetudo {ctx.valetudo_version}/{ctx.profile.arch} digest mismatch: GitHub "
+                f"Valetudo {ctx.valetudo_version}/{ctx.model_spec.arch} digest mismatch: GitHub "
                 f"publishes {want}, the download is {got or 'none'}. Refusing this binary; re-run "
                 "to redownload."
             )
@@ -144,7 +144,7 @@ def fetch_valetudo(ctx: Context) -> None:
         else:
             ctx.console.warn(
                 f"Couldn't obtain a trusted digest for Valetudo {ctx.valetudo_version}/"
-                f"{ctx.profile.arch}. The downloaded executable is UNVERIFIED."
+                f"{ctx.model_spec.arch}. The downloaded executable is UNVERIFIED."
             )
             if not ctx.interactive or not ctx.console.confirm(
                 "Install this unverified Valetudo binary anyway? This runs as root on the robot."

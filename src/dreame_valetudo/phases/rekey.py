@@ -324,7 +324,7 @@ def _enter_fel(ctx: Context, config: str, purpose: str) -> str:
     if not wait_for_fel(ctx):
         die(f"No FEL device — aborting before anything was {purpose.split(maxsplit=1)[0]}.")
     ctx.fel.fel_boot_fastboot(
-        ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr,
+        ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr,
     )
     result = ctx.fastboot.fbt("getvar", "config", check=False)
     live_config = parse_config(result.stdout + result.stderr)
@@ -898,8 +898,8 @@ def rekey(
     ctx: Context, *, keep_existing: bool = False, dry_run: bool = False, over_ssh: bool = False,
 ) -> None:
     robot = ctx.need_robot()
-    if ctx.profile.method != "fastboot":
-        die(f"{ctx.profile.model} uses the UART method; 'rekey' is only for MR813 fastboot models.")
+    if ctx.model_spec.method != "fastboot":
+        die(f"{ctx.model_spec.model} uses the UART method; 'rekey' is only for MR813 fastboot models.")
     if not robot.state_has("rooted"):
         die("This robot is not recorded as rooted. 'rekey' edits a rooted robot's authorized keys; "
             "an unrooted robot gets its key from the image built in the 'image' phase.")

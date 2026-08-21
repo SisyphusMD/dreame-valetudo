@@ -16,15 +16,15 @@ def requires_positive_model_verification(model_key: str) -> bool:
 
 
 def model_hazard_check(ctx: Context) -> None:
-    key = ctx.profile.key
+    key = ctx.model_spec.key
     if key.startswith("l10s-pro-ultra-heat"):
         ctx.console.warn("The L10s Pro Ultra Heat has TWO hardware revisions — R2338 and R2338H — "
                          "that take DIFFERENT firmware and differ by a SINGLE character in the "
                          "serial number. Flashing the wrong image BRICKS the robot. Read the "
                          f"serial from under the dustbin and confirm it matches "
-                         f"'{ctx.profile.model}'.")
+                         f"'{ctx.model_spec.model}'.")
         if ctx.interactive and not ctx.console.confirm(
-            f"Does the serial confirm this is '{ctx.profile.model}'?"
+            f"Does the serial confirm this is '{ctx.model_spec.model}'?"
         ):
             abort("Verify the serial, then re-run and choose the matching entry.")
     elif key == "l20-ultra":

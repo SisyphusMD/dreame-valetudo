@@ -1,17 +1,17 @@
-"""Pin the profile table against checked-in goldens.
+"""Pin the model_spec table against checked-in goldens.
 
-The goldens under golden/ (load_profile / impl_class_for_model / model_key_for_dir) are the
+The goldens under golden/ (load_model_spec / impl_class_for_model / model_key_for_dir) are the
 source of truth for the supported-model data; any drift in the table fails these tests.
 """
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
-from dreame_valetudo import profiles as P
+from dreame_valetudo import models as P
 
 GOLDEN = Path(__file__).parent / "golden"
 README = Path(__file__).parents[2] / "README.md"
@@ -23,27 +23,42 @@ def _rows(name: str) -> list[list[str]]:
 
 def test_supported_models_matches_golden_order() -> None:
     # The picker numbers robots by this order, so it is load-bearing.
-    keys = [r[0] for r in _rows("profiles.tsv")[1:]]
+    keys = [r[0] for r in _rows("models.tsv")[1:]]
     assert keys == P.SUPPORTED_MODELS
 
 
+def test_profile_rejects_an_invalid_static_table_value() -> None:
+    with pytest.raises(ValueError, match="bad method"):
+        replace(P.load_model_spec(P.DEFAULT_MODEL_KEY), method="invalid")  # type: ignore[arg-type]
+
+
+def test_directory_name_inference_uses_known_prefixes_and_safe_defaults(tmp_path: Path) -> None:
+    assert P.key_from_dirname("r2416-lounge") == "x40-ultra"
+    assert P.key_from_dirname("unrecognized") == P.DEFAULT_MODEL_KEY
+
+    robot = tmp_path / "r2416-lounge"
+    (robot / "state").mkdir(parents=True)
+    (robot / "state" / "model_key").write_text("\n")
+    assert P.known_model_key_for_dir(robot) == "x40-ultra"
+
+
 def test_profile_fields_match_golden() -> None:
-    header, *rows = _rows("profiles.tsv")
-    columns = ["key" if field.name == "key" else field.name.upper() for field in fields(P.Profile)]
+    header, *rows = _rows("models.tsv")
+    columns = ["key" if field.name == "key" else field.name.upper() for field in fields(P.ModelSpec)]
     columns += ["STAGE1_URL", "DUSTBUILDER_PAGE"]
     assert header == columns
     seen = set()
     for row in rows:
         rec = dict(zip(header, row, strict=True))
-        p = P.load_profile(rec["key"])
+        p = P.load_model_spec(rec["key"])
         seen.add(rec["key"])
-        for field in fields(P.Profile):
+        for field in fields(P.ModelSpec):
             column = "key" if field.name == "key" else field.name.upper()
             assert getattr(p, field.name) == rec[column], rec["key"]
         assert p.stage1_url == rec["STAGE1_URL"], rec["key"]
         assert p.dustbuilder_page == rec["DUSTBUILDER_PAGE"], rec["key"]
     # Neither the picker, the backing table, nor the golden may carry an unrepresented model.
-    assert seen == set(P.SUPPORTED_MODELS) == set(P._PROFILES)
+    assert seen == set(P.SUPPORTED_MODELS) == set(P._MODEL_SPECS)
 
 
 def test_readme_hardware_verified_models_are_deliberate() -> None:
@@ -55,9 +70,9 @@ def test_readme_hardware_verified_models_are_deliberate() -> None:
     assert verified == {"x40-ultra", "x30-ultra", "l10s-pro-ultra-heat"}
 
 
-def test_load_profile_rejects_unknown_key() -> None:
+def test_load_model_spec_rejects_unknown_key() -> None:
     with pytest.raises(ValueError):
-        P.load_profile("not-a-model")
+        P.load_model_spec("not-a-model")
 
 
 def test_impl_class_for_model_matches_golden() -> None:

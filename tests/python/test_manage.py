@@ -97,7 +97,7 @@ def test_rename_persists_a_legacy_directorys_inferred_model(make_ctx: CtxFactory
     assert renamed.state_get("model_key") == "d10s-pro"
     ctx.env["DREAME_ROBOT"] = "Kitchen"
     select_robot(ctx)
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
 
 
 def test_rename_prompts_for_the_new_name_when_only_old_is_given(make_ctx: CtxFactory) -> None:

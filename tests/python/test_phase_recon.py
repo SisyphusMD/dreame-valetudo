@@ -19,13 +19,13 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from dreame_valetudo.context import Context
 from dreame_valetudo.fel import wait_for_fel
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
     _verify_reported_model,
     read_identity_from_robot,
     recon,
 )
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
@@ -141,7 +141,7 @@ def _staging(ctx: Context) -> Path:
 
 @pytest.mark.parametrize(
     "model",
-    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+    [key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"],
 )
 def test_each_fastboot_model_follows_the_official_recon_contract(
     make_ctx: CtxFactory, model: str,
@@ -150,7 +150,7 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
     expected_dram = "ddr3" if model in DDR3_MODEL_KEYS else "ddr4"
     expected_fsbl = f"fsbl_{expected_dram}.bin"
     stage_dist(ctx, dram=expected_dram)
-    assert ctx.profile.dram == expected_dram
+    assert ctx.model_spec.dram == expected_dram
     assert ctx.fsbl_name == expected_fsbl
     recon(ctx, recovery_backup=False)
     sunxi_ops = [
@@ -159,10 +159,10 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
         if "sunxi-fel" in call[0] and call[1] in {"write", "exe"}
     ]
     assert sunxi_ops == [
-        ("write", ctx.profile.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
-        ("exe", ctx.profile.fsbl_addr),
-        ("write", ctx.profile.payload_addr, str(ctx.ws.dist / "payload.bin")),
-        ("exe", ctx.profile.payload_addr),
+        ("write", ctx.model_spec.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
+        ("exe", ctx.model_spec.fsbl_addr),
+        ("write", ctx.model_spec.payload_addr, str(ctx.ws.dist / "payload.bin")),
+        ("exe", ctx.model_spec.payload_addr),
     ]
 
 
@@ -401,7 +401,7 @@ def test_recon_binds_its_completion_marker_to_the_model_and_the_robot(
     model and the robot recon actually read — root refuses to flash on anything weaker."""
     ctx = make_ctx(model="d10s-pro", responder=config_responder())
     stage_dist(ctx)
-    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")  # d10s-pro is a ddr3 profile
+    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")  # d10s-pro is a ddr3 model_spec
 
     recon(ctx, recovery_backup=False)
 

@@ -81,7 +81,7 @@ from dreame_valetudo.console import Console
 from dreame_valetudo.fel import print_fel_entry
 from dreame_valetudo.phases.recon import _print_intro
 con = Console(color=False)
-ctx = SimpleNamespace(console=con, profile=SimpleNamespace(model="Test Robot"), robot=None)
+ctx = SimpleNamespace(console=con, model_spec=SimpleNamespace(model="Test Robot"), robot=None)
 _auto_intro(ctx)
 _print_intro(ctx)
 print_fel_entry(con)

@@ -96,8 +96,8 @@ def doctor(ctx: Context) -> None:
     needs_build = not _sunxi_ready(ctx)
     if needs_build:
         ctx.console.say(
-            f"Toolchain cache — {ctx.profile.model} (code={ctx.profile.model_code}, "
-            f"arch={ctx.profile.arch}, dram={ctx.profile.dram})"
+            f"Toolchain cache — {ctx.model_spec.model} (code={ctx.model_spec.model_code}, "
+            f"arch={ctx.model_spec.arch}, dram={ctx.model_spec.dram})"
         )
     ctx.ws.cache.mkdir(parents=True, exist_ok=True)
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)

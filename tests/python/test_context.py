@@ -1,4 +1,4 @@
-"""Context-derived per-profile values and the need_robot guard."""
+"""Context-derived per-model_spec values and the need_robot guard."""
 
 from __future__ import annotations
 

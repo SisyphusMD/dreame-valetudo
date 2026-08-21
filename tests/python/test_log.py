@@ -18,8 +18,8 @@ from dreame_valetudo.log import (
     scrub,
     tail_transcript,
 )
+from dreame_valetudo.models import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases.rekey import _password_candidates
-from dreame_valetudo.profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import RecordingRunner, Result
 
 
@@ -136,8 +136,8 @@ def test_recon_dump_names_all_survive_scrub() -> None:
 
 def test_profile_diagnostics_all_survive_scrub() -> None:
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        for token in (profile.fsbl_addr, profile.payload_addr):
+        model_spec = load_model_spec(key)
+        for token in (model_spec.fsbl_addr, model_spec.payload_addr):
             assert token in scrub(f"diagnostic {token}")
     for token in (*KNOWN_IMPL_CLASSES, "toc0hash", "toc1hash"):
         assert token in scrub(f"diagnostic {token}")

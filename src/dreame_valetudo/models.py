@@ -1,12 +1,12 @@
-"""Device profiles — the single, typed source of truth for every supported robot.
+"""Device model specs — the single, typed source of truth for every supported robot.
 
-Every robot is the same Allwinner MR813 "gen3" family; a model is just a profile (name, dustbuilder
+Every robot is the same Allwinner MR813 "gen3" family; a model is just a model_spec (name, dustbuilder
 page, Valetudo class, DRAM, and — for the older UART devices — method/arch/secure-boot). The table
 is pinned by ``tests/python/test_profiles.py`` against checked-in goldens so it cannot silently
 drift.
 
 The three lookups are deliberately kept separate:
-  * ``load_profile``          — the picker roster (models this tool drives end to end)
+  * ``load_model_spec``          — the picker roster (models this tool drives end to end)
   * ``impl_class_for_model``  — a SUPERSET map (robot-reported code -> Valetudo class) used by
                                 fix-impl, covering codes not in the picker
   * ``model_key_for_dir``     — infer a robot's key from its work-dir name on resume
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
-# The stringly-typed profile discriminants. The string VALUES are the on-disk state-file /
+# The stringly-typed model spec discriminants. The string VALUES are the on-disk state-file /
 # golden-TSV contract (recon writes model_key; goldens pin every field), so these Literals only
 # narrow the types — the serialized forms stay byte-identical.
 Method = Literal["fastboot", "uart"]
@@ -46,8 +46,8 @@ SUPPORTED_MODELS: list[str] = [
 ]
 
 @dataclass(frozen=True, slots=True)
-class Profile:
-    """One robot's resolved profile. Fields with defaults are the shared MR813 gen3 platform
+class ModelSpec:
+    """One robot's resolved model_spec. Fields with defaults are the shared MR813 gen3 platform
     values; a model overrides only what differs (DRAM for the ddr3 units; method/arch/secure-boot
     for the UART family). FEL load addresses are fixed for this SoC family."""
 
@@ -92,88 +92,88 @@ class Profile:
         return f"https://{DUSTBUILDER_HOST}/_dreame_{self.dust_code}.html"
 
 
-_PROFILES: dict[str, Profile] = {
+_MODEL_SPECS: dict[str, ModelSpec] = {
     p.key: p
     for p in [
         # ---- X-series (ddr4) ----
-        Profile("x40-ultra", "Dreame X40 Ultra", "r2416", "r2416",
+        ModelSpec("x40-ultra", "Dreame X40 Ultra", "r2416", "r2416",
                 "DreameX40UltraValetudoRobot", "no"),
-        Profile("x40-master", "Dreame X40 Master", "r2465", "r2465",
+        ModelSpec("x40-master", "Dreame X40 Master", "r2465", "r2465",
                 "DreameX40MasterValetudoRobot", "maybe"),
-        Profile("x30-ultra", "Dreame X30 Ultra", "r9316", "r9316",
+        ModelSpec("x30-ultra", "Dreame X30 Ultra", "r9316", "r9316",
                 "DreameX30UltraValetudoRobot", "yes"),
         # ---- L-series (ddr4) ----
-        Profile("l40-ultra", "Dreame L40 Ultra", "r2492", "r2492",
+        ModelSpec("l40-ultra", "Dreame L40 Ultra", "r2492", "r2492",
                 "DreameL40UltraValetudoRobot", "maybe"),
-        Profile("l20-ultra", "Dreame L20 Ultra", "r2394", "r2394",
+        ModelSpec("l20-ultra", "Dreame L20 Ultra", "r2394", "r2394",
                 "DreameL20UltraValetudoRobot", "maybe"),
-        Profile("l10s-ultra", "Dreame L10s Ultra", "r2228", "r2228",
+        ModelSpec("l10s-ultra", "Dreame L10s Ultra", "r2228", "r2228",
                 "DreameL10SUltraValetudoRobot", "maybe"),
-        Profile("l10s-pro-ultra-heat", "Dreame L10s Pro Ultra Heat", "r2338", "r2338",
+        ModelSpec("l10s-pro-ultra-heat", "Dreame L10s Pro Ultra Heat", "r2338", "r2338",
                 "DreameL10SProUltraHeatValetudoRobot", "maybe"),
-        Profile("l10s-pro-ultra-heat-h",
+        ModelSpec("l10s-pro-ultra-heat-h",
                 "Dreame L10s Pro Ultra Heat (R2338H hardware revision)", "r2338h", "r2338h",
                 "DreameL10SProUltraHeatValetudoRobot", "maybe"),
         # ---- D-series + W10 Pro: same MR813 flow, but ddr3 DRAM ----
-        Profile("d10s-pro", "Dreame D10s Pro", "r2250", "r2250",
+        ModelSpec("d10s-pro", "Dreame D10s Pro", "r2250", "r2250",
                 "DreameD10SProValetudoRobot", "maybe", dram="ddr3"),
-        Profile("d10s-plus", "Dreame D10s Plus", "r2240", "r2240",
+        ModelSpec("d10s-plus", "Dreame D10s Plus", "r2240", "r2240",
                 "DreameD10SPlusValetudoRobot", "maybe", dram="ddr3"),
-        Profile("w10-pro", "Dreame W10 Pro", "r2104", "r2104",
+        ModelSpec("w10-pro", "Dreame W10 Pro", "r2104", "r2104",
                 "DreameW10ProValetudoRobot", "maybe", dram="ddr3",
                 key_in_secure_storage="yes"),
         # ---- Mova-branded (ddr4) ----
-        Profile("mova-s20-ultra", "Mova S20 Ultra", "r2385", "r2385",
+        ModelSpec("mova-s20-ultra", "Mova S20 Ultra", "r2385", "r2385",
                 "DreameMovaS20UltraValetudoRobot", "maybe"),
-        Profile("mova-p10-pro-ultra", "Mova P10 Pro Ultra", "r2491", "r2491",
+        ModelSpec("mova-p10-pro-ultra", "Mova P10 Pro Ultra", "r2491", "r2491",
                 "DreameMovaP10ProUltraValetudoRobot", "maybe"),
         # ---- UART serial-shell method (older MR813-NAND + armv7 devices) ----
-        Profile("z10-pro", "Dreame Z10 Pro", "p2028", "p2028",
+        ModelSpec("z10-pro", "Dreame Z10 Pro", "p2028", "p2028",
                 "DreameZ10ProValetudoRobot", "maybe", method="uart", secure_boot="yes"),
-        Profile("xiaomi-1t", "Xiaomi 1T", "p2041", "p2041",
+        ModelSpec("xiaomi-1t", "Xiaomi 1T", "p2041", "p2041",
                 "Dreame1TValetudoRobot", "maybe", method="uart", secure_boot="no"),
-        Profile("l10-pro", "Dreame L10 Pro", "p2029", "p2029",
+        ModelSpec("l10-pro", "Dreame L10 Pro", "p2029", "p2029",
                 "DreameL10ProValetudoRobot", "maybe", method="uart", secure_boot="yes"),
-        Profile("x10-plus", "Xiaomi X10+", "p2114", "p2114",
+        ModelSpec("x10-plus", "Xiaomi X10+", "p2114", "p2114",
                 "DreameX10PlusValetudoRobot", "maybe", method="uart", secure_boot="yes"),
-        Profile("p2148", "Xiaomi P2148 (Mijia Ultra Slim)", "p2148", "p2148",
+        ModelSpec("p2148", "Xiaomi P2148 (Mijia Ultra Slim)", "p2148", "p2148",
                 "DreameP2148ValetudoRobot", "maybe", method="uart", secure_boot="no"),
-        Profile("vacuum-mop-2-ultra", "Xiaomi Vacuum-Mop 2 Ultra (P2150)", "p2150", "p2150",
+        ModelSpec("vacuum-mop-2-ultra", "Xiaomi Vacuum-Mop 2 Ultra (P2150)", "p2150", "p2150",
                 "DreameP2150ValetudoRobot", "maybe", method="uart", secure_boot="yes"),
-        Profile("d9", "Dreame D9", "p2009", "p2009",
+        ModelSpec("d9", "Dreame D9", "p2009", "p2009",
                 "DreameD9ValetudoRobot", "maybe", method="uart", arch="armv7-lowmem",
                 secure_boot="no"),
-        Profile("d9-pro", "Dreame D9 Pro", "p2187", "p2187",
+        ModelSpec("d9-pro", "Dreame D9 Pro", "p2187", "p2187",
                 "DreameD9ProValetudoRobot", "maybe", method="uart", arch="armv7-lowmem",
                 secure_boot="no"),
-        Profile("f9", "Dreame F9", "p2008", "p2008",
+        ModelSpec("f9", "Dreame F9", "p2008", "p2008",
                 "DreameF9ValetudoRobot", "maybe", method="uart", arch="armv7", secure_boot="no"),
-        Profile("xiaomi-1c", "Xiaomi 1C", "mc1808", "mc1808",
+        ModelSpec("xiaomi-1c", "Xiaomi 1C", "mc1808", "mc1808",
                 "Dreame1CValetudoRobot", "maybe", method="uart", arch="armv7", secure_boot="no"),
-        Profile("w10", "Dreame W10", "p2027", "p2027",
+        ModelSpec("w10", "Dreame W10", "p2027", "p2027",
                 "DreameW10ValetudoRobot", "maybe", method="uart", arch="armv7-lowmem",
                 secure_boot="no"),
-        Profile("mova-z500", "Mova Z500", "p2156", "p2156",
+        ModelSpec("mova-z500", "Mova Z500", "p2156", "p2156",
                 "DreameMovaZ500ValetudoRobot", "maybe", method="uart", arch="armv7",
                 secure_boot="no"),
     ]
 }
 
 
-def load_profile(key: str) -> Profile:
-    """Resolve a model key to its profile, or raise on an unknown key."""
+def load_model_spec(key: str) -> ModelSpec:
+    """Resolve a model key to its model_spec, or raise on an unknown key."""
     try:
-        return _PROFILES[key]
+        return _MODEL_SPECS[key]
     except KeyError:
         raise ValueError(
             f"Unknown model key {key!r} — supported: {' '.join(SUPPORTED_MODELS)}"
         ) from None
 
 
-def profile_for_model_code(code: str) -> Profile | None:
-    """The profile whose model_code matches `code` (as it appears in a backup folder name), or None
+def spec_for_model_code(code: str) -> ModelSpec | None:
+    """The model_spec whose model_code matches `code` (as it appears in a backup folder name), or None
     — lets a backfilled backup manifest recover the marketing model name from the code."""
-    return next((p for p in _PROFILES.values() if p.model_code == code), None)
+    return next((p for p in _MODEL_SPECS.values() if p.model_code == code), None)
 
 
 # Robot-reported dreame.vacuum.<code> -> Valetudo implementation class. A SUPERSET of the picker
@@ -217,7 +217,7 @@ _IMPL_PREFIXES: list[tuple[str, str]] = [
 ]
 
 KNOWN_IMPL_CLASSES = frozenset({
-    *(profile.impl_class for profile in _PROFILES.values()),
+    *(model_spec.impl_class for model_spec in _MODEL_SPECS.values()),
     *(cls for _prefix, cls in _IMPL_PREFIXES),
 })
 
@@ -326,7 +326,7 @@ def model_family_candidate_for_code(code: str) -> tuple[str, str, str] | None:
 
 
 def reviewed_model_identities_for_key(key: str) -> frozenset[str]:
-    """Regional identities copied from Valetudo for one local model profile."""
+    """Regional identities copied from Valetudo for one local model model_spec."""
     identities: set[str] = set()
     for full_base, suffixes in _MODEL_IDENTITY_SUFFIXES.items():
         candidate = model_family_candidate_for_code(full_base)

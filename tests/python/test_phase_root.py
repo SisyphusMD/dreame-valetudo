@@ -22,6 +22,7 @@ from dreame_valetudo.constants import (
     STAGED_IMAGE_MANIFEST,
 )
 from dreame_valetudo.context import Context
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import (
     _FEL_IMAGE_MIN_BYTES,
@@ -29,7 +30,6 @@ from dreame_valetudo.phases.root import (
     _mask_interrupts,
     root,
 )
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import begin_recovery_refresh
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
@@ -71,9 +71,9 @@ def _stage_image(ctx: Context, dust: str = "626153c7") -> None:
         for name in FEL_IMAGE_FILES
     }
     (fw / STAGED_IMAGE_MANIFEST).write_text(
-        json.dumps({"model_key": ctx.profile.key, "files": digests}) + "\n"
+        json.dumps({"model_key": ctx.model_spec.key, "files": digests}) + "\n"
     )
-    robot.state_set("image", f"model={ctx.profile.key} staged")
+    robot.state_set("image", f"model={ctx.model_spec.key} staged")
 
 
 def _write_recon(ctx: Context, cfg: str = CFG) -> None:
@@ -83,7 +83,7 @@ def _write_recon(ctx: Context, cfg: str = CFG) -> None:
     with zipfile.ZipFile(rd / RECOVERY_BACKUP_ZIP, "w") as archive:
         for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
             archive.writestr(name, b"backup")
-    ctx.need_robot().state_set("recon", f"model={ctx.profile.key} backup=obtained")
+    ctx.need_robot().state_set("recon", f"model={ctx.model_spec.key} backup=obtained")
 
 
 def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
@@ -99,18 +99,18 @@ def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
 
 @pytest.mark.parametrize(
     "model",
-    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+    [key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"],
 )
 def test_each_fastboot_model_follows_the_official_root_contract(
     make_ctx: CtxFactory, model: str,
 ) -> None:
-    profile = load_profile(model)
+    model_spec = load_model_spec(model)
     confirmations = [True, True] if (
         model.startswith("l10s-pro-ultra-heat") or model == "l20-ultra"
     ) else [True]
     ctx = make_ctx(
         model=model,
-        robot_name=f"{profile.model_code}-{CFG[:12]}",
+        robot_name=f"{model_spec.model_code}-{CFG[:12]}",
         responder=config_responder(),
         confirms=confirmations,
     )
@@ -395,7 +395,7 @@ def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFa
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
-    robot.state_set("model_key", ctx.profile.key)
+    robot.state_set("model_key", ctx.model_spec.key)
 
     with pytest.raises(Die, match="no completed reconnaissance record"):
         root(ctx)

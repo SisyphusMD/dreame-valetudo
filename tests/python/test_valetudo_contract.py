@@ -6,9 +6,9 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-from dreame_valetudo.profiles import (
+from dreame_valetudo.models import (
     SUPPORTED_MODELS,
-    load_profile,
+    load_model_spec,
     reviewed_model_identities_for_key,
 )
 from libexec import verify_valetudo_contract as contract
@@ -31,13 +31,13 @@ def _upstream_fixture(root: Path) -> Path:
     classes: dict[str, list[str]] = {}
     sections: dict[str, str] = {}
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        if profile.method != "fastboot":
+        model_spec = load_model_spec(key)
+        if model_spec.method != "fastboot":
             continue
-        identities = classes.setdefault(profile.impl_class, [])
-        identities.append(f"dreame.vacuum.{profile.model_code}")
-        identities.extend(reviewed_model_identities_for_key(profile.key))
-        title = profile.model.split(" (", 1)[0].removeprefix("Dreame ").removeprefix("Mova ")
+        identities = classes.setdefault(model_spec.impl_class, [])
+        identities.append(f"dreame.vacuum.{model_spec.model_code}")
+        identities.extend(reviewed_model_identities_for_key(model_spec.key))
+        title = model_spec.model.split(" (", 1)[0].removeprefix("Dreame ").removeprefix("Mova ")
         sections.setdefault(
             title,
             f"### {title}\n**Valetudo Binary**: `aarch64`\n**Secure Boot**: `yes`\n"
@@ -59,11 +59,11 @@ def test_current_semantic_contract_fixture_passes(tmp_path: Path) -> None:
 
 def test_every_fastboot_model_has_an_explicit_upstream_contract() -> None:
     fastboot = {
-        key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"
+        key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"
     }
     assert set(MODEL_SECTION_MARKERS) == fastboot
     assert {
-        key for key in fastboot if load_profile(key).dram == "ddr3"
+        key for key in fastboot if load_model_spec(key).dram == "ddr3"
     } == DDR3_MODEL_KEYS
 
 
