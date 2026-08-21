@@ -18,7 +18,7 @@ from ..context import Context
 from ..fel import print_fel_entry, wait_for_fel
 from ..hazards import requires_positive_model_verification
 from ..migrate import decrypt_recovery_backup
-from ..profiles import SUPPORTED_MODELS, Profile, load_profile
+from ..models import SUPPORTED_MODELS, ModelSpec, load_model_spec
 from ..recovery import begin_recovery_refresh, finish_recovery_refresh, write_recovery_provenance
 from ..session import records_step
 from ..util import parse_config, parse_getvar
@@ -87,36 +87,36 @@ def capture_identity(ctx: Context, robot: Robot) -> dict[str, str]:
 def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
     """Cross-check recognisable bootloader model codes without treating absence as identity."""
     values = "\n".join(captured.values()).lower()
-    found: dict[str, Profile] = {}
+    found: dict[str, ModelSpec] = {}
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
+        model_spec = load_model_spec(key)
         # Whole identifiers, not substrings. r2338 sits inside r2338h, and those two revisions take
         # incompatible firmware — a plain `in` matches both, and two matches read as "ambiguous",
         # which silently skips the stop for the one pair where a wrong choice bricks the robot.
         if any(re.search(rf"(?<![0-9a-z]){re.escape(code.lower())}(?![0-9a-z])", values)
-               for code in {profile.model_code, profile.dust_code}):
-            found[profile.key] = profile
+               for code in {model_spec.model_code, model_spec.dust_code}):
+            found[model_spec.key] = model_spec
     if not found:
-        if not ctx.interactive and requires_positive_model_verification(ctx.profile.key):
-            die(f"SAFETY STOP: {ctx.profile.model} requires a positive hardware-revision match, "
+        if not ctx.interactive and requires_positive_model_verification(ctx.model_spec.key):
+            die(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
                 "but this bootloader did not report a recognisable model. Re-run interactively "
                 "and verify the physical label before flashing.")
         ctx.console.info("This bootloader does not report a recognisable model, so the chosen "
                          "model could not be verified.")
         return
     if len(found) != 1:
-        if not ctx.interactive and requires_positive_model_verification(ctx.profile.key):
-            die(f"SAFETY STOP: {ctx.profile.model} requires a positive hardware-revision match, "
+        if not ctx.interactive and requires_positive_model_verification(ctx.model_spec.key):
+            die(f"SAFETY STOP: {ctx.model_spec.model} requires a positive hardware-revision match, "
                 "but this bootloader reported ambiguous model identifiers. Re-run interactively "
                 "and verify the physical label before flashing.")
         ctx.console.info("This bootloader reports ambiguous model identifiers, so the chosen "
                          "model could not be verified.")
         return
     reported = next(iter(found.values()))
-    if reported.key != ctx.profile.key:
-        die(f"SAFETY STOP: the chosen model is {ctx.profile.model}, but the bootloader reports "
+    if reported.key != ctx.model_spec.key:
+        die(f"SAFETY STOP: the chosen model is {ctx.model_spec.model}, but the bootloader reports "
             f"{reported.model}. Choose {reported.model} to fix the mismatch.")
-    ctx.console.info(f"Bootloader model verified: {ctx.profile.model}.")
+    ctx.console.info(f"Bootloader model verified: {ctx.model_spec.model}.")
 
 
 def read_identity_from_robot(ctx: Context) -> dict[str, str]:
@@ -138,7 +138,7 @@ def read_identity_from_robot(ctx: Context) -> dict[str, str]:
             return {}
         ctx.fel.fel_boot_fastboot(
             ctx.ws.dist, ctx.fsbl_name, "payload.bin",
-            ctx.profile.fsbl_addr, ctx.profile.payload_addr,
+            ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr,
         )
     except Die as exc:  # this is an auxiliary read, not the flash — never abort the caller over it
         ctx.console.warn(f"Couldn't bring the robot up in fastboot to read the values ({exc}).")
@@ -272,7 +272,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     if not wait_for_fel(ctx):
         die("No FEL device — aborting recon.")
     ctx.fel.fel_boot_fastboot(
-        ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
+        ctx.ws.dist, ctx.fsbl_name, "payload.bin", ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr
     )
 
     ctx.console.say("Reading the 'config' value...")
@@ -293,7 +293,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
             ctx.console.say(f"This robot is already set up as '{existing.display_name()}' — "
                             "resuming it.")
         else:
-            ctx.robot = Robot(ctx.ws.robots_dir / f"{ctx.profile.model_code}-{cfg[:12]}")
+            ctx.robot = Robot(ctx.ws.robots_dir / f"{ctx.model_spec.model_code}-{cfg[:12]}")
             ctx.console.say(f"Robot identified — '{ctx.robot.display_name()}'.")
     else:
         prior_file = ctx.robot.recon_dir / "config.txt"
@@ -327,7 +327,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # image/root. A rejected recon intentionally leaves only an empty, untrusted robot directory.
     (robot.recon_dir / "config.txt").write_text(f"config: {cfg}\n")
     protect_private_dir(robot.recon_dir)
-    robot.state_set("model_key", ctx.profile.key)
+    robot.state_set("model_key", ctx.model_spec.key)
 
     backup_state = _saved_backup_state(robot)
     adopt_existing_root = False
@@ -392,7 +392,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
                     write_recovery_provenance(
                         robot.recon_dir,
                         config=cfg,
-                        model_key=ctx.profile.key,
+                        model_key=ctx.model_spec.key,
                         binding="captured-same-session",
                         firmware_state=(
                             "stock-user-attested" if stock_attested else "unverified"
@@ -439,7 +439,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
         robot.state_set("root-origin", ADOPTED_ROOT)
     # The model is what a later flash is authorized against; the robot's config identity stays in
     # recon/config.txt only, so this marker never duplicates that secret into robot state.
-    robot.state_set("recon", f"model={ctx.profile.key} backup={backup_state}")
+    robot.state_set("recon", f"model={ctx.model_spec.key} backup={backup_state}")
     if adopt_existing_root:
         robot.state_set("rooted", ADOPTED_ROOT)
         robot.state_set("valetudo", ADOPTED_ROOT)

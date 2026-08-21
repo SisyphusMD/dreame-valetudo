@@ -15,7 +15,7 @@ from dreame_valetudo.dustbuilder import (
     guide_index_snapshot,
     verify_form,
 )
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.run import Result
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -24,9 +24,9 @@ _GOLDENS = _ROOT / "libexec" / "dustbuilder-forms"
 
 def test_every_fastboot_model_has_one_guide_and_golden() -> None:
     expected = {
-        load_profile(key).dust_code
+        load_model_spec(key).dust_code
         for key in SUPPORTED_MODELS
-        if load_profile(key).method == "fastboot"
+        if load_model_spec(key).method == "fastboot"
     }
     assert set(FORM_GUIDES) == expected
     assert {path.stem for path in _GOLDENS.glob("r*.txt")} == expected

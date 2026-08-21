@@ -1,7 +1,7 @@
-"""Shared run context — the injected seams plus the selected profile and current robot.
+"""Shared run context — the injected seams plus the selected model_spec and current robot.
 
-Bundles the injected seams (runner, console) with the workspace, the selected profile, and the
-current robot, and lazily resolves the fastboot transport + FEL helper. Derived per-profile values
+Bundles the injected seams (runner, console) with the workspace, the selected model_spec, and the
+current robot, and lazily resolves the fastboot transport + FEL helper. Derived per-model_spec values
 (the Valetudo binary path/URL, dustbuilder page, stage1 filenames) live here so the phases read
 them off it.
 """
@@ -22,7 +22,7 @@ from .console import Console, bookmark_prompts_in, die
 from .constants import VALETUDO_VERSION_DEFAULT
 from .fastboot import Fastboot, find_helper, resolve_libexec, resolve_transport
 from .fel import Fel
-from .profiles import Profile
+from .models import ModelSpec
 from .run import Runner
 from .session import describe_run, name_the_robot_on_the_bar, session_name, working_tmux
 from .workspace import Robot, Workspace, backups_dir
@@ -44,7 +44,7 @@ class Context:
     console: Console
     env: Mapping[str, str]
     ws: Workspace
-    profile: Profile
+    model_spec: ModelSpec
     robot: Robot | None = None
     sleep: Callable[[float], None] = time.sleep
     now: Callable[[], str] = _local_now
@@ -153,21 +153,21 @@ class Context:
             robot_env=self.env.get("DREAME_ROBOT"), config_env=self.env.get("DREAME_CONFIG")
         )
 
-    # --- derived per-profile values ---
+    # --- derived per-model_spec values ---
     @property
     def valetudo_version(self) -> str:
         return self.env.get("VALETUDO_VERSION") or VALETUDO_VERSION_DEFAULT
 
     @property
     def valetudo_bin(self) -> Path:
-        return self.ws.dist / f"valetudo-{self.valetudo_version}-{self.profile.arch}"
+        return self.ws.dist / f"valetudo-{self.valetudo_version}-{self.model_spec.arch}"
 
     @property
     def valetudo_url(self) -> str:
         override = self.env.get("VALETUDO_URL")
         if override:
             return override
-        arch = self.profile.arch
+        arch = self.model_spec.arch
         if self.valetudo_version == "latest":
             return f"https://github.com/Hypfer/Valetudo/releases/latest/download/valetudo-{arch}"
         return (
@@ -177,7 +177,7 @@ class Context:
 
     @property
     def dustbuilder_page(self) -> str:
-        return self.env.get("DUSTBUILDER_PAGE") or self.profile.dustbuilder_page
+        return self.env.get("DUSTBUILDER_PAGE") or self.model_spec.dustbuilder_page
 
     @property
     def stage1_tgz(self) -> Path:
@@ -185,7 +185,7 @@ class Context:
 
     @property
     def fsbl_name(self) -> str:
-        return f"fsbl_{self.profile.dram}.bin"
+        return f"fsbl_{self.model_spec.dram}.bin"
 
     @property
     def payload_bin(self) -> Path:

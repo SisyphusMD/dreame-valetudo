@@ -52,7 +52,7 @@ def _matching_fix_robot(argv: tuple[str, ...]) -> Result | None:
 
 def _bind_recon_robot(ctx: Context, config: str | None = _CONFIG) -> Context:
     ctx.robot = Robot(ctx.ws.robots_dir / "bench")
-    ctx.robot.state_set("model_key", ctx.profile.key)
+    ctx.robot.state_set("model_key", ctx.model_spec.key)
     ctx.robot.recon_dir.mkdir(parents=True, exist_ok=True)
     if config is not None:
         (ctx.robot.recon_dir / "config.txt").write_text(f"config: {config}\n")

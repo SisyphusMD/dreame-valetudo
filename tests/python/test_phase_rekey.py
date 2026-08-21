@@ -36,6 +36,7 @@ from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.context import Context
 from dreame_valetudo.dust_decrypt import PERIOD, xor_stream
 from dreame_valetudo.ext4 import find_root_file, replace_root_file
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import rekey as rekey_module
 from dreame_valetudo.phases.rekey import (
     _AUTHORIZED_KEYS,
@@ -50,7 +51,6 @@ from dreame_valetudo.phases.rekey import (
     rekey,
 )
 from dreame_valetudo.phases.restore import _DUST_XOR
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.run import Result
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ext4-misc-1mib.img.gz"
@@ -70,7 +70,7 @@ _MISC_START = PERIOD
 _MISC_SIZE = len(_EXT4_IMAGE)
 _DUMP_BYTES = _MISC_START + _MISC_SIZE + 4 * PERIOD
 
-_UART_MODEL = next(key for key in SUPPORTED_MODELS if load_profile(key).method != "fastboot")
+_UART_MODEL = next(key for key in SUPPORTED_MODELS if load_model_spec(key).method != "fastboot")
 
 
 def _keystream() -> bytes:

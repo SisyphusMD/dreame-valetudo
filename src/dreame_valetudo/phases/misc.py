@@ -7,8 +7,8 @@ from pathlib import Path
 
 from ..constants import RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from ..context import Context
+from ..models import known_model_key_for_dir, load_model_spec
 from ..platform_env import open_url
-from ..profiles import known_model_key_for_dir, load_profile
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..workspace import Robot
@@ -18,7 +18,7 @@ _PHASES = ("recon", "image", "rooted", "factory-backup", "valetudo", "restored-s
 
 @records_step("installing Valetudo")
 def valetudo(ctx: Context) -> None:
-    ctx.console.phase(f"Install Valetudo on the rooted robot ({ctx.profile.arch})",
+    ctx.console.phase(f"Install Valetudo on the rooted robot ({ctx.model_spec.arch})",
                       index=3, total=3)
     ctx.console.steps([
         "Join the robot's Wi-Fi AP (hold the two OUTER buttons until it talks).",
@@ -77,7 +77,7 @@ def _summary(robot: Robot) -> str:
     key = known_model_key_for_dir(robot.work)
     if key:
         try:
-            model = load_profile(key).model
+            model = load_model_spec(key).model
         except ValueError:
             model = f"unknown model '{key}' — upgrade dreame-valetudo"
     else:

@@ -21,11 +21,11 @@ from dreame_valetudo.cli import _ROBOT_COMMANDS
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
+from dreame_valetudo.models import impl_class_for_model
 from dreame_valetudo.phases.root import root as production_root
-from dreame_valetudo.profiles import impl_class_for_model
 from dreame_valetudo.run import Result, RunError
 
-# A model the fixture profile (x40-ultra) does not map to, so a pin taken from the workspace
+# A model the fixture model_spec (x40-ultra) does not map to, so a pin taken from the workspace
 # instead of the robot is visibly wrong.
 _LIVE_MODEL = "dreame.vacuum.r2240"
 
@@ -1392,7 +1392,7 @@ def test_hardware_stack_is_not_ready_until_fastboot_client_is_usable(
 
 def _pins_implementation(ctx: object, implementation: str | None = None) -> None:
     """Answer the pin read-back with a config the phase would have written."""
-    impl = ctx.profile.impl_class if implementation is None else implementation  # type: ignore[attr-defined]
+    impl = ctx.model_spec.impl_class if implementation is None else implementation  # type: ignore[attr-defined]
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[-1] == "cat /data/valetudo_config.json":
@@ -1427,7 +1427,7 @@ def test_implementation_pin_is_verified_on_the_robot_not_asked_about(
     _pins_implementation(ctx)
 
     assert B._confirm_pinned_implementation(ctx) == {
-        "implementation_pinned": ctx.profile.impl_class,
+        "implementation_pinned": ctx.model_spec.impl_class,
         "pin_derived_from_live_model": False,
     }
 
@@ -1453,13 +1453,13 @@ def test_the_pin_is_checked_against_the_live_model_when_the_robot_reports_one(
             return Result(argv, 0, f"model={_LIVE_MODEL}\n", "")
         if argv[-1] == "cat /data/valetudo_config.json":
             return Result(
-                argv, 0, json.dumps({"robot": {"implementation": ctx.profile.impl_class}}), "",
+                argv, 0, json.dumps({"robot": {"implementation": ctx.model_spec.impl_class}}), "",
             )
         return Result(argv, 0, "", "")
 
     ctx.runner.responder = responder  # type: ignore[attr-defined]
 
-    assert impl_class_for_model(_LIVE_MODEL) != ctx.profile.impl_class
+    assert impl_class_for_model(_LIVE_MODEL) != ctx.model_spec.impl_class
     with pytest.raises(Die, match="Bench check failed: the robot's config pins"):
         B._confirm_pinned_implementation(ctx)
 
@@ -4010,7 +4010,7 @@ def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
     selected: list[str] = []
 
     def refuse(inner: object, **_kwargs: object) -> None:
-        selected.append(inner.profile.key)  # type: ignore[attr-defined]
+        selected.append(inner.model_spec.key)  # type: ignore[attr-defined]
         raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
                   "model. A legacy, missing, duplicate, or mismatched model authorization "
                   "cannot permit a hardware write; run 'dreame-valetudo recon --force' for "
@@ -4027,7 +4027,7 @@ def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
     # model_key), and the robot's own binding on disk must survive the probe untouched.
     assert len(selected) == 1
     assert selected[0] != "x40-ultra"
-    assert B.load_profile(selected[0]).dram == B.load_profile("x40-ultra").dram
+    assert B.load_model_spec(selected[0]).dram == B.load_model_spec("x40-ultra").dram
     assert ctx.need_robot().state_get("model_key") == "x40-ultra"
     # The refused probe must not rebind the campaign to the deliberately wrong model.
     assert _report(ctx)["model_key"] == "x40-ultra"
@@ -4073,8 +4073,8 @@ def test_the_probe_model_is_a_same_dram_fastboot_model(make_ctx: CtxFactory) -> 
     for bound in ("x40-ultra", "d10s-plus"):
         probe = B._confusable_model(bound)
         assert probe != bound
-        assert B.load_profile(probe).method == "fastboot"
-        assert B.load_profile(probe).dram == B.load_profile(bound).dram
+        assert B.load_model_spec(probe).method == "fastboot"
+        assert B.load_model_spec(probe).dram == B.load_model_spec(bound).dram
 
 
 def test_wrong_model_probe_refuses_a_robot_whose_recon_is_not_bound_at_all(
@@ -4085,7 +4085,7 @@ def test_wrong_model_probe_refuses_a_robot_whose_recon_is_not_bound_at_all(
     ctx = make_ctx(robot_name="x40")
     _bound_campaign_robot(ctx, monkeypatch)
     ctx.need_robot().state_set("recon", "backup=obtained")  # completed, but bound to nothing
-    ctx.profile = B.load_profile("x30-ultra")
+    ctx.model_spec = B.load_model_spec("x30-ultra")
     called: list[bool] = []
     monkeypatch.setattr(B, "root", lambda *_a, **_k: called.append(True))
 
@@ -4108,7 +4108,7 @@ def test_the_wrong_model_scenario_matches_what_root_actually_says(
     robot.state_set("recon", "model=x40-ultra backup=obtained")
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
-    ctx.profile = B.load_profile("x30-ultra")
+    ctx.model_spec = B.load_model_spec("x30-ultra")
 
     with pytest.raises(Die) as raised:
         production_root(ctx)
@@ -4133,14 +4133,14 @@ def test_the_probe_never_lands_on_the_recon_authorized_model(
     bound = B._recon_bound_model(robot)
     assert bound == "x40-ultra"
     # Simulate `model` having changed the saved model AFTER recon: selection would then load this
-    # profile while the recon marker still authorizes `bound`.
+    # model_spec while the recon marker still authorizes `bound`.
     diverged = B._confusable_model(bound)
     robot.state_set("model_key", diverged)
-    ctx.profile = B.load_profile(diverged)
+    ctx.model_spec = B.load_model_spec(diverged)
     seen: list[str] = []
 
     def refuse(inner: object, **_kwargs: object) -> None:
-        seen.append(inner.profile.key)  # type: ignore[attr-defined]
+        seen.append(inner.model_spec.key)  # type: ignore[attr-defined]
         raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
                   "model; run 'dreame-valetudo recon --force' for this model first.")
 
@@ -4494,7 +4494,7 @@ def test_the_wrong_key_scenario_is_not_started_without_its_wrong_key(
 
 
 def test_the_wrong_model_probe_is_not_advertised_as_needing_a_second_robot() -> None:
-    """It derives a confusable model from the recon binding and swaps only this process's profile.
+    """It derives a confusable model from the recon binding and swaps only this process's model_spec.
 
     Calling that SPECIAL retires a safety-gate test from every campaign for a requirement it does
     not have.
@@ -4570,10 +4570,10 @@ def test_a_deliberately_wrong_model_does_not_outlive_its_scenario(
     """
     ctx = make_ctx(robot_name="bench")
     ctx.interactive = False
-    before = ctx.profile
+    before = ctx.model_spec
 
     def swap(_c: object, scenario: B.Scenario, *_a: object, **_k: object) -> int:
-        ctx.profile = B.load_profile("d10s-plus")
+        ctx.model_spec = B.load_model_spec("d10s-plus")
         return 0
 
     monkeypatch.setattr(B, "_run", swap)
@@ -4581,11 +4581,11 @@ def test_a_deliberately_wrong_model_does_not_outlive_its_scenario(
     monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
     scenarios = tuple(s for s in B.SCENARIOS if s.key == "fel-not-entered")
     B._campaign(
-        ctx, "conductor-profile", None, scenarios,  # type: ignore[arg-type]
+        ctx, "conductor-model_spec", None, scenarios,  # type: ignore[arg-type]
         auto_fn=_noop_auto, allow_destructive=False,
     )
 
-    assert ctx.profile is before
+    assert ctx.model_spec is before
 
 
 def test_rekey_is_not_treated_as_a_lifecycle_write() -> None:

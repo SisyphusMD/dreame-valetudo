@@ -24,7 +24,7 @@ from .. import manifest
 from ..console import Die, UserAbort, abort, die, warn_if_low_disk
 from ..constants import ROBOT_AP_IP
 from ..context import Context
-from ..profiles import known_model_key_for_code, load_profile
+from ..models import known_model_key_for_code, load_model_spec
 from ..session import records_step
 from ..ssh import (
     AP_VPN_HINT,
@@ -245,7 +245,7 @@ def _archived_key_is_recoverable(
 ) -> bool:
     """Whether an empty archived factory key still leaves the miio key recoverable.
 
-    A profile flagged ``key_in_secure_storage`` keeps the only copy outside key.txt, so its backup
+    A model_spec flagged ``key_in_secure_storage`` keeps the only copy outside key.txt, so its backup
     is complete only with the preserved sidecar. Everywhere else an empty key is reported at
     capture but never condemns an otherwise complete backup — most models have never been on a
     bench, and an unexpected empty key is not evidence that the rest of the archive is wrong.
@@ -258,7 +258,7 @@ def _archived_key_is_recoverable(
     if not isinstance(model_key, str):
         return True
     try:
-        return load_profile(model_key).key_in_secure_storage == "no"
+        return load_model_spec(model_key).key_in_secure_storage == "no"
     except ValueError:
         return True
 
@@ -490,7 +490,7 @@ def _bind_live_robot(ctx: Context, identity: dict[str, str]) -> None:
     # a mistake here binds the wrong one for good. Two robots of one model are indistinguishable by
     # model alone, so the recorded serial has to carry it — the config that used to stand here was
     # never readable over the AP at all.
-    if live_cpuid is None and ctx.profile.method != "fastboot":
+    if live_cpuid is None and ctx.model_spec.method != "fastboot":
         # UART robots are adopted through a guided install that captures no identity of their own,
         # so live model stays their strongest automatic binding, exactly as before. A fastboot
         # workspace has no such excuse and falls through to the checks below.
@@ -530,7 +530,7 @@ def _pin_live_robot(ctx: Context, identity: dict[str, str]) -> None:
 
 
 def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]:
-    """Read only the non-secret identity fields needed to bind a backup to the selected profile."""
+    """Read only the non-secret identity fields needed to bind a backup to the selected model_spec."""
     result = robot_ssh(
         ctx.runner,
         _TARGET,
@@ -562,22 +562,22 @@ def _live_robot_identity(ctx: Context, key: str | Path | None) -> dict[str, str]
         ctx.console.warn("This first-root robot has no live model= value yet, so its AP cannot be "
                          "matched automatically. Check the physical label before continuing.")
         if not ctx.console.confirm(
-            f"Does the label on the connected robot confirm {ctx.profile.model} "
-            f"({ctx.profile.model_code})?"
+            f"Does the label on the connected robot confirm {ctx.model_spec.model} "
+            f"({ctx.model_spec.model_code})?"
         ):
             abort("The connected robot was not physically confirmed as the selected model. "
                   "No backup or install was attempted.")
         identity["model_verification"] = "physical-label"
-        ctx.console.info(f"Physical model confirmed: {ctx.profile.model} "
-                         f"({ctx.profile.model_code}).")
+        ctx.console.info(f"Physical model confirmed: {ctx.model_spec.model} "
+                         f"({ctx.model_spec.model_code}).")
         _pin_live_robot(ctx, identity)
         return identity
     exact_key = known_model_key_for_code(reported)
-    if exact_key != ctx.profile.key:
-        die(f"SAFETY STOP: the selected robot is {ctx.profile.model} "
-            f"({ctx.profile.model_code}), but the connected robot reports {reported}. Join the "
+    if exact_key != ctx.model_spec.key:
+        die(f"SAFETY STOP: the selected robot is {ctx.model_spec.model} "
+            f"({ctx.model_spec.model_code}), but the connected robot reports {reported}. Join the "
             "selected robot's Wi-Fi AP and re-run.")
-    ctx.console.info(f"Live model verified: {reported} matches {ctx.profile.model}.")
+    ctx.console.info(f"Live model verified: {reported} matches {ctx.model_spec.model}.")
     identity["model_verification"] = "device.conf"
     _pin_live_robot(ctx, identity)
     return identity
@@ -594,7 +594,7 @@ def _capture_factory_backup(
     """Capture, validate, and manifest a backup before atomically publishing its directory."""
     robot = ctx.need_robot()
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    final = ctx.backups_dir / f"{robot_tag(ctx.profile.model_code, cfg)}-{ts}"
+    final = ctx.backups_dir / f"{robot_tag(ctx.model_spec.model_code, cfg)}-{ts}"
     ctx.backups_dir.mkdir(parents=True, exist_ok=True)
     ctx.backups_dir.chmod(0o700)
     with staged_publish(
@@ -639,8 +639,8 @@ def _capture_factory_backup(
             if _preserve_secure_storage_key(ctx, key, staging) is not None:
                 ctx.console.info(f"  {_SECURE_STORAGE_KEY_FILE} — the miio key, which this unit "
                                  "keeps only in secure storage")
-            elif ctx.profile.key_in_secure_storage == "yes":
-                ctx.console.warn(f"  {ctx.profile.model} keeps the miio key in secure storage, but "
+            elif ctx.model_spec.key_in_secure_storage == "yes":
+                ctx.console.warn(f"  {ctx.model_spec.model} keeps the miio key in secure storage, but "
                                  "secure storage returned none — this backup has no copy of it.")
             else:
                 ctx.console.warn("  the factory key.txt is empty and secure storage returned no "
@@ -672,9 +672,9 @@ def _capture_factory_backup(
             staging,
             {
                 "created": ts,
-                "model": ctx.profile.model,
-                "model_key": ctx.profile.key,
-                "model_code": ctx.profile.model_code,
+                "model": ctx.model_spec.model,
+                "model_key": ctx.model_spec.key,
+                "model_code": ctx.model_spec.model_code,
                 "config": cfg,
                 "robot": robot.display_name(),
                 "live_model": live_identity.get("model"),
@@ -925,15 +925,15 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
         "Hold the two OUTER buttons AGAIN to re-enable the robot's Wi-Fi AP.",
         f"Rejoin the robot's Wi-Fi on this {ctx.host}, then run:  dreame-valetudo ui",
     ])
-    if ctx.profile.autodetect_ok == "yes":
-        ctx.console.detail(f"{ctx.profile.model} is recognized by Valetudo's autodetect, so it "
+    if ctx.model_spec.autodetect_ok == "yes":
+        ctx.console.detail(f"{ctx.model_spec.model} is recognized by Valetudo's autodetect, so it "
                            "should serve on the first boot. Not loading? -> dreame-valetudo "
                            "diagnose")
     else:
-        ctx.console.info(f"Heads-up: Valetudo's autodetect can miss {ctx.profile.model} — if the "
+        ctx.console.info(f"Heads-up: Valetudo's autodetect can miss {ctx.model_spec.model} — if the "
                          "UI stays blank, run:  dreame-valetudo fix-impl")
-    if ctx.profile.key.startswith("l10s-pro-ultra-heat"):
-        ctx.console.warn(f"{ctx.profile.model} note: if it later won't DOCK or you can't select "
+    if ctx.model_spec.key.startswith("l10s-pro-ultra-heat"):
+        ctx.console.warn(f"{ctx.model_spec.model} note: if it later won't DOCK or you can't select "
                          "cleaning MODES, that's the known MCU/firmware mismatch — build a "
                          "'manual installation' image on the dustbuilder and install it over SSH "
                          "to resync the MCU.")
@@ -957,7 +957,7 @@ def update_valetudo(ctx: Context, key: str | Path | None = None) -> bool:
     _prepare_valetudo_binary(ctx, retry_command="dreame-valetudo update-valetudo")
     check_external_tools(ctx, ("curl",), required=True)
 
-    ctx.console.say(f"Update Valetudo on {ctx.profile.model}")
+    ctx.console.say(f"Update Valetudo on {ctx.model_spec.model}")
     ctx.console.info("The verified binary is ready. The remaining work uses the robot's own "
                      f"Wi-Fi AP at {ROBOT_AP_IP}.")
     ctx.console.action("Hold the two OUTER buttons until the robot starts its Wi-Fi AP, then join "

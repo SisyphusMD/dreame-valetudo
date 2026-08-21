@@ -58,7 +58,7 @@ def test_fetch_verifies_and_reaches_cache_ready(
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(
-        fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: hashlib.sha256(b"s1").hexdigest()}
+        fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: hashlib.sha256(b"s1").hexdigest()}
     )
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -83,7 +83,7 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     stage_dist(ctx, stage1_sha256=digest)
-    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: "deadbeef" * 8})
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -154,7 +154,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -168,7 +168,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert not any(c[0] in {"git", "make", "tar"} for c in calls)
-    assert not any(ctx.profile.stage1_url in c for c in calls)
+    assert not any(ctx.model_spec.stage1_url in c for c in calls)
 
 
 def test_fetch_valetudo_reuses_a_matching_published_digest_offline(

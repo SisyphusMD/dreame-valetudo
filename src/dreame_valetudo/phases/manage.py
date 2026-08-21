@@ -11,7 +11,7 @@ from .. import manifest
 from ..console import die
 from ..context import Context
 from ..installs import find_installs
-from ..profiles import known_model_key_for_dir
+from ..models import known_model_key_for_dir
 from ..workspace import Robot, slugify
 from .misc import _summary
 

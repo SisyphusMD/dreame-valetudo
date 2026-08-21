@@ -32,6 +32,7 @@ from .console import Answer, Die, UserAbort, die
 from .constants import ADOPTED_ROOT, RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, ROBOT_AP_IP
 from .context import Context
 from .log import scrub
+from .models import SUPPORTED_MODELS, load_model_spec
 from .phases.doctor import _sunxi_ready, doctor
 from .phases.fetch import fetch, fetch_stage1, stage1_ready
 from .phases.fixes import diagnose, fix_impl, resolved_impl_class
@@ -50,7 +51,6 @@ from .phases.rekey import rekey
 from .phases.restore import restore, stock_restore_kit_valid
 from .phases.root import root
 from .platform_env import NO_BROWSER
-from .profiles import SUPPORTED_MODELS, load_profile
 from .recovery import (
     PROVENANCE_FILE,
     RECOVERY_REFRESH_FILE,
@@ -705,7 +705,7 @@ def _confirm_pinned_implementation(ctx: Context) -> dict[str, object]:
         )
     model, expected = resolved_impl_class(ctx, key)
     if not model:
-        expected = ctx.profile.impl_class
+        expected = ctx.model_spec.impl_class
     elif expected is None:
         raise Die(f"Bench check failed: the robot reports model '{model}', which has no known "
                   "Valetudo implementation to pin.")
@@ -879,7 +879,7 @@ def validate_bench_args(ctx: Context, args: Sequence[str]) -> bool:
                 if not isinstance(recorded, str):
                     raise Die("Run stock-recon with the correct model before the wrong-model probe.")
             else:
-                _bind_report_model(report, ctx.profile.key)
+                _bind_report_model(report, ctx.model_spec.key)
         return scenario.key != "host-smoke"
     if action == "record":
         if len(positional) != 1 or positional[0] not in {"pass", "fail"}:
@@ -1462,10 +1462,10 @@ def _validate_report(report: Mapping[str, object], path: Path, campaign: str) ->
         if not isinstance(model, str):
             die("Hardware-bench report has an invalid model binding.")
         try:
-            profile = load_profile(model)
+            model_spec = load_model_spec(model)
         except ValueError:
             die("Hardware-bench report has an unknown model binding.")
-        if profile.method != "fastboot":
+        if model_spec.method != "fastboot":
             die("Hardware-bench report is bound to an unsupported UART model.")
     results = report.get("results")
     waivers = report.get("waivers")
@@ -1638,15 +1638,15 @@ def _bind_report_robot_after_recon(
 def _bind_report_model(report: dict[str, object], model_key: str | None) -> None:
     if model_key is None:
         return
-    profile = load_profile(model_key)
-    if profile.method != "fastboot":
+    model_spec = load_model_spec(model_key)
+    if model_spec.method != "fastboot":
         die("This hardware qualification runner currently covers fastboot models only.")
     recorded = report.get("model_key")
     if recorded is None:
-        report["model_key"] = profile.key
-    elif recorded != profile.key:
+        report["model_key"] = model_spec.key
+    elif recorded != model_spec.key:
         die(f"This campaign is bound to model {recorded}; use a separate campaign for "
-            f"{profile.key}.")
+            f"{model_spec.key}.")
 
 
 def _robot_workspace(ctx: Context, name: object, message: str) -> Robot:
@@ -1773,7 +1773,7 @@ def _backup_evidence(
     model_key = robot.state_get("model_key") if robot is not None else None
     partial_prefix: str | None = None
     if config is not None and model_key is not None:
-        partial_prefix = f".{robot_tag(load_profile(model_key).model_code, config)}-"
+        partial_prefix = f".{robot_tag(load_model_spec(model_key).model_code, config)}-"
     for directory in sorted(root.iterdir()):
         if directory.name.endswith(".partial"):
             if partial_prefix is not None and directory.name.startswith(partial_prefix):
@@ -2599,10 +2599,10 @@ def _confusable_model(bound: str) -> str:
     Same DRAM matters: a different-DRAM choice is caught earlier and by other means, so it would
     prove a weaker gate than the one this scenario exists for.
     """
-    want = load_profile(bound).dram
+    want = load_model_spec(bound).dram
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        if key != bound and profile.method == "fastboot" and profile.dram == want:
+        model_spec = load_model_spec(key)
+        if key != bound and model_spec.method == "fastboot" and model_spec.dram == want:
             return key
     raise Die(f"No other fastboot model shares {bound}'s DRAM type to probe with.")
 
@@ -2687,7 +2687,7 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         # The operator cannot make this mistake on demand: selection loads the workspace's saved
         # model_key and ignores DREAME_MODEL, so a probe that asked them to pick the wrong model
         # could never start. Swap to a confusable model here, after selection, touching only this
-        # process's profile — the workspace's own binding on disk is left exactly as it was.
+        # process's model_spec — the workspace's own binding on disk is left exactly as it was.
         # Derive the probe from the model the completed RECON is bound to, never from the current
         # selection. `model` can change a workspace's saved model after recon, and a probe derived
         # from that could land back on the recon-bound model — root's authorization would match and
@@ -2696,8 +2696,8 @@ def _perform(scenario: Scenario, ctx: Context, auto_fn: AutoFn) -> dict[str, obj
         probe = _confusable_model(bound)
         if probe == bound:
             raise Die("Refusing to probe with the recon-authorized model; that cannot stop.")
-        ctx.console.info(f"Probing with the deliberately wrong model: {load_profile(probe).model}.")
-        ctx.profile = load_profile(probe)
+        ctx.console.info(f"Probing with the deliberately wrong model: {load_model_spec(probe).model}.")
+        ctx.model_spec = load_model_spec(probe)
         # force=True, because the gate under test sits BELOW the guards that refuse a robot which
         # has already been written: an adopted or rooted robot returns from root() before the model
         # is ever compared, so the probe certified nothing and recorded "completed normally instead
@@ -2970,7 +2970,7 @@ def _run(
             f"Scenario '{scenario.key}' requires operator-controlled timing or another installed "
             f"version. Follow {HARDWARE_GUIDE_URL}, then use 'bench record'."
         )
-    if scenario.key != "host-smoke" and ctx.profile.method != "fastboot":
+    if scenario.key != "host-smoke" and ctx.model_spec.method != "fastboot":
         raise Die("This hardware qualification runner currently covers fastboot models only.")
     path, report = _load_report(ctx, campaign)
     if scenario.key in _USB_STACK_SCENARIOS:
@@ -2990,7 +2990,7 @@ def _run(
             raise Die("wrong-model-root needs this robot's completed recon bound to "
                       f"{recorded}; run stock-recon for the correct model first.")
     else:
-        _bind_report_model(report, ctx.profile.key if scenario.key != "host-smoke" else None)
+        _bind_report_model(report, ctx.model_spec.key if scenario.key != "host-smoke" else None)
 
     def take_snapshot(robot: Robot | None, *, finished: bool) -> Snapshot:
         return _snapshot_for_robot(
@@ -3658,7 +3658,7 @@ def _campaign(
         # Same binding _plan performs, and for the same reason: results already in this campaign
         # must be refused unless they belong to the robot and model selected now. Skipping it would
         # let a finished campaign report PASS for every scenario against a robot never touched.
-        _bind_report_model(report, ctx.profile.key)
+        _bind_report_model(report, ctx.model_spec.key)
         _bind_report_robot(report, _robot_slot(ctx, campaign))
     _write_report(path, report)
     ctx.console.phase(f"Hardware campaign: {campaign}"
@@ -3910,10 +3910,10 @@ class _CampaignState:
             ctx.console.ask("Press Enter when you are ready to start this scenario.")
         self.surface = surface
         self.attempted += 1
-        # wrong-model-root deliberately swaps in a confusable profile to prove the flash gate
+        # wrong-model-root deliberately swaps in a confusable model_spec to prove the flash gate
         # catches it. That was self-limiting while every scenario was its own process; sharing one
         # context across a session leaves the wrong model selected for everything after it.
-        selected = ctx.profile
+        selected = ctx.model_spec
         try:
             _run(
                 ctx, scenario, self.campaign,
@@ -3928,7 +3928,7 @@ class _CampaignState:
         else:
             self.ran += 1
         finally:
-            ctx.profile = selected
+            ctx.model_spec = selected
             self.invalidate()
         return "ran"
 
@@ -3962,7 +3962,7 @@ def _plan(
 ) -> int:
     path, report = _load_report(ctx, campaign)
     if any(scenario.key != "host-smoke" for scenario in scenarios):
-        _bind_report_model(report, ctx.profile.key)
+        _bind_report_model(report, ctx.model_spec.key)
         _bind_report_robot(report, _robot_slot(ctx, campaign))
     _write_report(path, report)
     latest, waived = _recorded(report)

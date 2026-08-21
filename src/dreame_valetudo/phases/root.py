@@ -136,7 +136,7 @@ def _has_recovery_backup(ctx: Context) -> bool:
 def _check_staged_integrity(ctx: Context) -> None:
     robot = ctx.need_robot()
     marker = robot.state_get("image") or ""
-    if f"model={ctx.profile.key}" not in marker:
+    if f"model={ctx.model_spec.key}" not in marker:
         die("SAFETY STOP: the staged image is not recorded for the currently selected model. "
             "Re-run 'image --force' before flashing.")
     path = robot.fw_dir / STAGED_IMAGE_MANIFEST
@@ -146,7 +146,7 @@ def _check_staged_integrity(ctx: Context) -> None:
     except (OSError, ValueError, KeyError, TypeError):
         die("SAFETY STOP: the staged image has no readable integrity record. Re-run "
             "'image --force' before flashing.")
-    if data.get("model_key") != ctx.profile.key or not isinstance(files, dict):
+    if data.get("model_key") != ctx.model_spec.key or not isinstance(files, dict):
         die("SAFETY STOP: the staged image integrity record belongs to another model. Re-run "
             "'image --force' before flashing.")
     for name in FEL_IMAGE_FILES:
@@ -198,7 +198,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     recon_state = robot.state_get("recon") or ""
     recon_models = [field.removeprefix("model=") for field in recon_state.split()
                     if field.startswith("model=")]
-    if len(recon_models) != 1 or recon_models[0] != ctx.profile.key:
+    if len(recon_models) != 1 or recon_models[0] != ctx.model_spec.key:
         die("SAFETY STOP: the completed recon is not bound to the currently selected model. A "
             "legacy, missing, duplicate, or mismatched model authorization cannot permit a "
             "hardware write; run 'dreame-valetudo recon --force' for this model first.")
@@ -268,7 +268,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     ctx.console.info("This is the point of no return: flashing replaces the firmware and can, in "
                      "the worst case, permanently brick the robot. Keep your recon backup.")
     model_hazard_check(ctx)
-    if not ctx.console.confirm(f"Flash {ctx.profile.model} now? (you're accepting the risk of "
+    if not ctx.console.confirm(f"Flash {ctx.model_spec.model} now? (you're accepting the risk of "
                                "bricking)"):
         abort("Aborted — nothing was written to the robot.")
 
@@ -277,7 +277,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     if not wait_for_fel(ctx):
         die("No FEL device — aborting before any write.")
     ctx.fel.fel_boot_fastboot(
-        robot.fw_dir, "fsbl.bin", "payload.bin", ctx.profile.fsbl_addr, ctx.profile.payload_addr
+        robot.fw_dir, "fsbl.bin", "payload.bin", ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr
     )
 
     # SAFETY: the connected robot must be the one the recon identity (and so the staged image,
@@ -308,7 +308,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     with _mask_interrupts():
         # Written before the first device mutation. If the host dies anywhere below, the next run
         # stops instead of blindly repeating a possibly complete or partial flash.
-        robot.state_set("flash-attempt", f"model={ctx.profile.key} config={live_cfg}")
+        robot.state_set("flash-attempt", f"model={ctx.model_spec.key} config={live_cfg}")
         robot.state_clear("restore-attempt")
         robot.state_clear("valetudo")
         # A forced reflash supersedes the prior success. Clear it only after the durable attempt

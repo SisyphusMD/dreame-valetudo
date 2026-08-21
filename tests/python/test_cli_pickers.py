@@ -14,13 +14,13 @@ from dreame_valetudo.workspace import Robot
 def test_select_model_from_env_skips_the_picker(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(env={"DREAME_MODEL": "d10s-plus"})
     select_model(ctx)
-    assert ctx.profile.key == "d10s-plus"
+    assert ctx.model_spec.key == "d10s-plus"
 
 
 def test_select_model_picks_by_menu_number(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["1"], confirms=[])  # first entry is x40-ultra
     select_model(ctx)
-    assert ctx.profile.key == "x40-ultra"
+    assert ctx.model_spec.key == "x40-ultra"
 
 
 def test_name_and_model_are_saved_before_recon(make_ctx: CtxFactory) -> None:
@@ -71,7 +71,7 @@ def test_robot_picker_can_resume_a_known_robot_beside_an_unknown_one(
     select_robot(ctx)
 
     assert ctx.robot == known
-    assert ctx.profile.key == "d10s-plus"
+    assert ctx.model_spec.key == "d10s-plus"
     assert "unknown model 'x50-ultra'" in ctx.console.text()  # type: ignore[attr-defined]
 
 
@@ -98,14 +98,14 @@ def test_back_from_model_returns_to_robot_picker(make_ctx: CtxFactory) -> None:
     Robot(ctx.ws.robots_dir / "prior").state_dir.mkdir(parents=True)
     select_robot(ctx)
     assert ctx.robot is not None and ctx.robot.work.name == "fresh"
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
 
 
 def test_first_robot_back_restarts_selection_without_using_default(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["abandoned", "b", "chosen", "9"])
     select_robot(ctx)
     assert ctx.robot is not None and ctx.robot.work.name == "chosen"
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
     assert not (ctx.ws.robots_dir / "abandoned").exists()
 
 
@@ -171,7 +171,7 @@ def test_model_command_disarms_firmware_staged_for_the_previous_model(
 
     _dispatch("model", [], ctx)
 
-    assert ctx.profile.key == "x40-ultra"
+    assert ctx.model_spec.key == "x40-ultra"
     assert robot.state_get("model_key") == "x40-ultra"
     assert not robot.state_has("image")
     assert "model=d10s-pro" in "\n".join(robot.image_provenance())
