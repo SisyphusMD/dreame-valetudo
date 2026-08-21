@@ -53,9 +53,23 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Vendored from project-standard. Shared files carry no project-specific noqa codes (a code the
+# sibling does not enable would fail RUF100 there), so the exemption lives with the rule set that
+# needs it. The lazy PyInstaller import is deliberate: it is a release-build dependency only.
+"packaging/check-glibc-floor.py" = ["PLC0415"]
 # False positive: ruff can't see that console.die is NoReturn across the module boundary.
 "src/dreame_valetudo/fastboot.py" = ["RET503"]
 "src/dreame_valetudo/phases/manage.py" = ["RET503"]
+
+[tool.coverage.run]
+source = ["src/dreame_valetudo", "libexec"]
+branch = true
+
+[tool.coverage.report]
+# Without this, --cov-fail-under compares the total rounded to whole percent, so 94.6% passes a
+# 95% floor. Ported from whiskerless, which has had coverage since before this project had any.
+precision = 2
+exclude_also = ["if TYPE_CHECKING:", "@overload", "raise NotImplementedError"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -76,4 +90,4 @@ ignore_missing_imports = true
 # disagreement means contributors lint with a different binary than the gate. A floor is
 # permanently satisfied, which leaves pep621 nothing to raise and no way for the lockfile to move
 # in the same PR as the annotated workflow literals.
-dev = ["pytest==9.1.1", "ruff==0.16.3", "mypy==2.3.1"]
+dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "ruff==0.16.3", "mypy==2.3.1"]

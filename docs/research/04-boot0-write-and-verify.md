@@ -49,7 +49,7 @@ rest and needs no on-device key.
 
 The keystream is recovered from the dump's **own `0x00` fill regions** (where plaintext is zero, the
 ciphertext *is* the keystream) and then XORed back out, making the real boot0 bytes at `0x2000` and
-`0x20000` readable. This is done by **`dreame_valetudo/dust_decrypt.py`**, sister tooling already in
+`0x20000` readable. This is done by **`src/dreame_valetudo/dust_decrypt.py`**, sister tooling already in
 this repository (`recover_keystream()` + `xor_stream()`); `run_chain.py` imports it directly.
 
 The flow after a boot0 write, before any reboot:

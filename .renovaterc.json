@@ -20,7 +20,7 @@
     {
       "customType": "regex",
       "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, and workflow shell blocks (pypi / github-releases / github-tags).",
-      "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "managerFilePatterns": ["/^dreame-valetudo$/", "/src/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>pypi|github-releases|github-tags) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
       ]
@@ -39,7 +39,7 @@
     {
       "customType": "regex",
       "description": "sunxi-tools commit pins (Python constants, legacy script, both build workflows), tracked on the master branch.",
-      "managerFilePatterns": ["/^dreame-valetudo$/", "/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "managerFilePatterns": ["/^dreame-valetudo$/", "/src/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>git-refs) depName=(?<depName>\\S+)\\s+[^\\n]*?(?<currentDigest>[0-9a-f]{40})"
       ],
@@ -47,7 +47,7 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the two files that carry such a pin outside a workflow: packaging/shellcheck-all.sh, and package-smoke.Dockerfile's base image, which has to move with the qualification image ci.yml pins.",
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/shellcheck-all.sh, and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins.",
       "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
@@ -61,7 +61,7 @@
       "addLabels": ["docker"]
     },
     {
-      "description": "package-smoke.Dockerfile's base image is claimed by the annotation-driven regex manager so it stays one dependency with ci.yml's qualification pin. Left enabled, the built-in dockerfile manager would also claim it as a separate `ubuntu` dep that updates in its own PR — and since publish.yml is the only thing that builds this file, that PR would automerge on a CI run that never touched it.",
+      "description": "The smoke Dockerfiles' base images are claimed by the annotation-driven regex manager so they stay one dependency with ci.yml's qualification pin. install-smoke.Dockerfile carries the synthetic depNames (debian-13-current, debian-12-floor, ...) whose allowedVersions rules pin the compatibility floors; the built-in manager would see a plain `debian` instead and let those floors drift. Left enabled, the built-in dockerfile manager would also claim it as a separate `ubuntu` dep that updates in its own PR — and since publish.yml is the only thing that builds this file, that PR would automerge on a CI run that never touched it.",
       "matchManagers": ["dockerfile"],
       "matchFileNames": ["packaging/package-smoke.Dockerfile", "packaging/install-smoke.Dockerfile"],
       "enabled": false
@@ -164,7 +164,7 @@
     {
       "description": "sunxi-tools is the FEL transport compiled into every release and used against the robot's boot ROM. The pin IS the commit Renovate writes, so nothing else has to move with it, and every build channel compiles it before the gate goes green.",
       "matchDepNames": ["https://github.com/linux-sunxi/sunxi-tools"],
-      "prBodyNotes": ["Every build channel reads this SHA from `dreame_valetudo/constants.py`."]
+      "prBodyNotes": ["Every build channel reads this SHA from `src/dreame_valetudo/constants.py`."]
     },
     {
       "description": "The macOS package compiles and signs tmux from its release tarball, whose digest has no datasource. `packaging/refresh-pins.sh` recomputes it from the bumped version as a postUpgradeTask.",
@@ -186,6 +186,7 @@
     },
     {
       "description": "pyusb is the USB transport the fastboot client speaks to the robot. CI proves only that it imports and enumerates: the unit tests stub `usb.core`/`usb.util` into `sys.modules`, and the build-job client smoke stops at `find_device()` with no robot attached, leaving every descriptor, endpoint and bulk-transfer call unexecuted. Green CI therefore says nothing about the path that writes to flash, so a bump is read by a human.",
+      "automerge": false,
       "matchDepNames": ["pyusb"],
       "prBodyNotes": ["CI cannot reach the flashing path, so green here does not cover the transport. The bench campaign is what exercises `dreame-fastboot` against real hardware."]
     },
@@ -202,6 +203,8 @@
     {
       "description": "These images define the shipped glibc ABI, so a bump stays hand-reviewed whatever the update type — the blast radius is every Linux package. The embedded-ELF check is NOT the manual part: packaging/check-glibc-floor.py runs inside deb.Dockerfile, which CI builds for x86_64 and publish builds for both arches, so a binary needing a symbol above packaging/glibc-floor.txt fails the build (at PR time for x86_64, at release for aarch64). What the human adds is judgement about the toolchain change itself, which no check encodes. Pinned to upstream's dated tags rather than `latest`: the digest alone already froze the build, so `latest` bought nothing and cost the reviewer the version needed to judge the bump at all. The regex versioning also confines candidates to dated tags, so `latest` is never offered as an update. Grouped because the two arches are one upstream release and move to the same dated tag together: reviewing them apart shows the reviewer half the change, and a toolchain skew BETWEEN the arches is itself the risk this hand-review exists to catch. Splitting them also doubled the rebase churn, since every merge rebases the other open PR and restarts its checks.",
       "matchDatasources": ["docker"],
+      "automerge": false,
+      "prBodyNotes": ["Held for hand review: the glibc floor check runs in CI, but no check encodes judgement about the toolchain change itself, and a skew between the two arches is the risk this review exists to catch."],
       "matchDepNames": ["quay.io/pypa/manylinux_2_28_x86_64", "quay.io/pypa/manylinux_2_28_aarch64"],
       "groupName": "manylinux builders",
       "versioning": "regex:^(?<major>\\d{4})\\.(?<minor>\\d{2})\\.(?<patch>\\d{2})-(?<build>\\d+)$"
