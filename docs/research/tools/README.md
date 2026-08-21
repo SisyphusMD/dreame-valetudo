@@ -11,7 +11,7 @@ physical unit on the bench; the published examples intentionally contain no reus
 The full-eMMC puller stops on the first missing or invalid stream and writes private files only.
 
 They depend on **sister tooling already in this repository**:
-- `dreame_valetudo/dust_decrypt.py` — recovers the transport keystream and de-obfuscates `upload`
+- `src/dreame_valetudo/dust_decrypt.py` — recovers the transport keystream and de-obfuscates `upload`
   dumps (chapter 04).
 - `libexec/fastboot-libusb.py` — the libusb fastboot client that binds the Dreame gadget (chapter 02).
 

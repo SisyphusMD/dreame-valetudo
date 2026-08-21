@@ -3,7 +3,7 @@
 **No firmware, keys, or images are stored in this repository.** This manifest identifies every binary
 artifact produced by the research by SHA-256, and says how to regenerate or re-extract each one from
 tooling. The reproduction tooling is in [`../tools/`](../tools/); it leans on sister tooling shipped
-in this repo — `dreame_valetudo/dust_decrypt.py` (the read-back de-obfuscator) and
+in this repo — `src/dreame_valetudo/dust_decrypt.py` (the read-back de-obfuscator) and
 `libexec/fastboot-libusb.py` (the fastboot client).
 
 All hashes are SHA-256 over the exact bytes described. For which of these are universal vs
