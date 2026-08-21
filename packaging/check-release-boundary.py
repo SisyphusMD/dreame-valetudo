@@ -6,7 +6,7 @@ cutters call this check with the version they are about to tag, so those changes
 become a pre-0.4 wheel, source archive, frozen binary, native package, or release note.
 
 Temporary by design: versions >= 0.4.0 pass unconditionally, so cutting 0.4.0 needs no cleanup —
-and once 0.4.0 has shipped, delete this file, tests/integration/release-boundary.sh, and their
+and once 0.4.0 has shipped, delete this file, tests/release/release-boundary.sh, and their
 workflow invocations outright.
 """
 

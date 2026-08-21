@@ -24,7 +24,7 @@ priority: optional
 maintainer: "Cody Bryant <SisyphusMD@users.noreply.github.com>"
 vendor: SisyphusMD
 homepage: https://github.com/SisyphusMD/dreame-valetudo
-license: AGPL-3.0-or-later
+license: GPL-3.0-or-later
 description: |
   Guided, idempotent tool to root supported Dreame robot vacuums (X40 Ultra, X30 Ultra,
   L10s Pro Ultra Heat, and the rest of the MR813 gen3 family) and install Valetudo, the local
@@ -84,3 +84,20 @@ overrides:
       - /usr/bin/zip
       - /usr/bin/ssh
       - /usr/bin/tmux
+
+# GPG signing. Whiskerless has signed its packages since 0.2.0; this project did not, which also
+# blocked the apt/dnf repository channel — a repository is only worth as much as the signature on
+# what it serves.
+#
+# Scope, so the guarantee is not overstated: `rpm --checksig` verifies this, and `dnf` refuses a
+# package whose signature does not match a trusted key. `dpkg -i` ignores signatures entirely, so on
+# the apt side this is belt-and-braces and whoever publishes the repository signs the metadata.
+#
+# NFPM_SIGNING_KEY_FILE is written by the workflow from the Forgejo org secret, into a mktemp path
+# outside the build context — never into the tree that gets copied into the packaging container.
+deb:
+  signature:
+    key_file: ${NFPM_SIGNING_KEY_FILE}
+rpm:
+  signature:
+    key_file: ${NFPM_SIGNING_KEY_FILE}

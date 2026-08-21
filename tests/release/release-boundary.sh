@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Integration: check-release-boundary.py must fail closed on a pre-0.4 tree that carries the UART
 # bench collector and pass a clean one, so the release gate actually blocks a leak instead of
-# rubber-stamping it. Run directly: bash tests/integration/release-boundary.sh
+# rubber-stamping it. Run directly: bash tests/release/release-boundary.sh
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp -d)
@@ -20,8 +20,8 @@ boundary_fails() {
 }
 
 safe=$tmp/safe
-mkdir -p "$safe/dreame_valetudo/phases" "$safe/packaging"
-printf '# safe\n' > "$safe/dreame_valetudo/cli.py"
+mkdir -p "$safe/src/dreame_valetudo/phases" "$safe/packaging"
+printf '# safe\n' > "$safe/src/dreame_valetudo/cli.py"
 printf '[project]\nname="fixture"\n' > "$safe/pyproject.toml"
 
 # A clean tree passes every pre-0.4 version, and 0.4 always passes regardless of content.
@@ -40,18 +40,18 @@ rm "$safe/packaging/deb.Dockerfile"
 
 # A collector marker inside an established file (the version pin the transport depends on) trips
 # the boundary too.
-printf 'PYSERIAL_VERSION = "3.5"\n' > "$safe/dreame_valetudo/constants.py"
-boundary_fails 0.3.0-rc.1 "$safe" "dreame_valetudo/constants.py contains collector marker"
-rm "$safe/dreame_valetudo/constants.py"
+printf 'PYSERIAL_VERSION = "3.5"\n' > "$safe/src/dreame_valetudo/constants.py"
+boundary_fails 0.3.0-rc.1 "$safe" "src/dreame_valetudo/constants.py contains collector marker"
+rm "$safe/src/dreame_valetudo/constants.py"
 
 # The collector module itself, by path alone, trips every pre-0.4 version and only those — the
 # boundary is version-gated, not an absolute ban on the file ever existing.
-printf '# collector\n' > "$safe/dreame_valetudo/phases/uart.py"
+printf '# collector\n' > "$safe/src/dreame_valetudo/phases/uart.py"
 for version in 0.2.1 0.3.0-rc.1; do
-  boundary_fails "$version" "$safe" "forbidden collector path exists: dreame_valetudo/phases/uart.py"
+  boundary_fails "$version" "$safe" "forbidden collector path exists: src/dreame_valetudo/phases/uart.py"
 done
 check 0.4.0 "$safe" >/dev/null
-rm "$safe/dreame_valetudo/phases/uart.py"
+rm "$safe/src/dreame_valetudo/phases/uart.py"
 
 # Clean again afterward: none of the injected violations left residue behind.
 check 0.3.0-rc.1 "$safe" >/dev/null

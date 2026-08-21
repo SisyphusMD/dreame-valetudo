@@ -106,16 +106,23 @@ jobs:
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .
+          ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
-          pytest -q tests/python
+          # Gated HERE too, not only in CI: ci.yml runs on a branch, and a release is cut from a
+          # tag. Without this the release path was the one way a coverage regression could ship.
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          # The Runner seam every external command funnels through, held at 100 separately so a
+          # regression there cannot hide inside the repository average.
+          coverage report --include='*/run.py' --fail-under=100
           python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
           python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
           python -m dreame_valetudo help | grep -q "Supported models"
-          for t in tests/integration/*.sh; do bash "$t"; done
+          for t in tests/release/*.sh; do bash "$t"; done
 
       - name: Prove the test toolchain changed no prerelease byte
         run: |

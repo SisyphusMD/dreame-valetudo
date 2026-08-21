@@ -98,12 +98,22 @@ jobs:
               mirrors = ["dockerhub-mirror.nas.bryantserver.com"]
 
       - name: Build the .debs + .rpms (buildx) + the tarball
+        id: build
+        env:
+          # Step-local, not job-wide: the key is needed by exactly this step, and a job-level
+          # secret is visible to every other one.
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
         run: |
           set -euo pipefail
           # Read the pins from the Python constants so there's ONE source of truth (Renovate-tracked).
-          read_pin() { python3 -c "import re,sys; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
+          read_pin() { python3 -c "import re,sys; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           export VERSION="${GITHUB_REF_NAME#v}"
+          # The NATIVE package version, for filenames. nfpm normalises a semver prerelease to the
+          # `~rc.` form internally, so a filename built from the raw tag would say `0.3.0-rc.17`
+          # while `dpkg -I` reports `0.3.0~rc.17` — the file would not be named after what it
+          # contains. whiskerless has always used the native form here; same convention.
+          PKGVER="${VERSION/-rc./~rc.}"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
           # renovate: datasource=pypi depName=pyinstaller
@@ -117,18 +127,51 @@ jobs:
           # nfpm packages the .debs. Pinned image; its digest IS the integrity check (Renovate-kept).
           # renovate: datasource=docker depName=goreleaser/nfpm
           NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
+          # The same base package-smoke.Dockerfile installs the .deb into, so the standalone bundle
+          # is proven against the identical userland rather than a second, differently-aged one.
+          # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
+          SMOKE_BASE="ubuntu:26.04@sha256:6df9e8dd1eac389ebfef692c9648449adeb815d01e16e29cd6f3e50fe64ba9a6"
 
           # Package a laid-out arch's binaries with the pinned nfpm image. DEB_ARCH is nfpm's internal
           # arch (amd64/arm64) for BOTH formats — nfpm maps it to the .deb arch and to the .rpm arch
           # (x86_64/aarch64). nfpm runs on the amd64 runner natively (arch-independent) via docker
           # create+cp, since the DinD daemon can't bind-mount the job workspace.
+          # Package signing, FAIL-CLOSED. An unsigned package installs perfectly well, so nothing
+          # downstream would notice — but the apt/dnf repository serves these to subscribers whose
+          # dnf is configured with `gpgcheck=1`, and an unsigned upload there is a broken channel
+          # discovered by users rather than by this workflow. Refusing to build is the loud failure.
+          #
+          # The key is the SisyphusMD namespace key, held as an ORG-level Forgejo secret, so every
+          # project in the namespace signs with the same one — see packaging/sisyphusmd.repo for
+          # why one owner key beats one key per project when the registry group is shared.
+          : "${GPG_SIGNING_KEY:?the signing key secret is missing — refusing to publish unsigned packages}"
+          # mktemp, NOT the workspace: `docker cp . :/w` sends the whole tree, so a key sitting
+          # in the repo would ride into every package build and be one stray `git add` from
+          # being committed.
+          KEYFILE="$(mktemp)"; chmod 600 "$KEYFILE"
+          printf '%s' "$GPG_SIGNING_KEY" > "$KEYFILE"
+          SIGN_ARGS=(-e NFPM_SIGNING_KEY_FILE=/signing-key.asc)
+          CIDS=""
+          cleanup() {
+            rm -f "$KEYFILE"
+            # Force-removed on EXIT, not just on success: `set -e` would skip a trailing `docker rm`
+            # on failure, and this runner's Docker host is reused — leaving the private key in a
+            # stopped container anyone with access could read.
+            for c in $CIDS; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+          }
+          trap cleanup EXIT
+
           nfpm_pkg() { # nfpm_pkg <deb|rpm> <nfpm-arch amd64|arm64> <output-filename>
             local fmt="$1" narch="$2" name="$3" cid
-            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -e GLIBC_FLOOR -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
+            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -e GLIBC_FLOOR \
+              "${SIGN_ARGS[@]}" -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
+            CIDS="$CIDS $cid"
             docker cp . "$cid":/w
+            # Copied SEPARATELY, and never into /w — see the mktemp note above.
+            docker cp "$KEYFILE" "$cid":/signing-key.asc
             docker start -a "$cid"
             docker cp "$cid":"/w/$name" .
-            docker rm "$cid" >/dev/null
+            docker rm -f "$cid" >/dev/null
           }
           build_pkgs() { # build_pkgs <docker-platform> <deb-arch> <rpm-arch> <builder-image>
             local plat="$1" arch="$2" rpmarch="$3" builder="$4"
@@ -147,18 +190,23 @@ jobs:
             # each with a copy of its target, so the package would no longer be what was built.
             cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
             cp "out-$arch/sunxi-fel" ./sunxi-fel
-            nfpm_pkg deb "$arch" "dreame-valetudo_$arch.deb"
-            nfpm_pkg rpm "$arch" "dreame-valetudo.$rpmarch.rpm"
+            nfpm_pkg deb "$arch" "dreame-valetudo_${PKGVER}_$arch.deb"
+            nfpm_pkg rpm "$arch" "dreame-valetudo-${PKGVER}.$rpmarch.rpm"
             # nfpm assembles the package outside the build image, so this is the only step that
             # compares what installs against what was frozen — entry types and all. Removed again
             # before the next arch, whose nfpm run copies this workspace into its container.
             rm -rf "extract-$arch" && mkdir "extract-$arch"
-            dpkg-deb -x "dreame-valetudo_$arch.deb" "extract-$arch"
+            dpkg-deb -x "dreame-valetudo_${PKGVER}_$arch.deb" "extract-$arch"
             python3 packaging/check-package-parity.py \
               "out-$arch/dreame-valetudo" "extract-$arch/usr/lib/dreame-valetudo/app"
             python3 packaging/check-package-parity.py \
               "out-$arch/dreame-fastboot" "extract-$arch/usr/lib/dreame-valetudo/fastboot"
             rm -rf "extract-$arch"
+            # The standalone channel, for distributions with neither apt nor dnf. Built from the
+            # raw bundles rather than the .deb because every symlink nfpm writes is absolute, and
+            # only after the parity check above has proven those bundles are what the package ships.
+            bash packaging/build-linux-tarball.sh \
+              "out-$arch" "$arch" "$PKGVER" "dreame-valetudo-${PKGVER}-linux-${arch}.tar.gz"
           }
           build_pkgs linux/amd64 amd64 x86_64 "$MANYLINUX_AMD64"
           build_pkgs linux/arm64 arm64 aarch64 "$MANYLINUX_ARM64"
@@ -177,8 +225,13 @@ jobs:
               --output "type=local,dest=$result" .
             test -f "$result/package-smoke-passed"
           }
-          smoke_pkg linux/amd64 dreame-valetudo_amd64.deb
-          smoke_pkg linux/arm64 dreame-valetudo_arm64.deb
+          smoke_pkg linux/amd64 "dreame-valetudo_${PKGVER}_amd64.deb"
+          smoke_pkg linux/arm64 "dreame-valetudo_${PKGVER}_arm64.deb"
+          # amd64 only: this runner executes amd64 natively, and the arm64 leg would need the
+          # buildx QEMU path the packages use. The launcher and layout are arch-independent — what
+          # differs per arch is the frozen binary, which smoke_pkg already ran on both.
+          bash packaging/smoke-linux-tarball.sh \
+            "dreame-valetudo-${PKGVER}-linux-amd64.tar.gz" "$SMOKE_BASE"
           # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
           bash packaging/build-tarball.sh
           ls -l ./*.deb ./*.rpm ./*.tar.gz
@@ -192,7 +245,13 @@ jobs:
           chmod +x packaging/forgejo-release.sh packaging/github-release.sh
           # Match the built artifacts by their real names: a bare ./*.deb also globs the
           # package-smoke.deb copy the smoke step leaves in the workspace, publishing it as a stray.
-          ASSETS=(./dreame-valetudo_*.deb ./dreame-valetudo.*.rpm ./dreame-valetudo-*.tar.gz)
+          # Assets carry the version, as whiskerless's always have: two downloads in ~/Downloads
+          # that cannot be told apart, where the second silently overwrites the first, is a real
+          # cost paid by users. reconcile matches by ROLE rather than constructed name, so older
+          # releases keep their versionless names without special-casing.
+          ASSETS=(./dreame-valetudo_*.deb ./dreame-valetudo-*.rpm ./dreame-valetudo-*.tar.gz)
+          # Both tarball kinds are covered by that last glob: the arch-independent SOURCE tarball
+          # the Homebrew formula builds from, and the two standalone linux bundles.
           fail=0
           packaging/forgejo-release.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
@@ -205,8 +264,39 @@ jobs:
             || fail=1
           exit "$fail"
 
+      - name: Publish the .deb/.rpm into the apt/dnf repositories
+        # Runs even when a release UPLOAD failed — the repository is a fourth destination with its
+        # own failure modes, and a job publishing to independent places must not let the first
+        # failure skip the rest.
+        #
+        # But NOT when the BUILD failed, which `!cancelled()` alone would allow. These are that
+        # step's output, and it builds amd64 fully before starting arm64 — so an arm64 failure
+        # leaves two amd64 packages on disk that no smoke test ever installed. Uploading those
+        # publishes a half-architecture release to every apt and dnf subscriber, and reports
+        # success doing it.
+        #
+        # A SEPARATE token from the release PAT: Forgejo scopes the package registry on its own,
+        # and `write:repository` — everything the release helpers need — cannot upload a package.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          chmod +x packaging/publish-registry.sh
+          # The REAL artifacts by name, not `./*.deb`. The package smoke leaves `package-smoke.deb`
+          # in the workspace on every successful build, and publish-registry.sh uploads whatever it
+          # is handed — so the bare glob published a duplicate arm64 package under that name, or
+          # failed the release on a registry duplicate.
+          packaging/publish-registry.sh forgejo.bryantserver.com \
+            "${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}" "$GITHUB_REF_NAME" \
+            ./dreame-valetudo_*.deb ./dreame-valetudo-*.rpm
+
   homebrew-tap:
     name: Update the Homebrew tap formula (stable or -rc per tag)
+    # Shared with homebrew-bottles and tap-bottles.yml: three jobs write this one repository, and
+    # two of them cloning the same tip means the loser pushes a non-fast-forward and the tap keeps
+    # whichever block lost the race.
+    concurrency:
+      group: tap-write
+      cancel-in-progress: false
     needs: releases
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -234,6 +324,120 @@ jobs:
           git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v}" || { echo "no change to publish"; exit 0; }
           git -c "$AUTH" push
 
+  homebrew-bottles:
+    name: Add the bottle block to the tap (second pass)
+    concurrency:
+      group: tap-write
+      cancel-in-progress: false
+    # The tap must already hold this version (the bottles were built by
+    # installing it) and the release must exist (the bottles are its assets).
+    needs: [homebrew-tap, releases]
+    # `releases` going red does not mean the bottles are missing — they are
+    # appended by the GitHub workflow, to a release that may well have been
+    # created successfully before some later host failed. #76 again.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Retried in-step: a transient versions-manifest fetch failure took all five CI
+      # jobs down together on 2026-08-17, and Forgejo exposes no rerun endpoint, so
+      # recovery has to happen inside the job. The guard is `!= 'success'`, not
+      # `== 'failure'`: if a runner ever leaves `outcome` unset, an equality test would
+      # silently skip the retry AND `continue-on-error` would have swallowed the first
+      # failure, letting later steps run against whatever interpreter happened to be
+      # present. This way an unknown outcome retries, and a failed retry fails the job.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_4
+        continue-on-error: true
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_4.outcome != 'success'
+        with:
+          python-version: "3.14"
+      - name: Wait for every bottle manifest on the Forgejo release
+        run: |
+          set -euo pipefail
+          API=https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo
+          # Four platforms. A stable tag bottles BOTH formulae — the stable one
+          # and the rc one it re-points at itself — because a bottle's filename
+          # embeds the formula name and its keg is rooted at
+          # `<formula>/<version>/`, so one cannot be renamed into the other.
+          # Without the second set, `brew install dreame-valetudo-rc` after a
+          # stable release silently goes back to building from source.
+          case "$GITHUB_REF_NAME" in
+            *-rc.*) expected=4 ;;
+            *)      expected=8 ;;
+          esac
+          echo "waiting for $expected bottle manifest(s) and the archives they name"
+          # The readiness condition is NOT "the manifests arrived". They are
+          # uploaded in the same pass as the archives and their double-dash names
+          # sort first, so the manifests are normally there while tarballs are
+          # still in flight — a one-shot check would fail on a perfectly healthy
+          # release. And names alone are not enough either: a re-run replaces an
+          # archive in place, so a same-named file from the previous attempt can
+          # be sitting there while the manifest already describes the new one.
+          #
+          # So the loop waits until every manifest is present AND every archive it
+          # names hashes to the sha256 recorded for it. That is exactly the claim
+          # the published formula makes, checked before making it — a formula
+          # whose sha256 does not match the served file fails every install, and
+          # unlike a missing block it does not fall back to building from source.
+          #
+          # Up to 60 minutes: the macOS legs build the formula from source, twice
+          # on a stable tag, on the slowest runners in the fleet.
+          ready=""
+          for _ in $(seq 1 180); do
+            assets=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" \
+              | jq -r '.assets[]? | "\(.name)\t\(.browser_download_url)"' || true)
+            urls=$(printf '%s\n' "$assets" | awk -F'\t' '$1 ~ /\.bottle\.json$/ {print $2}')
+            if [ "$(printf '%s\n' "$urls" | grep -c . || true)" -lt "$expected" ]; then
+              sleep 20; continue
+            fi
+            rm -rf manifests && mkdir -p manifests
+            printf '%s\n' "$urls" | while read -r u; do
+              [ -n "$u" ] && curl -sSL -o "manifests/$(basename "$u")" "$u"
+            done
+            ok=true
+            while read -r name want; do
+              [ -n "$name" ] || continue
+              url=$(printf '%s\n' "$assets" | awk -F'\t' -v n="$name" '$1 == n {print $2}')
+              if [ -z "$url" ]; then ok=false; break; fi
+              # A failed download is a REASON TO WAIT, not a reason to abort. Under `set -e` the
+              # pipeline's nonzero status killed the step outright, so one transient Forgejo error
+              # ended the advertised sixty-minute wait on its first iteration.
+              if ! got=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1); then ok=false; break; fi
+              if [ "$got" != "$want" ]; then ok=false; break; fi
+            done < <(jq -r '.[].bottle.tags[] | "\(.filename)\t\(.sha256)"' manifests/*.json)
+            if [ "$ok" = true ]; then ready=1; break; fi
+            sleep 20
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the bottles never arrived intact after 60m — the tap keeps its unbottled formula"
+            exit 1
+          fi
+          ls -l manifests/
+          echo "every bottle the manifests name is present and matches its sha256"
+      - name: Re-render the formula with the bottle block and push
+        env:
+          TOKEN: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          AUTH="http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          # Outside the checkout, for the same reason the first pass does it:
+          # update-tap.sh builds an sdist to compare against PyPI, and anything
+          # sitting beside the source is swept into it.
+          tap="$(mktemp -d)/tap"
+          git -c "$AUTH" clone "${GITHUB_SERVER_URL}/SisyphusMD/homebrew-tap.git" "$tap"
+          chmod +x packaging/update-tap.sh
+          bash packaging/update-tap.sh "$GITHUB_REF_NAME" "$tap" "$PWD/manifests"
+          cd "$tap"
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
+          git add Formula/
+          git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v} bottles" || { echo "no change to publish"; exit 0; }
+          git -c "$AUTH" push
   reconcile:
     name: Reconcile releases across registries (bridge .pkgs to NAS, heal history)
     needs: releases
@@ -259,8 +463,10 @@ jobs:
           for _ in $(seq 1 180); do
             qualified=$(curl -sf "$API/releases/tags/$GITHUB_REF_NAME" | jq -r '
               [.assets[]?.name] as $names |
-              ($names | index("dreame-valetudo-macos-arm64.pkg") != null) and
-              ($names | index("dreame-valetudo-macos-x86_64.pkg") != null)
+              # By SUFFIX, not exact name: .pkg filenames carry the version now, and this gate must
+              # not have to know how the version is spelled to recognise the arch it qualifies.
+              ($names | any(endswith("-macos-arm64.pkg"))) and
+              ($names | any(endswith("-macos-x86_64.pkg")))
             ' 2>/dev/null || echo false)
             [ "$qualified" = true ] && break
             sleep 10

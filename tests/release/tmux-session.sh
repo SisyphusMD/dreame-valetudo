@@ -235,7 +235,7 @@ tree_of_installed_script() {
   # From / and with -P, so the current directory is NOT on sys.path. Probing from the repo made
   # every interpreter "find" the tree and the check passed for a release install it should reject.
   (cd / && "${interp%% *}" -P -c 'import dreame_valetudo, pathlib
-print(pathlib.Path(dreame_valetudo.__file__).resolve().parent.parent)' 2>/dev/null)
+print(pathlib.Path(dreame_valetudo.__file__).resolve().parents[2])' 2>/dev/null)
 }
 
 if command -v uv >/dev/null 2>&1; then

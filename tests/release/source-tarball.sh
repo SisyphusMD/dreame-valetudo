@@ -8,7 +8,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 source_tree="$tmp/source"
 mkdir -p "$source_tree/packaging"
-cp -R "$repo/dreame_valetudo" "$repo/libexec" "$source_tree/"
+cp -R "$repo/src" "$repo/libexec" "$source_tree/"
 cp -R "$repo/docs" "$source_tree/"
 cp "$repo/pyproject.toml" "$repo/uv.lock" "$repo/README.md" "$repo/LICENSE" \
   "$repo/CHANGELOG.md" "$source_tree/"
