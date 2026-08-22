@@ -40,15 +40,7 @@ jobs:
           PACKAGE_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -uo pipefail
-          chmod +x packaging/prune-superseded-rcs.sh
-          # Fail closed: default to --dry-run and drop it ONLY on an explicit "false". An absent or
-          # malformed dry_run (e.g. an API dispatch that omits the input) then stays a preview and never
-          # authorizes a real deletion. The input's own default is true, so the UI preselects preview.
-          args=(--dry-run)
-          [ "$DRY_RUN" = "false" ] && args=()
-          # Warn-only: a prune problem must never fail this run or make a valid stable disappear. The
-          # sweep self-verifies each stable and exits 0 on every recoverable path; this guard keeps the
-          # job green even if it ever returns nonzero.
-          bash packaging/prune-superseded-rcs.sh "${args[@]}" \
-            || echo "::warning::prune-superseded-rcs exited nonzero; no stable release is affected"
+          # The script itself fails closed on DRY_RUN: anything but an exact "false" is a preview, so
+          # an API dispatch that omits the input, or passes it through unevaluated, cannot delete.
+          bash packaging/prune-rcs.sh \
+            || echo "::warning::prune-rcs exited nonzero; no stable release is affected"
