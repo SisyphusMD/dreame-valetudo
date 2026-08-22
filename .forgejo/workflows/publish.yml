@@ -461,6 +461,9 @@ jobs:
           CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
           NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
           GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
+          # Forgejo scopes the package registry separately: the repo PATs above cannot read or
+          # delete a package, so the registry half of the sweep needs its own write:package token.
+          PACKAGE_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}
         run: |
           set -uo pipefail
           chmod +x packaging/prune-superseded-rcs.sh
