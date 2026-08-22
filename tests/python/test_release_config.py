@@ -1337,3 +1337,49 @@ def test_every_hold_survives_rule_ordering() -> None:
                 f"{dep} is written as a hold but resolves to automerge on {update_type}: "
                 "its rule sits above the broad automerge rule, which overrides it"
             )
+
+
+def test_renovate_never_edits_a_vendored_file() -> None:
+    """A vendored file is owned by the standard, and editing it in place breaks STANDARD.lock.
+
+    Renovate does not know that. Pointed at a locked path that carries a `# renovate:` annotation it
+    opens a perfectly reasonable pin bump — and that PR then fails this repo's own drift check,
+    because the file no longer matches the lock it was vendored under. The bump has to originate in
+    the standard and arrive here as a re-vendor, so no manager may scan a locked path at all.
+    """
+    config = json.loads((_ROOT / ".renovaterc.json").read_text(encoding="utf-8"))
+    vendored = set(json.loads((_ROOT / "STANDARD.lock").read_text(encoding="utf-8"))["files"])
+    assert vendored, "no vendored files recorded; this invariant would assert nothing"
+
+    scanned = [
+        (index, path)
+        for index, manager in enumerate(config.get("customManagers", []))
+        for pattern in manager.get("managerFilePatterns", [])
+        for path in sorted(vendored)
+        if re.search(pattern.strip("/"), path)
+    ]
+    assert not scanned, (
+        f"customManagers scan vendored files, whose bumps would fail the drift check: {scanned}"
+    )
+
+
+def test_every_inline_shellcheck_pin_matches_the_vendored_script() -> None:
+    """Three copies of one pin, and they have to move together.
+
+    `packaging/shellcheck-all.sh` is vendored, and two workflows deliberately do NOT call it: those
+    jobs run on untrusted refs, where `actions/checkout` puts a FORK's copy of the script in the
+    workspace, so the command has to be text this repo defines. The cost of that safety is a second
+    and third copy of the image pin. Re-vendoring moves only the script, so nothing but this compares
+    them — and a fork PR would then qualify against a different shellcheck than every other gate.
+    """
+    script = (_ROOT / "packaging" / "shellcheck-all.sh").read_text(encoding="utf-8")
+    found = re.search(r'SHELLCHECK="([^"]+)"', script)
+    assert found, "packaging/shellcheck-all.sh no longer pins SHELLCHECK"
+    pin = found.group(1)
+
+    for relative in (".forgejo/workflows/ci.yml", ".github/workflows/ci-pr.yml"):
+        text = (_ROOT / relative).read_text(encoding="utf-8")
+        assert f'SHELLCHECK="{pin}"' in text, (
+            f"{relative} pins a different shellcheck image than the vendored script; the pin is "
+            "owned by the standard, so re-vendor and update every inline copy together"
+        )

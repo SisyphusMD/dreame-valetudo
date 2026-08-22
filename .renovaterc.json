@@ -47,8 +47,8 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/release-pins.env (the manylinux builders, nfpm and the smoke base, shared by both forges' build jobs), packaging/shellcheck-all.sh, and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins.",
-      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/release-pins\\.env$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/release-pins.env (the manylinux builders, nfpm and the smoke base, shared by both forges' build jobs), and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins. The vendored shellcheck-all.sh is deliberately NOT here: bumping a locked file in place fails this repo's own drift check, so that pin is owned by the standard and arrives as a re-vendor.",
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/release-pins\\.env$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]
@@ -189,6 +189,13 @@
       "matchManagers": ["github-actions"],
       "matchDepNames": ["python"],
       "matchFileNames": [".github/workflows/release-macos.yml"],
+      "enabled": false
+    },
+    {
+      "description": "The shellcheck image pin is owned by the shared standard: it lives in the VENDORED packaging/shellcheck-all.sh, and this repo also carries an inline copy in the fork-PR workflow, which must stay byte-equal to it (a test asserts that). Renovate cannot move both halves consistently - bumping the vendored file fails the drift check, bumping only the workflow breaks the equality - so the bump happens in project-standard and arrives here as a re-vendor that updates both copies in one commit.",
+      "matchDepNames": [
+        "koalaman/shellcheck"
+      ],
       "enabled": false
     },
     {
