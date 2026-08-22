@@ -54,7 +54,7 @@ echo "installing from the '$DIST' distribution, for $PLATFORM"
 
 CHANNELS=(
   deb-file deb-lifecycle deb-file-github deb-file-floor deb-file-ubuntu-floor rpm-file
-  apt-repo dnf-repo tarball uv-tool pipx
+  apt-repo dnf-repo zypper zypper-floor tarball uv-tool pipx
 )
 # The bottle is poured on x86_64 only: the linuxbrew image has no arm64 build, and the arm64 bottle
 # is proven by the macOS legs and by bottle-block.py refusing a partial set.

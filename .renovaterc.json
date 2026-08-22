@@ -56,6 +56,13 @@
   ],
   "packageRules": [
     {
+      "description": "These legs are compatibility FLOORS, not current-release aliases: the whole point is that a package which installs on the current release can still fail on the oldest one this project claims. Unclamped, Renovate bumps the tag and each floor quietly becomes a second current test \u2014 green, and proving nothing it was written to prove. Digests still refresh, so the images stay patched.",
+      "matchDepNames": [
+        "opensuse-leap-15.6-compat"
+      ],
+      "allowedVersions": "/^15\\.6$/"
+    },
+    {
       "description": "Docker Images",
       "matchDatasources": ["docker"],
       "addLabels": ["docker"]
