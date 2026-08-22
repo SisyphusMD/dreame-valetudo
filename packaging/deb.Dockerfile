@@ -1,10 +1,10 @@
-# Builds the self-contained bundle (main tool + fastboot client + sunxi-fel) for the TARGET
-# platform, then exports just those native binaries. Driven by publish.yml through buildx so the
-# arm64 build runs inside BuildKit's builder (which carries QEMU) — the sister repos build their
-# arm64 images the same way. This is necessary because the Forgejo runner is on a Talos node with
-# no usable host binfmt for a plain `docker run --platform arm64` (that gets `exec format error`);
-# buildx sidesteps it. nfpm packages the exported binaries into the .deb OUTSIDE this build (nfpm
-# is arch-independent and stays on its pinned-image path).
+# Builds the self-contained bundle (main tool + fastboot client + sunxi-fel) for the NATIVE
+# platform, then exports just those native binaries. Driven by build-linux-arch.sh through buildx,
+# which both forges call: amd64 on Forgejo, arm64 on GitHub's native arm runner. `--platform` names
+# the architecture the host already is and that script refuses the mismatch, so this never runs
+# under emulation. buildx rather than `docker run` because the Forgejo job is itself containerised
+# and a bind mount of the workspace does not reach the daemon. nfpm packages the exported binaries
+# into the .deb OUTSIDE this build (nfpm is arch-independent and stays on its pinned-image path).
 #
 ARG PYTHON_BUILD_IMAGE=scratch
 FROM ${PYTHON_BUILD_IMAGE} AS build
@@ -32,20 +32,22 @@ RUN curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYT
 RUN python3 -m pip install --quiet "pyinstaller==${PYINSTALLER}" "pyusb==${PYUSB}"
 # sunxi-fel: cloned + built before the repo COPY so it caches independently of source edits.
 # Pre-generate version.h so make skips its own version.h target (it has no prerequisites, so an
-# existing file counts as up to date). This is required because that target runs `./autoversion.sh`, which
-# has no shebang — qemu-user (the arm64 emulation) doesn't do the shell's ENOEXEC fallback, so the
-# make-invoked exec fails under emulation (it works natively). Running the SAME script via an explicit
-# `sh` reads it instead of exec-ing it, so it works under qemu and keeps upstream's exact version logic.
+# existing file counts as up to date). That target runs `./autoversion.sh`, which has no shebang;
+# running the SAME script via an explicit `sh` reads it instead of exec-ing it, and keeps upstream's
+# exact version logic. Kept because it is harmless and the failure it avoided is an ENOEXEC-fallback
+# difference between interpreters, not something specific to how this image is built.
 RUN git clone -q https://github.com/linux-sunxi/sunxi-tools.git /tmp/sx \
  && git -C /tmp/sx checkout -q "${SREF}" \
  && ( cd /tmp/sx && sh ./autoversion.sh > version.h ) \
  && make -C /tmp/sx sunxi-fel
 WORKDIR /w
 COPY . /w
-# BUNDLE_MODE=onedir: the emulated arm64 leg cannot start a PyInstaller onefile at all, because the
-# bootloader's onefile child requires its parent to be the same executable and under qemu-user the
-# kernel names the injected emulator instead. A onedir bundle has no child process, so both build
-# scripts can keep smoke-testing what they froze by running it — on both architectures.
+# BUNDLE_MODE=onedir. It began as the escape from a onefile bootloader check that emulated arm64
+# could never pass, and that reason is gone — every architecture now builds on its own hardware. It
+# stays because the standalone channel is a tarball of this tree with a launcher beside it, which is
+# a shipped artifact shape, and churning it to match a sibling would be uniformity rather than
+# convergence. A onedir bundle also spawns no child, so both build scripts can smoke-test what they
+# froze by running it.
 RUN BUNDLE_MODE=onedir bash packaging/build-bundle.sh /w/dist \
  && BUNDLE_MODE=onedir bash packaging/build-fastboot-client.sh /w/dist \
  && cp /tmp/sx/sunxi-fel /w/dist/sunxi-fel \

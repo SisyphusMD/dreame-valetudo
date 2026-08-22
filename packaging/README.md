@@ -11,10 +11,11 @@ Six distribution channels, one release flow:
 | Plain tarball | `dreame-valetudo-<v>.tar.gz` | `publish.yml` (`build-tarball.sh`) | none |
 | macOS installer | `dreame-valetudo-macos-{arm64,x86_64}.pkg` (per-arch matrix) | `release-macos.yml` (GitHub) | Developer ID + notarized |
 
-Both `.deb` arches are built on the Forgejo runner through **buildx** (`packaging/deb.Dockerfile`): the
-`docker-container` BuildKit driver carries QEMU, so the arm64 leg emulates inside the builder — the
-runner is a Talos node with no usable host binfmt for a plain `docker run --platform arm64`. nfpm
-then packages the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
+Each architecture is built on its own hardware through **buildx** (`packaging/deb.Dockerfile`):
+amd64 on the Forgejo runner, arm64 on GitHub's native `ubuntu-24.04-arm`. **Nothing is emulated.**
+Both forges call the same `packaging/build-linux-arch.sh`, which refuses to run when the host and
+target architectures disagree, so an emulated build cannot return by accident. nfpm then packages
+the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
 runs after every release and fans every asset out to all three registries (Forgejo, NAS, GitHub),
 backfilling any historical gap after two registries agree on the asset's SHA-256. It never trusts
 a filename or size alone, and ignores anything outside the exact release artifact matrix. Assets
@@ -120,10 +121,21 @@ from one).
    signing set (Apple Developer certs/keys, minted from your Apple Developer account):
    `CLUSTER_FORGEJO_REPO_WRITE_PAT`, `MACOS_APP_CERT_P12`, `MACOS_INSTALLER_CERT_P12`,
    `MACOS_CERT_PASSWORD`, `MACOS_APP_IDENTITY`, `MACOS_INSTALLER_IDENTITY`, `MACOS_NOTARY_KEY_P8`,
-   `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`. (`GITHUB_TOKEN` is automatic.)
+   `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`. (`GITHUB_TOKEN` is automatic; the workflows that
+   create or append to a release declare `permissions: contents: write`, without which it can read
+   but not publish.)
+
+   **Also on GitHub, `GPG_SIGNING_KEY`** — the same namespace key Forgejo holds. It is needed here
+   because the arm64 `.deb`/`.rpm` are built on GitHub's native arm runner, and a package signed on
+   one architecture and not the other is worse than neither. Put it in a **`linux-signing`
+   environment** (Settings → Environments → New environment) rather than in the repository secrets,
+   so only `release-linux-arm64.yml` can read it. Each forge holds the signing material for what it
+   builds; the Apple identity lives here on the same principle.
 
 If the macOS secrets are missing, the Linux assets and tap still publish, but the overall publish
-workflow fails its qualification gate until both signed `.pkg`s are present.
+workflow fails its qualification gate until both signed `.pkg`s are present. If `GPG_SIGNING_KEY`
+is missing on GitHub, `build-linux-arch.sh` fails closed rather than shipping unsigned arm64
+packages, and the release carries no arm64 Linux assets at all.
 
 ## Build and compatibility contracts
 
@@ -134,22 +146,17 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   `/usr/lib/dreame-valetudo` need no wrapper; the `.pkg`/brew set `DREAME_LIBEXEC`. Build scripts:
   `packaging/build-bundle.sh` (main) + `packaging/build-fastboot-client.sh` (client).
 - **`BUNDLE_MODE` selects onefile or onedir, and Linux is the only caller that asks for onedir.**
-  A onefile app re-executes itself as a child, and PyInstaller's bootloader requires that child's
-  parent to be running the same executable (GHSA-9fxf-4qw3-ghmr). Inside BuildKit's QEMU emulation
-  the kernel names the injected emulator as the parent, so *no* onefile binary the arm64 release
-  leg builds can start — which took out rc.13's Linux assets entirely. A onedir bundle spawns no
-  child, so the check never runs: the protection is not disabled, the two-process model it guards
-  is simply absent. The scripts default to onefile because `release-macos.yml` calls the same two
-  and signs, bundles and notarizes a single file; `deb.Dockerfile` is the one caller that passes
-  `BUNDLE_MODE=onedir`.
+  The scripts default to onefile because `release-macos.yml` calls the same two and signs, bundles
+  and notarizes a single file; `deb.Dockerfile` is the one caller that passes `BUNDLE_MODE=onedir`.
 
-  **The other way out, taken by the sibling project.** whiskerless hit this identical bug — it cost
-  that project's `v0.2.0-rc.18` Linux artifacts as it cost this one's rc.13 — and escaped it by
-  PINNING PyInstaller at 6.22.0, before the parent-executable check took effect on POSIX in 6.22.1,
-  keeping onefile and therefore a single-file download. The cost is a standing version pin, watched
-  by `whiskerless/packaging/check-pyinstaller-pin.sh`. Onedir was chosen here instead because it
-  removes the constraint at its root rather than waiting upstream out — but if a standalone Linux
-  binary ever becomes a channel worth having, that pin is how. See project-standard/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
+  Onedir began as an escape: a onefile app re-executes itself as a child, PyInstaller's bootloader
+  requires that child's parent to be running the same executable (GHSA-9fxf-4qw3-ghmr), and under
+  emulation the kernel names the injected emulator as the parent, so no onefile binary the arm64 leg
+  built could start. **That constraint is gone** — arm64 builds natively now. Onedir stays because
+  the standalone channel is a tarball of this tree with a launcher beside it, which is a shipped
+  artifact shape with its own smoke test; changing it to match the sibling would be uniformity, not
+  convergence. The sibling keeps onefile for the same kind of reason — one downloadable file suits a
+  tool run once from a laptop. See project-standard/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
   and `.../fastboot`) reached through a symlink to its launcher, because `find_helper` wants a
   runnable FILE at `/usr/lib/dreame-valetudo/dreame-fastboot` and the bootloader resolves symlinks
   before looking for its contents directory. `packaging/check-package-parity.py` compares each
@@ -162,16 +169,17 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   onefile, so hardened-runtime removal of `DYLD_*` variables does not affect that client. Each
   native macOS leg now installs its signed and notarized package, runs the built-in host smoke and
   helper checks, then uninstalls it and proves the test backup survived before uploading the asset.
-- **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`).** amd64 builds natively on
-  the runner; arm64 emulates inside BuildKit's builder (the `docker-container` driver carries QEMU),
-  because the Talos runner node has no usable host binfmt for a plain `docker run --platform arm64`
-  (that gets `exec format error` — the sister repos build their arm64 images the same buildx way).
-  It's arch-specific (amd64/arm64; 32-bit armhf Pis aren't built — use the source tarball + `uv`/
-  `pipx` there). The arm64 PyInstaller freeze under QEMU is the slowest step; if it's ever too slow
-  or flaky, move the arm64 `.deb` to a GitHub native `ubuntu-24.04-arm` runner (mirroring the `.pkg`
-  job's "GitHub builds what the cluster can't" pattern). Native arm64 is also the durable answer to
-  the class of problem rc.13 hit: emulation is a proxy for the artifact that ships, and it is the
-  only pre-release check that architecture gets.
+- **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`), each on its own
+  hardware.** amd64 on the Forgejo runner, arm64 on GitHub's `ubuntu-24.04-arm` — the same "GitHub
+  builds what the cluster can't" pattern the `.pkg` job uses, because no node here is arm64.
+  `--platform` names the architecture the host already is; `build-linux-arch.sh` checks that and
+  refuses the mismatch. buildx rather than `docker run` because the Forgejo job is itself
+  containerised and a bind mount of the workspace does not reach the daemon. It's arch-specific
+  (amd64/arm64; 32-bit armhf Pis aren't built — use the source tarball + `uv`/`pipx` there).
+
+  This replaced emulation, which was the durable answer to the class of problem rc.13 hit:
+  emulation is a proxy for the artifact that ships, and it was the only pre-release check that
+  architecture got.
 - **Python 3.11.0 is the source-install floor; current CPython is bundled for package users.** The
   full suite runs on the literal floor, while the ordinary and bundle jobs use the exact current
   release pinned in `constants.py`. Updating bundled Python therefore does not raise the source

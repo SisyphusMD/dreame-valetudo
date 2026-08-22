@@ -1,8 +1,9 @@
-name: Install matrix (Linux)
+name: Install matrix (Linux amd64)
 
-# Installs every LINUX channel we publish, from the PUBLISHED artifacts, and then runs the tool.
-# The macOS half is covered by .github/workflows/ci-macos.yml and the release job's own package
-# test, because Forgejo has no macOS runner.
+# Installs every LINUX channel we publish ON amd64, from the PUBLISHED artifacts, and then runs
+# the tool. The arm64 and macOS halves are `.github/workflows/install-matrix.yml`, because
+# architecture decides the forge here: this runner is amd64, GitHub has the native arm64 and macOS
+# ones, and nothing is emulated anywhere.
 #
 # WHY IT EXISTS. Until this, the only thing that installed a real release was package-smoke — one
 # .deb, one distro. That was defensible while the only channel was "download a file". It stopped
@@ -11,11 +12,11 @@ name: Install matrix (Linux)
 # silently falls back to a source build when its checksums are stale. Neither had anything
 # proving it worked. Ported from the sibling project, whose matrix had covered this for months.
 #
-# Every channel is a buildx target rather than a `docker run`, for the two reasons publish.yml
-# already hit on this runner: `docker run --platform arm64` dies with `exec format error` because
-# the host has no usable binfmt, and a bind mount of the workspace is invisible to the daemon
-# because the job itself runs in a container. BuildKit carries its own QEMU and streams its
-# context, so both go away. What each channel does lives in packaging/install-smoke.Dockerfile.
+# Every channel is a buildx target rather than a `docker run`, because the job itself runs in a
+# container and a bind mount of the workspace is invisible to the daemon. BuildKit streams its
+# context instead, so there is nothing to mount. What each channel does lives in
+# packaging/install-smoke.Dockerfile, and the channel LIST lives in
+# packaging/install-matrix-arch.sh so the two architectures cannot test different sets.
 #
 # It runs AFTER a release by necessity, so it cannot gate the release it tests. What it gates is
 # the next STABLE cut.
@@ -63,26 +64,15 @@ jobs:
           bash packaging/wait-for-release.sh "$TAG" "$FORMULA"
 
   linux:
-    name: Linux installs (${{ matrix.arch }})
+    name: Linux installs (amd64)
     needs: wait
+    # NO QEMU setup, and no arm64 leg: this runner is amd64, the script refuses to build for
+    # anything else, and the arm64 half runs natively on GitHub.
     runs-on: ubuntu-latest
-    strategy:
-      # One architecture failing must not hide the other's result.
-      fail-fast: false
-      matrix:
-        include:
-          - {arch: x86_64, platform: linux/amd64, deb: amd64, rpm: x86_64}
-          - {arch: arm64,  platform: linux/arm64, deb: arm64, rpm: aarch64}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          # The action's own default is tonistiigi/binfmt:latest — the one moving tag left in this
-          # chain, so it is pinned here like every other image.
-          # renovate: datasource=docker depName=tonistiigi/binfmt
-          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # BuildKit has its own registry client and does not inherit dockerd's mirror.
@@ -92,64 +82,11 @@ jobs:
       - name: Install every Linux channel and smoke each one
         env:
           VERSION: ${{ needs.wait.outputs.version }}
-          PLATFORM: ${{ matrix.platform }}
-          ARCH_DEB: ${{ matrix.deb }}
-          ARCH_RPM: ${{ matrix.rpm }}
-        run: |
-          set -uo pipefail
-          # deb/rpm carry the tilde spelling; everything else uses the tag's.
-          PKGVER="${VERSION/-rc./~rc.}"
-          # GitHub rewrites `~` to `.` in the STORED asset name, so the same package has a different
-          # filename there than on Forgejo. The deb-file-github target downloads the name a README
-          # reader would actually construct.
-          GH_PKGVER="${PKGVER//\~/.}"
-          GH_DL="https://github.com/SisyphusMD/dreame-valetudo/releases/download/$TAG"
-          # publish-registry.sh puts a candidate in `testing` and a release in BOTH, so a stable tag
-          # has to be installed from `stable` — testing it through `testing` would leave the
-          # distribution real users are on unexercised by a matrix that claims to cover every channel.
-          # The .repo file follows the distribution: a candidate is published only to `testing`,
-          # so installing the stable .repo would fetch the previous release or nothing at all.
-          case "$TAG" in
-            *-rc.*) DIST=testing; REPOFILE=sisyphusmd-testing.repo ;;
-            *)      DIST=stable;  REPOFILE=sisyphusmd.repo ;;
-          esac
-          echo "installing from the '$DIST' distribution, for $PLATFORM"
-
-          # The bottle is poured on x86_64 only: the linuxbrew image has no arm64 build, and the
-          # arm64 bottle is proven by the macOS legs and by bottle-block.py refusing a partial set.
-          channels="deb-file deb-lifecycle deb-file-github deb-file-floor deb-file-ubuntu-floor rpm-file apt-repo dnf-repo tarball uv-tool pipx"
-          [ "$ARCH_DEB" = amd64 ] && channels="$channels bottle-pour"
-
-          failed=""
-          for channel in $channels; do
-            echo "──────── $channel"
-            rm -rf "out/$channel"
-            ok=""
-            if docker buildx build --platform "$PLATFORM" \
-                 -f packaging/install-smoke.Dockerfile \
-                 --target "${channel}-result" \
-                 --output "type=local,dest=out/$channel" \
-                 --build-arg V="$VERSION" --build-arg PV="$PKGVER" \
-                 --build-arg DL="https://$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG" \
-                 --build-arg DIST="$DIST" --build-arg REPOFILE="$REPOFILE" \
-                 --build-arg FORGE="$FORGE" \
-                 --build-arg ARCH_DEB="$ARCH_DEB" --build-arg ARCH_RPM="$ARCH_RPM" \
-                 --build-arg TAG="$TAG" \
-                 --build-arg GH_DL="$GH_DL" --build-arg GH_PV="$GH_PKGVER" .; then
-              # The exported FILE, not merely the exit status: the marker is the only thing that
-              # cannot be produced by a build that did nothing.
-              [ -f "out/$channel/passed" ] && ok=1
-            fi
-            if [ -n "$ok" ]; then echo "  → $channel OK"; else failed="$failed $channel"; fi
-          done
-
-          echo
-          if [ -n "$failed" ]; then echo "::error::Linux channels failed:$failed"; exit 1; fi
-          echo "every Linux channel installed and passed the smoke on $ARCH_DEB"
+        run: bash packaging/install-matrix-arch.sh amd64
 
   summary:
-    name: Every Linux channel installed and ran
+    name: Every Linux amd64 channel installed and ran
     needs: linux
     runs-on: ubuntu-latest
     steps:
-      - run: echo "every Linux channel installed and ran on both architectures"
+      - run: echo "every Linux channel installed and ran on amd64"

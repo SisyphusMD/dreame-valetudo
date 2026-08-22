@@ -2,12 +2,9 @@
 # Build the relocatable standalone Linux bundle: extract anywhere, run ./dreame-valetudo.
 #   build-linux-tarball.sh <out-dir> <arch> <version> <dest.tar.gz>
 #
-# WHY this channel exists. The Linux binaries are PyInstaller ONEDIR, not onefile — GHSA-9fxf-4qw3-
-# ghmr made the onefile bootloader's parent-executable check fail under BuildKit's QEMU, and moving
-# to onedir removed the constraint at its root instead of pinning PyInstaller back to 6.22.0 the way
-# whiskerless does. The cost used to be that there was no standalone download at all: a user on
-# Arch, Alpine or NixOS had the source tarball or nothing. A directory tree is perfectly
-# distributable once it is packed, so this closes that gap without reintroducing the pin.
+# WHY this channel exists. The Linux binaries are PyInstaller ONEDIR, not onefile, so there was no
+# standalone download at all: a user on Arch, Alpine or NixOS had the source tarball or nothing. A
+# directory tree is perfectly distributable once it is packed, so this closes that gap.
 #
 # NOT built from the .deb. Every symlink nfpm writes is ABSOLUTE (/usr/lib/dreame-valetudo/...),
 # which is correct for a package installed at a fixed prefix and useless in a tree the user may

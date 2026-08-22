@@ -10,6 +10,12 @@
 #
 # What to wait FOR is not written down twice: it reads packaging/asset-roles.sh, the same table
 # reconcile-releases.sh replicates. A new artifact is added in one place and both learn about it.
+#
+# Release assets are not the whole of "installable". The matrix also installs from the apt/dnf
+# REGISTRY, and registry publishing is a separate job that waits for BOTH architectures to land —
+# arm64 is built on the other forge now — so it can finish after everything else here. It used to
+# be a step of the release job, which ordered it ahead of this by accident rather than by design.
+# Without waiting on it, a healthy release gets a red apt-repo leg for having been asked too early.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +45,38 @@ version="${tag#v}"
 
 FORGE="${FORGE_HOST:-forgejo.bryantserver.com}"
 API="https://$FORGE/api/v1/repos/$PROJECT_REPO_SLUG/releases/tags/$tag"
+
+OWNER="${PROJECT_REPO_SLUG%%/*}"
+PKG="${PROJECT_REPO_SLUG#*/}"
+# The registry versions publish-registry.sh writes: debian keeps the native `~rc.` form, and rpm
+# carries nfpm's release suffix. Derived the same way there, so the two move together if that
+# suffix ever changes.
+pkgver="${version/-rc./~rc.}"
+
+# Scope: this answers "has the registry been written yet", not "is the release good". A
+# distribution whose upload FAILED already fails publish-registry.sh, which exits non-zero and
+# reddens its job — a red apt-repo leg there is a correct report, not the premature one this
+# guards against.
+registry_ready() {
+  local kind ver a b
+  for kind in debian rpm; do
+    # BOTH architectures, by filename. A non-empty list is not enough: the two are uploaded one
+    # after the other, so a poll landing between them would release the arm64 legs against a
+    # repository that only has amd64 — and that fails deterministically on a retry after a partial
+    # publish, not just rarely.
+    case "$kind" in
+      debian) ver="$pkgver";   a="_amd64.deb";  b="_arm64.deb" ;;
+      rpm)    ver="$pkgver-1"; a=".x86_64.rpm"; b=".aarch64.rpm" ;;
+    esac
+    # curl's -f is load-bearing rather than tidiness. Without it a 404 still writes its JSON error
+    # object to stdout and jq would be reading that object instead of a file list. Verified against
+    # this registry, as were the two version spellings above.
+    curl -sSf --max-time 60 \
+      "https://$FORGE/api/v1/packages/$OWNER/$kind/$PKG/$ver/files" 2>/dev/null \
+      | jq -e --arg a "$a" --arg b "$b" \
+          '[.[].name] | any(endswith($a)) and any(endswith($b))' >/dev/null 2>&1 || return 1
+  done
+}
 
 # 40 minutes. The macOS .pkg leg signs and notarizes, and notarization is Apple's queue rather than
 # ours — it has taken over twenty minutes on a bad day.
@@ -80,7 +118,10 @@ for _ in $(seq 1 120); do
         *) echo "  waiting: the tap formula $bottle_formula has no bottle block yet"; sleep 20; continue ;;
       esac
     fi
-    echo "$tag is installable: every role in the release matrix is present"
+    if ! registry_ready; then
+      echo "  waiting: the apt/dnf registry does not serve $pkgver yet"; sleep 20; continue
+    fi
+    echo "$tag is installable: every role in the release matrix is present, and apt/dnf have it"
     exit 0
   fi
   echo "waiting for:$missing"

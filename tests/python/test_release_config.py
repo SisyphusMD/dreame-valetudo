@@ -12,6 +12,11 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 _PUBLISH = _ROOT / ".forgejo" / "workflows" / "publish.yml"
 _CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
+# Architecture decides the forge, so the build and install-test logic lives in scripts BOTH
+# forges call rather than inline in either workflow. Assertions about what a release actually
+# does belong against these.
+_BUILD_ARCH = _ROOT / "packaging" / "build-linux-arch.sh"
+_PINS = _ROOT / "packaging" / "release-pins.env"
 _RELEASE = _ROOT / ".forgejo" / "workflows" / "release.yml"
 _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
@@ -146,8 +151,8 @@ def test_the_package_matrix_upgrades_from_the_pre_onedir_layout() -> None:
 def test_every_release_deb_is_compared_against_the_tree_that_was_built() -> None:
     # nfpm runs outside the build image. Without this, a package that dropped bundled data would
     # still install, still report its version and still pass the host smoke.
-    for workflow in (_CI, _PUBLISH):
-        text = workflow.read_text()
+    for source in (_CI, _BUILD_ARCH):
+        text = source.read_text()
         assert "dpkg-deb -x" in text
         assert text.count("packaging/check-package-parity.py") == 2
         assert "/usr/lib/dreame-valetudo/app" in text
@@ -155,7 +160,7 @@ def test_every_release_deb_is_compared_against_the_tree_that_was_built() -> None
     # A recursive copy that dereferenced the bundles' symlinks would package something the build
     # never produced, and the parity check is what would report it.
     assert "cp -a out/dreame-valetudo out/dreame-fastboot dist/" in _CI.read_text()
-    assert 'cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/' in _PUBLISH.read_text()
+    assert 'cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/' in _BUILD_ARCH.read_text()
 
 
 def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
@@ -165,18 +170,26 @@ def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
     for rule in config["packageRules"]:
         assert "pyinstaller" not in rule.get("matchDepNames", [])
     pins = {}
-    for workflow in (_CI, _PUBLISH, _MACOS):
-        text = workflow.read_text()
+    # The Linux pin lives in release-pins.env, which BOTH forges' build jobs source — ci.yml too, so
+    # what CI compile-checks is what a release builds with. macOS keeps its own inline copy because
+    # its build never touches that file.
+    for source in (_PINS, _MACOS):
+        text = source.read_text()
         assert "Held at 6.22.0" not in text
         found = re.search(
             r"# renovate: datasource=pypi depName=pyinstaller\s*\n[^\n]*?(\d+\.\d+(?:\.\d+)?)",
             text,
         )
-        assert found is not None, workflow.name
-        pins[workflow.name] = found.group(1)
-    # One depName across three files is one grouped Renovate PR. The clamp scoped the Forgejo pair
-    # away from the macOS one, which is exactly how they could drift apart unnoticed.
+        assert found is not None, source.name
+        pins[source.name] = found.group(1)
+    # One depName across both files is one grouped Renovate PR. The clamp scoped the Linux pins away
+    # from the macOS one, which is exactly how they could drift apart unnoticed.
     assert len(set(pins.values())) == 1, pins
+    # Neither Forgejo workflow may re-pin it inline: a second copy is the drift this file prevents.
+    # A literal VERSION assignment, not a use — `--build-arg PYINSTALLER="$PYINSTALLER"` is how the
+    # sourced value reaches the build and must stay.
+    for workflow in (_CI, _PUBLISH):
+        assert not re.search(r'PYINSTALLER="\d', workflow.read_text()), workflow.name
 
 
 def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:
@@ -642,10 +655,10 @@ def test_native_packages_refuse_hosts_below_their_libc_floor() -> None:
     dockerfile = (_ROOT / "packaging" / "deb.Dockerfile").read_text()
     assert "packaging/check-glibc-floor.py" in dockerfile
     assert '"$(cat packaging/glibc-floor.txt)"' in dockerfile
-    for workflow in (_CI, _PUBLISH):
-        contents = workflow.read_text()
-        assert "export GLIBC_FLOOR" in contents
-        assert "GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)" in contents
+    for source in (_CI, _BUILD_ARCH):
+        contents = source.read_text()
+        assert "export VERSION GLIBC_FLOOR" in contents or "export GLIBC_FLOOR" in contents
+        assert "packaging/glibc-floor.txt" in contents
         assert "-e GLIBC_FLOOR" in contents
 
 
@@ -684,11 +697,17 @@ def test_manylinux_builders_are_pinned_to_dated_tags() -> None:
     assert len(rules) == 1
     assert rules[0]["versioning"].startswith("regex:")
 
-    for workflow in (_CI, _PUBLISH):
-        for line in workflow.read_text().splitlines():
-            if "quay.io/pypa/manylinux_2_28_" in line and "sha256:" in line:
-                assert ":latest@" not in line, f"manylinux pin regressed to latest: {line.strip()}"
-                assert re.search(r":\d{4}\.\d{2}\.\d{2}-\d+@sha256:", line), line.strip()
+    # release-pins.env, which is where both forges' build jobs read them from. Counted, because a
+    # test whose loop body never runs passes without checking anything: these pins used to be inline
+    # in the workflows, and scanning the old location would have gone quietly vacuous the moment
+    # they moved.
+    checked = 0
+    for line in _PINS.read_text().splitlines():
+        if "quay.io/pypa/manylinux_2_28_" in line and "sha256:" in line:
+            assert ":latest@" not in line, f"manylinux pin regressed to latest: {line.strip()}"
+            assert re.search(r":\d{4}\.\d{2}\.\d{2}-\d+@sha256:", line), line.strip()
+            checked += 1
+    assert checked == 2, f"expected both manylinux builders in {_PINS.name}, found {checked}"
 
 
 def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
@@ -908,20 +927,36 @@ def test_every_dnf_config_names_a_distribution_the_publisher_writes() -> None:
 def test_publishing_refuses_to_ship_unsigned_packages() -> None:
     """Unsigned packages install fine, so nothing downstream notices — but subscribers running
     `gpgcheck=1` get a channel that fails for them and for nobody else."""
-    text = _PUBLISH.read_text()
+    text = _BUILD_ARCH.read_text()
     assert 'GPG_SIGNING_KEY:?' in text
     assert "NFPM_SIGNING_KEY_FILE" in text
     # The key is written outside the workspace: `docker cp . :/w` sends the whole tree.
     assert 'KEYFILE="$(mktemp)"' in text
     assert "::warning::GPG_SIGNING_KEY is not set" not in text
+    # Both forges build packages now, so both must hand the key in — an arm64 release signed by
+    # nobody would install fine and fail only for subscribers running gpgcheck=1.
+    for workflow in (_PUBLISH, _ROOT / ".github" / "workflows" / "release-linux-arm64.yml"):
+        assert "GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}" in workflow.read_text(), workflow.name
 
 
-def test_the_registry_publish_runs_but_never_on_a_failed_build() -> None:
-    releases = _job(_PUBLISH.read_text(), "releases")
-    assert "packaging/publish-registry.sh forgejo.bryantserver.com" in releases
+def test_the_registry_publish_runs_but_never_on_a_partial_package_set() -> None:
+    """A repository is not a release page: what lands there is what `apt install` hands people
+    immediately, with no way to tell the set is short.
+
+    This used to be guarded by `steps.build.outcome == 'success'`, because one job built both
+    architectures and a failed arm64 leg left two unsmoked amd64 packages on disk. Architecture now
+    decides the forge, so there is no such step to ask about — this job never builds anything. The
+    guard is that it must COLLECT all four packages from the release before publishing any."""
+    registry = _job(_PUBLISH.read_text(), "registry")
+    assert "packaging/publish-registry.sh forgejo.bryantserver.com" in registry
     # A separate token: `write:repository` cannot upload a package to Forgejo's registry.
-    assert "CLUSTER_FORGEJO_REGISTRY_PUSH_PAT" in releases
-    assert "!cancelled() && steps.build.outcome == 'success'" in releases
+    assert "CLUSTER_FORGEJO_REGISTRY_PUSH_PAT" in registry
+    assert "packaging/fetch-release-assets.sh" in registry
+    # Exactly four, and nothing swallowing the failure: matched as the whole command so the
+    # explanatory comment beside it cannot satisfy the check.
+    fetch = re.search(r"^\s*packaging/fetch-release-assets\.sh[^\n]*$", registry, re.M)
+    assert fetch is not None
+    assert fetch.group(0).strip() == 'packaging/fetch-release-assets.sh "$GITHUB_REF_NAME" 4 "$select"'
 
 
 # --- Homebrew bottles -----------------------------------------------------------------
@@ -1074,6 +1109,8 @@ def test_the_infra_triage_is_the_shared_one() -> None:
 
 # --- the install matrix ---------------------------------------------------------------
 _INSTALL_MATRIX = _ROOT / ".forgejo" / "workflows" / "install-matrix.yml"
+_INSTALL_MATRIX_GH = _ROOT / ".github" / "workflows" / "install-matrix.yml"
+_MATRIX_ARCH = _ROOT / "packaging" / "install-matrix-arch.sh"
 _INSTALL_SMOKE = _ROOT / "packaging" / "install-smoke.Dockerfile"
 
 
@@ -1081,9 +1118,10 @@ def test_every_channel_the_matrix_builds_has_a_target() -> None:
     """A channel named in the workflow but absent from the Dockerfile fails the build and is
     noticed. The dangerous direction is the other one: a target nobody builds looks like coverage
     in the file and tests nothing at all."""
-    workflow = _INSTALL_MATRIX.read_text()
-    listed = set(re.search(r'channels="([^"]+)"', workflow).group(1).split())
-    extra = re.search(r'channels="\$channels ([a-z-]+)"', workflow)
+    script = _MATRIX_ARCH.read_text()
+    listed = set(re.search(r"^CHANNELS=\(\n(.*?)^\)$", script, re.M | re.S).group(1).split())
+    # The amd64-only addition, appended rather than listed: the linuxbrew image has no arm64 build.
+    extra = re.search(r"CHANNELS\+=\(([a-z-]+)\)", script)
     if extra:
         listed.add(extra.group(1))
     targets = set(re.findall(r"AS ([a-z0-9-]+)-result", _INSTALL_SMOKE.read_text()))
@@ -1095,9 +1133,16 @@ def test_the_matrix_covers_the_channels_that_had_nothing_proving_them() -> None:
     """The two that justified writing this: a repository is a URL every subscriber's package
     manager resolves on every update, and a bottle falls back to a SOURCE BUILD when its checksums
     are stale — quietly, and green."""
-    workflow = _INSTALL_MATRIX.read_text()
+    script = _MATRIX_ARCH.read_text()
     for channel in ("apt-repo", "dnf-repo", "bottle-pour", "tarball"):
-        assert channel in workflow, channel
+        assert channel in script, channel
+    # And BOTH architectures run that one list. Two inline copies on two forges is a divergence with
+    # a schedule: the arm64 half would keep passing while testing a shorter set.
+    assert "install-matrix-arch.sh amd64" in _INSTALL_MATRIX.read_text()
+    assert "install-matrix-arch.sh arm64" in _INSTALL_MATRIX_GH.read_text()
+    # It refuses to run for an architecture the host is not, so a leg on the wrong runner fails
+    # loudly instead of quietly reporting on an emulator.
+    assert "that would be emulation" in script
 
 
 def test_the_bottle_channel_refuses_a_source_build() -> None:
@@ -1118,17 +1163,17 @@ def test_a_stable_tag_is_installed_from_the_stable_distribution() -> None:
     """publish-registry.sh puts a candidate in `testing` and a release in BOTH. Testing a stable
     through `testing` would leave the distribution real users are on unexercised by a matrix that
     claims to cover every channel."""
-    workflow = _INSTALL_MATRIX.read_text()
-    assert "*-rc.*) DIST=testing; REPOFILE=sisyphusmd-testing.repo ;;" in workflow
-    assert "*)      DIST=stable;  REPOFILE=sisyphusmd.repo ;;" in workflow
+    script = _MATRIX_ARCH.read_text()
+    assert "*-rc.*) DIST=testing; REPOFILE=sisyphusmd-testing.repo ;;" in script
+    assert "*)      DIST=stable;  REPOFILE=sisyphusmd.repo ;;" in script
     # The .repo file has to travel with the distribution, or the rc matrix installs the stable
     # repository and qualifies the previous release while the testing channel goes untested.
-    assert '--build-arg REPOFILE="$REPOFILE"' in workflow
+    assert '--build-arg REPOFILE="$REPOFILE"' in script
 
 
 def test_every_channel_proves_itself_with_an_exported_file() -> None:
     """buildx caches aggressively, so an exit status can be a cache hit for a build that did
     nothing. The marker file is the only thing that cannot be."""
-    assert '[ -f "out/$channel/passed" ]' in _INSTALL_MATRIX.read_text()
+    assert '[ -f "out/$channel/passed" ]' in _MATRIX_ARCH.read_text()
     exported = re.findall(r"COPY --from=([a-z0-9-]+) [^\n]*passed", _INSTALL_SMOKE.read_text())
     assert len(exported) >= 9, f"only {len(exported)} channels export a marker"
