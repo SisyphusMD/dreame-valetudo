@@ -451,7 +451,7 @@ jobs:
     # the rc formula at the stable AND after reconcile has confirmed the stable is fanned out to all
     # three registries — the default needs-success gate means a failed reconcile (stable not fully
     # published) skips the prune, so the rc formula is never left pointing at a deleted rc.
-    needs: [homebrew-tap, registry, nas-bridge, reconcile]
+    needs: [releases, registry, nas-bridge, homebrew-tap, homebrew-bottles, reconcile]
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
@@ -464,15 +464,10 @@ jobs:
           # Forgejo scopes the package registry separately: the repo PATs above cannot read or
           # delete a package, so the registry half of the sweep needs its own write:package token.
           PACKAGE_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}
+          # Fail closed: the script is a dry run unless DRY_RUN is exactly "false".
+          DRY_RUN: "false"
         run: |
-          set -uo pipefail
-          chmod +x packaging/prune-superseded-rcs.sh
-          # Destructive. The deletion path is hardened against the real Forgejo/GitHub release-tag
-          # model: the release is deleted before its tag, the tag ref is removed via the git-refs
-          # endpoint, Forgejo's stale tag DB row is cleared via /tags/<name>, and removal is confirmed
-          # by RE-READING the live list and git refs (never by trusting a 204/404), retried for
-          # eventual consistency. This first fires at the 0.3.0 stable cut — its first real-registry
-          # deletion — so watch that release. Warn-only: a prune problem must never fail the release or
-          # make a valid stable disappear.
-          bash packaging/prune-superseded-rcs.sh \
-            || echo "::warning::prune-superseded-rcs exited nonzero; the stable release is unaffected"
+          # Warn-only. The stable is already published by this point, so a prune problem must never
+          # redden the release or make a valid stable look failed.
+          bash packaging/prune-rcs.sh \
+            || echo "::warning::prune-rcs exited nonzero; the stable release is unaffected"
