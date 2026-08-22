@@ -210,6 +210,36 @@ wait_sessions() {
   done
   return 1
 }
+
+# How long a pane may take to show the text a step is waiting for. Generous and overridable on
+# purpose: these are shared runners, and the x86_64 macOS tier is the slowest CI has, so a budget
+# that is comfortable on a quiet machine is a coin flip there.
+PANE_TRIES="${TMUX_PANE_TRIES:-240}"   # x 0.25s
+PANE_SECONDS=$(( PANE_TRIES / 4 ))
+# A driver has to outlive the pane waits its own case performs. Derived rather than a constant: a
+# fixed deadline shorter than the wait budget kills the run first, and the wait then reports a
+# timeout for a run that is already dead. Three waits is the most any one case makes, plus headroom
+# for the work between them.
+DRIVE_INTERACTIVE=$(( PANE_SECONDS * 3 + 60 ))
+
+# Wait for text in a session's pane, and FAIL saying so if it never arrives.
+#
+# Failing is the point. A wait that falls through on timeout sends the next keystrokes to whatever
+# is on screen, so the run breaks later at an assertion with nothing to do with the cause.
+wait_for_pane() {  # wait_for_pane <session> <text> [what-it-means]
+  local session="$1" text="$2" what="${3:-$2}" esc
+  esc=$'\033'
+  for _ in $(seq 1 "$PANE_TRIES"); do
+    # -J joins wrapped lines and the escapes are stripped, because both are RENDERING rather than
+    # content: a prompt is one string to the person reading it whether or not the pane width splits
+    # it. Matching the raw capture misses any prompt that straddles the edge.
+    "${TMUX_CMD[@]}" capture-pane -p -J -t "$session" 2>/dev/null \
+      | LC_ALL=C sed "s/${esc}\[[0-9;]*[a-zA-Z]//g; s/${esc}(B//g" \
+      | grep -qF "$text" && return 0
+    sleep 0.25
+  done
+  fail "timed out after $(( PANE_TRIES / 4 ))s waiting for $what"
+}
 session_for_work() {
   python3 - "$1" <<'PYEOF'
 import hashlib, pathlib, sys
@@ -334,16 +364,13 @@ cat > "$INT_LIBEXEC/sunxi-fel" <<'EOF'
 exit 1
 EOF
 chmod +x "$INT_LIBEXEC/sunxi-fel"
-drive interrupted 40 "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
+drive interrupted "$DRIVE_INTERACTIVE" "DREAME_WORK=$W_INT" "DREAME_MODEL=x40-ultra" \
   "DREAME_TEST_HOLD_PROMPT=1" "DREAME_PYTHON=$INT_PYTHON" \
   "DREAME_LIBEXEC=$INT_LIBEXEC" \
   -- "${TOOL[@]}" recon --no-recovery-backup &
 INT_CLIENT=$!
 INT_SESSION="$(session_for_work "$W_INT")"
-for _ in $(seq 1 80); do
-  "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null | grep -q "Name for this robot" && break
-  sleep 0.25
-done
+wait_for_pane "$INT_SESSION" "Name for this robot" "the interrupt case to reach its name prompt"
 # Name it BEFORE interrupting. Only a run that got as far as a robot has anything to resume, so an
 # interrupt at the name prompt itself is meant to close without a question — testing the resume path
 # from there would assert the opposite of the intended behaviour.
@@ -351,21 +378,10 @@ done
 # Force a usable transport even on the minimal CI runner, then interrupt at a live prompt. A line
 # such as "The road ahead" remains in scrollback after the run has moved on and is not a usable
 # synchronization point.
-ready=0
-for _ in $(seq 1 80); do
-  if "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null |
-      grep -q "Ready to start watching for the robot"; then
-    ready=1
-    break
-  fi
-  sleep 0.25
-done
-[ "$ready" = 1 ] || fail "the interrupt case never reached its live readiness prompt"
+wait_for_pane "$INT_SESSION" "Ready to start watching for the robot" \
+  "the interrupt case to reach its live readiness prompt"
 "${TMUX_CMD[@]}" send-keys -t "$INT_SESSION" C-c
-for _ in $(seq 1 60); do
-  "${TMUX_CMD[@]}" capture-pane -p -t "$INT_SESSION" 2>/dev/null | grep -qE "\[y/N\]" && break
-  sleep 0.25
-done
+wait_for_pane "$INT_SESSION" "[y/N]" "Ctrl+C to raise its resume confirmation"
 [ "$(sessions)" -eq 1 ] || fail "Ctrl+C did not leave exactly one resumable run"
 "${TMUX_CMD[@]}" detach-client -s "$INT_SESSION"
 wait "$INT_CLIENT" 2>/dev/null || true
@@ -391,7 +407,7 @@ pass "Ctrl+C leaves one run and re-running goes back to it"
 
 # --- 6. a vanished client rejoins the same run ----------------------------------------------
 W_DROP="$RUNDIR/work-client-drop"
-drive dropped 40 "DREAME_WORK=$W_DROP" "DREAME_MODEL=x40-ultra" -- "${TOOL[@]}" &
+drive dropped "$DRIVE_INTERACTIVE" "DREAME_WORK=$W_DROP" "DREAME_MODEL=x40-ultra" -- "${TOOL[@]}" &
 DROP_CLIENT=$!
 DROP_SESSION="$(session_for_work "$W_DROP")"
 for _ in $(seq 1 80); do
@@ -455,9 +471,9 @@ EOF
 env HOME="$HOME_DIR" "${TMUX_CMD[@]}" new-session -d -s unrelated 'sleep 20'
 W_CONFIG="$RUNDIR/work-config"
 CONFIG_SESSION="$(session_for_work "$W_CONFIG")"
-drive config 40 "DREAME_WORK=$W_CONFIG" -- "${TOOL[@]}" &
+drive config "$DRIVE_INTERACTIVE" "DREAME_WORK=$W_CONFIG" -- "${TOOL[@]}" &
 CONFIG_CLIENT=$!
-for _ in $(seq 1 80); do
+for _ in $(seq 1 "$PANE_TRIES"); do
   pane="$("${TMUX_CMD[@]}" capture-pane -p -t "$CONFIG_SESSION" 2>/dev/null || true)"
   attached="$("${TMUX_CMD[@]}" display-message -p -t "$CONFIG_SESSION" \
     '#{session_attached}' 2>/dev/null || true)"
@@ -541,7 +557,7 @@ EOF
 chmod +x "$NESTED_SCRIPT"
 env HOME="$HOME_DIR" TMUX_TMPDIR="$TMUX_TMPDIR" TERM=xterm-256color \
   "${USER_TMUX_CMD[@]}" new-session -d -s user -x 120 -y 40 "$NESTED_SCRIPT"
-for _ in $(seq 1 80); do
+for _ in $(seq 1 "$PANE_TRIES"); do
   pane="$("${TMUX_CMD[@]}" capture-pane -p -t "$NESTED_SESSION" 2>/dev/null || true)"
   attached="$("${TMUX_CMD[@]}" display-message -p -t "$NESTED_SESSION" \
     '#{session_attached}' 2>/dev/null || true)"
@@ -562,7 +578,7 @@ pass "a caller inside another tmux attaches across servers and gets the outcome"
 # --- 12. a pure command does not disturb a live run ------------------------------------------
 # A bare run with no robots stops at the naming prompt and sits there, which is a live session.
 W2="$RUNDIR/work2"
-drive live 40 "DREAME_WORK=$W2" -- "${TOOL[@]}" &
+drive live "$DRIVE_INTERACTIVE" "DREAME_WORK=$W2" -- "${TOOL[@]}" &
 LIVE=$!
 for _ in $(seq 1 80); do [ "$(sessions)" -ge 1 ] && break; sleep 0.5; done
 [ "$(sessions)" -ge 1 ] || fail "no session appeared for a run left waiting at a prompt"
