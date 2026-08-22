@@ -623,7 +623,21 @@ def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> 
         # The job that runs third-party lint/test code holds no credential at all, and neither
         # checkout leaves one behind for a later step to pick up.
         assert "secrets." not in gate, workflow
-        assert text.count("persist-credentials: false") == 2, workflow
+        # EVERY checkout disclaims the credential, rather than a fixed COUNT of them doing so. The
+        # count was 2 because there happened to be two checkouts; adding a third credential-free job
+        # then failed a test whose actual subject — that none of them persists a token — had only
+        # got stronger. Scanned as text: this project has no YAML parser and wants no dev dep for
+        # one assertion.
+        # Not "- uses:": a checkout may be a bare list item or carry its own `name:` above the
+        # `uses:` line, and matching only the first spelling silently found no checkouts at all.
+        blocks = text.split("uses: actions/checkout")
+        assert len(blocks) > 1, f"{workflow}: no checkout at all"
+        for block in blocks[1:]:
+            # Up to the next step in the same job, or the next job.
+            head = re.split(r"\n\s*- (?:name|uses):|\n  \w[\w-]*:", block)[0]
+            assert "persist-credentials: false" in head, (
+                f"{workflow}: a checkout does not disclaim the credential:\n{head[:200]}"
+            )
         assert "token: ${{ secrets" not in text, workflow
 
         # The job that does hold the token re-derives the edits on a tree the gate never touched
