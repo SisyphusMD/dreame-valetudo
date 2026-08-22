@@ -39,12 +39,19 @@ case "$MODE" in
     ;;
 esac
 
+# --paths is $ROOT/src, not $ROOT: the package lives under src/ now and PyInstaller resolves
+# imports from that path, not from an installed distribution — the repo root holds no
+# `dreame_valetudo` package any more, so the freeze died on the first import.
+#
+# Nothing may be commented INSIDE the continuation chain below: the comment swallows its own
+# trailing backslash, the command ends there, and every argument after it becomes a stray
+# command. shellcheck reports it as SC2215.
 pyinstaller "${mode_args[@]}" --clean --noconfirm \
   --name dreame-valetudo \
   --distpath "$OUT" \
   --workpath "$(mktemp -d)" \
   --specpath "$(mktemp -d)" \
-  --paths "$ROOT" \
+  --paths "$ROOT/src" \
   --add-data "$ROOT/libexec/fastboot-libusb.py:libexec" \
   --add-data "$ROOT/libexec/dustbuilder-forms:libexec/dustbuilder-forms" \
   --add-data "$ROOT/CHANGELOG.md:dreame_valetudo" \
