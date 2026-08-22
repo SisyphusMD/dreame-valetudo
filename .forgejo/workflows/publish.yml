@@ -56,17 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Both .debs are built through buildx, the way the sister repos build their arm64 images: the
-      # docker-container BuildKit driver carries QEMU, so the arm64 leg emulates INSIDE the builder.
-      # This runner is a Talos node with no usable host binfmt for a plain `docker run --platform
-      # arm64` (that gets `exec format error`); buildx sidesteps it, and its context/output are
-      # client-side streams so the DinD workspace-visibility problem doesn't apply either.
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          # The action's own default is tonistiigi/binfmt:latest — the one moving tag left in
-          # either workflow. Pin it by digest like every other image here.
-          # renovate: datasource=docker depName=tonistiigi/binfmt
-          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      # NO QEMU. This runner is amd64 and builds only amd64; arm64 is built on a native arm64
+      # runner (.github/workflows/release-linux-arm64.yml). buildx is still used because its
+      # context and output are client-side streams, which dodges the workspace-visibility problem
+      # a bind mount hits when the job itself runs in a container — not because anything emulates.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
@@ -74,7 +67,7 @@ jobs:
             [registry."docker.io"]
               mirrors = ["dockerhub-mirror.nas.bryantserver.com"]
 
-      - name: Build the .debs + .rpms (buildx) + the tarball
+      - name: Build the amd64 .deb, .rpm and tarball (native — nothing is emulated here)
         id: build
         env:
           # Step-local, not job-wide: the key is needed by exactly this step, and a job-level
@@ -82,136 +75,19 @@ jobs:
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          # Read the pins from the Python constants so there's ONE source of truth (Renovate-tracked).
-          read_pin() { python3 -c "import re,sys; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
-          SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
-          export VERSION="${GITHUB_REF_NAME#v}"
-          # The NATIVE package version, for filenames. nfpm normalises a semver prerelease to the
-          # `~rc.` form internally, so a filename built from the raw tag would say `0.3.0-rc.17`
-          # while `dpkg -I` reports `0.3.0~rc.17` — the file would not be named after what it
-          # contains. whiskerless has always used the native form here; same convention.
-          PKGVER="${VERSION/-rc./~rc.}"
-          export GLIBC_FLOOR
-          GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
-          # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.22.2"
-          PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
-          PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
-          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
-          MANYLINUX_AMD64="quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b"
-          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_aarch64
-          MANYLINUX_ARM64="quay.io/pypa/manylinux_2_28_aarch64:2026.08.15-1@sha256:561427136aabf3787bffb294b3515748241e0962d1527ae28bea1e076bfb9d99"
-          # nfpm packages the .debs. Pinned image; its digest IS the integrity check (Renovate-kept).
-          # renovate: datasource=docker depName=goreleaser/nfpm
-          NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
-          # The same base package-smoke.Dockerfile installs the .deb into, so the standalone bundle
-          # is proven against the identical userland rather than a second, differently-aged one.
-          # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-          SMOKE_BASE="ubuntu:26.04@sha256:6df9e8dd1eac389ebfef692c9648449adeb815d01e16e29cd6f3e50fe64ba9a6"
-
-          # Package a laid-out arch's binaries with the pinned nfpm image. DEB_ARCH is nfpm's internal
-          # arch (amd64/arm64) for BOTH formats — nfpm maps it to the .deb arch and to the .rpm arch
-          # (x86_64/aarch64). nfpm runs on the amd64 runner natively (arch-independent) via docker
-          # create+cp, since the DinD daemon can't bind-mount the job workspace.
-          # Package signing, FAIL-CLOSED. An unsigned package installs perfectly well, so nothing
-          # downstream would notice — but the apt/dnf repository serves these to subscribers whose
-          # dnf is configured with `gpgcheck=1`, and an unsigned upload there is a broken channel
-          # discovered by users rather than by this workflow. Refusing to build is the loud failure.
+          # The build-time pins live in packaging/release-pins.env and the script sources them
+          # itself — one file, because the arm64 half of this release is built on GitHub and two
+          # inline copies would drift the first time one was bumped.
           #
-          # The key is the SisyphusMD namespace key, held as an ORG-level Forgejo secret, so every
-          # project in the namespace signs with the same one — see packaging/sisyphusmd.repo for
-          # why one owner key beats one key per project when the registry group is shared.
-          : "${GPG_SIGNING_KEY:?the signing key secret is missing — refusing to publish unsigned packages}"
-          # mktemp, NOT the workspace: `docker cp . :/w` sends the whole tree, so a key sitting
-          # in the repo would ride into every package build and be one stray `git add` from
-          # being committed.
-          KEYFILE="$(mktemp)"; chmod 600 "$KEYFILE"
-          printf '%s' "$GPG_SIGNING_KEY" > "$KEYFILE"
-          SIGN_ARGS=(-e NFPM_SIGNING_KEY_FILE=/signing-key.asc)
-          CIDS=""
-          cleanup() {
-            rm -f "$KEYFILE"
-            # Force-removed on EXIT, not just on success: `set -e` would skip a trailing `docker rm`
-            # on failure, and this runner's Docker host is reused — leaving the private key in a
-            # stopped container anyone with access could read.
-            for c in $CIDS; do docker rm -f "$c" >/dev/null 2>&1 || true; done
-          }
-          trap cleanup EXIT
-
-          nfpm_pkg() { # nfpm_pkg <deb|rpm> <nfpm-arch amd64|arm64> <output-filename>
-            local fmt="$1" narch="$2" name="$3" cid
-            cid=$(docker create -e DEB_ARCH="$narch" -e VERSION -e GLIBC_FLOOR \
-              "${SIGN_ARGS[@]}" -w /w "$NFPM" package -p "$fmt" -f packaging/nfpm.yaml -t "/w/$name")
-            CIDS="$CIDS $cid"
-            docker cp . "$cid":/w
-            # Copied SEPARATELY, and never into /w — see the mktemp note above.
-            docker cp "$KEYFILE" "$cid":/signing-key.asc
-            docker start -a "$cid"
-            docker cp "$cid":"/w/$name" .
-            docker rm -f "$cid" >/dev/null
-          }
-          build_pkgs() { # build_pkgs <docker-platform> <deb-arch> <rpm-arch> <builder-image>
-            local plat="$1" arch="$2" rpmarch="$3" builder="$4"
-            # buildx builds the per-arch bundle (main tool + fastboot client + sunxi-fel) and exports
-            # just those native binaries. The per-arch builder and source/tool pins ride in as
-            # build args. The arm64 leg emulates inside the builder.
-            rm -rf "out-$arch"
-            docker buildx build --platform "$plat" \
-              --build-arg PYTHON_BUILD_IMAGE="$builder" \
-              --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
-              --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
-              --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
-              -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
-            rm -rf dist && mkdir dist
-            # -a, not -r: a bundle may contain symlinks, and a plain recursive copy would replace
-            # each with a copy of its target, so the package would no longer be what was built.
-            cp -a "out-$arch/dreame-valetudo" "out-$arch/dreame-fastboot" dist/
-            cp "out-$arch/sunxi-fel" ./sunxi-fel
-            nfpm_pkg deb "$arch" "dreame-valetudo_${PKGVER}_$arch.deb"
-            nfpm_pkg rpm "$arch" "dreame-valetudo-${PKGVER}.$rpmarch.rpm"
-            # nfpm assembles the package outside the build image, so this is the only step that
-            # compares what installs against what was frozen — entry types and all. Removed again
-            # before the next arch, whose nfpm run copies this workspace into its container.
-            rm -rf "extract-$arch" && mkdir "extract-$arch"
-            dpkg-deb -x "dreame-valetudo_${PKGVER}_$arch.deb" "extract-$arch"
-            python3 packaging/check-package-parity.py \
-              "out-$arch/dreame-valetudo" "extract-$arch/usr/lib/dreame-valetudo/app"
-            python3 packaging/check-package-parity.py \
-              "out-$arch/dreame-fastboot" "extract-$arch/usr/lib/dreame-valetudo/fastboot"
-            rm -rf "extract-$arch"
-            # The standalone channel, for distributions with neither apt nor dnf. Built from the
-            # raw bundles rather than the .deb because every symlink nfpm writes is absolute, and
-            # only after the parity check above has proven those bundles are what the package ships.
-            bash packaging/build-linux-tarball.sh \
-              "out-$arch" "$arch" "$PKGVER" "dreame-valetudo-${PKGVER}-linux-${arch}.tar.gz"
-          }
-          build_pkgs linux/amd64 amd64 x86_64 "$MANYLINUX_AMD64"
-          build_pkgs linux/arm64 arm64 aarch64 "$MANYLINUX_ARM64"
-          # Install and execute the exact release packages on BOTH Linux architectures before any
-          # asset is published. BuildKit carries QEMU for arm64; a plain docker run on this runner
-          # cannot. The full distro upgrade matrix runs pre-merge in ci.yml on amd64.
-          smoke_pkg() { # smoke_pkg <docker-platform> <deb>
-            # Two statements: in one `local`, every argument expands before any assignment runs,
-            # so a self-reference trips `set -u`.
-            local plat="$1" package="$2"
-            local result="package-smoke-${plat##*/}"
-            cp "$package" package-smoke.deb
-            rm -rf "$result"
-            docker buildx build --platform "$plat" \
-              -f packaging/package-smoke.Dockerfile --target result \
-              --output "type=local,dest=$result" .
-            test -f "$result/package-smoke-passed"
-          }
-          smoke_pkg linux/amd64 "dreame-valetudo_${PKGVER}_amd64.deb"
-          smoke_pkg linux/arm64 "dreame-valetudo_${PKGVER}_arm64.deb"
-          # amd64 only: this runner executes amd64 natively, and the arm64 leg would need the
-          # buildx QEMU path the packages use. The launcher and layout are arch-independent — what
-          # differs per arch is the frozen binary, which smoke_pkg already ran on both.
-          bash packaging/smoke-linux-tarball.sh \
-            "dreame-valetudo-${PKGVER}-linux-amd64.tar.gz" "$SMOKE_BASE"
-          # tarball: arch-independent SOURCE channel (run via uv/pipx — no per-arch binary).
+          # amd64 ONLY. arm64 is built natively by .github/workflows/release-linux-arm64.yml and
+          # appended to this release afterwards — this runner is amd64, and emulating arm64 here
+          # is what cost rc.13 its Linux assets. build-linux-arch.sh refuses a host/target
+          # mismatch rather than silently emulating, so that cannot come back by accident.
+          bash packaging/build-linux-arch.sh amd64 "$GITHUB_REF_NAME"
+          # The arch-independent SOURCE tarball the Homebrew formula builds from. Built here rather
+          # than in the per-arch script precisely because it is not per-arch: building it twice
+          # would mean two forges racing to publish two copies of one artifact.
           bash packaging/build-tarball.sh
-          ls -l ./*.deb ./*.rpm ./*.tar.gz
 
       - name: Release notes from CHANGELOG
         run: bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
@@ -226,9 +102,20 @@ jobs:
           # that cannot be told apart, where the second silently overwrites the first, is a real
           # cost paid by users. reconcile matches by ROLE rather than constructed name, so older
           # releases keep their versionless names without special-casing.
-          ASSETS=(./dreame-valetudo_*.deb ./dreame-valetudo-*.rpm ./dreame-valetudo-*.tar.gz)
-          # Both tarball kinds are covered by that last glob: the arch-independent SOURCE tarball
-          # the Homebrew formula builds from, and the two standalone linux bundles.
+          # The amd64 artifacts this runner built, plus the arch-independent source tarball. The
+          # arm64 ones are appended to this same release by the native arm64 job on GitHub, the way
+          # the macOS .pkg already is — so a glob for them here would either match nothing or race
+          # that job.
+          ASSETS=(
+            ./dreame-valetudo_*_amd64.deb
+            ./dreame-valetudo-*.x86_64.rpm
+            ./dreame-valetudo-*-linux-amd64.tar.gz
+          )
+          # The SOURCE tarball is named without a `-linux-<arch>` segment, so it needs its own
+          # entry: a glob loose enough to catch it also catches the arm64 bundle this job does not
+          # have. extglob rather than a second broad pattern, for exactly that reason.
+          shopt -s extglob
+          ASSETS+=(./dreame-valetudo-!(*-linux-*).tar.gz)
           fail=0
           packaging/forgejo-release.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
@@ -241,27 +128,35 @@ jobs:
             || fail=1
           exit "$fail"
 
-      - name: Publish the .deb/.rpm into the apt/dnf repositories
-        # Runs even when a release UPLOAD failed — the repository is a fourth destination with its
-        # own failure modes, and a job publishing to independent places must not let the first
-        # failure skip the rest.
-        #
-        # But NOT when the BUILD failed, which `!cancelled()` alone would allow. These are that
-        # step's output, and it builds amd64 fully before starting arm64 — so an arm64 failure
-        # leaves two amd64 packages on disk that no smoke test ever installed. Uploading those
-        # publishes a half-architecture release to every apt and dnf subscriber, and reports
-        # success doing it.
-        #
-        # A SEPARATE token from the release PAT: Forgejo scopes the package registry on its own,
-        # and `write:repository` — everything the release helpers need — cannot upload a package.
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+  registry:
+    name: Publish .deb/.rpm into the apt/dnf repositories
+    needs: releases
+    # Runs even when a release UPLOAD failed — the repository is a fourth destination with its own
+    # failure modes, and a job publishing to independent places must not let the first failure skip
+    # the rest.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Collect BOTH architectures, then publish
+        # A repository is not a release page: whatever lands there is what `apt install` hands
+        # people immediately, with no way to tell the set is short. publish-registry.sh refuses a
+        # partial set for that reason, and since arm64 moved to a native GitHub runner this job's
+        # own workspace holds only half of it — so it reads the full set off the release both
+        # forges publish to, and fails rather than publishing half.
         run: |
           set -euo pipefail
-          chmod +x packaging/publish-registry.sh
-          # The REAL artifacts by name, not `./*.deb`. The package smoke leaves `package-smoke.deb`
-          # in the workspace on every successful build, and publish-registry.sh uploads whatever it
-          # is handed — so the bare glob published a duplicate arm64 package under that name, or
-          # failed the release on a registry duplicate.
+          chmod +x packaging/publish-registry.sh packaging/fetch-release-assets.sh
+          select='.assets[]? | select(
+                    (.name | endswith("_amd64.deb"))
+                    or (.name | endswith("_arm64.deb"))
+                    or (.name | endswith(".x86_64.rpm"))
+                    or (.name | endswith(".aarch64.rpm"))
+                  ) | .browser_download_url'
+          # No `|| true`: an incomplete set must stop this job, not be published.
+          packaging/fetch-release-assets.sh "$GITHUB_REF_NAME" 4 "$select"
+          # A SEPARATE token from the release PAT: Forgejo scopes the package registry on its own,
+          # and `write:repository` — everything the release helpers need — cannot upload a package.
           packaging/publish-registry.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}" "$GITHUB_REF_NAME" \
             ./dreame-valetudo_*.deb ./dreame-valetudo-*.rpm
@@ -425,9 +320,56 @@ jobs:
           git add Formula/
           git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v} bottles" || { echo "no change to publish"; exit 0; }
           git -c "$AUTH" push
+  nas-bridge:
+    name: Bridge the GitHub-built assets → NAS
+    needs: releases
+    # Runs even when `releases` went red. It needs exactly one thing — the GitHub-built assets on
+    # the public Forgejo release — and that has nothing to do with whether the other registries
+    # accepted their copies.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Wait for the GitHub-built assets on the public Forgejo release, then copy to NAS
+        run: |
+          # -e stays ON. Only the FETCH is allowed to fail softly, and an `|| partial=true` OR-list
+          # is exempt from -e anyway — dropping -e for it would also stop the NAS upload itself
+          # from failing the job, reporting a green bridge over a failed copy.
+          set -euo pipefail
+          chmod +x packaging/fetch-release-assets.sh packaging/forgejo-release.sh
+          # Everything GitHub builds lands on the GitHub + public-Forgejo releases and stops there,
+          # because the NAS is internal and no GitHub runner can reach it. That is two workflows'
+          # worth: the notarized .pkg (release-macos.yml) and the whole arm64 Linux set
+          # (release-linux-arm64.yml, which builds natively rather than emulating).
+          #   2 .pkg (arm64 + x86_64) + arm64 .deb + aarch64 .rpm + the arm64 standalone tarball
+          #
+          # Named by suffix rather than by a substring like `arm64`, which would also match the
+          # Homebrew bottles bottles.yml appends to this same release. Those are kept off the NAS
+          # on purpose — reconcile excludes them too, because a bottle is not reproducible.
+          select='.assets[]? | select(
+                    (.name | endswith(".pkg"))
+                    or (.name | endswith("_arm64.deb"))
+                    or (.name | endswith(".aarch64.rpm"))
+                    or (.name | endswith("-linux-arm64.tar.gz"))
+                  ) | .browser_download_url'
+          # Upload what DID arrive before going red: a half-copied NAS beats an empty one, and
+          # prune-rcs reads this job's verdict before deleting candidates either way.
+          partial=false
+          packaging/fetch-release-assets.sh "$GITHUB_REF_NAME" 5 "$select" > fetched.txt \
+            || partial=true
+          mapfile -t fetched < fetched.txt
+          [ "${#fetched[@]}" -gt 0 ] || { echo "::error::nothing arrived to bridge to the NAS"; exit 1; }
+          bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
+          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
+            "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${fetched[@]}"
+          if [ "$partial" = true ]; then
+            echo "::error::the NAS release is incomplete for $GITHUB_REF_NAME"
+            exit 1
+          fi
+
   reconcile:
     name: Reconcile releases across registries (bridge .pkgs to NAS, heal history)
-    needs: releases
+    needs: [releases, nas-bridge]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -472,7 +414,7 @@ jobs:
     # the rc formula at the stable AND after reconcile has confirmed the stable is fanned out to all
     # three registries — the default needs-success gate means a failed reconcile (stable not fully
     # published) skips the prune, so the rc formula is never left pointing at a deleted rc.
-    needs: [homebrew-tap, reconcile]
+    needs: [homebrew-tap, registry, nas-bridge, reconcile]
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:

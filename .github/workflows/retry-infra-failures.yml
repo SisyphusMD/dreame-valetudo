@@ -27,6 +27,8 @@ on:
       - "CI (macOS)"
       - "CI (pull requests)"
       - "Bottles (Homebrew)"
+      - "Install matrix (macOS + Linux arm64)"
+      - "Release (Linux arm64)"
       - "Release (macOS pkg)"
     types: [completed]
 

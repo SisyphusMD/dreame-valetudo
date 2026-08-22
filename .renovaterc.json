@@ -19,8 +19,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, and workflow shell blocks (pypi / github-releases / github-tags).",
-      "managerFilePatterns": ["/^dreame-valetudo$/", "/src/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/"],
+      "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, workflow shell blocks, and packaging/release-pins.env (pypi / github-releases / github-tags). The pins file is listed because two forges build this release — amd64 on Forgejo, arm64 on GitHub — and one file is what keeps their pins equal; a pattern covering only the workflows would silently stop bumping PyInstaller.",
+      "managerFilePatterns": ["/^dreame-valetudo$/", "/src/dreame_valetudo/constants\\.py$/", "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/release-pins\\.env$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>pypi|github-releases|github-tags) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
       ]
@@ -47,8 +47,8 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/shellcheck-all.sh, and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins.",
-      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/release-pins.env (the manylinux builders, nfpm and the smoke base, shared by both forges' build jobs), packaging/shellcheck-all.sh, and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins.",
+      "managerFilePatterns": ["/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/", "/^packaging/release-pins\\.env$/", "/^packaging/shellcheck-all\\.sh$/", "/^packaging/package-smoke\\.Dockerfile$/", "/^packaging/install-smoke\\.Dockerfile$/"],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
       ]
