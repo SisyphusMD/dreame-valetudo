@@ -172,8 +172,10 @@ jobs:
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
           ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
@@ -229,9 +231,32 @@ jobs:
           [ -n "$version" ] || { echo "::error::could not compute the version being promoted"; exit 1; }
           bash packaging/check-rc-install-matrix.sh "$version"
 
+  mirror-gate:
+    name: Qualify the mirror's macOS checks on the source commit (no write credential)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the mirror's macOS CI to be green on the source commit
+        # This forge has no macOS runner, so nothing here can run the suite on a Mac. ci.yml waits
+        # for the mirror's verdict per pull request, which leaves main reachable by anything that
+        # did not go through one — a direct push, an infra failure someone retried, a run that went
+        # red after merge. Cutting from main is exactly when that matters.
+        #
+        # The SOURCE commit, not the tagged one: the tag job stamps version strings and commits, so
+        # the tagged tree is a child of this SHA and no branch workflow ever evaluates it.
+        env:
+          # Optional and read-only. Unauthenticated GitHub allows 60 requests an hour PER IP,
+          # shared with everything else egressing from this network. A token needs NO scopes for a
+          # public repo and lifts the limit to 5,000/hour. Absent, this still works, just slowly.
+          # The job holds no WRITE credential either way, which is the property that matters.
+          MIRROR_CI_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
+        run: bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/ci-macos.yml
+
   tag:
     name: Authorize and push release tag
-    needs: [gate, candidate-gate]
+    needs: [gate, candidate-gate, mirror-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Refuse non-main dispatches

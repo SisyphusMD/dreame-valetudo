@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Run pinned shellcheck (DEFAULT severity, matching ci.yml and the sibling project) over every
-# shipped and integration script, via a
-# throwaway container so no host shellcheck install is required. Shared by ci.yml's shellcheck job
-# and the release/prerelease gates, so pre-merge and pre-tag runs enforce the exact same check.
+# Run pinned shellcheck at DEFAULT severity over every shipped and integration script, via a
+# throwaway container so no host shellcheck install is required.
+#
+# One script rather than an inline block, called by ci.yml's shellcheck job AND by the
+# release/prerelease gates: pre-merge and pre-tag then enforce the same check by construction
+# rather than by three copies of it staying in agreement.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # renovate: datasource=docker depName=koalaman/shellcheck
