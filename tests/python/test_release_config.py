@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import yaml
+
 _ROOT = Path(__file__).resolve().parents[2]
 _PUBLISH = _ROOT / ".forgejo" / "workflows" / "publish.yml"
 _CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
@@ -21,7 +23,7 @@ _RELEASE = _ROOT / ".forgejo" / "workflows" / "release.yml"
 _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
 _MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
-_MACOS_WAIT = _ROOT / "packaging" / "wait-github-macos-ci.sh"
+_MACOS_WAIT = _ROOT / "packaging" / "check-mirror-ci.sh"
 # No datasource tracks these, so nothing bumps them and nothing has to refresh them: the stage1
 # tarball has no upstream release feed, and the Dust keystream is a constant of the format.
 _STATIC_DIGESTS = ("STAGE1_SHA256", "DUST_KEYSTREAM_SHA256")
@@ -214,7 +216,8 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     macos = _MACOS_CI.read_text()
 
     assert "needs: [shellcheck, python, python-floor, build, integration]" in forgejo
-    assert "packaging/wait-github-macos-ci.sh" in forgejo
+    assert "packaging/check-mirror-ci.sh" in forgejo
+    assert ".github/workflows/ci-macos.yml" in forgejo
     assert 'github.event.pull_request.head.repo.full_name == github.repository' in forgejo
     assert 'os.environ["GITHUB_EVENT_PATH"]' in forgejo
     assert '["pull_request"]["head"]["sha"]' in forgejo
@@ -254,7 +257,7 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
 
     assert 'requires-python = ">=3.11"' in project
     assert 'python-version: "3.11.0"' in floor_job
-    assert 'pip install "pytest==$PYTEST" -e .' in floor_job
+    assert 'pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .' in floor_job
     assert "pytest -q tests/python" in floor_job
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
@@ -459,9 +462,15 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
     bridge = _MACOS_WAIT.read_text()
 
-    assert 'DREAME_GITHUB_CI_ATTEMPTS:-12' in bridge
-    assert 'DREAME_GITHUB_CI_DELAY:-300' in bridge
-    assert 'DREAME_GITHUB_CI_INITIAL_DELAY:-180' in bridge
+    # Two Forgejo runners share one public egress IP and GitHub allows 60 unauthenticated requests
+    # an hour. A 2400s deadline polled every 300s is 8 requests per gate, so several can be in
+    # flight at once and still sit well under the shared limit.
+    assert 'MIRROR_CI_TIMEOUT:-2400' in bridge
+    assert 'MIRROR_CI_INTERVAL:-300' in bridge
+    # A throttled response is a statement about the quota, not about the commit. Failing the gate
+    # on one would turn somebody else's traffic into a red release.
+    assert '403|429)' in bridge
+    # Match the workflow FILE, and let a success outrank a cancelled sibling.
     assert '.split("@", 1)[0] == workflow' in bridge
     assert 'r.get("conclusion") == "success"' in bridge
 
@@ -560,7 +569,8 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
         # CI runs on a branch and a release is cut from a tag, so a gate that lives only in CI does
         # not constrain what a release may ship.
         assert (
-            'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .'
+            'pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV"'
+            ' "pyyaml==$PYYAML" -e .'
             in gate
         )
 
@@ -613,11 +623,9 @@ def test_stable_release_pushes_commit_and_tag_atomically() -> None:
     # keeping the same three safety checks the shared script performs for release.yml.
     prerelease_step = _PRERELEASE.read_text()
     prerelease_step = prerelease_step[prerelease_step.index("      - name: Push the prerelease tag") :]
+    # Only that it does NOT use the shared helper. What the inline push must itself guarantee is
+    # pinned by test_workflow_security.py, in both projects, so there is one place to change it.
     assert "bash packaging/push-tag.sh" not in prerelease_step
-    assert 'push origin "$TAG"' in prerelease_step
-    assert '[ "$(git cat-file -t "refs/tags/$TAG")" = tag ]' in prerelease_step
-    assert '[ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ]' in prerelease_step
-    assert 'test -z "$(git status --porcelain)"' in prerelease_step
 
 
 def test_release_write_token_is_confined_to_a_job_that_reproduces_the_gate() -> None:
@@ -1238,3 +1246,31 @@ def test_every_channel_proves_itself_with_an_exported_file() -> None:
     assert '[ -f "out/$channel/passed" ]' in _MATRIX_ARCH.read_text()
     exported = re.findall(r"COPY --from=([a-z0-9-]+) [^\n]*passed", _INSTALL_SMOKE.read_text())
     assert len(exported) >= 9, f"only {len(exported)} channels export a marker"
+
+
+
+def test_every_job_that_runs_the_suite_installs_the_yaml_parser() -> None:
+    """tests/python imports PyYAML, and pip does not install PEP 735 dependency groups.
+
+    `uv run pytest` resolves the dev group from uv.lock and passes locally; every CI job instead
+    pip-installs an explicit pinned list plus `-e .`, so a test-only import that is not on that
+    list fails at COLLECTION and takes the whole job with it. Local green and CI red, for a
+    dependency that looks declared.
+
+    Per JOB, not per step: steps share one environment, so the install and the run are routinely
+    two different steps.
+    """
+    workflows = sorted((_ROOT / ".forgejo" / "workflows").glob("*.yml"))
+    workflows += sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
+    checked = 0
+    for workflow in workflows:
+        jobs = yaml.safe_load(workflow.read_text())["jobs"]
+        for name, job in jobs.items():
+            runs = "\n".join(
+                step.get("run", "") for step in job.get("steps", []) if isinstance(step, dict)
+            )
+            if "pytest -q tests/python" not in runs:
+                continue
+            checked += 1
+            assert "pyyaml==" in runs, f"{workflow.name}:{name} runs the suite without pyyaml"
+    assert checked >= 6, f"only found {checked} jobs running the suite"

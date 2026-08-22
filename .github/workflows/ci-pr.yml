@@ -45,11 +45,13 @@ jobs:
           PYTEST="9.1.1"
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
           # `-e .` is not optional under the src/ layout: the package is no longer
           # importable from the working directory, which is the whole point — a module
           # missing from the built wheel can no longer pass the tests from the checkout.
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" -e .
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           # Every tracked *.py rather than a hand-maintained list, matching ci.yml.
           ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/' | tr '\n' ' ')
           mypy
@@ -88,7 +90,9 @@ jobs:
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
-          pip install "pytest==$PYTEST" -e .
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
+          pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
           python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
             packaging/stamp-version.py \
             packaging/build-source-tar.py \
