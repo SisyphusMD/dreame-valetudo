@@ -468,9 +468,14 @@ case "$url" in
     else printf '[]\n200'; fi ;;
   */releases/tags/*)
     stem="${url##*/releases/tags/}"; stem="${stem%%\?*}"
+    # A STATUS line, like the git-refs branch above: stable_present_everywhere reads this through
+    # http_get_status, because a JSON error body must never be mistaken for a valid answer.
+    if [ "$registry" = "${PRUNE_STABLE_ERROR_REGISTRY:-}" ]; then
+      printf '{"message":"Internal Server Error"}\n500'; exit 0
+    fi
     if [ -f "$refs" ] && grep -qxF "$stem" "$refs" && [ -f "$STUB_FIX/$registry.tag.$stem.json" ]; then
-      cat "$STUB_FIX/$registry.tag.$stem.json"
-    else printf '{}\n'; fi ;;
+      printf '%s\n200' "$(cat "$STUB_FIX/$registry.tag.$stem.json")"
+    else printf '{}\n404'; fi ;;
   */releases*)
     if [ -f "$rel" ]; then cat "$rel"; else printf '[]\n'; fi ;;
   *) printf '{}\n' ;;
@@ -871,6 +876,23 @@ for r in cluster nas github; do
   write_stable "$fixL/$r.tag.v0.6.0.json" v0.6.0 0.6.0 "$((o+40))"
 done
 seed_prune_state "$fixL" "$stateL"
+# A registry that cannot be READ is not a registry reporting "not published". The stable-quorum
+# read gates on HTTP status precisely so a JSON-bodied 500 cannot be mistaken for an answer; if it
+# were, the sweep would log an ordinary "kept" line and exit 0, and nothing would ever revisit it.
+: > "$calls"
+if out=$(STUB_FIX="$fixL" PRUNE_STATE="$stateL" PRUNE_STABLE_ERROR_REGISTRY=cluster \
+  bash "$root/packaging/prune-superseded-rcs.sh" 2>&1); then
+  fail "prune exited 0 when a registry's stable-quorum read returned a 500"
+fi
+printf '%s\n' "$out" | grep -q 'could not read' \
+  || fail "prune did not say the stable could not be read: $out"
+# `! grep -q`, NOT `grep -qv`: the latter succeeds whenever ANY line fails to match, which is
+# almost always, so it asserts nothing at all.
+if printf '%s\n' "$out" | grep -q 'is not fully published'; then
+  fail "prune reported an unreadable registry as 'not fully published'"
+fi
+echo "  prune: an unreadable registry aborts the sweep instead of reading as 'not published' OK"
+
 : > "$calls"
 out=$(STUB_FIX="$fixL" PRUNE_STATE="$stateL" PRUNE_REF_ERROR_REGISTRY=cluster \
   bash "$root/packaging/prune-superseded-rcs.sh" 2>&1) \
