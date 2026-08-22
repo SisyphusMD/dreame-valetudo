@@ -164,7 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           # renovate: datasource=pypi depName=ruff
-          RUFF="0.16.3"
+          RUFF="0.16.4"
           # renovate: datasource=pypi depName=mypy
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
