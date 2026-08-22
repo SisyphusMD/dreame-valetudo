@@ -74,7 +74,11 @@ REPLACE_BOTTLE_BLOCK
     # not sitting beside the package. resolve_libexec() still falls through to the wheel's own
     # libexec for fastboot-libusb.py, which is not in here — the two lookups are separate on
     # purpose, so one native binary does not have to live next to the Python payload.
-    bin.write_env_script libexec/"venv/bin/dreame-valetudo", DREAME_LIBEXEC: libexec/"tools"
+    # (bin/"name"), not bin: write_env_script writes the script AT the pathname it is called
+    # on, so `bin.write_env_script` replaces the bin DIRECTORY with a file — after which
+    # every `bin/dreame-valetudo` is ENOTDIR and no install works at all.
+    (bin/"dreame-valetudo").write_env_script libexec/"venv/bin/dreame-valetudo",
+                                             DREAME_LIBEXEC: libexec/"tools"
   end
 
   def caveats
