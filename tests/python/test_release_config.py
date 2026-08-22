@@ -50,7 +50,12 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
     assert cluster < github < nas
 
     for name in ("homebrew-tap", "reconcile"):
-        assert "\n    if: ${{ always() }}\n" in _job(text, name)
+        # The condition must still OVERRIDE a failed dependency (that is the point of the repair
+        # jobs) while additionally requiring the ref guard to have passed — see
+        # test_no_publish_job_outruns_the_ref_guard for why the bare form was not enough.
+        condition = _job(text, name)
+        assert "always()" in condition, name
+        assert "needs.guard.result == 'success'" in condition, name
 
 
 def test_reconcile_requires_both_github_qualified_macos_packages() -> None:
@@ -951,6 +956,37 @@ def test_publishing_refuses_to_ship_unsigned_packages() -> None:
     # nobody would install fine and fail only for subscribers running gpgcheck=1.
     for workflow in (_PUBLISH, _ROOT / ".github" / "workflows" / "release-linux-arm64.yml"):
         assert "GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}" in workflow.read_text(), workflow.name
+
+
+def test_no_publish_job_outruns_the_ref_guard() -> None:
+    """publish.yml is dispatchable so a partly-failed release can be finished. The guard job refuses
+    a dispatch whose ref is not a release tag, because "main" would otherwise BE the version:
+    packages named for it, and releases called `main` created on all three registries.
+
+    But several jobs carry `always()` or `!cancelled()` so that one registry failing does not skip
+    the others — and those override a FAILED dependency, not merely an unsuccessful release. A guard
+    that refused the ref therefore stopped nothing: every external-write job downstream still ran.
+    Naming the guard in `needs` is not enough either; the condition has to test its result.
+
+    Scanned as text — this project has no YAML parser and wants no dev dep for one assertion.
+    """
+    text = _PUBLISH.read_text()
+    assert "\n  guard:\n" in text, "the ref guard is gone"
+    unguarded = []
+    # Each job is a top-level 2-space key; slice on that and read the header lines.
+    for chunk in re.split(r"\n  (?=[a-z][\w-]*:\n)", text.split("\njobs:\n", 1)[1]):
+        name = chunk.split(":", 1)[0].strip()
+        header = chunk.split("steps:", 1)[0]
+        condition = "".join(ln for ln in header.splitlines() if ln.strip().startswith("if:"))
+        if "always()" not in condition and "cancelled()" not in condition:
+            continue  # the implicit needs-success gate already covers it
+        needs = "".join(ln for ln in header.splitlines() if ln.strip().startswith("needs:"))
+        if "guard" not in needs or "needs.guard.result" not in condition:
+            unguarded.append(name)
+    assert unguarded == [], (
+        "these run even when the guard refused the ref, and write to registries while they do: "
+        f"{unguarded}"
+    )
 
 
 def test_the_registry_publish_runs_but_never_on_a_partial_package_set() -> None:

@@ -6,6 +6,16 @@ name: Publish
 # On a STABLE tag a final prune-rcs job (after tap + reconcile) sweeps the rc releases/tags that the
 # now fully fanned-out stable supersedes. See packaging/README.md for the secrets.
 on:
+  # Dispatchable so a partly-failed publish can be FINISHED without cutting a new tag. Forgejo
+  # exposes no rerun endpoint, so without this the only recovery from a late transient failure —
+  # a mirror-timing error, one registry refusing an upload — is burning another release candidate.
+  # Every helper here is idempotent (create-or-reuse the release, --skip-existing on PyPI, replace
+  # assets), so re-running a partial publish completes it rather than duplicating it.
+  #
+  # Dispatch with the TAG as the ref. The guard job below refuses anything else, because dispatching
+  # from `main` would treat "main" as the version: packages named for it, a wait for a tag that does
+  # not exist, and releases called `main` created on all three hosts. Same arrangement as the sibling.
+  workflow_dispatch:
   push:
     # Stable (v1.2.3) and prerelease (v1.2.3-rc.N) tags both build here; the release helpers mark
     # the hyphenated ones as prereleases, and the tap job writes them to the separate -rc formula.
@@ -19,8 +29,34 @@ concurrency:
 
 
 jobs:
+  guard:
+    name: Refuse anything that is not a release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the ref
+        run: |
+          set -euo pipefail
+          # Both tag shapes this workflow publishes; anything else is a dispatch mistake, and it is
+          # cheaper to refuse it here than to unpick releases named `main` from three registries.
+          # The SAME grammar every other release step enforces, not a glob. `v0.3.0.dev1`
+          # matches `v*.*.*` and is rejected by rel_validate_tag — and by every helper
+          # downstream — so a glob here lets a dispatch start the PyPI upload and the builds
+          # before anything refuses it.
+          case "${GITHUB_REF}" in
+            refs/tags/*) : ;;
+            *) echo "::error::${GITHUB_REF} is not a tag — dispatch this with a release tag as the ref" >&2; exit 1 ;;
+          esac
+          # shellcheck source=/dev/null
+          . packaging/release-common.sh
+          rel_validate_tag "${GITHUB_REF_NAME}"
+          echo "publishing ${GITHUB_REF_NAME}"
+
   pypi:
     name: Publish to PyPI
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,6 +88,7 @@ jobs:
 
   releases:
     name: Build .debs + tarball, create releases (Forgejo, NAS, GitHub)
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,11 +167,11 @@ jobs:
 
   registry:
     name: Publish .deb/.rpm into the apt/dnf repositories
-    needs: releases
+    needs: [guard, releases]
     # Runs even when a release UPLOAD failed — the repository is a fourth destination with its own
     # failure modes, and a job publishing to independent places must not let the first failure skip
     # the rest.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -171,8 +208,8 @@ jobs:
     concurrency:
       group: tap-write
       cancel-in-progress: false
-    needs: [releases, pypi]
-    if: ${{ always() }}
+    needs: [guard, releases, pypi]
+    if: ${{ always() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -209,11 +246,11 @@ jobs:
       cancel-in-progress: false
     # The tap must already hold this version (the bottles were built by
     # installing it) and the release must exist (the bottles are its assets).
-    needs: [homebrew-tap, releases]
+    needs: [guard, homebrew-tap, releases]
     # `releases` going red does not mean the bottles are missing — they are
     # appended by the GitHub workflow, to a release that may well have been
     # created successfully before some later host failed. #76 again.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -322,11 +359,11 @@ jobs:
           git -c "$AUTH" push
   nas-bridge:
     name: Bridge the GitHub-built assets → NAS
-    needs: releases
+    needs: [guard, releases]
     # Runs even when `releases` went red. It needs exactly one thing — the GitHub-built assets on
     # the public Forgejo release — and that has nothing to do with whether the other registries
     # accepted their copies.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -369,8 +406,8 @@ jobs:
 
   reconcile:
     name: Reconcile releases across registries (bridge .pkgs to NAS, heal history)
-    needs: [releases, nas-bridge]
-    if: ${{ always() }}
+    needs: [guard, releases, nas-bridge]
+    if: ${{ always() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
