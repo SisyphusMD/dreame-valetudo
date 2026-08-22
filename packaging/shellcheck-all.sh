@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run pinned shellcheck (severity=warning) over every shipped and integration script, via a
+# Run pinned shellcheck (DEFAULT severity, matching ci.yml and the sibling project) over every
+# shipped and integration script, via a
 # throwaway container so no host shellcheck install is required. Shared by ci.yml's shellcheck job
 # and the release/prerelease gates, so pre-merge and pre-tag runs enforce the exact same check.
 set -euo pipefail
@@ -9,7 +10,7 @@ SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f178
 # Every tracked *.sh, not three globbed directories: a script added anywhere else used to go
 # unchecked because nobody widened the list.
 mapfile -t scripts < <(git ls-files '*.sh')
-cid=$(docker create -w /work "$SHELLCHECK" --severity=warning "${scripts[@]}")
+cid=$(docker create -w /work "$SHELLCHECK" "${scripts[@]}")
 docker cp . "$cid":/work
 check_rc=0
 docker start -a "$cid" || check_rc=$?

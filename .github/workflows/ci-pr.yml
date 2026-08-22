@@ -118,10 +118,10 @@ jobs:
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           mapfile -t scripts < <(git ls-files '*.sh')
-          # --severity=warning, the SAME threshold the Forgejo gate and the release path use. At
+          # DEFAULT severity, the SAME threshold the Forgejo gate and the release path use. At
           # shellcheck's default this job flags informational SC1091/SC2015 that the canonical
           # check accepts, so every pull request failed a hygiene gate the branch itself passes.
-          cid=$(docker create -w /work "$SHELLCHECK" --severity=warning "${scripts[@]}")
+          cid=$(docker create -w /work "$SHELLCHECK" "${scripts[@]}")
           docker cp . "$cid":/work
           rc=0
           docker start -a "$cid" || rc=$?

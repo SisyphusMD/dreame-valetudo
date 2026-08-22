@@ -31,10 +31,15 @@ jobs:
           # This is the one command in this job not gated to trusted refs (see the file header) — it
           # must stay text this repo's own workflow defines, never something read back off a fork's
           # checkout and executed directly.
+          # DEFAULT severity, not --severity=warning. SC1091 (a sourced file shellcheck cannot
+          # follow) is info-level, and the vendored release helpers source project.env and
+          # release-common.sh — annotating those is how a reader knows the source is deliberate.
+          # The sibling runs at the same level; a looser one here would go green on a defect
+          # that reddens the other repo.
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning $(git ls-files '*.sh' | tr '\n' ' '))
+            $(git ls-files '*.sh' | tr '\n' ' '))
           # Every tracked *.sh, not three globbed directories: a shell script added
           # anywhere else used to go unchecked because nobody widened the list.
           docker cp . "$cid":/work
