@@ -63,7 +63,10 @@ jobs:
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
       - name: Check shell scripts
-        run: shellcheck --severity=warning packaging/*.sh tests/release/*.sh docs/research/tools/*.sh
+        # Every tracked script, at DEFAULT severity — the same set and threshold every other
+        # gate uses. A hand-listed set of directories silently stops covering a script added
+        # outside them, which is how a shell defect reaches a release green.
+        run: git ls-files '*.sh' | xargs shellcheck
       - name: Run integration scripts with native tmux
         run: |
           for t in tests/release/*.sh; do
