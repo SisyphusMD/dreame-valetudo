@@ -55,7 +55,11 @@
 # --dry-run reports exactly what it WOULD delete and issues zero DELETEs (a safe preview, and what
 # the integration test drives).
 #
-# Env: CLUSTER_TOKEN, NAS_TOKEN, GH_TOKEN. Stdlib shell + curl + jq only.
+# Env: CLUSTER_TOKEN, NAS_TOKEN, GH_TOKEN, PACKAGE_TOKEN. Stdlib shell + curl + jq only.
+#
+# PACKAGE_TOKEN needs Forgejo's `write:package` scope, which the repo tokens above do not
+# carry — Forgejo scopes the package registry separately. Required rather than optional,
+# because an unset token would silently skip every package and report a clean sweep.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -162,6 +166,178 @@ http_delete() {
   fi
   curl -sS -X DELETE -H "Authorization: $(registry_auth "$1")" "$2" >/dev/null 2>&1 || true
   return 0
+}
+
+
+# --- the apt/dnf REGISTRY half of the sweep ---------------------------------------------------
+#
+# Deleting an rc's release is only half the job: its .deb and .rpm keep being SERVED from the
+# repositories until they are removed there too, so `apt-cache policy` goes on offering a candidate
+# whose release page is gone, and `apt install` hands it to whoever asks. Ported from the sibling,
+# whose version of this was established against the LIVE registry rather than from the API docs —
+# the endpoint asymmetry below in particular is not guessable and is invisible at the API, because
+# every call returns 204 either way.
+: "${PACKAGE_TOKEN:?required — write:package scope; an unset token would skip every package and report a clean sweep}"
+PKG_NAME="dreame-valetudo"
+PKG="https://forgejo.bryantserver.com/api/v1/packages/SisyphusMD"
+REG="https://forgejo.bryantserver.com/api/packages/SisyphusMD"
+PKG_AUTH="Authorization: token ${PACKAGE_TOKEN}"
+
+# A DELETE against the package registry. Dry-run aware like http_delete, but unlike it the status IS
+# checked: the release path re-reads live state to confirm removal, and there is no equivalent
+# cheap re-read for a registry version, so a refused delete has to surface here.
+pkg_delete() {  # pkg_delete <url>
+  local code
+  if [ "$dry_run" = true ]; then
+    echo "  DRY-RUN would DELETE $1"
+    return 0
+  fi
+  code=$(curl --max-time 120 -sS -o /dev/null -w '%{http_code}' -X DELETE -H "$PKG_AUTH" "$1")
+  case "$code" in
+    20*|404) return 0 ;;
+    *) echo "::error::DELETE $1 returned $code"; return 1 ;;
+  esac
+}
+
+# index_has decompresses into a file rather than a pipe; it needs somewhere to put it.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# `0.2.0~rc.28-1` (rpm) and `0.2.0~rc.28` (debian) both belong to tag
+# `v0.2.0-rc.28`: drop rpm's trailing release, then undo the tilde that deb and
+# rpm need in order to sort a candidate below its release.
+pkg_tag() { printf 'v%s\n' "$(printf '%s' "$1" | sed -E 's/-[0-9]+$//; s/~rc\./-rc./')"; }
+
+# Delete one registry version — and, just as importantly, get the repository
+# metadata rebuilt so a package manager stops offering it.
+#
+# THE TWO FORMATS NEED OPPOSITE ENDPOINTS. This is not a style choice and not
+# guessable; it was established against the live registry by deleting through
+# each and reading the published index afterwards:
+#
+#   debian  the GENERIC endpoint rebuilds `dists/*/main/binary-*/Packages`;
+#           the pool endpoint deletes the file and leaves the index advertising
+#           a version that now 404s.
+#   rpm     the NATIVE endpoint rebuilds `repodata/`; the generic one deletes the
+#           file and leaves `primary.xml` advertising it.
+#
+# Getting this backwards is invisible at the API — every call still returns 204 —
+# and shows up only as a user being offered a version that cannot be downloaded.
+# The architectures a registry version actually carries, from its own file list.
+arches_of() {  # arches_of <type> <version>
+  curl --max-time 60 --retry 2 --retry-connrefused --retry-max-time 120 -sSf \
+    -H "$PKG_AUTH" "$PKG/$1/$PKG_NAME/$2/files" | jq -r '.[].name' | while read -r n; do
+      case "$1" in
+        debian) n="${n##*_}"; printf '%s\n' "${n%.deb}" ;;
+        rpm)    n="${n%.rpm}"; printf '%s\n' "${n##*.}" ;;
+      esac
+    done | sort -u
+}
+
+# Whether a version is being SERVED from a distribution — read off the published
+# index, because that is the only thing a user's package manager ever sees. The
+# registry listing says a version exists somewhere; it does not say it reached
+# the distribution whose subscribers are about to lose the candidate.
+# 0 = being served here, 1 = definitely not, 2 = could not tell. The third state
+# is the point: `-sf` alone collapses "the index says no" and "the index did not
+# load" into the same answer, and this guard's whole job is to keep a candidate
+# alive until its replacement is demonstrably serving. A timeout must read as
+# keep, never as prune.
+index_has() {  # index_has <type> <distribution> <arch> <version>
+  local url code body="$work/index-body"
+  case "$1" in
+    debian) url="$REG/debian/dists/$2/main/binary-$3/Packages" ;;
+    rpm)    url="$REG/rpm/$2/repodata/primary.xml.gz" ;;
+    *) return 2 ;;
+  esac
+  code=$(curl --max-time 60 --retry 2 --retry-connrefused --retry-max-time 120 \
+    -sS -o "$body" -w '%{http_code}' "$url") || return 2
+  case "$code" in
+    404) return 1 ;;   # nothing has ever been published to that index
+    200) ;;
+    *) return 2 ;;
+  esac
+  # Matched on NAME + ARCH + VERSION together, never version alone. Forgejo scopes the package
+  # registry to the OWNER, so this repository holds the sibling project's packages too — and the two
+  # release in lockstep, so "some package here is at 0.3.0" is routinely true while THIS package is
+  # not. Version-only matching would report the stable as serving and license deleting a candidate
+  # that is still the only installable copy.
+  if [ "$1" = rpm ]; then
+    # Decompressed to a file first, deliberately. Piping gunzip into grep loses
+    # gunzip's failure — a truncated or corrupt index would come back as "no
+    # match", which the caller reads as "definitely not served here" and treats
+    # as licence to delete. An index it cannot read has to stay unknown.
+    gunzip -c "$body" > "$body.xml" 2>/dev/null || return 2
+    # One <package> element at a time: name, arch and version must belong to the SAME entry. The
+    # rpm index is not arch-scoped by URL the way the debian one is, so arch is checked here.
+    awk -v n="$PKG_NAME" -v a="$3" -v v="${4%-*}" '
+      BEGIN { RS = "<package" ; found = 0 }
+      index($0, "<name>" n "</name>") \
+        && index($0, "<arch>" a "</arch>") \
+        && index($0, "ver=\"" v "\"") { found = 1 }
+      END { exit !found }' "$body.xml"
+  else
+    # The debian index IS arch-scoped by URL (binary-<arch>), so only name and version are matched
+    # here — but both, and within one stanza. Stanzas are blank-line separated.
+    awk -v n="$PKG_NAME" -v v="$4" '
+      BEGIN { RS = "" ; FS = "\n" ; found = 0 }
+      {
+        haveName = 0; haveVer = 0
+        for (i = 1; i <= NF; i++) {
+          if ($i == "Package: " n) haveName = 1
+          if ($i == "Version: " v) haveVer = 1
+        }
+        if (haveName && haveVer) found = 1
+      }
+      END { exit !found }' "$body"
+  fi
+}
+
+delete_package() {  # delete_package <type> <version>
+  local type="$1" version="$2" files arch dist
+  case "$type" in
+    debian)
+      # One call takes every architecture and every distribution at once.
+      pkg_delete "$PKG/debian/$PKG_NAME/$version" || return 1
+      echo "        deleted debian $version"
+      ;;
+    rpm)
+      # Per group and per architecture, so the architectures are read back off
+      # the version's own file list rather than assumed. Both groups are tried
+      # because a 404 for one it never reached is free, while missing the one it
+      # did reach leaves it being served — publish-registry.sh puts candidates in
+      # `testing` only, but a sweep should not depend on that rule still holding.
+      files=$(curl --max-time 60 --retry 2 --retry-connrefused --retry-max-time 120 -sSf \
+        -H "$PKG_AUTH" "$PKG/rpm/$PKG_NAME/$version/files" | jq -r '.[].name') || {
+          echo "::error::could not list rpm files for $PKG_NAME $version"; return 1; }
+      [ -n "$files" ] || { echo "::error::rpm $version reported no files"; return 1; }
+      while read -r name; do
+        [ -n "$name" ] || continue
+        # whiskerless-0.2.0~rc.28-1.x86_64.rpm → x86_64
+        arch="${name%.rpm}"; arch="${arch##*.}"
+        for dist in testing stable; do
+          pkg_delete "$REG/rpm/$dist/package/$PKG_NAME/$version/$arch" || return 1
+        done
+        echo "        deleted rpm $version $arch"
+      done <<< "$files"
+      ;;
+    *) echo "::error::unknown package type $type"; return 1 ;;
+  esac
+}
+
+all_packages() {
+  local page=1 body got names
+  while :; do
+    body=$(curl --max-time 60 --retry 2 --retry-connrefused --retry-max-time 180 \
+      -sSf -H "$PKG_AUTH" "$PKG?limit=100&page=$page") || return 1
+    names=$(printf '%s' "$body" | jq -r '.[].name') || return 1
+    [ -n "$names" ] || break
+    got=$(printf '%s' "$body" | jq -r --arg name "$PKG_NAME" '
+      .[] | select(.name == $name) | select(.type == "debian" or .type == "rpm")
+      | "\(.type) \(.version)"') || return 1
+    [ -z "$got" ] || printf '%s\n' "$got"
+    page=$((page + 1))
+  done
 }
 
 # $1 stem tag (vX.Y.Z). 0 only when the stable release is published on all three registries AND the
@@ -331,8 +507,26 @@ for registry in "${REGISTRIES[@]}"; do
   done < <(jq -r '.[]? | [(.tag_name // ""), ((.id // "") | tostring)] | join("|")' <<<"$body")
 done
 
+# Enumerated ONCE, before any deletion: an unreadable registry must stop the sweep rather than
+# read as "this candidate published no packages", which would license deleting a release whose
+# .deb is still being served.
+all_packages > "$work/packages" || { echo "::error::could not enumerate the package registry"; exit 1; }
+
+# ALSO from the package registry, not only the release listings. The two are removed in sequence —
+# releases first, then packages — so a package DELETE that fails after its release is already gone
+# leaves an rc that no release listing mentions and that a later sweep would therefore never revisit,
+# while apt goes on offering it. Enumerating the registry too makes that residue self-healing: the
+# stable-replacement gate still has to pass before anything is deleted.
+while read -r _ptype _pversion; do
+  [ -n "$_pversion" ] || continue
+  _ptag="$(pkg_tag "$_pversion")"
+  is_rc_tag "$_ptag" || continue
+  rc_tag_seen["$_ptag"]=1
+  stem_seen["${_ptag%-rc.*}"]=1
+done < "$work/packages"
+
 if [ "${#stem_seen[@]}" -eq 0 ]; then
-  echo "prune: no vX.Y.Z-rc.* releases found on any registry; nothing to prune"
+  echo "prune: no vX.Y.Z-rc.* releases or packages found on any registry; nothing to prune"
   exit 0
 fi
 
@@ -354,11 +548,65 @@ while IFS= read -r stem; do
   [ "${#group_tags[@]}" -gt 0 ] || continue
   while IFS= read -r tag; do
     [ -n "$tag" ] || continue
+    # A published RELEASE does not prove a published PACKAGE. The registry upload is a separate job
+    # with its own failure modes, so a stable can exist on all three hosts while its .deb and .rpm
+    # never reached the repository. Deleting the candidate then leaves an apt subscriber with no
+    # installable version at all — worse than the leftover this sweep exists to remove.
+    #
+    # Existing SOMEWHERE is not the test either: the candidate must be replaced everywhere it is
+    # currently SERVED, same distributions and same architectures, read off the published index
+    # because that is the only thing a user's package manager ever sees.
+    pkgs=""
+    while read -r ptype pversion; do
+      [ -n "$pversion" ] || continue
+      [ "$(pkg_tag "$pversion")" = "$tag" ] && pkgs="$pkgs $ptype:$pversion"
+    done < "$work/packages"
+    missing_stable=""
+    for entry in $pkgs; do
+      ptype="${entry%%:*}"; pversion="${entry#*:}"
+      sversion=""
+      while read -r qtype qversion; do
+        [ -n "$qversion" ] || continue
+        if [ "$qtype" = "$ptype" ] && [ "$(pkg_tag "$qversion")" = "$stem" ]; then sversion="$qversion"; fi
+      done < "$work/packages"
+      if [ -z "$sversion" ]; then missing_stable="$missing_stable $ptype"; continue; fi
+      # Captured, not iterated inline: bash discards the exit status of a command substitution in a
+      # `for` word list, so a failed lookup would produce an empty list, skip every check below, and
+      # license the delete this guard exists to prevent.
+      if ! parches=$(arches_of "$ptype" "$pversion"); then
+        echo "::error::could not list $ptype files for $PKG_NAME $pversion"; exit 1
+      fi
+      if ! sarches=$(arches_of "$ptype" "$sversion"); then
+        echo "::error::could not list $ptype files for $PKG_NAME $sversion"; exit 1
+      fi
+      if [ -z "$parches" ]; then missing_stable="$missing_stable $ptype/no-files"; continue; fi
+      for parch in $parches; do
+        printf '%s\n' "$sarches" | grep -Fqx "$parch" \
+          || missing_stable="$missing_stable $ptype/$parch"
+        for pdist in testing stable; do
+          if index_has "$ptype" "$pdist" "$parch" "$pversion"; then here=0; else here=$?; fi
+          [ "$here" -eq 1 ] && continue          # candidate not served here
+          if [ "$here" -eq 2 ]; then
+            missing_stable="$missing_stable $ptype/$pdist(unreadable)"; continue
+          fi
+          index_has "$ptype" "$pdist" "$parch" "$sversion" \
+            || missing_stable="$missing_stable $ptype/$pdist"
+        done
+      done
+    done
+    if [ -n "$missing_stable" ]; then
+      # Deduplicated: the checks run per architecture, so one missing distribution is otherwise
+      # reported once for each.
+      echo "keep: $tag — $stem does not yet replace it in:$(printf '%s' "$missing_stable" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+      continue
+    fi
+
     if [ "$dry_run" = true ]; then
       echo "prune (dry-run): $tag superseded by stable $stem (present on all three); would remove release + git tag on each registry"
     else
       echo "prune: $tag superseded by stable $stem (present on all three); removing release + git tag"
     fi
+
     residue=""
     for registry in "${REGISTRIES[@]}"; do
       id="${rc_id[$registry|$tag]-}"
@@ -366,6 +614,15 @@ while IFS= read -r stem; do
         residue+="${residue:+, }$registry"
       fi
     done
+    # AFTER the releases, and only for versions the registry actually reported. Of everything
+    # being removed, the package is the one still being SERVED: a leftover release is clutter,
+    # a leftover package keeps being offered by `apt upgrade`.
+    if [ -z "$residue" ]; then
+      for entry in $pkgs; do
+        delete_package "${entry%%:*}" "${entry#*:}" \
+          || residue+="${residue:+, }registry(${entry%%:*})"
+      done
+    fi
     if [ -n "$residue" ]; then
       # A later sweep only re-finds residue whose RELEASE still lists (enumeration is list-based). If
       # the release was removed but its tag ref survives, that orphan ref is a release-less remnant the

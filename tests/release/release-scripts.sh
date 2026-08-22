@@ -415,9 +415,10 @@ cat > "$tmp/curl" <<'STUB'
 #!/usr/bin/env bash
 set -u
 printf 'curl %s\n' "$*" >> "$STUB_CALLS"
-method=GET; url=""; prev=""
+method=GET; url=""; prev=""; outfile=""
 for a in "$@"; do
   [ "$prev" = -X ] && method="$a"
+  [ "$prev" = -o ] && outfile="$a"
   case "$a" in http*://*) url="$a" ;; esac
   prev="$a"
 done
@@ -429,6 +430,9 @@ case "$url" in
 esac
 rel="$PRUNE_STATE/$registry.releases.json"   # JSON array: [{id, tag_name}, ...]
 refs="$PRUNE_STATE/$registry.tagrefs"        # newline list of tag names that still have a git ref
+# The apt/dnf REGISTRY, which lives only on the cluster instance. One line per published version:
+#   <type> <version> <arch>
+pkgs="$PRUNE_STATE/packages"
 if [ "$method" = DELETE ]; then
   case "$url" in
     */git/refs/tags/*)
@@ -447,6 +451,17 @@ if [ "$method" = DELETE ]; then
       [ -f "$refs" ] && { grep -vxF "$tag" "$refs" > "$refs.tmp" || true; mv "$refs.tmp" "$refs"; }
       printf '204'; exit 0 ;;
     */tags/*) printf '404'; exit 0 ;;   # legacy, unreliable: removes nothing
+    # The two package endpoints delete differently ON PURPOSE — see prune-superseded-rcs.sh. The
+    # stub honours both shapes so a caller that used the wrong one shows up as a version that is
+    # still being served rather than as a passing test.
+    */api/v1/packages/*/debian/*)
+      ver="${url##*/}"
+      [ -f "$pkgs" ] && { grep -v "^debian $ver " "$pkgs" > "$pkgs.tmp" || true; mv "$pkgs.tmp" "$pkgs"; }
+      printf '204'; exit 0 ;;
+    */api/packages/*/rpm/*/package/*)
+      arch="${url##*/}"; rest="${url%/*}"; ver="${rest##*/}"
+      [ -f "$pkgs" ] && { grep -v "^rpm $ver $arch$" "$pkgs" > "$pkgs.tmp" || true; mv "$pkgs.tmp" "$pkgs"; }
+      printf '204'; exit 0 ;;
     */releases/*)
       id="${url##*/releases/}"; id="${id%%\?*}"
       if [ -n "${PRUNE_STICKY_RELEASE:-}" ] && [ "$id" = "$PRUNE_STICKY_RELEASE" ]; then
@@ -459,6 +474,51 @@ if [ "$method" = DELETE ]; then
   esac
 fi
 case "$url" in
+    # The registry listing all_packages pages through.
+    */api/v1/packages/*\?limit=*)
+      case "$url" in *page=1*) : ;; *) printf '[]\n'; exit 0 ;; esac
+      if [ -f "$pkgs" ]; then
+        awk '{print $1, $2}' "$pkgs" | sort -u | while read -r t v; do
+          printf '{"name":"dreame-valetudo","type":"%s","version":"%s"}\n' "$t" "$v"
+        done | jq -s .
+      else printf '[]\n'; fi
+      exit 0 ;;
+    # A version's own file list, which arches_of reads the architectures off.
+    */api/v1/packages/*/files)
+      rest="${url%/files}"; ver="${rest##*/}"; rest="${rest%/*}"; rest="${rest%/*}"; type="${rest##*/}"
+      if [ -f "$pkgs" ]; then
+        awk -v t="$type" -v v="$ver" '$1==t && $2==v {print $3}' "$pkgs" | while read -r a; do
+          case "$type" in
+            *debian*) printf '{"name":"dreame-valetudo_%s_%s.deb"}\n' "$ver" "$a" ;;
+            *)        printf '{"name":"dreame-valetudo-%s.%s.rpm"}\n' "$ver" "$a" ;;
+          esac
+        done | jq -s .
+      else printf '[]\n'; fi
+      exit 0 ;;
+    # The published indexes index_has reads — the only thing a user's package manager ever sees.
+    # Read with `-o <file> -w '%{http_code}'`: the BODY goes to the file and only the STATUS is
+    # printed, because index_has has to tell "the index says no" apart from "the index did not load".
+    */api/packages/*/debian/dists/*/Packages)
+      a="${url##*binary-}"; arch="${a%%/*}"
+      # Real stanzas, blank-line separated, carrying the package NAME — index_has matches name and
+      # version within one stanza, because this registry is owner-scoped and holds the sibling
+      # project's packages at the same versions.
+      { if [ -f "$pkgs" ]; then
+          awk -v aa="$arch" '$1=="debian" && $3==aa && $4!="unindexed" {
+            printf "Package: dreame-valetudo\nVersion: %s\nArchitecture: %s\n\n", $2, $3 }' "$pkgs"
+          # A sibling project at the SAME version, which must not satisfy the guard.
+          printf 'Package: whiskerless\nVersion: 0.1.2\nArchitecture: %s\n\n' "$arch"
+        fi; } > "${outfile:-/dev/stdout}"
+      printf '200'; exit 0 ;;
+    */api/packages/*/rpm/*/repodata/primary.xml.gz)
+      { { printf '<metadata>'
+          [ -f "$pkgs" ] && awk '$1=="rpm" && $4!="unindexed" {
+            sub(/-[0-9]+$/,"",$2)
+            printf "<package><name>dreame-valetudo</name><arch>%s</arch><version ver=\"%s\"/></package>", $3, $2 }' "$pkgs"
+          # A sibling project at the same version and arch, which must not satisfy the guard.
+          printf '<package><name>whiskerless</name><arch>x86_64</arch><version ver="0.1.2"/></package>'
+          printf '</metadata>'; } | gzip -c; } > "${outfile:-/dev/stdout}"
+      printf '200'; exit 0 ;;
   */git/refs/tags/*)
     tag="${url##*/git/refs/tags/}"; tag="${tag%%\?*}"
     if [ "$registry" = "${PRUNE_REF_ERROR_REGISTRY:-}" ]; then
@@ -482,7 +542,7 @@ case "$url" in
 esac
 STUB
 chmod +x "$tmp/curl"
-export CLUSTER_TOKEN=ctok NAS_TOKEN=ntok GH_TOKEN=gtok
+export CLUSTER_TOKEN=ctok NAS_TOKEN=ntok GH_TOKEN=gtok PACKAGE_TOKEN=ptok
 export PRUNE_RETRY_SLEEP=0   # no real eventual-consistency wait in the stubbed run
 
 write_list() {  # <file> then <tag> <id> pairs
@@ -533,6 +593,9 @@ seed_prune_state() {  # <fixdir> <statedir>
       printf '[]\n' > "$st/$r.releases.json"; : > "$st/$r.tagrefs"
     fi
   done
+  # The apt/dnf registry, seeded from the fixture like the release lists — the state dir is wiped
+  # above, so anything written straight into it would not survive to the run.
+  if [ -f "$fix/packages" ]; then cp "$fix/packages" "$st/packages"; else : > "$st/packages"; fi
 }
 
 # The authoritative post-run checks: what does the stub's LIVE state actually hold now? (Not what the
@@ -773,6 +836,107 @@ for r in cluster nas github; do
   release_in_state "$stateH" "$r" "$o" || fail "prune removed the stable v0.1.1 release from $r's list"
 done
 echo "  prune: a uniform five-asset (pre-.rpm era) stable identical on all 3 prunes its rc OK"
+
+# Scenario H2 — the apt/dnf REGISTRY half. A published RELEASE does not prove a published PACKAGE:
+# the registry upload is a separate job, so a stable can be fanned out to all three release pages
+# while its .deb never reached the repository. Pruning the candidate then leaves an apt subscriber
+# with no installable version at all, which is worse than the leftover the sweep exists to remove.
+fixH2="$tmp/prune-fixH2"; mkdir -p "$fixH2"
+stateH2="$tmp/prune-stateH2"
+mkdir -p "$stateH2"
+for r in cluster nas github; do
+  case $r in cluster) o=800 ;; nas) o=1800 ;; github) o=2800 ;; esac
+  write_list "$fixH2/$r.list.json" v0.1.2 "$o" v0.1.2-rc.1 "$((o+1))"
+  write_stable5 "$fixH2/$r.tag.v0.1.2.json" v0.1.2 0.1.2 "$o"
+done
+# The CANDIDATE is in the repository; the stable is not.
+printf 'debian 0.1.2~rc.1 amd64\nrpm 0.1.2~rc.1-1 x86_64\n' > "$fixH2/packages"
+out=$(run_prune "$fixH2" "$stateH2" 2>&1) \
+  || fail "prune sweep exited nonzero when the stable had not reached the registry: $out"
+printf '%s\n' "$out" | grep -q "does not yet replace it in" \
+  || fail "prune did not say the stable has not replaced the candidate in the registry: $out"
+for r in cluster nas github; do
+  case $r in cluster) o=800 ;; nas) o=1800 ;; github) o=2800 ;; esac
+  release_in_state "$stateH2" "$r" "$((o+1))" \
+    || fail "prune deleted the v0.1.2-rc.1 release on $r though its package is still the only one served"
+done
+grep -q "^debian 0.1.2~rc.1 amd64$" "$stateH2/packages" \
+  || fail "prune deleted the candidate's .deb from the registry with no stable replacing it"
+echo "  prune: a candidate still SERVED from apt/dnf is kept when the stable has not replaced it OK"
+
+# Scenario H3 — the same, once the stable IS in the repository at the same dists and arches: the
+# candidate's release, tag AND its registry versions all go, through the two different endpoints
+# the two formats need (debian generic, rpm native — established against the live registry).
+fixH3="$tmp/prune-fixH3"; mkdir -p "$fixH3"
+stateH3="$tmp/prune-stateH3"
+mkdir -p "$stateH3"
+for r in cluster nas github; do
+  case $r in cluster) o=900 ;; nas) o=1900 ;; github) o=2900 ;; esac
+  write_list "$fixH3/$r.list.json" v0.1.3 "$o" v0.1.3-rc.1 "$((o+1))"
+  write_stable5 "$fixH3/$r.tag.v0.1.3.json" v0.1.3 0.1.3 "$o"
+done
+printf 'debian 0.1.3~rc.1 amd64\nrpm 0.1.3~rc.1-1 x86_64\ndebian 0.1.3 amd64\nrpm 0.1.3-1 x86_64\n' \
+  > "$fixH3/packages"
+out=$(run_prune "$fixH3" "$stateH3" 2>&1) \
+  || fail "prune sweep exited nonzero when the stable had replaced the candidate: $out"
+! grep -q "^debian 0.1.3~rc.1 " "$stateH3/packages" \
+  || fail "prune left the candidate's .deb being served from the repository"
+! grep -q "^rpm 0.1.3~rc.1-1 " "$stateH3/packages" \
+  || fail "prune left the candidate's .rpm being served from the repository"
+grep -q "^debian 0.1.3 amd64$" "$stateH3/packages" \
+  || fail "prune deleted the STABLE's .deb from the repository"
+grep -Eq -- "DELETE .*/api/v1/packages/.*/debian/dreame-valetudo/0\.1\.3~rc\.1\$" "$calls" \
+  || fail "prune did not delete the .deb through the generic endpoint (the one that rebuilds Packages)"
+grep -Eq -- "DELETE .*/api/packages/.*/rpm/.*/package/dreame-valetudo/0\.1\.3~rc\.1-1/x86_64\$" "$calls" \
+  || fail "prune did not delete the .rpm through the native endpoint (the one that rebuilds repodata)"
+echo "  prune: a candidate the stable has replaced is removed from apt/dnf too, via each format's own endpoint OK"
+
+# Scenario H4 — the stable's package EXISTS in the registry listing but is not SERVED from the
+# distribution the candidate is served from, while the SIBLING project is being served there at the
+# same version. Forgejo scopes the package registry to the owner, so both projects publish into one
+# apt/dnf group and release in lockstep: matching on version alone finds the sibling, concludes the
+# replacement is live, and deletes a candidate that is still the only installable copy.
+fixH4="$tmp/prune-fixH4"; mkdir -p "$fixH4"
+stateH4="$tmp/prune-stateH4"
+for r in cluster nas github; do
+  case $r in cluster) o=1000 ;; nas) o=2000 ;; github) o=3000 ;; esac
+  write_list "$fixH4/$r.list.json" v0.1.2 "$o" v0.1.2-rc.1 "$((o+1))"
+  write_stable5 "$fixH4/$r.tag.v0.1.2.json" v0.1.2 0.1.2 "$o"
+done
+# The stable is LISTED (so sversion resolves) but `unindexed` keeps it out of every published index.
+printf 'debian 0.1.2~rc.1 amd64\nrpm 0.1.2~rc.1-1 x86_64\ndebian 0.1.2 amd64 unindexed\nrpm 0.1.2-1 x86_64 unindexed\n' \
+  > "$fixH4/packages"
+out=$(run_prune "$fixH4" "$stateH4" 2>&1) \
+  || fail "prune sweep exited nonzero when the stable was listed but not served: $out"
+printf '%s\n' "$out" | grep -q "does not yet replace it in" \
+  || fail "prune treated a SIBLING package at the same version as the stable replacement: $out"
+grep -q "^debian 0.1.2~rc.1 amd64$" "$fixH4/../prune-stateH4/packages" \
+  || fail "prune deleted the candidate's .deb while its own replacement was not being served"
+echo "  prune: a sibling project's package at the same version does not count as the replacement OK"
+
+# Scenario H5 — residue that no release listing mentions. Releases are removed before packages, so a
+# package DELETE that fails after its release is gone leaves an rc that only the package registry
+# knows about. Enumerating from releases alone, a later sweep would never revisit it and apt would go
+# on offering it forever.
+fixH5="$tmp/prune-fixH5"; mkdir -p "$fixH5"
+stateH5="$tmp/prune-stateH5"
+for r in cluster nas github; do
+  case $r in cluster) o=1100 ;; nas) o=2100 ;; github) o=3100 ;; esac
+  # ONLY the stable is listed — the candidate's release and tag are already gone.
+  write_list "$fixH5/$r.list.json" v0.1.2 "$o"
+  write_stable5 "$fixH5/$r.tag.v0.1.2.json" v0.1.2 0.1.2 "$o"
+done
+printf 'debian 0.1.2~rc.1 amd64\nrpm 0.1.2~rc.1-1 x86_64\ndebian 0.1.2 amd64\nrpm 0.1.2-1 x86_64\n' \
+  > "$fixH5/packages"
+out=$(run_prune "$fixH5" "$stateH5" 2>&1) \
+  || fail "prune sweep exited nonzero on package-only residue: $out"
+! grep -q "^debian 0.1.2~rc.1 " "$stateH5/packages" \
+  || fail "prune never revisited a package whose release was already deleted: $out"
+! grep -q "^rpm 0.1.2~rc.1-1 " "$stateH5/packages" \
+  || fail "prune left the orphaned .rpm being served: $out"
+grep -q "^debian 0.1.2 amd64$" "$stateH5/packages" \
+  || fail "prune deleted the STABLE's package while clearing residue"
+echo "  prune: a package left behind with no release is still found and cleared OK"
 
 # Scenario I — a stable whose asset SETS DIFFER across registries (a partial fan-out still in flight):
 # cluster and nas serve the five-asset set, github is missing one of them. Without a fixed asset
