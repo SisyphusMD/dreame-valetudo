@@ -56,6 +56,11 @@ jobs:
         if: steps.setup_python_1.outcome != 'success'
         with:
           python-version: "3.14.7"
+      # Installed, not merely checked out: the package lives under src/, so `python -m
+      # dreame_valetudo` finds nothing when run from the repo root. The release and prerelease
+      # gates already install it before their own version checks, for the same reason.
+      - name: Install the package so its module is importable
+        run: python -m pip install --quiet -e .
       - name: compare every live form with its per-model golden
         run: python -m dreame_valetudo verify-forms
       - name: compare model and rooting contracts with official Valetudo
