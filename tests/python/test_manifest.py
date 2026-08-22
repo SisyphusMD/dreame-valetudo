@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import ScriptedConsole
@@ -330,11 +331,19 @@ def test_retag_robot_ignores_malformed_and_unreadable_manifests(tmp_path: Path) 
     (malformed / "manifest.json").write_text("[")
     (unreadable / "manifest.json").write_text('{"config": "same", "robot": "old"}')
     manifest.write(healthy, {"config": "same", "robot": "old"})
-    unreadable.chmod(0)
-    try:
+
+    # NOT chmod(0): CI runs as root, which reads a mode-000 file happily — the manifest would be
+    # retagged, the count would be 2, and the test would fail for a reason that says nothing about
+    # the code. Refusing the read directly reproduces the condition for any user.
+    real_read = Path.read_text
+
+    def _read(self: Path, *args: object, **kwargs: object) -> str:
+        if unreadable in self.parents:
+            raise OSError("unreadable")
+        return real_read(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch.object(Path, "read_text", _read):
         assert manifest.retag_robot({"HOME": str(tmp_path)}, "same", "new") == 1
-    finally:
-        unreadable.chmod(0o700)
     assert json.loads((healthy / "manifest.json").read_text())["robot"] == "new"
 
 
