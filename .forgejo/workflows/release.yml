@@ -126,7 +126,19 @@ jobs:
           sed -i -E "s#(releases/download/)[^/]+/#\1${TAG}/#g" README.md
           grep -q "releases/download/${TAG}/" README.md || { echo "::error::README link rewrite did not apply"; exit 1; }
 
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_1
+        continue-on-error: true
+        with:
+          python-version: "3.14.7"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_1.outcome != 'success'
         with:
           python-version: "3.14.7"
 
