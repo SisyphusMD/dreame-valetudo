@@ -170,9 +170,25 @@ http_delete() {
 # agrees; cross-registry disagreement is treated as an unfinished fan-out and keeps the rc. The stem's
 # tag and release are never pruned, so reading it GET-by-tag stays reliable here.
 stable_present_everywhere() {
-  local stem="$1" registry json names signature="" have_signature=0 ok=1
+  local stem="$1" registry resp code json names signature="" have_signature=0 ok=1
   for registry in "${REGISTRIES[@]}"; do
-    json="$(http_get "$registry" "$(registry_releases_api "$registry")/tags/$stem")"
+    # http_get_status, not http_get: the STATUS has to gate the interpretation here. A 401/403/5xx
+    # that still returns {"message":...} is a non-empty body, so an emptiness check would pass it
+    # through and the jq gate below would then report "not a published release" about a registry
+    # that was never successfully read — the wrong sentence, in a one-shot sweep that never revisits
+    # the decision. Unreachable is not the same claim as unpublished, and only one is evidence.
+    resp="$(http_get_status "$registry" "$(registry_releases_api "$registry")/tags/$stem")"
+    code="${resp##*$'\n'}"
+    json="${resp%$'\n'*}"
+    case "$code" in
+      2[0-9][0-9]) ;;
+      404)
+        echo "::warning::prune: stable $stem is not published on $registry; keeping its rc" >&2
+        ok=0; continue ;;
+      *)
+        echo "::error::prune: could not read $stem on $registry (HTTP $code) — refusing to conclude anything about it" >&2
+        return 2 ;;
+    esac
     # Present AND consumable: an interrupted publisher can leave the tag as a draft or misclassified
     # prerelease with assets attached; users cannot install that, so it must not authorize a prune.
     # This mirrors rel_ensure_release_state's draft==false && prerelease==false gate.
@@ -324,10 +340,13 @@ fail=0
 pruned=0
 while IFS= read -r stem; do
   [ -n "$stem" ] || continue
-  if ! stable_present_everywhere "$stem"; then
-    echo "prune: $stem is not fully published on all three registries; its rc releases are kept"
-    continue
-  fi
+  # Status 2 means a registry could not be read at all, which is not a keep decision but the
+  # absence of one; the sibling's sweep makes the same distinction.
+  stable_present_everywhere "$stem" || case $? in
+    2) exit 1 ;;
+    *) echo "prune: $stem is not fully published on all three registries; its rc releases are kept"
+       continue ;;
+  esac
   group_tags=()
   for tag in "${!rc_tag_seen[@]}"; do
     [ "${tag%-rc.*}" = "$stem" ] && group_tags+=("$tag")
