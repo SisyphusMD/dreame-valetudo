@@ -1112,8 +1112,19 @@ def test_the_formulae_hand_the_tool_its_own_helper_directory() -> None:
     through to the system prefixes and find either nothing or another install's sunxi-fel."""
     for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
         formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
-        assert "bin.write_env_script" in formula, name
-        assert "DREAME_LIBEXEC:" in formula, name
+        # Matched on CODE, with comments stripped: the wrapper's own explanation names the wrong
+        # call form as the thing to avoid, so a substring search over the whole file passes on the
+        # comment even when the real invocation is gone.
+        code = "\n".join(
+            line for line in formula.splitlines() if not line.lstrip().startswith("#")
+        )
+        # `(bin/"name")`, never bare `bin`: write_env_script writes AT the pathname it is called on,
+        # so calling it on the directory replaces bin itself with a file and every install is
+        # ENOTDIR. A real `brew install` is the only thing that catches it, which the CI build job
+        # now runs.
+        assert '(bin/"dreame-valetudo").write_env_script' in code, name
+        assert "\n    bin.write_env_script" not in code, f"{name}: writes over the bin directory"
+        assert "DREAME_LIBEXEC:" in code, name
 
 
 def test_the_caveats_no_longer_promise_a_first_run_source_build() -> None:
