@@ -314,3 +314,114 @@ def test_migrate_heals_recon_backups_after_structural_move(tmp_path: Path) -> No
     assert (new_recon / "dreame_recovery_backup.zip").read_bytes() == b"zip"  # renamed forward there
     assert not (new_recon / "dreame_samples.zip").exists()
     assert not (tmp_path / "dreame-valetudo-work").exists()  # old path removed, not symlinked forward
+
+
+def test_decrypt_permission_repair_failure_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100")
+    monkeypatch.setattr(
+        M, "protect_private_dir", lambda _path: (_ for _ in ()).throw(PermissionError("read-only")),
+    )
+    console = ScriptedConsole()
+
+    assert M.decrypt_recovery_backup(recon, {}, console) == 0
+    assert "could not restrict recovery-backup permissions" in console.text()
+    assert not (recon / "dustx100.dd.gz").exists()
+
+
+def test_refresh_refuses_to_start_without_a_durable_pending_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100")
+    marker = recon / ".decrypt-refresh"
+    real_write = Path.write_text
+
+    def fail_marker(path: Path, *args: object, **kwargs: object) -> int:
+        if path == marker:
+            raise PermissionError("read-only")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_marker)
+    console = ScriptedConsole()
+
+    assert M.decrypt_recovery_backup(recon, {}, console, refresh=True) == 0
+    assert "could not record the recovery refresh" in console.text()
+    assert not list(recon.glob("*.dd.gz"))
+
+
+def test_unknown_free_space_does_not_refuse_decryption_on_a_guess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    plain = _seed_sealed(recon, "dustx100")
+    monkeypatch.setattr(
+        M.shutil, "disk_usage", lambda _path: (_ for _ in ()).throw(OSError("unmounted")),
+    )
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 1
+    assert gzip.decompress((recon / "dustx100.dd.gz").read_bytes()) == plain
+
+
+def test_one_failed_nonrefresh_output_does_not_block_other_recovery_slices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100", "dustx101")
+    original = dust_decrypt.xor_file
+    calls = 0
+
+    def fail_first(source, write, keystream):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("disk full")
+        return original(source, write, keystream)
+
+    monkeypatch.setattr(dust_decrypt, "xor_file", fail_first)
+    console = ScriptedConsole()
+
+    assert M.decrypt_recovery_backup(recon, {}, console) == 1
+    assert not (recon / "dustx100.dd.gz").exists()
+    assert (recon / "dustx101.dd.gz").is_file()
+    assert "could not decrypt dustx100.bin" in console.text()
+
+
+def test_failed_refresh_staging_preserves_every_prior_decrypted_slice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100", "dustx101")
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole()) == 2
+    before = {path.name: path.read_bytes() for path in recon.glob("*.dd.gz")}
+    monkeypatch.setattr(
+        dust_decrypt, "xor_file", lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    assert M.decrypt_recovery_backup(recon, {}, ScriptedConsole(), refresh=True) == 0
+    assert {path.name: path.read_bytes() for path in recon.glob("*.dd.gz")} == before
+    assert not list(recon.glob("*.refresh.tmp"))
+    assert (recon / ".decrypt-refresh").is_file()
+
+
+def test_refresh_publication_error_keeps_retry_marker_and_cleans_unpublished_temps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recon = tmp_path / "recon"
+    _seed_sealed(recon, "dustx100", "dustx101")
+    original_replace = Path.replace
+
+    def fail_publish(source: Path, target: Path) -> Path:
+        if source.name.endswith(".refresh.tmp"):
+            raise OSError("read-only destination")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publish)
+    console = ScriptedConsole()
+
+    assert M.decrypt_recovery_backup(recon, {}, console, refresh=True) == 0
+    assert "refresh publication is incomplete" in console.text()
+    assert (recon / ".decrypt-refresh").is_file()
+    assert not list(recon.glob("*.refresh.tmp"))

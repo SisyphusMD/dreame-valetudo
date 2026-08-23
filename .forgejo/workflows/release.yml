@@ -126,7 +126,19 @@ jobs:
           sed -i -E "s#(releases/download/)[^/]+/#\1${TAG}/#g" README.md
           grep -q "releases/download/${TAG}/" README.md || { echo "::error::README link rewrite did not apply"; exit 1; }
 
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_1
+        continue-on-error: true
+        with:
+          python-version: "3.14.7"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_1.outcome != 'success'
         with:
           python-version: "3.14.7"
 
@@ -136,7 +148,7 @@ jobs:
           set -euo pipefail
           # The release is exactly these five files and nothing else. Hashing the patch here, before
           # any third-party tool is installed, is what the tag job later reproduces byte-for-byte.
-          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
@@ -157,17 +169,29 @@ jobs:
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py
+          ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py
           mypy
-          pytest -q tests/python
+          # Gated HERE too, not only in CI: ci.yml runs on a branch, and a release is cut from a
+          # tag. Without this the release path was the one way a coverage regression could ship.
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          # The Runner seam every external command funnels through, held at 100 separately so a
+          # regression there cannot hide inside the repository average.
+          coverage report --include='*/run.py' --fail-under=100
           python -c "import re,sys; v=re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1); sys.exit(0 if v=='${VERSION}' else 1)"
           python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
           python -m dreame_valetudo help | grep -q "Supported models"
-          for t in tests/integration/*.sh; do bash "$t"; done
+          # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
+          # CONVENTIONS 6c: a gate that only really runs in ci.yml does not constrain a release.
+          python3 -m pip install --upgrade build
+          for t in tests/release/*.sh; do bash "$t"; done
 
       - name: Prove the test toolchain changed no release byte
         run: |
@@ -178,9 +202,64 @@ jobs:
           test -z "$(git diff --cached --name-only)"
           test -z "$(git ls-files --others --exclude-standard)"
 
+  candidate-gate:
+    name: Qualify the candidate this release promotes (no write credential)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # next-version.sh derives the version from the TAGS. A default shallow checkout has none,
+          # so it would fall back to 0.0.0, ask about a version that has no candidates, and report
+          # "nothing to check" — a gate that passes hardest exactly when it is broken.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the last rc's install matrix to be green
+        # The install matrix installs PUBLISHED artifacts, so it can only ever run after a release
+        # and can never gate the one it tests. This is where it earns its keep: a candidate whose
+        # apt, dnf, Homebrew, .pkg or tarball install is broken must not become the stable, and
+        # noticing that should not depend on somebody remembering to open the right tab.
+        #
+        # This workflow said the matrix "gates the next stable cut" while nothing read its result.
+        # Reads only, and takes an optional read-only token for the same rate-limit reason the
+        # sibling's does.
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_REPO_READ_PAT: ${{ secrets.GH_REPO_READ_PAT }}
+        run: |
+          set -euo pipefail
+          # Belt to fetch-depth's braces: if the tags did not arrive, every version this could
+          # compute is fiction.
+          git tag -l 'v*.*.*' | grep -q . || { echo "::error::no tags in this checkout"; exit 1; }
+          version="$(bash packaging/next-version.sh "$BUMP" | sed -n 's/^version=//p')"
+          [ -n "$version" ] || { echo "::error::could not compute the version being promoted"; exit 1; }
+          bash packaging/check-rc-install-matrix.sh "$version"
+
+  mirror-gate:
+    name: Qualify the mirror's macOS checks on the source commit (no write credential)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the mirror's macOS CI to be green on the source commit
+        # This forge has no macOS runner, so nothing here can run the suite on a Mac. ci.yml waits
+        # for the mirror's verdict per pull request, which leaves main reachable by anything that
+        # did not go through one — a direct push, an infra failure someone retried, a run that went
+        # red after merge. Cutting from main is exactly when that matters.
+        #
+        # The SOURCE commit, not the tagged one: the tag job stamps version strings and commits, so
+        # the tagged tree is a child of this SHA and no branch workflow ever evaluates it.
+        env:
+          # Optional and read-only. Unauthenticated GitHub allows 60 requests an hour PER IP,
+          # shared with everything else egressing from this network. A token needs NO scopes for a
+          # public repo and lifts the limit to 5,000/hour. Absent, this still works, just slowly.
+          # The job holds no WRITE credential either way, which is the property that matters.
+          MIRROR_CI_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
+        run: bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/ci-macos.yml
+
   tag:
     name: Authorize and push release tag
-    needs: gate
+    needs: [gate, candidate-gate, mirror-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Refuse non-main dispatches
@@ -217,7 +296,7 @@ jobs:
           bash packaging/promote-changelog.sh "$version" "$QUALIFIED_DATE"
           python3 packaging/stamp-version.py "$version"
           sed -i -E "s#(releases/download/)[^/]+/#\1${tag}/#g" README.md
-          printf '%s\n' CHANGELOG.md README.md dreame_valetudo/__init__.py pyproject.toml uv.lock \
+          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
             | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
@@ -235,7 +314,7 @@ jobs:
           set -euo pipefail
           git config user.name "forgejo-actions[bot]"
           git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add CHANGELOG.md README.md pyproject.toml dreame_valetudo/__init__.py uv.lock
+          git add CHANGELOG.md README.md pyproject.toml src/dreame_valetudo/__init__.py uv.lock
           git commit -m "release: ${VERSION}"
           # Fail closed: never tag a commit that doesn't actually carry the version bump.
           python3 packaging/stamp-version.py "$VERSION" --check

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import ScriptedConsole
@@ -235,3 +236,185 @@ def test_retag_skips_unwritable_manifest_and_updates_the_rest(
     assert json.loads((blocked / "manifest.json").read_text())["robot"] == "old"
     assert json.loads((healthy / "manifest.json").read_text())["robot"] == "new"
     assert str(blocked) in con.text()
+
+
+def test_protect_backups_restricts_every_local_file_and_directory(tmp_path: Path) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    backup = _backup(backups)
+    nested = backup / "nested"
+    nested.mkdir()
+    secret = nested / "identity.txt"
+    secret.write_text("private")
+    for path in (backups, backup, nested, secret):
+        path.chmod(0o777)
+
+    manifest.protect_backups({"HOME": str(tmp_path)})
+
+    assert backups.stat().st_mode & 0o777 == 0o700
+    assert backup.stat().st_mode & 0o777 == 0o700
+    assert nested.stat().st_mode & 0o777 == 0o700
+    assert secret.stat().st_mode & 0o777 == 0o600
+
+
+def test_protect_backups_never_follows_a_symlink_outside_the_backup_tree(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o755)
+    secret = outside / "identity.txt"
+    secret.write_text("private")
+    secret.chmod(0o644)
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    backups.mkdir(parents=True)
+    (backups / "outside-link").symlink_to(outside, target_is_directory=True)
+
+    manifest.protect_backups({"HOME": str(tmp_path)})
+
+    assert outside.stat().st_mode & 0o777 == 0o755
+    assert secret.stat().st_mode & 0o777 == 0o644
+
+
+def test_protect_backups_warns_and_stops_when_the_root_cannot_be_restricted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    backup = _backup(backups)
+    secret = backup / "files.tar.gz"
+    secret.chmod(0o666)
+    real_chmod = Path.chmod
+
+    def fail_root(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        if path == backups:
+            raise PermissionError("read-only mount")
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", fail_root)
+    con = ScriptedConsole()
+
+    manifest.protect_backups({"HOME": str(tmp_path)}, con)
+
+    assert "read-only mount" in con.text()
+    assert secret.stat().st_mode & 0o777 == 0o666
+
+
+def test_protect_backups_warns_for_one_unrestrictable_file_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    backup = _backup(backups)
+    blocked = backup / "files.tar.gz"
+    healthy = backup / "private.dd.gz"
+    blocked.chmod(0o666)
+    healthy.chmod(0o666)
+    real_chmod = Path.chmod
+
+    def fail_one(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        if path == blocked:
+            raise PermissionError("immutable file")
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", fail_one)
+    con = ScriptedConsole()
+
+    manifest.protect_backups({"HOME": str(tmp_path)}, con)
+
+    assert "immutable file" in con.text()
+    assert blocked.stat().st_mode & 0o777 == 0o666
+    assert healthy.stat().st_mode & 0o777 == 0o600
+
+
+def test_retag_robot_ignores_malformed_and_unreadable_manifests(tmp_path: Path) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    malformed = _backup(backups, "dreame-r2416-malformed-20200101")
+    unreadable = _backup(backups, "dreame-r2416-unreadable-20200102")
+    healthy = _backup(backups, "dreame-r2416-zzz-healthy-20200103")
+    (malformed / "manifest.json").write_text("[")
+    (unreadable / "manifest.json").write_text('{"config": "same", "robot": "old"}')
+    manifest.write(healthy, {"config": "same", "robot": "old"})
+
+    # NOT chmod(0): CI runs as root, which reads a mode-000 file happily — the manifest would be
+    # retagged, the count would be 2, and the test would fail for a reason that says nothing about
+    # the code. Refusing the read directly reproduces the condition for any user.
+    real_read = Path.read_text
+
+    def _read(self: Path, *args: object, **kwargs: object) -> str:
+        if unreadable in self.parents:
+            raise OSError("unreadable")
+        return real_read(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch.object(Path, "read_text", _read):
+        assert manifest.retag_robot({"HOME": str(tmp_path)}, "same", "new") == 1
+    assert json.loads((healthy / "manifest.json").read_text())["robot"] == "new"
+
+
+def test_manifest_scans_warn_instead_of_failing_when_backup_directory_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    _backup(backups)
+    real_iterdir = Path.iterdir
+
+    def fail_scan(path: Path):
+        if path == backups:
+            raise PermissionError("cannot enumerate")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_scan)
+    con = ScriptedConsole()
+
+    manifest.backfill_manifests({"HOME": str(tmp_path)}, con)
+    assert manifest.retag_robot({"HOME": str(tmp_path)}, "same", "new", con) == 0
+
+    assert con.text().count("cannot enumerate") == 2
+
+
+def test_backfill_numbers_corrupt_manifest_copies_without_overwriting_prior_evidence(
+    tmp_path: Path,
+) -> None:
+    backup = tmp_path / "dreame-r2416-unknownconfig-20200101-000000"
+    backup.mkdir()
+    (backup / "manifest.json").write_text("broken current")
+    (backup / "manifest.json.corrupt").write_text("older broken")
+    (backup / "manifest.json.corrupt.1").write_text("another older broken")
+
+    assert manifest.backfill_if_missing(backup) is True
+    assert (backup / "manifest.json.corrupt.2").read_text() == "broken current"
+    assert (backup / "manifest.json.corrupt").read_text() == "older broken"
+
+
+def test_permission_repairs_remain_nonfatal_without_a_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    backup = _backup(backups)
+    blocked = backup / "files.tar.gz"
+    real_chmod = Path.chmod
+
+    def fail(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        if path in {backups, blocked}:
+            raise PermissionError("read-only")
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", fail)
+    manifest.protect_backups({"HOME": str(tmp_path)})
+
+    monkeypatch.setattr(Path, "chmod", lambda path, mode, **kwargs: (
+        (_ for _ in ()).throw(PermissionError("file blocked")) if path == blocked
+        else real_chmod(path, mode, **kwargs)
+    ))
+    manifest.protect_backups({"HOME": str(tmp_path)})
+
+
+def test_retag_skips_nonmanifests_and_warns_when_an_update_cannot_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backups = tmp_path / "dreame-valetudo" / "backups"
+    no_manifest = _backup(backups, "no-manifest")
+    (no_manifest / "manifest.json").unlink(missing_ok=True)
+    blocked = _backup(backups, "blocked")
+    manifest.write(blocked, {"config": "same", "robot": "old"})
+    monkeypatch.setattr(manifest, "_dump", lambda *_args: (_ for _ in ()).throw(OSError("full")))
+    console = ScriptedConsole()
+
+    assert manifest.retag_robot({"HOME": str(tmp_path)}, "same", "new", console) == 0
+    assert "Could not update" in console.text()

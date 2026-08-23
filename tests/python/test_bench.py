@@ -21,11 +21,11 @@ from dreame_valetudo.cli import _ROBOT_COMMANDS
 from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.fastboot import Fastboot, Transport
+from dreame_valetudo.models import impl_class_for_model
 from dreame_valetudo.phases.root import root as production_root
-from dreame_valetudo.profiles import impl_class_for_model
-from dreame_valetudo.run import Result, RunError
+from dreame_valetudo.run import RecordingRunner, Result, RunError
 
-# A model the fixture profile (x40-ultra) does not map to, so a pin taken from the workspace
+# A model the fixture model spec (x40-ultra) does not map to, so a pin taken from the workspace
 # instead of the robot is visibly wrong.
 _LIVE_MODEL = "dreame.vacuum.r2240"
 
@@ -208,7 +208,7 @@ def _phase_source() -> str:
     search for it fails unless the `"..."\\n    "..."` seams are closed first.
     """
     joined = []
-    for path in sorted((Path(__file__).parents[2] / "dreame_valetudo").rglob("*.py")):
+    for path in sorted((Path(__file__).parents[2] / "src" / "dreame_valetudo").rglob("*.py")):
         if path.name == "bench.py":
             continue
         text = path.read_text()
@@ -1392,7 +1392,7 @@ def test_hardware_stack_is_not_ready_until_fastboot_client_is_usable(
 
 def _pins_implementation(ctx: object, implementation: str | None = None) -> None:
     """Answer the pin read-back with a config the phase would have written."""
-    impl = ctx.profile.impl_class if implementation is None else implementation  # type: ignore[attr-defined]
+    impl = ctx.model_spec.impl_class if implementation is None else implementation  # type: ignore[attr-defined]
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[-1] == "cat /data/valetudo_config.json":
@@ -1427,7 +1427,7 @@ def test_implementation_pin_is_verified_on_the_robot_not_asked_about(
     _pins_implementation(ctx)
 
     assert B._confirm_pinned_implementation(ctx) == {
-        "implementation_pinned": ctx.profile.impl_class,
+        "implementation_pinned": ctx.model_spec.impl_class,
         "pin_derived_from_live_model": False,
     }
 
@@ -1453,13 +1453,13 @@ def test_the_pin_is_checked_against_the_live_model_when_the_robot_reports_one(
             return Result(argv, 0, f"model={_LIVE_MODEL}\n", "")
         if argv[-1] == "cat /data/valetudo_config.json":
             return Result(
-                argv, 0, json.dumps({"robot": {"implementation": ctx.profile.impl_class}}), "",
+                argv, 0, json.dumps({"robot": {"implementation": ctx.model_spec.impl_class}}), "",
             )
         return Result(argv, 0, "", "")
 
     ctx.runner.responder = responder  # type: ignore[attr-defined]
 
-    assert impl_class_for_model(_LIVE_MODEL) != ctx.profile.impl_class
+    assert impl_class_for_model(_LIVE_MODEL) != ctx.model_spec.impl_class
     with pytest.raises(Die, match="Bench check failed: the robot's config pins"):
         B._confirm_pinned_implementation(ctx)
 
@@ -4010,7 +4010,7 @@ def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
     selected: list[str] = []
 
     def refuse(inner: object, **_kwargs: object) -> None:
-        selected.append(inner.profile.key)  # type: ignore[attr-defined]
+        selected.append(inner.model_spec.key)  # type: ignore[attr-defined]
         raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
                   "model. A legacy, missing, duplicate, or mismatched model authorization "
                   "cannot permit a hardware write; run 'dreame-valetudo recon --force' for "
@@ -4027,7 +4027,7 @@ def test_wrong_model_probe_passes_when_root_refuses_the_unbound_model(
     # model_key), and the robot's own binding on disk must survive the probe untouched.
     assert len(selected) == 1
     assert selected[0] != "x40-ultra"
-    assert B.load_profile(selected[0]).dram == B.load_profile("x40-ultra").dram
+    assert B.load_model_spec(selected[0]).dram == B.load_model_spec("x40-ultra").dram
     assert ctx.need_robot().state_get("model_key") == "x40-ultra"
     # The refused probe must not rebind the campaign to the deliberately wrong model.
     assert _report(ctx)["model_key"] == "x40-ultra"
@@ -4073,8 +4073,8 @@ def test_the_probe_model_is_a_same_dram_fastboot_model(make_ctx: CtxFactory) -> 
     for bound in ("x40-ultra", "d10s-plus"):
         probe = B._confusable_model(bound)
         assert probe != bound
-        assert B.load_profile(probe).method == "fastboot"
-        assert B.load_profile(probe).dram == B.load_profile(bound).dram
+        assert B.load_model_spec(probe).method == "fastboot"
+        assert B.load_model_spec(probe).dram == B.load_model_spec(bound).dram
 
 
 def test_wrong_model_probe_refuses_a_robot_whose_recon_is_not_bound_at_all(
@@ -4085,7 +4085,7 @@ def test_wrong_model_probe_refuses_a_robot_whose_recon_is_not_bound_at_all(
     ctx = make_ctx(robot_name="x40")
     _bound_campaign_robot(ctx, monkeypatch)
     ctx.need_robot().state_set("recon", "backup=obtained")  # completed, but bound to nothing
-    ctx.profile = B.load_profile("x30-ultra")
+    ctx.model_spec = B.load_model_spec("x30-ultra")
     called: list[bool] = []
     monkeypatch.setattr(B, "root", lambda *_a, **_k: called.append(True))
 
@@ -4108,7 +4108,7 @@ def test_the_wrong_model_scenario_matches_what_root_actually_says(
     robot.state_set("recon", "model=x40-ultra backup=obtained")
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {'a' * 32}\n")
-    ctx.profile = B.load_profile("x30-ultra")
+    ctx.model_spec = B.load_model_spec("x30-ultra")
 
     with pytest.raises(Die) as raised:
         production_root(ctx)
@@ -4133,14 +4133,14 @@ def test_the_probe_never_lands_on_the_recon_authorized_model(
     bound = B._recon_bound_model(robot)
     assert bound == "x40-ultra"
     # Simulate `model` having changed the saved model AFTER recon: selection would then load this
-    # profile while the recon marker still authorizes `bound`.
+    # model spec while the recon marker still authorizes `bound`.
     diverged = B._confusable_model(bound)
     robot.state_set("model_key", diverged)
-    ctx.profile = B.load_profile(diverged)
+    ctx.model_spec = B.load_model_spec(diverged)
     seen: list[str] = []
 
     def refuse(inner: object, **_kwargs: object) -> None:
-        seen.append(inner.profile.key)  # type: ignore[attr-defined]
+        seen.append(inner.model_spec.key)  # type: ignore[attr-defined]
         raise Die("SAFETY STOP: the completed recon is not bound to the currently selected "
                   "model; run 'dreame-valetudo recon --force' for this model first.")
 
@@ -4494,7 +4494,7 @@ def test_the_wrong_key_scenario_is_not_started_without_its_wrong_key(
 
 
 def test_the_wrong_model_probe_is_not_advertised_as_needing_a_second_robot() -> None:
-    """It derives a confusable model from the recon binding and swaps only this process's profile.
+    """It derives a confusable model from the recon binding and swaps only this process's model_spec.
 
     Calling that SPECIAL retires a safety-gate test from every campaign for a requirement it does
     not have.
@@ -4570,10 +4570,10 @@ def test_a_deliberately_wrong_model_does_not_outlive_its_scenario(
     """
     ctx = make_ctx(robot_name="bench")
     ctx.interactive = False
-    before = ctx.profile
+    before = ctx.model_spec
 
     def swap(_c: object, scenario: B.Scenario, *_a: object, **_k: object) -> int:
-        ctx.profile = B.load_profile("d10s-plus")
+        ctx.model_spec = B.load_model_spec("d10s-plus")
         return 0
 
     monkeypatch.setattr(B, "_run", swap)
@@ -4581,11 +4581,11 @@ def test_a_deliberately_wrong_model_does_not_outlive_its_scenario(
     monkeypatch.setattr(B, "_wait_for_robot_ap", lambda *_a, **_k: True)
     scenarios = tuple(s for s in B.SCENARIOS if s.key == "fel-not-entered")
     B._campaign(
-        ctx, "conductor-profile", None, scenarios,  # type: ignore[arg-type]
+        ctx, "conductor-model_spec", None, scenarios,  # type: ignore[arg-type]
         auto_fn=_noop_auto, allow_destructive=False,
     )
 
-    assert ctx.profile is before
+    assert ctx.model_spec is before
 
 
 def test_rekey_is_not_treated_as_a_lifecycle_write() -> None:
@@ -5001,3 +5001,1763 @@ def test_answering_yes_to_already_rooted_always_offers_the_adoption_answer_too(
 
     if next(a for a in answers if "already rooted" in a.match).value is True:
         assert any("adopt it as-is" in a.match for a in answers)
+
+
+def test_failure_detail_prefers_named_checks_then_falls_back_to_stop_reason() -> None:
+    assert B._failure_detail({"checks": ["broken invariant"], "failure_message": "later"}) == [
+        "broken invariant",
+    ]
+    assert B._failure_detail({"checks": [None, ""], "stop_message": "operator stopped"}) == [
+        "operator stopped",
+    ]
+    assert B._failure_detail({}) == []
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        ([], "Usage:"),
+        (["unknown"], "Usage:"),
+        (["run"], "requires a scenario name"),
+        (["record", "--campaign", "rc"], "requires a scenario name"),
+        (["run", "does-not-exist"], "Unknown bench scenario"),
+    ],
+)
+def test_bench_action_parser_rejects_missing_and_unknown_commands(
+    args: list[str], message: str,
+) -> None:
+    with pytest.raises(Die, match=message):
+        B._action_and_scenario(args)
+
+
+@pytest.mark.parametrize(
+    "args, allowed, message",
+    [
+        (["--campaign", "a", "--campaign", "b"], {"campaign"}, "repeated"),
+        (["--allow-destructive=yes"], {"allow-destructive"}, "does not take a value"),
+        (["--campaign"], {"campaign"}, "requires a value"),
+        (["--unknown", "x"], {"campaign"}, "Unknown bench option"),
+    ],
+)
+def test_bench_option_parser_rejects_ambiguous_or_incomplete_options(
+    args: list[str], allowed: set[str], message: str,
+) -> None:
+    with pytest.raises(Die, match=message):
+        B._options(args, allowed)
+
+
+def test_unknown_suite_preflight_selects_nothing_until_validation_names_the_error() -> None:
+    assert B._campaign_suite_scenarios(["plan", "--suite", "does-not-exist"]) == ()
+    assert B.bench_is_model_independent(["malformed"]) is False
+
+
+@pytest.mark.parametrize(
+    "value, nullable, expected",
+    [
+        (None, True, True),
+        (None, False, False),
+        (123, False, False),
+        ("not-a-time", False, False),
+        ("2026-08-20T12:30:00", False, False),
+        ("2026-08-20T12:30:00+00:00", False, True),
+    ],
+)
+def test_report_timestamps_require_timezone_aware_iso_values(
+    value: object, nullable: bool, expected: bool,
+) -> None:
+    assert B._valid_timestamp(value, nullable=nullable) is expected
+
+
+def test_stock_recon_verdict_names_every_missing_recovery_invariant() -> None:
+    scenario = B._scenario("stock-recon")
+    after = replace(
+        _snapshot_with(), recovery_valid=False, recovery_provenance=False,
+        recovery_refresh_pending=True, recon_backup_obtained=False,
+    )
+
+    failures = B._validate(scenario, _snapshot_with(), after)
+
+    assert "recon completion marker is absent" in failures
+    assert "recovery backup is invalid or absent" in failures
+    assert "recovery provenance is absent" in failures
+    assert "an incomplete recovery refresh remains" in failures
+    assert "the current recon did not obtain a complete recovery backup" in failures
+
+
+def test_legacy_adoption_verdict_requires_adopted_state_without_write_attempts() -> None:
+    scenario = B._scenario("legacy-root-adoption")
+    after = _snapshot_with(**{"flash-attempt": "uncertain", "restore-attempt": "uncertain"})
+
+    failures = B._validate(scenario, _snapshot_with(), after)
+
+    assert "existing-root adoption marker is absent" in failures
+    assert "the existing rooted installation was not adopted" in failures
+    assert "adoption created a firmware-write attempt" in failures
+
+
+def test_factory_backup_verdict_requires_new_manifested_complete_evidence() -> None:
+    scenario = B._scenario("adopted-root-backup")
+    before = replace(_snapshot_with(valetudo="old"), bound_factory_backups=frozenset({"same"}))
+    after = replace(
+        _snapshot_with(valetudo="changed"), bound_factory_backups=frozenset({"same"}),
+        partial_backups=1,
+    )
+
+    failures = B._validate(scenario, before, after)
+
+    assert "no new identity-bound manifested factory backup was published" in failures
+    assert "the backup changed Valetudo completion state" in failures
+    assert "an incomplete backup directory remains" in failures
+
+
+def test_root_and_install_verdicts_require_durable_completion_and_recovery() -> None:
+    root = B._scenario("first-root")
+    before = replace(_snapshot_with(recon="yes", image="yes"), recovery_valid=False)
+    after = replace(
+        _snapshot_with(**{"flash-attempt": "uncertain"}), recovery_valid=False,
+        recovery_provenance=False, recovery_refresh_pending=True,
+    )
+    root_failures = B._validate(root, before, after)
+    assert "rooted completion marker is absent" in root_failures
+    assert "uncertain flash-attempt marker remains" in root_failures
+    assert any("recovery backup was lost" in item for item in root_failures)
+    assert any("recovery provenance was lost" in item for item in root_failures)
+    assert "the scenario left an incomplete recovery refresh" in root_failures
+
+    install = B._scenario("post-root-install")
+    install_after = replace(_snapshot_with(rooted="yes"), partial_backups=1)
+    install_failures = B._validate(install, _snapshot_with(rooted="yes"), install_after)
+    assert "Valetudo completion marker is absent" in install_failures
+    assert "no new identity-bound manifested factory backup was published" in install_failures
+    assert "an incomplete backup directory remains" in install_failures
+
+
+def test_non_destructive_verdicts_reject_dangerous_or_unrelated_state_changes() -> None:
+    before = _snapshot_with(rooted="old", valetudo="old")
+    after = _snapshot_with(rooted="changed", valetudo="changed")
+
+    dry_run = B._validate(B._scenario("rekey-dry-run"), before, after)
+    assert "the preview changed saved robot state" in dry_run
+    assert any(item.startswith("dangerous state changed:") for item in dry_run)
+    assert "the key change altered Valetudo completion state" in dry_run
+
+    resume = B._validate(B._scenario("rooted-resume"), before, after)
+    assert any(item.startswith("dangerous state changed:") for item in resume)
+
+
+def test_restore_verdict_requires_clean_markers_and_a_validated_kit() -> None:
+    scenario = B._scenario("stock-restore")
+    after = _snapshot_with(rooted="old", valetudo="old", **{"restore-attempt": "pending"})
+
+    failures = B._validate(scenario, _snapshot_with(), after)
+
+    assert "restored-stock completion marker is absent" in failures
+    assert "superseded rooted marker remains" in failures
+    assert "superseded valetudo marker remains" in failures
+    assert "superseded restore-attempt marker remains" in failures
+    assert "no validated stock restore kit is present" in failures
+
+
+def test_rejected_and_interrupted_verdicts_require_zero_state_or_artifact_drift() -> None:
+    before = replace(
+        _snapshot_with(recon="old", valetudo="old"),
+        recovery_artifacts={"capture": "before"}, backup_counts={"factory": 1},
+    )
+    after = replace(
+        _snapshot_with(recon="changed", valetudo="changed", rooted="changed"),
+        recovery_artifacts={"capture": "after"}, backup_counts={"factory": 2},
+        partial_backups=1,
+    )
+
+    wrong_model = B._validate(B._scenario("wrong-model-root"), before, after)
+    assert "recon completion state changed during the rejected/interrupted run" in wrong_model
+    assert "recovery artifacts changed during the rejected/interrupted run" in wrong_model
+    assert any(item.startswith("dangerous state changed:") for item in wrong_model)
+
+    wrong_network = B._validate(B._scenario("wifi-wrong-network"), before, after)
+    assert "Valetudo completion state changed during the rejected/interrupted run" in wrong_network
+    assert "published backup counts changed during the rejected/interrupted run" in wrong_network
+    assert "an incomplete backup directory remains" in wrong_network
+
+    interrupted = B._validate(B._scenario("ctrl-c-push"), before, after)
+    assert "Valetudo completion state changed during the interrupted run" in interrupted
+    assert "an incomplete backup directory remains" in interrupted
+
+
+def test_mistyped_serial_preserves_shape_and_refuses_unalterable_values() -> None:
+    assert B._mistyped_serial("SERIALA").endswith("B")
+    with pytest.raises(Die, match="no character to alter"):
+        B._mistyped_serial("---")
+
+
+def _valid_automated_result(key: str = "host-smoke") -> dict[str, object]:
+    scenario = B._scenario(key)
+    return {
+        "scenario": key,
+        "safety": scenario.safety,
+        "method": "automated",
+        "result": "passed",
+        "robot": None if key == "host-smoke" else "robot-0123456789ab",
+        "evidence": {},
+        "checks": [],
+        "host": {"system": "Darwin", "release": "26", "machine": "arm64"},
+        "scenario_definition": B._scenario_definition(scenario),
+        "started_at": "2026-08-20T12:00:00+00:00",
+        "finished_at": "2026-08-20T12:00:01+00:00",
+        "elapsed_seconds": 1.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda _entry: None, "non-object"),
+        (lambda entry: entry.update(scenario="unknown"), "unknown scenario"),
+        (lambda entry: entry.update(safety="H9"), "invalid safety"),
+        (lambda entry: entry.update(failure_message=123), "invalid failure_message"),
+        (lambda entry: entry.update(observation_host={"system": 1}), "invalid observation-host"),
+        (lambda entry: entry.update(method="invented"), "unknown method"),
+        (lambda entry: entry.update(scenario_definition={}), "does not match"),
+        (lambda entry: entry.update(robot="robot-private-name"), "unexpectedly names a robot"),
+        (lambda entry: entry.update(elapsed_seconds=True), "invalid timing metadata"),
+    ],
+)
+def test_result_validation_names_each_corrupt_public_report_condition(
+    mutate: object, message: str,
+) -> None:
+    if message == "non-object":
+        with pytest.raises(Die, match=message):
+            B._validate_result_entry([])
+        return
+    entry = _valid_automated_result()
+    mutate(entry)  # type: ignore[operator]
+    with pytest.raises(Die, match=message):
+        B._validate_result_entry(entry)
+
+
+def test_result_validation_rejects_bad_robot_and_observation_bindings() -> None:
+    robot_entry = _valid_automated_result("stock-recon")
+    robot_entry["robot"] = "kitchen"
+    with pytest.raises(Die, match="no valid robot binding"):
+        B._validate_result_entry(robot_entry)
+
+    observation = next(scenario for scenario in B.SCENARIOS if scenario.observation is not None)
+    observed = _valid_automated_result(observation.key)
+    observed.update(method="automated-observation", post_state_digest="bad")
+    with pytest.raises(Die, match="no valid state binding"):
+        B._validate_result_entry(observed)
+
+    observed["post_state_digest"] = "a" * 64
+    observed["observation_confirmed"] = False
+    observed["observation_resumed"] = False
+    with pytest.raises(Die, match="invalid attestation metadata"):
+        B._validate_result_entry(observed)
+
+
+def test_manual_result_validation_requires_a_manual_scenario_robot_and_timing() -> None:
+    scenario = next(item for item in B.SCENARIOS if not item.automated)
+    entry = {
+        **_valid_automated_result(),
+        "scenario": scenario.key,
+        "safety": scenario.safety,
+        "method": "operator-recorded",
+        "robot": "robot-0123456789ab",
+        "started_at": None,
+        "finished_at": "2026-08-20T12:00:00+00:00",
+        "elapsed_seconds": None,
+        "note_recorded": False,
+    }
+    B._validate_result_entry(entry)
+    entry["robot"] = "private-name"
+    with pytest.raises(Die, match="invalid scenario or robot binding"):
+        B._validate_result_entry(entry)
+    entry["robot"] = "robot-0123456789ab"
+    entry["started_at"] = "2026-08-20T11:00:00+00:00"
+    with pytest.raises(Die, match="invalid timing metadata"):
+        B._validate_result_entry(entry)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"schema_version": 2, "entries": []}, "unsupported schema"),
+        ({"schema_version": 1, "entries": ["bad"]}, "malformed entry"),
+        ({"schema_version": 1, "entries": [{"id": "bad"}]}, "invalid or duplicate"),
+        ({
+            "schema_version": 1,
+            "entries": [{
+                "id": "a" * 64, "kind": "operator-note", "scenario": "upgrade-resume",
+                "recorded_at": "2026-08-20T12:00:00+00:00", "text": 1,
+            }],
+        }, "operator note is malformed"),
+        ({
+            "schema_version": 1,
+            "entries": [{
+                "id": "a" * 64, "kind": "waiver", "scenario": "upgrade-resume",
+                "recorded_at": "2026-08-20T12:00:00+00:00", "reason": "",
+                "residual_risk": "risk", "accepted_by": "owner",
+            }],
+        }, "private waiver is malformed"),
+    ],
+)
+def test_private_report_validation_refuses_malformed_acceptance_records(
+    tmp_path: Path, payload: dict[str, object], message: str,
+) -> None:
+    report = tmp_path / "report.json"
+    (tmp_path / ".private.json").write_text(json.dumps(payload))
+    with pytest.raises(Die, match=message):
+        B._private_entries(report)
+
+
+def test_private_report_refuses_symlinks_and_duplicate_identifiers(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    target = tmp_path / "elsewhere"
+    target.write_text("{}")
+    private = tmp_path / ".private.json"
+    private.symlink_to(target)
+    with pytest.raises(Die, match="unsafe"):
+        B._private_entries(report)
+    private.unlink()
+    entry = {
+        "id": "a" * 64,
+        "kind": "operator-note",
+        "scenario": "upgrade-resume",
+        "recorded_at": "2026-08-20T12:00:00+00:00",
+        "text": "observed",
+    }
+    private.write_text(json.dumps({"schema_version": 1, "entries": [entry, entry]}))
+    with pytest.raises(Die, match="duplicate"):
+        B._private_entries(report)
+
+
+def test_report_robot_rebinding_refuses_ambiguous_or_malformed_history() -> None:
+    with pytest.raises(Die, match="different physical robot"):
+        B._bind_report_robot({"robot": "robot-0123456789ab"}, None)
+    with pytest.raises(Die, match="different physical robot"):
+        B._bind_report_robot({"robot": "robot-0123456789ab"}, "robot-abcdef012345")
+    with pytest.raises(Die, match="different physical robot"):
+        B._bind_report_robot_after_recon(
+            {"robot": "robot-0123456789ab", "results": []},
+            None,
+            "robot-abcdef012345",
+        )
+    with pytest.raises(Die, match="invalid results list"):
+        B._bind_report_robot_after_recon(
+            {"robot": "robot-0123456789ab", "results": "bad"},
+            "robot-0123456789ab",
+            "robot-abcdef012345",
+        )
+
+
+def test_interrupting_runner_covers_redirect_link_loss_guard_and_delegation(tmp_path: Path) -> None:
+    inner = RecordingRunner()
+    runner = B._InjectingRunner(inner, "publish", link_loss=True)
+    first = runner.run_redirect(["ssh", "publish"], stdout_path=str(tmp_path / "out"))
+    second = runner.run_redirect(["ssh", "later"])
+    assert first.returncode == second.returncode == 255
+    assert runner.fired and runner.fired_rc == 0
+    assert inner.calls == [("ssh", "publish")]
+    assert runner.transcript() == ["ssh publish"]
+
+    guarded = B._InjectingRunner(inner, "never", link_loss=True, guard=("next-write",))
+    with pytest.raises(B._BoundaryAbsent):
+        guarded.run_redirect(["ssh", "next-write"])
+    assert guarded.absent is True
+
+
+def test_interrupting_runner_raises_keyboard_interrupt_only_after_a_successful_trigger() -> None:
+    failed_inner = RecordingRunner(lambda argv: Result(argv, 1, "", "failed"))
+    failed = B._InjectingRunner(failed_inner, "write", link_loss=False)
+    assert failed.run(["tool", "write"], check=False).returncode == 1
+    assert failed.fired is False
+
+    live = B._InjectingRunner(RecordingRunner(), "write", link_loss=False)
+    with pytest.raises(KeyboardInterrupt):
+        live.run(["tool", "write"])
+    assert live.fired and live.fired_rc == 0
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["list", "extra"], "Usage"),
+        (["plan", "extra", "--campaign", "rc"], "Unexpected positional"),
+        (["campaign", "extra", "--campaign", "rc"], "Unexpected positional"),
+        (["run", "host-smoke", "extra", "--campaign", "rc"], "Unexpected positional"),
+        (["record", "upgrade-resume", "maybe", "--campaign", "rc"], "exactly one verdict"),
+        (["waive", "upgrade-resume", "extra", "--campaign", "rc"], "waiver scenario"),
+        (["report", "extra", "--campaign", "rc"], "bench report"),
+    ],
+)
+def test_bench_preflight_rejects_extra_or_invalid_positionals_without_commands(
+    make_ctx: CtxFactory, args: list[str], message: str,
+) -> None:
+    ctx = make_ctx()
+    with pytest.raises(Die, match=message):
+        B.validate_bench_args(ctx, args)
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_wrong_key_preflight_requires_a_regular_explicit_file_without_commands(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(env={"DREAME_SSHKEY": str(tmp_path / "missing")})
+    with pytest.raises(Die, match="existing regular unrelated key"):
+        B.validate_bench_args(ctx, ["run", "ssh-wrong-key", "--campaign", "rc"])
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_campaign_path_and_metadata_validation_fail_before_writing(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    path = ctx.ws.base / "bench" / "rc"
+    path.parent.mkdir(parents=True)
+    path.write_text("collision")
+    with pytest.raises(Die, match="not a directory"):
+        B._campaign_dir(ctx, "rc")
+
+    monkeypatch.setattr(B, "__version__", "invalid version with spaces")
+    with pytest.raises(Die, match="short version"):
+        B._metadata(ctx)
+
+
+def test_runtime_and_hardware_fingerprints_name_unreadable_artifacts(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(
+        B, "_tree_digest", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(Die, match="Could not fingerprint this executable"):
+        B._runtime_fingerprint()
+
+    helper = ctx.ws.base / "helper"
+    helper.write_text("binary")
+    ctx._fastboot = Fastboot(ctx.runner, ctx.console, Transport("binary", (str(helper),)))
+    monkeypatch.setattr(B, "_sunxi_ready", lambda _ctx: True)
+    monkeypatch.setattr(B, "stage1_ready", lambda _ctx: True)
+    monkeypatch.setattr(
+        B, "_file_digest", lambda _path: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(Die, match="Could not fingerprint hardware helper"):
+        B._hardware_fingerprint(ctx)
+
+
+def test_hardware_stack_readiness_fails_closed_for_missing_commands_and_probe_errors(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(B, "_sunxi_ready", lambda _ctx: False)
+    assert B._hardware_stack_ready(ctx) is False
+
+    monkeypatch.setattr(B, "_sunxi_ready", lambda _ctx: True)
+    monkeypatch.setattr(B, "stage1_ready", lambda _ctx: True)
+    ctx._fastboot = Fastboot(ctx.runner, ctx.console, Transport("binary", ("missing-helper",)))
+    monkeypatch.setattr(B.shutil, "which", lambda _name: None)
+    assert B._hardware_stack_ready(ctx) is False
+
+    helper = ctx.ws.base / "not-executable"
+    helper.write_text("binary")
+    ctx._fastboot = Fastboot(ctx.runner, ctx.console, Transport("binary", (str(helper),)))
+    assert B._hardware_stack_ready(ctx) is False
+
+    monkeypatch.setattr(
+        B, "_sunxi_ready", lambda _ctx: (_ for _ in ()).throw(OSError("probe failed")),
+    )
+    assert B._hardware_stack_ready(ctx) is False
+
+
+def test_campaign_json_reader_rejects_invalid_json_and_non_object_roots(tmp_path: Path) -> None:
+    path = tmp_path / "report.json"
+    path.write_text("{")
+    with pytest.raises(Die, match="record is unreadable"):
+        B._read_object(path)
+
+    path.write_text("[]")
+    with pytest.raises(Die, match="not a JSON object"):
+        B._read_object(path)
+
+
+def test_campaign_anonymization_key_rejects_symlinks_and_invalid_material(tmp_path: Path) -> None:
+    directory = tmp_path / "campaign"
+    directory.mkdir()
+    outside = tmp_path / "outside-key"
+    outside.write_text("00" * 32)
+    key = directory / ".robot-key"
+    key.symlink_to(outside)
+    with pytest.raises(Die, match="campaign key is unsafe"):
+        B._campaign_key(directory, create=False)
+
+    key.unlink()
+    key.write_text("not hex")
+    with pytest.raises(Die, match="campaign key is unreadable"):
+        B._campaign_key(directory, create=False)
+
+
+def _write_private_entries(report: Path, entries: object, *, schema: int = 1) -> None:
+    (report.parent / ".private.json").write_text(json.dumps({
+        "schema_version": schema,
+        "entries": entries,
+    }))
+
+
+def test_private_campaign_record_rejects_unsafe_path_and_schema(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    target = tmp_path / "outside.json"
+    target.write_text("{}")
+    private = tmp_path / ".private.json"
+    private.symlink_to(target)
+    with pytest.raises(Die, match="private record is unsafe"):
+        B._private_entries(report)
+
+    private.unlink()
+    _write_private_entries(report, [], schema=2)
+    with pytest.raises(Die, match="unsupported schema"):
+        B._private_entries(report)
+
+
+def test_private_campaign_record_rejects_malformed_and_duplicate_identity_fields(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    _write_private_entries(report, [None])
+    with pytest.raises(Die, match="malformed entry"):
+        B._private_entries(report)
+
+    recorded = "2026-08-20T12:00:00+00:00"
+    invalid = {
+        "id": "short",
+        "kind": "operator-note",
+        "scenario": "host-smoke",
+        "recorded_at": recorded,
+        "text": "note",
+    }
+    _write_private_entries(report, [invalid])
+    with pytest.raises(Die, match="invalid or duplicate entry"):
+        B._private_entries(report)
+
+
+def test_private_campaign_notes_and_waivers_require_their_sensitive_fields(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    base = {
+        "id": "a" * 64,
+        "scenario": "host-smoke",
+        "recorded_at": "2026-08-20T12:00:00+00:00",
+    }
+    _write_private_entries(report, [{**base, "kind": "operator-note"}])
+    with pytest.raises(Die, match="operator note is malformed"):
+        B._private_entries(report)
+
+    _write_private_entries(report, [{**base, "kind": "waiver", "reason": "", "residual_risk": "x",
+                                     "accepted_by": "owner"}])
+    with pytest.raises(Die, match="private waiver is malformed"):
+        B._private_entries(report)
+
+
+@pytest.mark.parametrize(
+    "model, message",
+    [(123, "invalid model binding"), ("does-not-exist", "unknown model binding"),
+     ("z10-pro", "unsupported UART model")],
+)
+def test_report_validation_refuses_invalid_unknown_and_uart_model_bindings(
+    make_ctx: CtxFactory, tmp_path: Path, model: object, message: str,
+) -> None:
+    ctx = make_ctx()
+    report = B._new_report(ctx, "rc")
+    report["model_key"] = model
+
+    with pytest.raises(Die, match=message):
+        B._validate_report(report, tmp_path / "report.json", "rc")
+
+
+def test_report_validation_refuses_unsupported_identity_schema(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    report = B._new_report(ctx, "rc")
+    report["runtime_fingerprint"] = "not-a-digest"
+
+    with pytest.raises(Die, match="unsupported identity or schema"):
+        B._validate_report(report, tmp_path / "report.json", "rc")
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "nested/name", "nested\\name", "bad\0name"])
+def test_manual_robot_workspace_rejects_unsafe_names_before_path_access(
+    make_ctx: CtxFactory, name: str,
+) -> None:
+    ctx = make_ctx()
+
+    with pytest.raises(Die, match="invalid workspace"):
+        B._robot_workspace(ctx, name, "invalid workspace")
+
+
+def test_manual_robot_workspace_requires_an_existing_non_symlink_directory(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    target = tmp_path / "target"
+    target.mkdir()
+    ctx.ws.robots_dir.mkdir(parents=True, exist_ok=True)
+    (ctx.ws.robots_dir / "linked").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(Die, match="invalid workspace"):
+        B._robot_workspace(ctx, "linked", "invalid workspace")
+    with pytest.raises(Die, match="invalid workspace"):
+        B._robot_workspace(ctx, "missing", "invalid workspace")
+
+
+def test_injecting_runner_stays_severed_and_failed_redirect_does_not_fire(tmp_path: Path) -> None:
+    live = B._InjectingRunner(RecordingRunner(), "write", link_loss=True)
+    live.run(["tool", "write"])
+    assert live.run(["tool", "later"]).returncode == 255
+
+    failed_inner = RecordingRunner()
+    failed_inner.redirect_responder = lambda argv, _out, _in: Result(argv, 3, "", "failed")
+    failed = B._InjectingRunner(failed_inner, "write", link_loss=True)
+    result = failed.run_redirect(["tool", "write"], stdout_path=str(tmp_path / "out"), check=False)
+    assert result.returncode == 3
+    assert failed.fired is False
+
+
+def test_resolved_bench_key_fails_closed_without_a_robot_or_resolvable_key(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert B._resolved_key(make_ctx()) is None
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, "resolve_sshkey", lambda *_args: (_ for _ in ()).throw(Die("bad key")))
+    assert B._resolved_key(ctx) is None
+
+
+def test_pinned_implementation_readback_names_live_model_and_config_failures(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    key = tmp_path / "id"
+    key.write_text("private")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)})
+    monkeypatch.setattr(B, "_is_robot_ap", lambda *_args, **_kwargs: True)
+
+    monkeypatch.setattr(B, "resolved_impl_class", lambda *_args: ("unknown.model", None))
+    with pytest.raises(Die, match="no known Valetudo implementation"):
+        B._confirm_pinned_implementation(ctx)
+
+    monkeypatch.setattr(B, "resolved_impl_class", lambda *_args: ("", None))
+    ctx.runner.responder = lambda argv: Result(argv, 1, "", "unreadable")  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="could not read"):
+        B._confirm_pinned_implementation(ctx)
+
+    ctx.runner.responder = lambda argv: Result(argv, 0, "{", "")  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="not valid JSON"):
+        B._confirm_pinned_implementation(ctx)
+
+
+def test_authorized_key_confirmation_requires_a_recorded_write(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    with pytest.raises(Die, match="no key was recorded"):
+        B._confirm_authorized_key(ctx, B._KeyBaseline(None, None, True))
+
+
+def test_report_validation_requires_private_records_for_notes_and_waivers(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    path = tmp_path / "report.json"
+    manual_scenario = next(item for item in B.SCENARIOS if not item.automated)
+    manual = {
+        **_valid_automated_result(),
+        "scenario": manual_scenario.key,
+        "safety": manual_scenario.safety,
+        "method": "operator-recorded",
+        "robot": "robot-0123456789ab",
+        "started_at": None,
+        "finished_at": "2026-08-20T12:00:00+00:00",
+        "elapsed_seconds": None,
+        "note_recorded": True,
+        "private_record_id": "a" * 64,
+    }
+    report = B._new_report(ctx, "rc")
+    report["results"] = [manual]
+    with pytest.raises(Die, match="manual note without"):
+        B._validate_report(report, path, "rc")
+
+    manual["note_recorded"] = False
+    with pytest.raises(Die, match="unexpected private note"):
+        B._validate_report(report, path, "rc")
+
+    report["results"] = []
+    report["waivers"] = ["bad"]
+    with pytest.raises(Die, match="non-object waiver"):
+        B._validate_report(report, path, "rc")
+
+    report["waivers"] = [{
+        "scenario": manual_scenario.key,
+        "recorded_at": "2026-08-20T12:00:00+00:00",
+        "reason_recorded": True,
+        "residual_risk_recorded": True,
+        "acceptor_recorded": True,
+        "private_record_id": "b" * 64,
+    }]
+    with pytest.raises(Die, match="without matching private acceptance"):
+        B._validate_report(report, path, "rc")
+
+
+def test_append_private_creates_a_valid_nonshareable_record_and_refuses_bad_storage(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "report.json"
+    identifier = B._append_private(report, {"kind": "operator-note", "text": "private"})
+    stored = json.loads((tmp_path / ".private.json").read_text())
+    assert stored["entries"] == [{"id": identifier, "kind": "operator-note", "text": "private"}]
+
+    (tmp_path / ".private.json").write_text(json.dumps({"schema_version": 2, "entries": []}))
+    with pytest.raises(Die, match="unsupported schema"):
+        B._append_private(report, {"kind": "operator-note"})
+
+
+def test_report_list_and_pending_observation_helpers_fail_closed() -> None:
+    with pytest.raises(Die, match="invalid results list"):
+        B._append({"results": "bad"}, "results", {})
+    assert B._pending_observation({"results": "bad"}, B._scenario("post-root-install")) is None
+
+
+def test_invoking_entrypoint_handles_frozen_module_absolute_relative_and_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(B.sys, "frozen", True, raising=False)
+    assert B._invoking_entrypoint() == (sys.executable,)
+    monkeypatch.delattr(B.sys, "frozen", raising=False)
+    monkeypatch.setattr(B.sys, "argv", [])
+    assert B._invoking_entrypoint() is None
+    monkeypatch.setattr(B.sys, "argv", [str(tmp_path / "dreame_valetudo" / "__main__.py")])
+    assert B._invoking_entrypoint() == (sys.executable, "-m", "dreame_valetudo")
+    absolute = tmp_path / "tool"
+    monkeypatch.setattr(B.sys, "argv", [str(absolute)])
+    assert B._invoking_entrypoint() == (str(absolute),)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(B.sys, "argv", ["bin/tool"])
+    assert B._invoking_entrypoint() == (str((tmp_path / "bin/tool").absolute()),)
+    monkeypatch.setattr(B.sys, "argv", ["missing-tool"])
+    monkeypatch.setattr(B.shutil, "which", lambda _name: None)
+    assert B._invoking_entrypoint() is None
+
+
+def test_recon_interruption_evidence_names_each_published_state_violation() -> None:
+    before = replace(
+        _snapshot_with(recon="complete"),
+        recovery_artifacts={B.RECOVERY_BACKUP_ZIP: "old", "scratch": "old"},
+        backup_counts={"factory": 1},
+    )
+    after = replace(
+        _snapshot_with(recon="changed"),
+        recovery_artifacts={B.RECOVERY_BACKUP_ZIP: "new", "scratch": "new"},
+        backup_counts={"factory": 2},
+        recovery_refresh_pending=False,
+    )
+
+    failures = B._recon_interruption_failures(before, after)
+    assert "recon completion state changed during the interrupted run" in failures
+    assert "published recovery archive or provenance changed during the interrupted run" in failures
+    assert "changed recovery artifacts were not marked as an incomplete generation" in failures
+    assert "published backup counts changed during the interrupted run" in failures
+    assert "recon completion state changed during the interrupted run" not in (
+        B._recon_interruption_failures(before, after, allow_recon_invalidation=True)
+    )
+
+
+def test_recon_model_binding_and_confusable_model_are_derived_from_saved_state(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    with pytest.raises(Die, match="exactly one model"):
+        B._recon_bound_model(robot)
+    robot.state_set("recon", "backup=obtained model=x40-ultra")
+    assert B._recon_bound_model(robot) == "x40-ultra"
+    assert B._confusable_model("x40-ultra") != "x40-ultra"
+
+    monkeypatch.setattr(B, "SUPPORTED_MODELS", ["x40-ultra"])
+    with pytest.raises(Die, match="No other fastboot model"):
+        B._confusable_model("x40-ultra")
+
+
+def test_staged_binary_cleanup_requires_a_robot_and_a_confirmed_removal(
+    make_ctx: CtxFactory,
+) -> None:
+    assert B._clear_staged_binary(make_ctx()) is False
+
+    failed = make_ctx(
+        robot_name="bench", responder=lambda argv: Result(argv, 255, "", "disconnected"),
+    )
+    with pytest.raises(Die, match="could not confirm"):
+        B._clear_staged_binary(failed)
+
+    present = make_ctx(
+        robot_name="bench", responder=lambda argv: Result(argv, 0, "present\ngone\n", ""),
+    )
+    assert B._clear_staged_binary(present) is True
+
+
+def test_marker_and_recovery_hashes_ignore_unsafe_entries_and_record_read_failures(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_dir.mkdir(parents=True)
+    good = robot.state_dir / "good"
+    bad = robot.state_dir / "bad"
+    good.write_text("ok")
+    bad.write_text("no")
+    (robot.state_dir / "linked").symlink_to(good)
+    real_read = Path.read_bytes
+    monkeypatch.setattr(
+        Path, "read_bytes",
+        lambda path: (_ for _ in ()).throw(OSError("denied")) if path == bad else real_read(path),
+    )
+    hashes = B._marker_hashes(robot)
+    assert set(hashes) == {"bad", "good"}
+    assert hashes["bad"] == "unreadable"
+
+    robot.recon_dir.mkdir(parents=True)
+    recovery = robot.recon_dir / B.PROVENANCE_FILE
+    recovery.write_text("proof")
+    (robot.recon_dir / B.RECOVERY_BACKUP_ZIP).symlink_to(recovery)
+    assert B.PROVENANCE_FILE in B._recovery_hashes(robot)
+    assert B.RECOVERY_BACKUP_ZIP not in B._recovery_hashes(robot)
+
+
+def test_backup_artifact_hashes_classify_symlinks_directories_and_unreadable_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / "backup"
+    directory.mkdir()
+    regular = directory / "regular"
+    unreadable = directory / "unreadable"
+    regular.write_text("data")
+    unreadable.write_text("secret")
+    (directory / "subdir").mkdir()
+    (directory / "link").symlink_to(regular)
+    real_open = Path.open
+
+    def guarded_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == unreadable:
+            raise OSError("denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    hashes = B._backup_artifact_hashes(directory)
+    assert hashes["backup/link"] == "symlink"
+    assert hashes["backup/subdir"] == "non-file"
+    assert hashes["backup/unreadable"] == "unreadable"
+    assert len(hashes["backup/regular"]) == 64
+
+
+def test_backup_evidence_counts_partial_other_and_identity_bound_manifests(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _set_robot_identity(ctx)
+    partial = ctx.backups_dir / (
+        f".{B.robot_tag(ctx.model_spec.model_code, 'a' * 32)}-capture.partial"
+    )
+    partial.mkdir(parents=True)
+    other = ctx.backups_dir / "other"
+    other.mkdir()
+    (other / "manifest.json").write_text(json.dumps({"backup_type": "other"}))
+    stock = ctx.backups_dir / "stock"
+    stock.mkdir()
+    (stock / "manifest.json").write_text(json.dumps({
+        "backup_type": "stock-restore-kit", "config": "a" * 32, "model_key": "x40-ultra",
+    }))
+
+    counts, bound, artifacts, partials = B._backup_evidence(
+        ctx.backups_dir, ctx.need_robot(), config="a" * 32,
+        validate_factory=False, validate_restore=False,
+    )
+    assert counts == {"other-manifest": 1, "robot-stock-restore-kit": 1, "stock-restore-kit": 1}
+    assert bound == frozenset() and artifacts == {}
+    assert partials == 1
+
+
+def test_observation_resume_refuses_mismatched_evidence_before_repeating_hardware(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    scenario = next(item for item in B.SCENARIOS if item.observation is not None)
+    current = _snapshot_with()
+    report: dict[str, object] = {"results": []}
+    path = tmp_path / "report.json"
+    pending = {
+        "scenario": scenario.key,
+        "robot": "robot-0123456789ab",
+        "scenario_definition": B._scenario_definition(scenario),
+        "post_state_digest": B._snapshot_digest(current),
+    }
+
+    with pytest.raises(Die, match="without one"):
+        B._resume_observation(
+            ctx, B._scenario("host-smoke"), path, report, pending,
+            "robot-0123456789ab", current,
+        )
+    with pytest.raises(Die, match="different bench robot"):
+        B._resume_observation(ctx, scenario, path, report, pending, "robot-ffffffffffff", current)
+    with pytest.raises(Die, match="older scenario definition"):
+        B._resume_observation(
+            ctx, scenario, path, report, {**pending, "scenario_definition": "old"},
+            "robot-0123456789ab", current,
+        )
+    with pytest.raises(Die, match="state changed"):
+        B._resume_observation(
+            ctx, scenario, path, report, {**pending, "post_state_digest": "0" * 64},
+            "robot-0123456789ab", current,
+        )
+    assert report["results"] == []
+
+
+@pytest.mark.parametrize(("interactive", "confirmed", "expected"), [
+    (False, None, "awaiting-observation"),
+    (True, False, "failed"),
+    (True, True, "passed"),
+])
+def test_observation_resume_records_operator_outcome_without_rerunning_hardware(
+    make_ctx: CtxFactory, tmp_path: Path, interactive: bool, confirmed: bool | None, expected: str,
+) -> None:
+    ctx = make_ctx(
+        robot_name="bench", interactive=interactive,
+        confirms=[] if confirmed is None else [confirmed],
+    )
+    scenario = next(item for item in B.SCENARIOS if item.observation is not None)
+    current = _snapshot_with()
+    pending = {
+        "scenario": scenario.key,
+        "robot": "robot-0123456789ab",
+        "scenario_definition": B._scenario_definition(scenario),
+        "post_state_digest": B._snapshot_digest(current),
+        "result": "awaiting-observation",
+    }
+    report: dict[str, object] = {"results": []}
+
+    result = B._resume_observation(
+        ctx, scenario, tmp_path / "report.json", report, pending,
+        "robot-0123456789ab", current,
+    )
+
+    assert result == (0 if expected == "passed" else 1)
+    if interactive:
+        assert report["results"][-1]["result"] == expected  # type: ignore[index]
+    else:
+        assert report["results"] == []
+
+
+@pytest.mark.parametrize(("interactive", "confirmed", "expected"), [
+    (False, None, "awaiting-observation"),
+    (True, False, "failed"),
+    (True, True, "passed"),
+])
+def test_observation_recording_persists_pending_and_final_attestations(
+    make_ctx: CtxFactory, tmp_path: Path, interactive: bool, confirmed: bool | None, expected: str,
+) -> None:
+    ctx = make_ctx(interactive=interactive, confirms=[] if confirmed is None else [confirmed])
+    scenario = next(item for item in B.SCENARIOS if item.observation is not None)
+    report: dict[str, object] = {"results": []}
+
+    result = B._record_observation(
+        ctx, scenario, tmp_path / "report.json", report,
+        {"scenario": scenario.key}, _snapshot_with(),
+    )
+
+    assert result == (0 if expected == "passed" else 1)
+    assert report["results"][-1]["result"] == expected  # type: ignore[index]
+
+
+def test_observation_recording_rejects_a_scenario_without_a_prompt(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    with pytest.raises(Die, match="without a prompt"):
+        B._record_observation(
+            make_ctx(), B._scenario("host-smoke"), tmp_path / "report.json",
+            {"results": []}, {}, _snapshot_with(),
+        )
+
+
+def test_scenario_plan_state_labels_recorded_waived_manual_special_and_ready(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    snapshot = _snapshot_with()
+    host = B._scenario("host-smoke")
+    assert B._scenario_state(ctx, host, "rc", {host.key: {"result": "passed"}}, set(), snapshot) == (
+        "PASS", None,
+    )
+    assert B._scenario_state(
+        ctx, host, "rc", {host.key: {"result": "awaiting-observation"}}, set(), snapshot,
+    )[0] == "OBSERVE"
+    failed = B._scenario_state(
+        ctx, host, "rc", {host.key: {"result": "failed", "failure_message": "boom"}},
+        set(), snapshot,
+    )
+    assert failed == ("FAILED", "boom")
+    assert B._scenario_state(ctx, host, "rc", {}, {host.key}, snapshot) == ("WAIVED", None)
+
+    manual = next(item for item in B.SCENARIOS if not item.automated)
+    assert B._scenario_state(ctx, manual, "rc", {}, set(), snapshot)[0] == "RECORD"
+    special = B._scenario("multi-robot-selection")
+    assert B._scenario_state(ctx, special, "rc", {}, set(), snapshot)[0] == "SPECIAL"
+    assert B._scenario_state(ctx, host, "rc", {}, set(), snapshot) == (
+        "READY", "dreame-valetudo bench run host-smoke --campaign rc",
+    )
+
+
+def test_robot_ap_waits_handle_already_ready_eventual_success_and_timeout(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(B, "_AP_WAIT_POLLS", 2)
+    monkeypatch.setattr(B, "_AP_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(B, "_robot_answers_ap", lambda _ctx: False)
+    assert B._wait_off_robot_ap(ctx, "leave") is True
+    assert B._wait_for_robot_ap(ctx, "join") is False
+
+    answers = iter([True, True, False])
+    monkeypatch.setattr(B, "_robot_answers_ap", lambda _ctx: next(answers))
+    assert B._wait_off_robot_ap(ctx, "leave") is True
+    monkeypatch.setattr(B, "_robot_answers_ap", lambda _ctx: True)
+    assert B._wait_for_robot_ap(ctx, "join") is True
+
+
+def test_robot_ap_identity_uses_header_then_fails_closed_on_key_resolution(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, "valetudo_version_header", lambda _runner: "2026.08.0")
+    assert B._robot_answers_ap(ctx) is True
+    monkeypatch.setattr(B, "valetudo_version_header", lambda _runner: None)
+    monkeypatch.setattr(B, "resolve_sshkey", lambda *_args: (_ for _ in ()).throw(Die("missing")))
+    assert B._robot_answers_ap(ctx) is False
+
+
+def test_key_baseline_treats_an_unreadable_public_identity_as_unknown(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    key = tmp_path / "id"
+    key.write_text("private")
+    ctx = make_ctx(robot_name="bench", env={"DREAME_SSHKEY": str(key)})
+    monkeypatch.setattr(B, "ap_reachable", lambda _ctx: True)
+    monkeypatch.setattr(B, "_robot_authorized_keys", lambda _ctx, _key: "authorized")
+    monkeypatch.setattr(B, "_ssh_public_fingerprint", lambda *_args: (_ for _ in ()).throw(Die("bad")))
+
+    assert B._key_baseline(ctx) == B._KeyBaseline(None, "authorized", True)
+
+
+def test_public_key_identity_rejects_invalid_base64_and_wrong_key_needs_override(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    key = tmp_path / "id"
+    key.write_text("private")
+    ctx = make_ctx(responder=lambda argv: Result(argv, 0, "ssh-ed25519 !!!\n", ""))
+    with pytest.raises(Die, match="invalid public identity"):
+        B._ssh_public_fingerprint(ctx, key, "test")
+    with pytest.raises(Die, match="requires DREAME_SSHKEY"):
+        B._validate_wrong_key_identity(make_ctx(robot_name="bench"))
+
+
+def test_frozen_runtime_fingerprint_includes_executable_and_extracted_contents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    executable = tmp_path / "tool"
+    contents = tmp_path / "contents"
+    executable.write_text("launcher")
+    contents.mkdir()
+    (contents / "module").write_text("payload")
+    monkeypatch.setattr(B.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(B.sys, "executable", str(executable))
+    monkeypatch.setattr(B.sys, "_MEIPASS", str(contents), raising=False)
+
+    assert len(B._runtime_fingerprint()) == 64
+
+
+def test_hardware_fingerprint_binding_refuses_changed_stack_and_failed_provisioning(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    report: dict[str, object] = {"hardware_fingerprint": "old"}
+    monkeypatch.setattr(B, "_hardware_stack_ready", lambda _ctx: True)
+    monkeypatch.setattr(B, "_hardware_fingerprint", lambda _ctx: "new")
+    with pytest.raises(Die, match="different hardware helper"):
+        B._bind_hardware_fingerprint(report, ctx)
+
+    readiness = iter([False, False])
+    monkeypatch.setattr(B, "_hardware_stack_ready", lambda _ctx: next(readiness))
+    monkeypatch.setattr(B, "doctor", lambda _ctx: None)
+    monkeypatch.setattr(B, "fetch_stage1", lambda _ctx: None)
+    with pytest.raises(Die, match="could not be provisioned"):
+        B._verify_recorded_hardware_stack(report, ctx)
+
+
+def test_existing_campaign_refuses_build_channel_and_runtime_rebinding(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    directory = B._campaign_dir(ctx, "rc")
+    B._campaign_key(directory, create=True)
+    report = B._new_report(ctx, "rc")
+    B._write_report(directory / "report.json", report)
+
+    monkeypatch.setattr(B, "_metadata", lambda _ctx: ("different-build", report["channel"]))
+    with pytest.raises(Die, match="bound to build"):
+        B._load_report(ctx, "rc")
+    monkeypatch.setattr(B, "_metadata", lambda _ctx: (report["build"], "different-channel"))
+    with pytest.raises(Die, match="bound to install channel"):
+        B._load_report(ctx, "rc")
+    monkeypatch.setattr(B, "_metadata", lambda _ctx: (report["build"], report["channel"]))
+    monkeypatch.setattr(B, "_runtime_fingerprint", lambda: "f" * 64)
+    with pytest.raises(Die, match="different executable fingerprint"):
+        B._load_report(ctx, "rc")
+
+
+def test_preflight_refuses_a_nondirectory_and_changed_build(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    collision = ctx.ws.base / "bench" / "bad"
+    collision.parent.mkdir(parents=True)
+    collision.write_text("file")
+    with pytest.raises(Die, match="not a directory"):
+        B._preflight_report(ctx, "bad")
+
+    directory = B._campaign_dir(ctx, "rc")
+    B._campaign_key(directory, create=True)
+    report = B._new_report(ctx, "rc")
+    B._write_report(directory / "report.json", report)
+    monkeypatch.setattr(B, "_metadata", lambda _ctx: ("changed", report["channel"]))
+    with pytest.raises(Die, match="bound to build"):
+        B._preflight_report(ctx, "rc")
+
+
+def test_append_private_refuses_a_symlinked_record(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    target = tmp_path / "target"
+    target.write_text("{}")
+    (tmp_path / ".private.json").symlink_to(target)
+    with pytest.raises(Die, match="symlinked private"):
+        B._append_private(report, {})
+
+
+def test_report_model_binding_rejects_uart_profiles(make_ctx: CtxFactory) -> None:
+    with pytest.raises(Die, match="fastboot models only"):
+        B._bind_report_model({}, "z10-pro")
+
+
+def test_validation_catches_reroot_and_already_rooted_recon_regressions() -> None:
+    reroot = B._validate(
+        B._scenario("reroot-after-restore"), _snapshot_with(),
+        _snapshot_with(**{"restored-stock": "still-present"}),
+    )
+    assert "restored-stock marker remains after reroot" in reroot
+
+    before = replace(_snapshot_with(), recovery_artifacts={"capture": "old"})
+    after = replace(_snapshot_with(), recovery_artifacts={"capture": "changed"})
+    failures = B._validate(B._scenario("already-rooted-recon"), before, after)
+    assert "pre-root recovery generation changed" in failures[0]
+    assert "recon completion marker is absent" in failures
+
+
+def test_scenario_answers_use_verified_serial_for_rekey_cases(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().remember_serial("SERIALA", verified=True)
+    wrong = B._scenario_answers(ctx, B._scenario("rekey-wrong-serial"))
+    ordinary = B._scenario_answers(ctx, B._scenario("rekey-over-ssh"))
+    assert any(answer.value == "SERIALB" for answer in wrong)
+    assert any(answer.value == "" and answer.times == 3 for answer in ordinary)
+
+
+def test_perform_host_smoke_names_entrypoint_version_and_help_failures(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    scenario = B._scenario("host-smoke")
+    monkeypatch.setattr(B, "_invoking_entrypoint", lambda: None)
+    with pytest.raises(Die, match="Could not resolve"):
+        B._perform(scenario, ctx, _noop_auto)
+
+    monkeypatch.setattr(B, "_invoking_entrypoint", lambda: ("tool",))
+    ctx.runner.responder = lambda argv: Result(argv, 0, "wrong", "")  # type: ignore[attr-defined]
+    with pytest.raises(Die, match="exact version"):
+        B._perform(scenario, ctx, _noop_auto)
+
+    ctx.runner.responder = lambda argv: Result(  # type: ignore[attr-defined]
+        argv, 0, f"dreame-valetudo {B.__version__}" if argv[-1] == "version" else "wrong", "",
+    )
+    with pytest.raises(Die, match="help command"):
+        B._perform(scenario, ctx, _noop_auto)
+
+
+@pytest.mark.parametrize(
+    ("scenario_key", "patched_name", "message"),
+    [
+        ("adopted-root-backup", "backup", "Factory backup did not complete"),
+        ("post-root-install", "push", "Valetudo installation did not complete"),
+        ("ssh-wrong-key", "push", "Valetudo installation did not complete"),
+    ],
+)
+def test_perform_requires_success_from_boolean_hardware_phases(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+    scenario_key: str, patched_name: str, message: str,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, patched_name, lambda _ctx: False)
+    with pytest.raises(Die, match=message):
+        B._perform(B._scenario(scenario_key), ctx, _noop_auto)
+
+
+def test_perform_dispatches_preview_resume_and_rejected_diagnosis(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        B, "rekey", lambda _ctx, **kwargs: calls.append("dry" if kwargs.get("dry_run") else "live"),
+    )
+    assert B._perform(B._scenario("rekey-dry-run"), ctx, _noop_auto) == {"preview_only": True}
+    assert calls == ["dry"]
+
+    assert B._perform(
+        B._scenario("rooted-resume"), ctx, lambda _ctx, args: calls.append(f"auto:{len(args)}"),
+    ) == {}
+    assert calls[-1] == "auto:0"
+
+    monkeypatch.setattr(B, "diagnose", lambda _ctx: None)
+    with pytest.raises(Die, match="did not reject"):
+        B._perform(B._scenario("wifi-wrong-network"), ctx, _noop_auto)
+    with pytest.raises(Die, match="healthy running"):
+        B._perform(B._scenario("diagnose"), ctx, _noop_auto)
+
+
+def test_perform_reroot_requires_restored_state_then_runs_image_and_forced_root(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    with pytest.raises(Die, match="did not preserve"):
+        B._perform(B._scenario("reroot-after-restore"), ctx, _noop_auto)
+
+    calls: list[str] = []
+
+    def restore_state(_ctx: object, _args: object) -> None:
+        robot.state_set("restored-stock")
+        robot.state_clear("rooted")
+
+    monkeypatch.setattr(B, "image", lambda _ctx: calls.append("image"))
+    monkeypatch.setattr(B, "root", lambda _ctx, **kwargs: calls.append(f"root:{kwargs['force']}"))
+    assert B._perform(B._scenario("reroot-after-restore"), ctx, restore_state) == {}
+    assert calls == ["image", "root:True"]
+
+
+def test_perform_unknown_manual_route_requires_operator_recording(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    manual = next(item for item in B.SCENARIOS if not item.automated)
+    with pytest.raises(Die, match="requires operator-controlled timing"):
+        B._perform(manual, ctx, _noop_auto)
+
+
+def test_run_refuses_manual_uart_unbound_wrong_model_and_noninteractive_h3(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manual = next(item for item in B.SCENARIOS if not item.automated)
+    with pytest.raises(Die, match="requires operator-controlled timing"):
+        B._run(make_ctx(), manual, "rc", allow_destructive=False, auto_fn=_noop_auto)
+
+    uart = make_ctx(model="z10-pro")
+    with pytest.raises(Die, match="fastboot models only"):
+        B._run(uart, B._scenario("diagnose"), "rc", allow_destructive=False, auto_fn=_noop_auto)
+
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, "_verify_recorded_hardware_stack", lambda *_args: None)
+    with pytest.raises(Die, match="Run stock-recon"):
+        B._run(ctx, B._scenario("wrong-model-root"), "rc", allow_destructive=False, auto_fn=_noop_auto)
+
+    noninteractive = make_ctx(robot_name="bench", interactive=False)
+    with pytest.raises(Die, match="Re-run with --allow-destructive"):
+        B._run(
+            noninteractive, B._scenario("first-root"), "rc",
+            allow_destructive=False, auto_fn=_noop_auto,
+        )
+
+
+def test_ap_waits_cover_timeout_eventual_arrival_and_ssh_identity(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    real_robot_answers_ap = B._robot_answers_ap
+    monkeypatch.setattr(B, "_AP_WAIT_POLLS", 2)
+    monkeypatch.setattr(B, "_AP_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(B, "_robot_answers_ap", lambda _ctx: True)
+    assert B._wait_off_robot_ap(ctx, "leave") is False
+
+    arrival = iter([False, False, True])
+    monkeypatch.setattr(B, "_robot_answers_ap", lambda _ctx: next(arrival))
+    assert B._wait_for_robot_ap(ctx, "join") is True
+
+    key = tmp_path / "id"
+    key.write_text("private")
+    ctx.env["DREAME_SSHKEY"] = str(key)
+    monkeypatch.setattr(B, "_robot_answers_ap", real_robot_answers_ap)
+    monkeypatch.setattr(B, "valetudo_version_header", lambda _runner: None)
+    monkeypatch.setattr(B, "is_dreame_ap", lambda *_args: True)
+    assert B._robot_answers_ap(ctx) is True
+
+
+def test_campaign_state_status_covers_choice_destructive_and_missing_ap_overrides(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    state = B._CampaignState(ctx, "rc", False, _noop_auto)
+    scenario = B._scenario("stock-recon")
+    monkeypatch.setattr(state, "_current", lambda: ({}, set(), _snapshot_with()))
+    monkeypatch.setattr(B, "_scenario_state", lambda *_args: ("READY", "command"))
+
+    state.chosen[scenario.key] = False
+    assert state.status(scenario)[0] == "SUPERSEDED"
+    state.chosen.clear()
+    destructive = B._scenario("first-root")
+    assert state.status(destructive)[0] == "NOT ARMED"
+    state.allow_destructive = True
+    state.ap_unavailable = True
+    ap_scenario = B._scenario("post-root-install")
+    assert state.status(ap_scenario)[0] == "NO AP"
+
+
+def test_campaign_attempt_defers_skips_and_handles_contested_stop(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    state = B._CampaignState(ctx, "rc", True, _noop_auto)
+    deferred = B._scenario("terminal-loss-root")
+    assert state.attempt(deferred, [deferred]) == "skipped"
+    assert state.deferred == [deferred]
+
+    state.ap_unavailable = True
+    ap_scenario = B._scenario("post-root-install")
+    assert state.attempt(ap_scenario, [ap_scenario]) == "skipped"
+    assert state.skipped == 1
+
+    state.ap_unavailable = False
+    crossing = B._scenario("first-root")
+    monkeypatch.setattr(state, "_contested", lambda *_args: "stop")
+    assert state.attempt(crossing, [crossing]) == "stop"
+
+
+def test_campaign_attempt_records_safe_stop_and_success_without_leaking_profile(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    state = B._CampaignState(ctx, "rc", True, _noop_auto)
+    scenario = B._scenario("host-smoke")
+    monkeypatch.setattr(B, "_run", lambda *_args, **_kwargs: (_ for _ in ()).throw(Die("stop")))
+    assert state.attempt(scenario, [scenario]) == "ran"
+    assert state.stopped == 1
+
+    monkeypatch.setattr(B, "_run", lambda *_args, **_kwargs: 0)
+    assert state.attempt(scenario, [scenario]) == "ran"
+    assert state.ran == 1
+
+
+def test_contested_write_can_proceed_or_stop_by_operator_choice(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = B._scenario("first-root")
+    rival = B._scenario("terminal-loss-root")
+    decline = B._CampaignState(make_ctx(confirms=[False]), "rc", True, _noop_auto)
+    monkeypatch.setattr(decline, "status", lambda _scenario: ("READY", None))
+    assert decline._contested(scenario, [scenario, rival]) == "stop"
+
+    proceed = B._CampaignState(make_ctx(confirms=[True]), "rc", True, _noop_auto)
+    monkeypatch.setattr(proceed, "status", lambda _scenario: ("READY", None))
+    assert proceed._contested(scenario, [scenario, rival]) == "go"
+    assert proceed._contested(scenario, [scenario]) == "go"
+
+
+def test_record_and_waiver_refuse_invalid_verdict_note_and_workspace_model(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    manual = next(item for item in B.SCENARIOS if not item.automated)
+    with pytest.raises(Die, match="exactly one verdict"):
+        B._record(ctx, manual, "rc", [], {})
+    with pytest.raises(Die, match="Invalid bench note"):
+        B._record(ctx, manual, "rc", ["pass"], {"note": True})
+
+    ctx.need_robot().state_set("model_key", "d10s-plus")
+    options = {"model": "x40-ultra", "robot": "bench"}
+    with pytest.raises(Die, match="does not match"):
+        B._record(ctx, manual, "rc", ["pass"], options)
+    with pytest.raises(Die, match="does not match"):
+        B._waive(ctx, manual, "rc", {
+            **options, "reason": "reason", "risk": "risk", "accepted-by": "owner",
+        })
+
+
+def test_recovery_hashes_mark_an_unreadable_protected_artifact(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = make_ctx(robot_name="bench").need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    artifact = robot.recon_dir / B.RECOVERY_BACKUP_ZIP
+    artifact.write_bytes(b"capture")
+    real_open = Path.open
+
+    def fail_artifact(path: Path, *args: object, **kwargs: object) -> object:
+        if path == artifact:
+            raise OSError("unreadable")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_artifact)
+    assert B._recovery_hashes(robot) == {B.RECOVERY_BACKUP_ZIP: "unreadable"}
+
+
+def test_backup_evidence_ignores_non_directories_symlinks_and_malformed_manifests(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    root = tmp_path / "backups"
+    root.mkdir()
+    (root / "plain-file").write_text("not a backup")
+    (root / "linked-dir").symlink_to(tmp_path, target_is_directory=True)
+
+    linked_manifest = root / "linked-manifest"
+    linked_manifest.mkdir()
+    (linked_manifest / "manifest.json").symlink_to(root / "plain-file")
+
+    unreadable_json = root / "bad-json"
+    unreadable_json.mkdir()
+    (unreadable_json / "manifest.json").write_text("{bad")
+
+    non_object = root / "array-json"
+    non_object.mkdir()
+    (non_object / "manifest.json").write_text("[]")
+
+    ctx = make_ctx(robot_name="bench")
+    assert B._backup_evidence(
+        root, ctx.need_robot(), config=None, validate_factory=False, validate_restore=False,
+    ) == ({}, frozenset(), {}, 0)
+
+
+def test_backup_artifact_hashing_marks_an_unreadable_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    real_iterdir = Path.iterdir
+
+    def fail_backup(path: Path) -> object:
+        if path == backup:
+            raise OSError("unreadable")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_backup)
+    assert B._backup_artifact_hashes(backup) == {"backup/<directory>": "unreadable"}
+
+
+@pytest.mark.parametrize(
+    "sources",
+    [None, {}, {"sealed": "not-an-object"}],
+)
+def test_recovery_provenance_rejects_missing_or_malformed_source_records(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, sources: object,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text("config: " + "a" * 32 + "\n")
+    robot.state_set("model_key", ctx.model_spec.key)
+    provenance = {"config": "a" * 32, "model_key": ctx.model_spec.key, "sources": sources}
+    monkeypatch.setattr(B, "read_recovery_provenance", lambda _path: provenance)
+
+    assert B._recovery_provenance_valid(robot) is False
+
+
+def test_recovery_provenance_rejects_source_records_the_capture_cannot_parse(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    config = "a" * 32
+    (robot.recon_dir / "config.txt").write_text(f"config: {config}\n")
+    robot.state_set("model_key", ctx.model_spec.key)
+    monkeypatch.setattr(B, "read_recovery_provenance", lambda _path: {
+        "config": config, "model_key": ctx.model_spec.key, "sources": {"sealed": {}},
+    })
+    monkeypatch.setattr(
+        B, "recovery_source_records",
+        lambda *_args: (_ for _ in ()).throw(ValueError("bad capture")),
+    )
+
+    assert B._recovery_provenance_valid(robot) is False
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_campaign_attempt_records_the_operator_choice_between_one_time_alternatives(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, answer: bool,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[answer])
+    state = B._CampaignState(ctx, "rc", True, _noop_auto)
+    scenario = B._scenario("stock-recon")
+    monkeypatch.setattr(state, "status_of_key", lambda _key: "READY")
+    ran: list[str] = []
+    monkeypatch.setattr(B, "_run", lambda *_args, **_kwargs: ran.append(scenario.key) or 0)
+
+    outcome = state.attempt(scenario, [scenario])
+
+    if answer:
+        assert outcome == "ran" and ran == [scenario.key]
+        assert state.chosen == {"stock-recon": True, "legacy-root-adoption": False}
+    else:
+        assert outcome == "skipped" and ran == []
+        assert state.chosen == {"stock-recon": False}
+
+
+def test_campaign_skips_home_network_work_when_the_robot_ap_never_releases(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    state = B._CampaignState(ctx, "rc", True, _noop_auto)
+    scenario = B._scenario("wifi-wrong-network")
+    monkeypatch.setattr(B, "_wait_off_robot_ap", lambda *_args: False)
+    monkeypatch.setattr(
+        B, "_run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    assert state.attempt(scenario, [scenario]) == "skipped"
+    assert state.skipped == 1
+
+
+def test_bench_campaign_dispatch_passes_scope_and_destructive_consent(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    captured: list[tuple[str, str | None, bool, int]] = []
+
+    def campaign(
+        _ctx: object, name: str, suite: str | None, scenarios: object,
+        *, auto_fn: object, allow_destructive: bool,
+    ) -> int:
+        captured.append((name, suite, allow_destructive, len(scenarios)))  # type: ignore[arg-type]
+        assert auto_fn is _noop_auto
+        return 7
+
+    monkeypatch.setattr(B, "_campaign", campaign)
+    assert B.bench(
+        ctx,
+        ["campaign", "--campaign", "rc", "--suite", "smoke", "--allow-destructive"],
+        auto_fn=_noop_auto,
+    ) == 7
+    assert captured == [("rc", "smoke", True, len(B.SUITES["smoke"]))]
+
+
+def test_perform_names_interruption_update_and_cached_install_failures(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, "_snapshot", lambda *_args, **_kwargs: _snapshot_with())
+    monkeypatch.setattr(B, "recon", lambda *_args, **_kwargs: None)
+    with pytest.raises(Die, match="interrupted recovery generation was not rejected"):
+        B._perform(B._scenario("usb-drop-recon"), ctx, _noop_auto)
+    with pytest.raises(Die, match=r"completed without the required Ctrl\+C"):
+        B._perform(B._scenario("ctrl-c-recon"), ctx, _noop_auto)
+
+    ctx.need_robot().state_set("valetudo", ctx.valetudo_version)
+    with pytest.raises(Die, match="no newer verified Valetudo target"):
+        B._perform(B._scenario("valetudo-update"), ctx, _noop_auto)
+
+    ctx.need_robot().state_set("valetudo", VALETUDO_OLDER)
+    monkeypatch.setattr(B, "update_valetudo", lambda _ctx: False)
+    with pytest.raises(Die, match="Valetudo update did not complete"):
+        B._perform(B._scenario("valetudo-update"), ctx, _noop_auto)
+
+    fetched: list[bool] = []
+    monkeypatch.setattr(B, "fetch", lambda _ctx: fetched.append(True))
+    monkeypatch.setattr(B, "push", lambda _ctx: False)
+    with pytest.raises(Die, match="verified cache"):
+        B._perform(B._scenario("offline-cached-binary"), ctx, _noop_auto)
+    assert fetched == [True]
+
+
+def test_wrong_model_probe_refuses_when_no_distinct_confusable_model_exists(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(B, "_recon_bound_model", lambda _robot: ctx.model_spec.key)
+    monkeypatch.setattr(B, "_confusable_model", lambda model: model)
+
+    with pytest.raises(Die, match="cannot stop"):
+        B._perform(B._scenario("wrong-model-root"), ctx, _noop_auto)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_destructive_run_requires_interactivity_even_when_explicitly_armed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench", interactive=False)
+    _prepare_root_start(ctx, monkeypatch)
+    monkeypatch.setattr(B, "_verify_recorded_hardware_stack", lambda *_args: None)
+
+    with pytest.raises(Die, match="requires an interactive terminal and robot"):
+        B._run(
+            ctx, B._scenario("first-root"), "rc",
+            allow_destructive=True, auto_fn=_noop_auto,
+        )
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_non_usb_run_rebinds_a_previously_recorded_hardware_fingerprint(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    _prepare_valetudo_state(ctx)
+    path, report = B._load_report(ctx, "rc")
+    report["hardware_fingerprint"] = "a" * 64
+    B._write_report(path, report)
+    rebound: list[bool] = []
+    monkeypatch.setattr(B, "_bind_hardware_fingerprint", lambda *_args: rebound.append(True))
+    monkeypatch.setattr(B, "_perform", lambda *_args: {})
+
+    assert B._run(
+        ctx, B._scenario("diagnose"), "rc", allow_destructive=False, auto_fn=_noop_auto,
+    ) == 0
+    assert rebound == [True, True]
+
+
+def test_report_marks_reinstall_evidence_and_ignores_nonobject_history(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    scenario = B._scenario("post-root-install")
+    report = B._new_report(ctx, "rc")
+    report.update({"model_key": ctx.model_spec.key, "robot": "bench", "channel": "test"})
+    report["results"] = [None, {
+        "scenario": scenario.key, "result": "passed",
+        "evidence": {"valetudo_present_before": True},
+    }]
+    monkeypatch.setattr(B, "_load_report", lambda *_args: (tmp_path / "report.json", report))
+    monkeypatch.setattr(B, "_write_report", lambda *_args: None)
+
+    assert B._report(ctx, "rc", None, [scenario]) == 0
+    assert "reinstall, not a first install" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_plan_prints_the_reason_for_each_nonready_scenario(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    scenario = B._scenario("host-smoke")
+    monkeypatch.setattr(
+        B, "_load_report", lambda *_args: (tmp_path / "report.json", B._new_report(ctx, "rc")),
+    )
+    monkeypatch.setattr(B, "_write_report", lambda *_args: None)
+    monkeypatch.setattr(B, "_recorded", lambda _report: ({}, set()))
+    monkeypatch.setattr(B, "_snapshot", lambda *_args, **_kwargs: _snapshot_with())
+    monkeypatch.setattr(B, "_scenario_state", lambda *_args: ("WAIT", "missing prerequisite"))
+
+    assert B._plan(ctx, "rc", None, [scenario]) == 0
+    assert "missing prerequisite" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("problem", ["partial", "marker"])
+def test_interrupted_install_sweep_rejects_partial_backup_and_false_completion_evidence(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, problem: str,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    point = B._INTERRUPT_POINTS[0]
+    before = _snapshot_with()
+    after = replace(
+        before,
+        partial_backups=1 if problem == "partial" else 0,
+        markers={"valetudo": "changed"} if problem == "marker" else before.markers,
+    )
+    snapshots = iter([before, after])
+
+    class Fired:
+        absent = False
+        fired = True
+        fired_rc = 255
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(B, "_INTERRUPT_POINTS", (point,))
+    monkeypatch.setattr(B, "_InjectingRunner", Fired)
+    monkeypatch.setattr(B, "_snapshot", lambda _ctx: next(snapshots))
+    monkeypatch.setattr(B, "push", lambda _ctx: (_ for _ in ()).throw(Die("injected")))
+
+    message = "partial backup" if problem == "partial" else "recorded Valetudo"
+    with pytest.raises(Die, match=message):
+        B._interrupted_install_sweep(ctx, link_loss=True)
+
+    assert ctx.runner is not None
+
+
+def test_run_warns_when_a_failure_record_cannot_be_saved(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    writes = 0
+
+    def fail_second_write(_path: Path, _report: object) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("report directory read-only")
+
+    monkeypatch.setattr(B, "_write_report", fail_second_write)
+    monkeypatch.setattr(B, "_perform", lambda *_args: (_ for _ in ()).throw(Die("failure")))
+
+    with pytest.raises(Die, match="failure"):
+        B._run(
+            ctx, B._scenario("host-smoke"), "rc",
+            allow_destructive=False, auto_fn=_noop_auto,
+        )
+
+    assert writes == 2
+    assert "Could not save the hardware-bench failure record" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_campaign_stops_immediately_when_a_boundary_choice_requests_stop(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    scenario = B._scenario("host-smoke")
+
+    class StopState:
+        surface = None
+        attempted = 1
+        skipped = 0
+        total = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.deferred: list[object] = []
+
+        def runnable(self, _scenario: object) -> bool:
+            return True
+
+        def attempt(self, _scenario: object, _scenarios: object) -> str:
+            return "stop"
+
+        def progress(self) -> str:
+            return "stopped"
+
+        def status(self, _scenario: object) -> tuple[str, None]:
+            return "WAIT", None
+
+    monkeypatch.setattr(B, "_CampaignState", StopState)
+    monkeypatch.setattr(
+        B, "_load_report", lambda *_args: (tmp_path / "report.json", B._new_report(ctx, "rc")),
+    )
+    monkeypatch.setattr(B, "_write_report", lambda *_args: None)
+    monkeypatch.setattr(B, "_report", lambda *_args: 0)
+
+    assert B._campaign(
+        ctx, "rc", None, [scenario], auto_fn=_noop_auto, allow_destructive=False,
+    ) == 0
+    assert "progress: stopped" in ctx.console.text()  # type: ignore[attr-defined]

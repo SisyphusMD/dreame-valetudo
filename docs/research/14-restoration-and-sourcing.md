@@ -9,7 +9,7 @@ recovery path is your own factory backup, not a shared image.
 ## Universal bootstrap tooling (same for the whole MR813 family — already public, do not re-host)
 
 These only get a unit into FEL/fastboot; they carry no model identity. All are publicly hosted and
-pinned in [`dreame_valetudo/constants.py`](../../dreame_valetudo/constants.py), so the canonical
+pinned in [`src/dreame_valetudo/constants.py`](../../src/dreame_valetudo/constants.py), so the canonical
 source is a pin/URL, not a copy here.
 
 | artifact | scope | source |
@@ -20,7 +20,7 @@ source is a pin/URL, not a copy here.
 | `dust-livesuit-mr813-ddr3.img`, `-ddr4.img` | per DDR type, across models | [builder.dontvacuum.me/nextgen/](https://builder.dontvacuum.me/nextgen/) |
 
 The ddr3/ddr4 choice is per model (see the model table in the top-level README and
-`dreame_valetudo/profiles.py`). For a bare FEL boot either loader has been observed to come up
+`src/dreame_valetudo/models.py`). For a bare FEL boot either loader has been observed to come up
 (the DDR type is immaterial to FEL boot on the tested units), but flash with the matching one.
 
 ## Universal constants (hard to derive without RE — captured as text here, no blob needed)

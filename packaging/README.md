@@ -11,10 +11,11 @@ Six distribution channels, one release flow:
 | Plain tarball | `dreame-valetudo-<v>.tar.gz` | `publish.yml` (`build-tarball.sh`) | none |
 | macOS installer | `dreame-valetudo-macos-{arm64,x86_64}.pkg` (per-arch matrix) | `release-macos.yml` (GitHub) | Developer ID + notarized |
 
-Both `.deb` arches are built on the Forgejo runner through **buildx** (`packaging/deb.Dockerfile`): the
-`docker-container` BuildKit driver carries QEMU, so the arm64 leg emulates inside the builder — the
-runner is a Talos node with no usable host binfmt for a plain `docker run --platform arm64`. nfpm
-then packages the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
+Each architecture is built on its own hardware through **buildx** (`packaging/deb.Dockerfile`):
+amd64 on the Forgejo runner, arm64 on GitHub's native `ubuntu-24.04-arm`. **Nothing is emulated.**
+Both forges call the same `packaging/build-linux-arch.sh`, which refuses to run when the host and
+target architectures disagree, so an emulated build cannot return by accident. nfpm then packages
+the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
 runs after every release and fans every asset out to all three registries (Forgejo, NAS, GitHub),
 backfilling any historical gap after two registries agree on the asset's SHA-256. It never trusts
 a filename or size alone, and ignores anything outside the exact release artifact matrix. Assets
@@ -110,6 +111,9 @@ from one).
    |---|---|
    | `CLUSTER_FORGEJO_REPO_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `dreame-valetudo` (release commit/tag + create/append the Forgejo release). |
    | `NAS_FORGEJO_REPO_WRITE_PAT` | PAT on the NAS Forgejo, repo write (NAS release + the bridged `.pkg`). |
+| `CLUSTER_FORGEJO_REGISTRY_PUSH_PAT` | `publish` | Package-registry write on the cluster instance. Separate from the repo PAT: the registry is a different blast radius, and it is the one credential that can overwrite what subscribers install. Org-scoped. |
+| `GPG_SIGNING_KEY` | `publish` | The namespace signing key's private half (`CCE50015D058E9BF`), shared with the sibling project because the registry groups packages by OWNER — a per-project key would buy no isolation. `publish` FAILS CLOSED without it rather than shipping unsigned packages. Org-scoped. |
+| `PYPI_API_TOKEN` | `publish` | Uploads the sdist and wheel. Project-scoped by PyPI, so the sibling's token cannot be reused. **Not yet set:** the `pypi` job skips with a warning until it exists, and the Homebrew formula keeps building from the release asset until the first upload succeeds. |
    | `GH_REPO_WRITE_PAT` | GitHub PAT, Contents: read & write (create the GitHub release). Same PAT as the GitHub push-mirror. |
    | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `homebrew-tap` (the `homebrew-tap` job pushes the updated formula — the stable formula for a stable tag, the `dreame-valetudo-rc` formula for a prerelease tag). |
 
@@ -117,10 +121,21 @@ from one).
    signing set (Apple Developer certs/keys, minted from your Apple Developer account):
    `CLUSTER_FORGEJO_REPO_WRITE_PAT`, `MACOS_APP_CERT_P12`, `MACOS_INSTALLER_CERT_P12`,
    `MACOS_CERT_PASSWORD`, `MACOS_APP_IDENTITY`, `MACOS_INSTALLER_IDENTITY`, `MACOS_NOTARY_KEY_P8`,
-   `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`. (`GITHUB_TOKEN` is automatic.)
+   `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`. (`GITHUB_TOKEN` is automatic; the workflows that
+   create or append to a release declare `permissions: contents: write`, without which it can read
+   but not publish.)
+
+   **Also on GitHub, `GPG_SIGNING_KEY`** — the same namespace key Forgejo holds. It is needed here
+   because the arm64 `.deb`/`.rpm` are built on GitHub's native arm runner, and a package signed on
+   one architecture and not the other is worse than neither. Put it in a **`linux-signing`
+   environment** (Settings → Environments → New environment) rather than in the repository secrets,
+   so only `release-linux-arm64.yml` can read it. Each forge holds the signing material for what it
+   builds; the Apple identity lives here on the same principle.
 
 If the macOS secrets are missing, the Linux assets and tap still publish, but the overall publish
-workflow fails its qualification gate until both signed `.pkg`s are present.
+workflow fails its qualification gate until both signed `.pkg`s are present. If `GPG_SIGNING_KEY`
+is missing on GitHub, `build-linux-arch.sh` fails closed rather than shipping unsigned arm64
+packages, and the release carries no arm64 Linux assets at all.
 
 ## Build and compatibility contracts
 
@@ -131,14 +146,17 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   `/usr/lib/dreame-valetudo` need no wrapper; the `.pkg`/brew set `DREAME_LIBEXEC`. Build scripts:
   `packaging/build-bundle.sh` (main) + `packaging/build-fastboot-client.sh` (client).
 - **`BUNDLE_MODE` selects onefile or onedir, and Linux is the only caller that asks for onedir.**
-  A onefile app re-executes itself as a child, and PyInstaller's bootloader requires that child's
-  parent to be running the same executable (GHSA-9fxf-4qw3-ghmr). Inside BuildKit's QEMU emulation
-  the kernel names the injected emulator as the parent, so *no* onefile binary the arm64 release
-  leg builds can start — which took out rc.13's Linux assets entirely. A onedir bundle spawns no
-  child, so the check never runs: the protection is not disabled, the two-process model it guards
-  is simply absent. The scripts default to onefile because `release-macos.yml` calls the same two
-  and signs, bundles and notarizes a single file; `deb.Dockerfile` is the one caller that passes
-  `BUNDLE_MODE=onedir`. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
+  The scripts default to onefile because `release-macos.yml` calls the same two and signs, bundles
+  and notarizes a single file; `deb.Dockerfile` is the one caller that passes `BUNDLE_MODE=onedir`.
+
+  Onedir began as an escape: a onefile app re-executes itself as a child, PyInstaller's bootloader
+  requires that child's parent to be running the same executable (GHSA-9fxf-4qw3-ghmr), and under
+  emulation the kernel names the injected emulator as the parent, so no onefile binary the arm64 leg
+  built could start. **That constraint is gone** — arm64 builds natively now. Onedir stays because
+  the standalone channel is a tarball of this tree with a launcher beside it, which is a shipped
+  artifact shape with its own smoke test; changing it to match the sibling would be uniformity, not
+  convergence. The sibling keeps onefile for the same kind of reason — one downloadable file suits a
+  tool run once from a laptop. See project-standard/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
   and `.../fastboot`) reached through a symlink to its launcher, because `find_helper` wants a
   runnable FILE at `/usr/lib/dreame-valetudo/dreame-fastboot` and the bootloader resolves symlinks
   before looking for its contents directory. `packaging/check-package-parity.py` compares each
@@ -151,16 +169,17 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   onefile, so hardened-runtime removal of `DYLD_*` variables does not affect that client. Each
   native macOS leg now installs its signed and notarized package, runs the built-in host smoke and
   helper checks, then uninstalls it and proves the test backup survived before uploading the asset.
-- **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`).** amd64 builds natively on
-  the runner; arm64 emulates inside BuildKit's builder (the `docker-container` driver carries QEMU),
-  because the Talos runner node has no usable host binfmt for a plain `docker run --platform arm64`
-  (that gets `exec format error` — the sister repos build their arm64 images the same buildx way).
-  It's arch-specific (amd64/arm64; 32-bit armhf Pis aren't built — use the source tarball + `uv`/
-  `pipx` there). The arm64 PyInstaller freeze under QEMU is the slowest step; if it's ever too slow
-  or flaky, move the arm64 `.deb` to a GitHub native `ubuntu-24.04-arm` runner (mirroring the `.pkg`
-  job's "GitHub builds what the cluster can't" pattern). Native arm64 is also the durable answer to
-  the class of problem rc.13 hit: emulation is a proxy for the artifact that ships, and it is the
-  only pre-release check that architecture gets.
+- **Per-arch `.deb` builds go through buildx (`packaging/deb.Dockerfile`), each on its own
+  hardware.** amd64 on the Forgejo runner, arm64 on GitHub's `ubuntu-24.04-arm` — the same "GitHub
+  builds what the cluster can't" pattern the `.pkg` job uses, because no node here is arm64.
+  `--platform` names the architecture the host already is; `build-linux-arch.sh` checks that and
+  refuses the mismatch. buildx rather than `docker run` because the Forgejo job is itself
+  containerised and a bind mount of the workspace does not reach the daemon. It's arch-specific
+  (amd64/arm64; 32-bit armhf Pis aren't built — use the source tarball + `uv`/`pipx` there).
+
+  This replaced emulation, which was the durable answer to the class of problem rc.13 hit:
+  emulation is a proxy for the artifact that ships, and it was the only pre-release check that
+  architecture got.
 - **Python 3.11.0 is the source-install floor; current CPython is bundled for package users.** The
   full suite runs on the literal floor, while the ordinary and bundle jobs use the exact current
   release pinned in `constants.py`. Updating bundled Python therefore does not raise the source
@@ -188,3 +207,87 @@ workflow fails its qualification gate until both signed `.pkg`s are present.
   `.deb` test runs on
   current Debian and Ubuntu LTS plus Debian 12 and Ubuntu 22.04 compatibility floors. Physical USB
   access and the udev rule still require a real host.
+
+## Secrets
+
+Derived from the workflows, not maintained by hand — if this list and
+`grep -rhoE 'secrets\.[A-Z0-9_]+' .forgejo/workflows .github/workflows` disagree, the workflows are
+right. Structure mirrors whiskerless's equivalent section so the two are readable side by side.
+
+### On Forgejo (`forgejo.bryantserver.com/SisyphusMD/dreame-valetudo` → Settings → Actions → Secrets)
+
+| Secret | Used by | What it is |
+|---|---|---|
+| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs`, `dustbuilder-forms` | Repo-write PAT on the cluster instance: pushes the release commit and tag, creates releases, prunes superseded candidates. |
+| `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish` | Separate PAT scoped to `SisyphusMD/homebrew-tap`. Deliberately not the repo PAT: the tap is a different blast radius. |
+| `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
+| `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-standard's VARIANCE.md. |
+| `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the tap jobs can push the rendered formulas. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
+| `GH_REPO_WRITE_PAT` | `publish`, `prune-rcs` | Creates and prunes releases on the GitHub mirror, which the Forgejo runner cannot do with its own token. |
+
+### On GitHub (`github.com/SisyphusMD/dreame-valetudo` → Settings → Secrets and variables → Actions)
+
+Only `release-macos.yml` runs there, because the signed and notarized `.pkg` needs Apple's toolchain
+on a real macOS runner.
+
+| Secret | What it is |
+|---|---|
+| `MACOS_APP_CERT_P12` / `MACOS_APP_IDENTITY` | Developer ID Application certificate (base64 `.p12`) and the identity string to sign the binaries with. |
+| `MACOS_INSTALLER_CERT_P12` / `MACOS_INSTALLER_IDENTITY` | Developer ID Installer certificate and identity, for the `.pkg` itself. |
+| `MACOS_CERT_PASSWORD` | Password for both `.p12` imports. |
+| `MACOS_NOTARY_KEY_P8` / `MACOS_NOTARY_KEY_ID` / `MACOS_NOTARY_ISSUER` | App Store Connect API key, key id and issuer id, for `notarytool`. |
+| `GITHUB_TOKEN` | Automatic. Attaches the built `.pkg` to the release. |
+
+`*.p12` and `*.p8` are in `.gitignore` for a reason: those two files are exactly what a release
+engineer ends up holding locally, and neither belongs in a repository.
+
+## apt / dnf repositories — enabled
+
+Both projects now publish signed apt and dnf repositories, so users get `apt install
+dreame-valetudo` or `dnf install dreame-valetudo` and automatic updates. Direct `.deb`/`.rpm`
+downloads remain, for machines that would rather not add a repository.
+
+| Piece | State |
+|---|---|
+| `publish-registry.sh` | Vendored from project-standard. Called by `publish.yml` after the packages are built and smoke-tested. |
+| `sisyphusmd.repo`, `sisyphusmd-testing.repo` | Shipped, and pointing at a key that exists (`CCE50015D058E9BF`). |
+| `sisyphusmd-signing-key.asc` | The public half, vendored so both projects trust the same namespace key. |
+| Qualification | The install matrix installs from both repositories every release — `apt-repo` and `dnf-repo` channels, on both architectures. |
+
+**A candidate never reaches a subscriber who asked for releases.** deb and rpm version ordering
+cannot express that on its own (`0.3.0~rc.1` sorts below `0.3.0`, which only helps once `0.3.0`
+exists), so the two audiences are separated by DISTRIBUTION instead: a candidate goes to `testing`
+only, a release to both. The install matrix picks its `.repo` file to match, or an rc run would
+qualify the previous stable and leave the testing channel untested.
+
+**The trust root is the Forgejo host that also serves the packages**, which is why
+`repo_gpgcheck=0` and why the package signature — ours, not the registry's — is what actually
+authenticates a download. That weakness is documented rather than hidden, and it is identical in
+both projects by design; read the `.repo` comments before changing either.
+
+### Generating the signing key
+
+The workflow **fails closed** if `GPG_SIGNING_KEY` is absent — it refuses to publish unsigned
+packages rather than quietly shipping them. So packaging signing is wired but inert until the secret
+exists. To create it:
+
+```bash
+# RSA 4096, no expiry, no passphrase — CI cannot answer a prompt, and an expiring key silently
+# breaks every subscriber's update on a date nobody has written down.
+gpg --batch --quick-generate-key "Dreame Valetudo <SisyphusMD@users.noreply.github.com>" rsa4096 sign never
+gpg --armor --export-secret-keys <KEYID>   # -> the GPG_SIGNING_KEY secret, Forgejo org scope
+gpg --armor --export <KEYID> > packaging/sisyphusmd-signing-key.asc   # the PUBLIC half, committed
+```
+
+Commit only the **public** half. The private key lives in the Forgejo secret and nowhere else — the
+workflow writes it to a `mktemp` path outside the build context, copies it into the packaging
+container separately from the source tree, and force-removes both on EXIT so a failed build cannot
+leave it in a stopped container on a reused Docker host.
+
+Then flip on the repository channel: wire `publish-registry.sh` into `publish.yml`, point the
+`.repo` files' `gpgkey` at the committed public key, and remove their NOT-LIVE banners.
+
+**Before you do, decide where that key's trust is rooted.** Whiskerless serves its public key from
+the same Forgejo host that serves the packages, which is why it runs `repo_gpgcheck=0` — a host
+compromise would hand out both the packages and the key that vouches for them. It is documented
+there rather than hidden, and it is worth fixing in **both** projects rather than reproducing here.

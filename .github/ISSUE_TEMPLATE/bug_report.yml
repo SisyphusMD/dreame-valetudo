@@ -1,0 +1,56 @@
+name: Bug report
+description: Something went wrong while rooting, restoring, or running the tool.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If a flash failed and the robot will not boot, say so in the title.** That is the case
+        worth interrupting for, and the details below are what make it diagnosable.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`dreame-valetudo --version`"
+      placeholder: "0.2.1"
+    validations: { required: true }
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options: [Homebrew, .pkg (macOS), .deb, .rpm, source tarball, from a git checkout]
+    validations: { required: true }
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and architecture
+      placeholder: "macOS 15.5 arm64 / Debian 13 amd64"
+    validations: { required: true }
+  - type: input
+    id: model
+    attributes:
+      label: Robot model
+      description: The picker's key, e.g. `x40-ultra`. Include the hardware revision if you know it.
+      placeholder: "x40-ultra"
+    validations: { required: true }
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase?
+      options: [doctor, fetch, recon, image, root, push, rekey, restore, backup, ui, other]
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations: { required: true }
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: |
+        The relevant console output. **Check it before pasting** — it can contain your robot's
+        serial and config identity. Redact anything you would not put on a forum.
+      render: text
+    validations: { required: true }

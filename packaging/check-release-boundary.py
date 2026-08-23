@@ -6,7 +6,7 @@ cutters call this check with the version they are about to tag, so those changes
 become a pre-0.4 wheel, source archive, frozen binary, native package, or release note.
 
 Temporary by design: versions >= 0.4.0 pass unconditionally, so cutting 0.4.0 needs no cleanup —
-and once 0.4.0 has shipped, delete this file, tests/integration/release-boundary.sh, and their
+and once 0.4.0 has shipped, delete this file, tests/release/release-boundary.sh, and their
 workflow invocations outright.
 """
 
@@ -24,8 +24,8 @@ _VERSION = re.compile(
 # established manual UART walkthrough in cli.py is allowed, but its bench-command additions are
 # checked separately below.
 _FORBIDDEN_PATHS = (
-    "dreame_valetudo/phases/uart.py",
-    "dreame_valetudo/uart.py",
+    "src/dreame_valetudo/phases/uart.py",
+    "src/dreame_valetudo/uart.py",
     "libexec/uart-console.py",
     "packaging/build-uart-client.sh",
     "packaging/requirements-uart-release-build.txt",
@@ -38,26 +38,26 @@ _FORBIDDEN_PATHS = (
 )
 
 _FORBIDDEN_TEXT: dict[str, tuple[str, ...]] = {
-    "dreame_valetudo/bench.py": (
+    "src/dreame_valetudo/bench.py": (
         "from .phases.uart import",
         '"uart-adopt"',
         '"uart-observe"',
     ),
-    "dreame_valetudo/cli.py": (
+    "src/dreame_valetudo/cli.py": (
         "from .phases.uart import",
         '"uart-adopt"',
         '"uart-observe"',
     ),
-    "dreame_valetudo/constants.py": ("PYSERIAL_VERSION",),
-    "dreame_valetudo/context.py": ("from .uart import", "def uart("),
+    "src/dreame_valetudo/constants.py": ("PYSERIAL_VERSION",),
+    "src/dreame_valetudo/context.py": ("from .uart import", "def uart("),
     # `def ask_secret(` is a collector marker again. It briefly was not: 0.3's `rekey --over-ssh`
     # hid the under-dustbin serial as it was typed, which needed the same seam and made this gate
     # refuse a release containing no collector at all. That prompt is visible now — a value copied
     # off a label has to be checkable — so 0.3 has no hidden-prompt seam left and the marker is
     # evidence once more. The other two are the collector's own: the raw-terminal helper behind its
     # prompt, and the streaming command surface its serial transport is built on.
-    "dreame_valetudo/console.py": ("def ask_secret(", "def _secret_prompt("),
-    "dreame_valetudo/log.py": ("def ask_secret(", "RunningCommand"),
+    "src/dreame_valetudo/console.py": ("def ask_secret(", "def _secret_prompt("),
+    "src/dreame_valetudo/log.py": ("def ask_secret(", "RunningCommand"),
     "pyproject.toml": ("libexec/uart-console.py", "pyserial"),
     "uv.lock": ('name = "pyserial"',),
 }

@@ -10,13 +10,21 @@ from __future__ import annotations
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import FB
 
+from dreame_valetudo import fastboot as fastboot_module
 from dreame_valetudo.console import Console, Die
 from dreame_valetudo.constants import PYUSB_VERSION
-from dreame_valetudo.fastboot import Fastboot, Transport, find_helper, resolve_transport
+from dreame_valetudo.fastboot import (
+    Fastboot,
+    Transport,
+    find_helper,
+    resolve_libexec,
+    resolve_transport,
+)
 from dreame_valetudo.log import LoggingConsole, RunLog
 from dreame_valetudo.run import RecordingRunner, Result
 
@@ -190,6 +198,44 @@ def test_find_helper_falls_back_to_an_installed_system_prefix(
     monkeypatch.setattr("dreame_valetudo.fastboot._SYSTEM_LIBEXEC", (str(prefix),))
 
     assert find_helper("tmux", {}) == tmux
+
+
+def test_libexec_candidates_include_the_frozen_bundle_and_fallback_when_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fastboot_module.sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert tmp_path / "libexec" in fastboot_module._libexec_candidates({})
+
+    monkeypatch.setattr(fastboot_module, "_libexec_candidates", lambda _env: [])
+    assert resolve_libexec({}).name == "libexec"
+
+
+def test_default_pyusb_probes_fail_closed_on_process_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise OSError("cannot execute")
+
+    monkeypatch.setattr(fastboot_module.subprocess, "run", fail)
+    assert fastboot_module._default_pyusb_version("python") is None
+    assert fastboot_module._default_python_imports_usb("python") is False
+
+
+def test_default_python_usb_probe_reports_the_process_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        fastboot_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    assert fastboot_module._default_python_imports_usb("python") is True
+
+
+def test_transport_uses_path_python_when_it_imports_usb(tmp_path: Path) -> None:
+    transport = resolve_transport(
+        {}, tmp_path,
+        which=lambda name: "/usr/bin/python3" if name == "python3" else None,
+        python_imports_usb=lambda py: py == "/usr/bin/python3" or py == "python3",
+        pyusb_version=lambda _py: None,
+    )
+    assert transport == Transport("python", ("python3", str(tmp_path / "fastboot-libusb.py")))
 
 
 def test_transport_uses_dreame_python(tmp_path: Path) -> None:

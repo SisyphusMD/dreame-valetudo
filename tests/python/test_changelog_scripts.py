@@ -134,7 +134,7 @@ def test_changelog_section_extracts_a_tags_section(tmp_path: Path) -> None:
     result = _section(root, "0.1.0")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "\n### Added\n\n- initial\n"
+    assert result.stdout == "### Added\n\n- initial\n"
 
 
 def test_changelog_section_falls_back_to_unreleased_for_a_prerelease_tag(tmp_path: Path) -> None:
@@ -143,4 +143,4 @@ def test_changelog_section_falls_back_to_unreleased_for_a_prerelease_tag(tmp_pat
     result = _section(root, "0.2.0-rc.1")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "\n### Added\n\n- something new\n\n"
+    assert result.stdout == "### Added\n\n- something new\n\n"

@@ -1,0 +1,460 @@
+"""Shareable, scrubbed run log.
+
+Every production run writes a plain-text log under the work dir capturing the console narrative,
+full external-command argv (with argv[0] shortened), exit codes, and truncated stderr on failure.
+Command stdin and stdout are never recorded. Every line is scrubbed by the patterns below before it
+is written. The miio key is streamed over stdin rather than argv; the credential-shaped-token rule
+is a backstop for any robot output echoed through the console.
+
+Wiring: ``LoggingConsole`` / ``LoggingRunner`` wrap the real ``Console`` / ``SubprocessRunner`` in
+``cli.main``; tests inject their own seams, so nothing is logged under test.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import platform
+import re
+import sys
+import time
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import ClassVar, TextIO
+
+from .console import Console, Progress, _fmt_elapsed
+from .constants import RECOVERY_DUMP_NAMES
+from .models import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_model_spec
+from .run import Result, RunError, Runner
+
+# Redaction patterns, applied to every line before it is written. Order matters: the SSH-key blob is
+# base64 (matches the hex/int rules), so it must be redacted whole first.
+_SSH_PUB = re.compile(
+    r"\b((?:ssh|ecdsa|sk)-[A-Za-z0-9@.-]+)[ \t]+AAAA[0-9A-Za-z+/=]{20,}"
+    r"(?:[ \t]+[^\r\n]*)?"
+)
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# The rooted image's root password: base64 of md5sum's stdin line, `"<32 hex>  -\n"`. That fixed
+# 36-byte shape makes it always 48 base64 chars whose last group is the base64 of " -\n" ("IC0K"),
+# which is specific enough to redact without catching anything else. Nothing hands this value to the
+# runner or the console — rekey --over-ssh keeps it in an askpass file — so this is a backstop for a
+# future call site, and it runs before the generic rules so they cannot chew it up first.
+_ROBOT_PASSWORD = re.compile(r"\b[A-Za-z0-9+/]{44}IC0K\b")
+_DUST_COMMAND = re.compile(r"(\boem\s+dust\s+)[0-9a-fA-F]{8}\b", re.IGNORECASE)
+_HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")             # config/identity value, robot-tag hex, SHAs
+# Device IDs are 9-10 digit ints; ≥9 catches them (and, harmlessly, big byte counts) while sparing
+# 8-digit YYYYMMDD dates / timestamps, which are useful and not sensitive.
+_LONGINT = re.compile(r"(?<![\w.])-?\d{9,}(?![\w.])")
+# A key in an explicit assignment is a credential even when it happens to be all letters or only
+# eight digits. Match the context before the generic high-entropy rule so ordinary words and dates
+# elsewhere remain useful diagnostics.
+_MIKEY_ASSIGNMENT = re.compile(
+    r"(\b(?:mi_?key|key)\s*[:=]\s*)([A-Za-z0-9]{8,64})\b", re.IGNORECASE
+)
+# The robot's miio device key (device.conf `key=`, push.py's _MIKEY_RE: [A-Za-z0-9]{8,64}). Its
+# mixed letters+digits dodge both _HEX (non-hex letters) and _LONGINT (has letters), so it needs its
+# own rule. Constrained to tokens carrying BOTH a letter and a digit — the high-entropy shape of a
+# random credential — so ordinary all-alpha words in a shared log (valetudo, processes, …) survive.
+_MIKEY = re.compile(r"\b(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{8,64}\b")
+
+# Fixed public identifiers can share the shape of a miio key. An exact-literal allowlist preserves
+# diagnostic meaning without exempting arbitrary credential-shaped strings. Drift guards cover the
+# dump names and every model spec-derived value.
+_PUBLIC_TOKENS = frozenset({
+    *RECOVERY_DUMP_NAMES, "toc0hash", "toc1hash",
+    *(load_model_spec(key).fsbl_addr for key in SUPPORTED_MODELS),
+    *(load_model_spec(key).payload_addr for key in SUPPORTED_MODELS),
+    *KNOWN_IMPL_CLASSES,
+})
+_PRIVATE_BENCH_OPTIONS = frozenset({
+    "--note", "--reason", "--risk", "--accepted-by", "--actual-robot", "--robot",
+})
+
+
+def _mask_mikey(match: re.Match[str]) -> str:
+    token = match.group(0)
+    return token if token in _PUBLIC_TOKENS else "<redacted-id>"
+
+
+def scrub(text: str, home: Path | None = None) -> str:
+    """Redact personal + identifying values from one log line."""
+    if home is not None:
+        h = str(home)
+        if len(h) > 1:  # never blank out "/"
+            text = text.replace(h, "~")
+    protected_types: list[tuple[str, str]] = []
+
+    def mask_public_key(match: re.Match[str]) -> str:
+        marker = f"\0SSH-TYPE-{len(protected_types)}\0"
+        protected_types.append((marker, match.group(1)))
+        return f"{marker} <redacted-public-key>"
+
+    text = _SSH_PUB.sub(mask_public_key, text)
+    text = _ROBOT_PASSWORD.sub("<redacted-password>", text)
+    text = _EMAIL.sub("<redacted-email>", text)
+    text = _DUST_COMMAND.sub(r"\1<redacted-id>", text)
+    text = _MIKEY_ASSIGNMENT.sub(r"\1<redacted-id>", text)
+    text = _HEX.sub("<redacted-id>", text)
+    text = _LONGINT.sub("<redacted-id>", text)
+    text = _MIKEY.sub(_mask_mikey, text)
+    for marker, key_type in protected_types:
+        text = text.replace(marker, key_type)
+    return text
+
+
+def redact_run_argv(argv: Sequence[str]) -> list[str]:
+    out = list(argv)
+    if not out or out[0] != "bench":
+        return out
+    for index, value in enumerate(argv):
+        if value in _PRIVATE_BENCH_OPTIONS and index + 1 < len(out):
+            out[index + 1] = "<private-bench-text>"
+        else:
+            for option in _PRIVATE_BENCH_OPTIONS:
+                if value.startswith(option + "="):
+                    out[index] = option + "=<private-bench-text>"
+                    break
+    return out
+
+
+def redact_dust_token(args: Sequence[object]) -> list[str]:
+    """Display form of a fastboot argv with the `oem dust <token>` argument masked.
+
+    The oem-dust flash-authorization token is hex8(config[0:4] XOR 0xC9ACBCC6) — a config-identity
+    secret scrub() redacts everywhere else — but only 8 hex chars, so it slips under scrub()'s
+    >=12-hex rule. Mask it at the source instead. Only the single argument after `oem dust` is
+    replaced, so every other logged/echoed command is byte-identical and the real argv sent to
+    fastboot is untouched."""
+    out = [str(a) for a in args]
+    for i in range(len(out) - 2):
+        if out[i] == "oem" and out[i + 1] == "dust":
+            out[i + 2] = "<redacted-id>"
+    return out
+
+
+_STAMP = re.compile(r"^\[\+\s*[\d.]+s\] ")
+
+
+def tail_transcript(path: Path, keep: int = 12) -> list[str]:
+    """The last console lines of a finished run, for reprinting once its window has gone.
+
+    A tmux client draws on the terminal's alternate screen, so the moment the session ends the
+    terminal is restored and everything the run printed goes with it — the Valetudo address it just
+    told the user to open, the error it died on, the path to this very log. The log holds the same
+    transcript, so its tail is what was on the screen. Commands and headers are dropped: the point
+    is what the run SAID, not what it ran.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    prefixes = tuple(sorted(set(LoggingConsole._PREFIX.values()), key=len, reverse=True))
+    prompt = LoggingConsole._PREFIX["prompt"]
+    answer = LoggingConsole._PREFIX["answer"]
+    drop_answer = False
+    for line in raw:
+        if not line.strip() or line.startswith("#"):
+            continue
+        said = _STAMP.sub("", line)
+        if said.startswith("$ "):
+            continue
+        if said.startswith(prompt + " "):
+            drop_answer = True
+            continue
+        if drop_answer and said.startswith(answer + " "):
+            drop_answer = False
+            continue
+        drop_answer = False
+        for prefix in prefixes:
+            if said.startswith(prefix + " "):
+                said = said[len(prefix) + 1:]
+                break
+        out.append(said)
+    # Collapse consecutive repeats BEFORE taking the tail. A poll that retries once a second (the
+    # FEL wait is up to 180) otherwise fills the whole window with one identical line and pushes
+    # the only thing worth reading — how the run ended — off the top.
+    runs: list[list[object]] = []
+    for said in out:
+        if runs and runs[-1][0] == said:
+            runs[-1][1] = int(runs[-1][1]) + 1      # type: ignore[call-overload]
+        else:
+            runs.append([said, 1])
+    shown = [str(text) if count == 1 else f"{text}   (repeated {count} times)"
+             for text, count in runs]
+    return shown[-keep:]
+
+
+def _prune(logs_dir: Path, keep: int) -> None:
+    with contextlib.suppress(OSError):
+        old = sorted(logs_dir.glob("run-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in old[keep:]:
+            p.unlink(missing_ok=True)
+
+
+class RunLog:
+    """One run's scrubbed transcript, flushed line-by-line so it survives a crash.
+
+    Every message/command line carries an elapsed-since-start stamp (``[+  12.3s]``) and each
+    command its own wall-clock duration, so a hardware run is self-documenting: the flash
+    sequence's margin against the power MCU's fixed rail-cycle clock is readable straight off the
+    log, not inferred from a "seemed to work"."""
+
+    def __init__(self, path: Path, fh: TextIO, home: Path,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.path = path
+        self._fh = fh
+        self._home = home
+        self._clock = clock
+        self._t0 = clock()
+        self._protected: set[str] = set()
+
+    @classmethod
+    def open(cls, base: Path, home: Path, argv: Sequence[str], version: str, *,
+             stamp: str, when: str, clock: Callable[[], float] = time.monotonic) -> RunLog:
+        logs = base / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        _prune(logs, keep=25)
+        fh = (logs / f"run-{stamp}.log").open("w", encoding="utf-8")
+        log = cls(logs / f"run-{stamp}.log", fh, home, clock)
+        log._raw(f"# dreame-valetudo {version}   {when}")
+        log._raw("# command: " + scrub(" ".join(redact_run_argv(argv)), home))
+        log._raw(f"# platform: {platform.platform()}   python {sys.version.split()[0]}")
+        log._raw("# personal + identifying values are redacted below; safe to share")
+        log._raw("# each line is stamped [+seconds] elapsed since start; commands show their duration")
+        log._raw("")
+        return log
+
+    def mono(self) -> float:
+        """The raw clock, for a caller timing its own command."""
+        return self._clock()
+
+    def _stamp(self) -> str:
+        return f"[+{self._clock() - self._t0:6.1f}s]"
+
+    def _raw(self, line: str) -> None:
+        with contextlib.suppress(OSError, ValueError):
+            self._fh.write(line + "\n")
+            self._fh.flush()
+
+    def protect(self, *values: str | None) -> None:
+        """Keep exact operator-chosen labels out of subsequent shareable log lines."""
+        self._protected.update(value for value in values if value)
+
+    def _scrub(self, text: str) -> str:
+        cleaned = scrub(text, self._home)
+        for value in sorted(self._protected, key=len, reverse=True):
+            replacement = "<private-robot-name>"
+            if cleaned == value:
+                cleaned = replacement
+                continue
+            escaped = re.escape(value)
+            cleaned = re.sub(rf"(?<=/){escaped}(?=/|$)", replacement, cleaned)
+            cleaned = cleaned.replace(f"'{value}'", f"'{replacement}'")
+            cleaned = cleaned.replace(f'"{value}"', f'"{replacement}"')
+            cleaned = cleaned.replace(
+                f"{value}'s recovery backup",
+                f"{replacement}'s recovery backup",
+            )
+            cleaned = re.sub(
+                rf"(^\s*[0-9]+\)\s+){escaped}(?=\s{{2,}})",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\b(?:Robot|Resuming|folder):?\s+){escaped}(?=\s|$|\))",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\bselected robot name exactly \(){escaped}(?=\))",
+                rf"\1{replacement}",
+                cleaned,
+            )
+            cleaned = re.sub(
+                rf"(\bRobot\s+(?:'[^']*'|\"[^\"]*\")\s+\(){escaped}"
+                rf"(?=\)\s+uses unknown saved model)",
+                rf"\1{replacement}",
+                cleaned,
+            )
+        return cleaned
+
+    def line(self, prefix: str, text: str) -> None:
+        self._raw(f"{self._stamp()} {prefix} {self._scrub(text)}")
+
+    def note(self, text: str) -> None:
+        """A raw, unstamped ``#`` annotation line — for framing content that predates the timeline
+        (e.g. migration output replayed in after it ran before the log opened)."""
+        self._raw("# " + self._scrub(text))
+
+    def command(self, result: Result, duration: float | None = None) -> None:
+        tool = result.argv[0].rsplit("/", 1)[-1] if result.argv else ""
+        parts = redact_dust_token((tool, *result.argv[1:]))
+        line = self._scrub("$ " + " ".join(parts).rstrip())
+        if len(line) > 400:
+            line = line[:400] + " …(truncated)"
+        meta = f"rc={result.returncode}" + (f", {duration:.2f}s" if duration is not None else "")
+        self._raw(f"{self._stamp()} {line}   ({meta})")
+        if not result.ok and result.stderr.strip():
+            err = self._scrub(result.stderr.strip())
+            self._raw("    ! " + (err[:400] + " …" if len(err) > 400 else err))
+
+    def finish(self, rc: int) -> None:
+        self._raw(f"\n# exit {rc} after {self._clock() - self._t0:.1f}s total")
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._fh.close()
+
+
+class LoggingConsole(Console):
+    """A Console that mirrors every message (and each prompt + answer) into the run log."""
+
+    # The log's own prefix vocabulary — deliberately independent of the terminal rendering, so
+    # presentation changes never reshape the shareable log.
+    _PREFIX: ClassVar[dict[str, str]] = {
+        "say": ">>", "action": "=>", "info": "  ", "warn": "!!", "err": "XX", "phase": "==",
+        "detail": "  ", "step": "  ", "block": " |", "block_title": " |", "progress_done": "->",
+        "prompt": "??", "answer": "->",
+    }
+
+    def __init__(self, log: RunLog, *, color: bool | None = None,
+                 protect_robot_names: bool = False) -> None:
+        super().__init__(color=color)
+        self._log = log
+        self._protect_robot_names = protect_robot_names
+
+    def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
+              lead: bool = False, trail: bool = False) -> None:
+        self._log.line(self._PREFIX.get(kind, "  "), message)
+        super()._emit(kind, message, wrap=wrap, hang=hang, lead=lead, trail=trail)
+
+    def confirm(self, prompt: str) -> bool:
+        self._log.line(self._PREFIX["prompt"], prompt)
+        answer = super().confirm(prompt)
+        self._log.line(self._PREFIX["answer"], "yes" if answer else "no")
+        return answer
+
+    def ask(self, prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
+        self._log.line(self._PREFIX["prompt"], prompt)
+        answer = super().ask(prompt, default=default, sensitive=sensitive)
+        if self._protect_robot_names and prompt.startswith("Name for this robot "):
+            private_name = answer.strip()
+            private_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", private_name).strip("-.")
+            self._log.protect(private_name, private_slug)
+        # Same contract ask_secret has always had, reached by a different route: what changed for a
+        # sensitive answer is that the operator can now SEE what they typed, not that the shareable
+        # log may keep it.
+        self._log.line(self._PREFIX["answer"], "<not recorded>" if sensitive else answer)
+        return answer
+
+
+class LoggingRunner(Runner):
+    """Wraps a real Runner, logging each command's name + exit code — never its stdin or stdout (so
+    a streamed key, a piped config value, or a robot data dump can't leak into the log)."""
+
+    def __init__(self, inner: Runner, log: RunLog) -> None:
+        self._inner = inner
+        self._log = log
+
+    def _finish(self, result: Result, t: float, check: bool) -> Result:
+        self._log.command(result, self._log.mono() - t)
+        if check and not result.ok:
+            raise RunError(result)
+        return result
+
+    def run(self, argv: Sequence[str], *, check: bool = True, stdin: str | None = None,
+            timeout: float | None = None) -> Result:
+        t = self._log.mono()
+        result = self._inner.run(argv, check=False, stdin=stdin, timeout=timeout)
+        return self._finish(result, t, check)
+
+    def run_redirect(self, argv: Sequence[str], *, stdout_path: str | None = None,
+                     stdin_path: str | None = None, check: bool = True,
+                     timeout: float | None = None) -> Result:
+        t = self._log.mono()
+        result = self._inner.run_redirect(argv, stdout_path=stdout_path, stdin_path=stdin_path,
+                                          check=False, timeout=timeout)
+        return self._finish(result, t, check)
+
+
+class _RecordingProgress(Progress):
+    """Forwards to a real Progress while recording its done-line into a pending buffer, so a progress
+    step that ran before the log opened still reaches it. Times with its own clock (created alongside
+    the wrapped one, so the elapsed shown matches within milliseconds)."""
+
+    def __init__(self, inner: Progress, pending: list[tuple[str, str]], label: str, *,
+                 timer: bool = True,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._inner = inner
+        self._pending = pending
+        self._label = label
+        self._timer = timer
+        self._clock = clock
+        self._t0 = clock()
+        self._closed = False
+
+    def __enter__(self) -> Progress:
+        self._inner.__enter__()
+        return self
+
+    def close(self, *, done: bool = False) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._inner.close(done=done)
+        if done:
+            tail = (
+                f" ({_fmt_elapsed(self._clock() - self._t0)})" if self._timer else ""
+            )
+            self._pending.append(("->", f"{self._label} — done{tail}"))
+
+    def clear_line(self) -> None:
+        self._inner.clear_line()
+
+
+class BufferingConsole(Console):
+    """Wraps a Console, forwarding every message and prompt to it unchanged (so terminal rendering and
+    test capture are untouched) while recording them, so output produced BEFORE the run log exists can
+    be replayed into the log the moment it opens.
+
+    First-run migration is the case: the log lives under the very ``work/`` dir migration consolidates,
+    so it must run before the log is opened — leaving a migration that hit a snag with nothing in the
+    shareable log. This records the same ``(prefix, text)`` pairs ``LoggingConsole`` writes live, so a
+    replayed line matches a live one bar its elapsed stamp (~0s, since replay is at log-open)."""
+
+    def __init__(self, inner: Console) -> None:
+        super().__init__(color=False)
+        self._inner = inner
+        self._pending: list[tuple[str, str]] = []
+
+    def _emit(self, kind: str, message: str, *, wrap: bool = True, hang: int | None = None,
+              lead: bool = False, trail: bool = False) -> None:
+        self._pending.append((LoggingConsole._PREFIX.get(kind, "  "), message))
+        self._inner._emit(kind, message, wrap=wrap, hang=hang, lead=lead, trail=trail)
+
+    def confirm(self, prompt: str) -> bool:
+        self._pending.append(("??", prompt))
+        answer = self._inner.confirm(prompt)
+        self._pending.append(("->", "yes" if answer else "no"))
+        return answer
+
+    def ask(self, prompt: str, *, default: str | None = None, sensitive: bool = False) -> str:
+        self._pending.append(("??", prompt))
+        answer = self._inner.ask(prompt, default=default, sensitive=sensitive)
+        self._pending.append(("->", "<not recorded>" if sensitive else answer))
+        return answer
+
+    def progress(self, label: str, *, timer: bool = True) -> Progress:
+        return _RecordingProgress(
+            self._inner.progress(label, timer=timer), self._pending, label, timer=timer
+        )
+
+    def flush_into(self, log: RunLog) -> None:
+        """Replay the buffered pre-log output into ``log`` (file only — the terminal already showed it
+        live), framed by a note that it predates the timeline. Idempotent: clears the buffer."""
+        if not self._pending:
+            return
+        log.note("the workspace migration below ran before this run log was opened")
+        for prefix, text in self._pending:
+            log.line(prefix, text)
+        self._pending.clear()

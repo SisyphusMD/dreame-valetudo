@@ -1,0 +1,146 @@
+"""Pin the model_spec table against checked-in goldens.
+
+The goldens under golden/ (load_model_spec / impl_class_for_model / model_key_for_dir) are the
+source of truth for the supported-model data; any drift in the table fails these tests.
+"""
+
+from __future__ import annotations
+
+from dataclasses import fields, replace
+from pathlib import Path
+
+import pytest
+
+from dreame_valetudo import models as P
+
+GOLDEN = Path(__file__).parent / "golden"
+README = Path(__file__).parents[2] / "README.md"
+
+
+def _rows(name: str) -> list[list[str]]:
+    return [line.split("\t") for line in (GOLDEN / name).read_text().splitlines() if line]
+
+
+def test_supported_models_matches_golden_order() -> None:
+    # The picker numbers robots by this order, so it is load-bearing.
+    keys = [r[0] for r in _rows("models.tsv")[1:]]
+    assert keys == P.SUPPORTED_MODELS
+
+
+def test_profile_rejects_an_invalid_static_table_value() -> None:
+    with pytest.raises(ValueError, match="bad method"):
+        replace(P.load_model_spec(P.DEFAULT_MODEL_KEY), method="invalid")  # type: ignore[arg-type]
+
+
+def test_directory_name_inference_uses_known_prefixes_and_safe_defaults(tmp_path: Path) -> None:
+    assert P.key_from_dirname("r2416-lounge") == "x40-ultra"
+    assert P.key_from_dirname("unrecognized") == P.DEFAULT_MODEL_KEY
+
+    robot = tmp_path / "r2416-lounge"
+    (robot / "state").mkdir(parents=True)
+    (robot / "state" / "model_key").write_text("\n")
+    assert P.known_model_key_for_dir(robot) == "x40-ultra"
+
+
+def test_profile_fields_match_golden() -> None:
+    header, *rows = _rows("models.tsv")
+    columns = ["key" if field.name == "key" else field.name.upper() for field in fields(P.ModelSpec)]
+    columns += ["STAGE1_URL", "DUSTBUILDER_PAGE"]
+    assert header == columns
+    seen = set()
+    for row in rows:
+        rec = dict(zip(header, row, strict=True))
+        p = P.load_model_spec(rec["key"])
+        seen.add(rec["key"])
+        for field in fields(P.ModelSpec):
+            column = "key" if field.name == "key" else field.name.upper()
+            assert getattr(p, field.name) == rec[column], rec["key"]
+        assert p.stage1_url == rec["STAGE1_URL"], rec["key"]
+        assert p.dustbuilder_page == rec["DUSTBUILDER_PAGE"], rec["key"]
+    # Neither the picker, the backing table, nor the golden may carry an unrepresented model.
+    assert seen == set(P.SUPPORTED_MODELS) == set(P._MODEL_SPECS)
+
+
+def test_readme_hardware_verified_models_are_deliberate() -> None:
+    verified = {
+        line.split("|")[1].strip().strip("`")
+        for line in README.read_text().splitlines()
+        if line.rstrip().endswith("| ✅ Verified |")
+    }
+    assert verified == {"x40-ultra", "x30-ultra", "l10s-pro-ultra-heat"}
+
+
+def test_load_model_spec_rejects_unknown_key() -> None:
+    with pytest.raises(ValueError):
+        P.load_model_spec("not-a-model")
+
+
+def test_impl_class_for_model_matches_golden() -> None:
+    rows = _rows("impl_class.tsv")
+    for code, expected in rows:
+        got = P.impl_class_for_model(code)
+        assert (got or "FAIL") == expected, f"{code!r} -> {got!r}, want {expected}"
+    golden = dict(rows)
+    for prefix, expected in P._IMPL_PREFIXES:
+        assert golden.get(prefix) == expected, f"{prefix!r} is not pinned exactly in the golden"
+
+
+def test_impl_prefix_order_cannot_swallow_a_different_class() -> None:
+    for index, (prefix, impl_class) in enumerate(P._IMPL_PREFIXES):
+        for later, later_class in P._IMPL_PREFIXES[index + 1:]:
+            assert not (later.startswith(prefix) and later_class != impl_class), (
+                f"{prefix!r} would swallow later {later!r}"
+            )
+
+
+def test_model_key_for_dir_matches_golden(tmp_path: Path) -> None:
+    rows = _rows("model_key.tsv")
+    for dirname, expected in rows:
+        d = tmp_path / dirname
+        d.mkdir()
+        assert P.model_key_for_dir(d) == expected, dirname
+    for prefix, expected in P._DIR_PREFIX_TO_KEY:
+        assert any(dirname.startswith(prefix) and key == expected for dirname, key in rows), (
+            f"{prefix!r} is not pinned in the golden"
+        )
+
+
+def test_model_key_for_dir_prefers_saved_marker(tmp_path: Path) -> None:
+    # A dir NAMED r2416-* would infer x40-ultra, but a saved marker wins.
+    d = tmp_path / "r2416-deadbeef"
+    (d / "state").mkdir(parents=True)
+    (d / "state" / "model_key").write_text("d10s-plus\n")
+    assert P.model_key_for_dir(d) == "d10s-plus"
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("dreame.vacuum.r2416", "x40-ultra"),
+        ("dreame.vacuum.r2449", "x40-ultra"),
+        ("dreame.vacuum.r2465a", "x40-master"),
+        ("dreame.vacuum.r9316k", "x30-ultra"),
+        ("dreame.vacuum.r9316t", "x30-ultra"),
+        ("dreame.vacuum.r2492b", "l40-ultra"),
+        ("dreame.vacuum.r2492j", "l40-ultra"),
+        ("dreame.vacuum.r2394j", "l20-ultra"),
+        ("dreame.vacuum.r2394s", "l20-ultra"),
+        ("dreame.vacuum.r2228o", "l10s-ultra"),
+        ("dreame.vacuum.r2385a", "mova-s20-ultra"),
+        ("mova.vacuum.r2491a", "mova-p10-pro-ultra"),
+        ("dreame.vacuum.r2338", "l10s-pro-ultra-heat"),
+        ("dreame.vacuum.r2338h", "l10s-pro-ultra-heat-h"),
+        ("dreame.vacuum.r2338ha", None),
+        ("dreame.vacuum.r2338a", "l10s-pro-ultra-heat"),
+        ("dreame.vacuum.r2338haz", None),
+        ("dreame.vacuum.r2492x", None),
+        ("mova.vacuum.r2492", None),
+        ("mova.vacuum.r2492b", None),
+        ("mova.vacuum.r2394s", None),
+        ("foo.r2416", None),
+        ("dreame.vacuum.r2416x", None),
+        ("r2416", None),
+    ],
+)
+def test_known_model_key_for_code_is_exact(reported: str, expected: str | None) -> None:
+    assert P.known_model_key_for_code(reported) == expected

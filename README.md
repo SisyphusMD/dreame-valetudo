@@ -76,10 +76,10 @@ brew trust sisyphusmd/tap    # one-time; Homebrew 6+ won't load a third-party ta
 brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
-The same command works on any supported Mac or Linux architecture. Installing does not build
-anything: the first `dreame-valetudo` run compiles `sunxi-fel`, the small helper used to talk to the
-robot in FEL mode, which needs a compiler and network access that once. Run the command once before
-you join the robot's own Wi-Fi, where there is no internet.
+The same command works on any supported Mac or Linux architecture, and it is self-contained:
+`sunxi-fel` — the small helper used to talk to the robot in FEL mode — is built and bundled by the
+formula, so nothing is compiled the first time you run it. That matters because the flashing work
+happens while your machine is joined to the robot's own Wi-Fi, which has no internet.
 
 > [!NOTE]
 > **Linux, one time:** run `dreame-valetudo install-udev` so the tool can use USB without sudo. It
@@ -109,6 +109,26 @@ sudo apt install ./dreame-valetudo_arm64.deb    # or the amd64 file
 dreame-valetudo
 ```
 
+**Or subscribe to the apt repository**, so upgrades arrive with the rest of the system:
+
+```bash
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://forgejo.bryantserver.com/api/packages/SisyphusMD/debian/repository.key \
+  | sudo tee /etc/apt/keyrings/sisyphusmd.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/sisyphusmd.asc] https://forgejo.bryantserver.com/api/packages/SisyphusMD/debian stable main" \
+  | sudo tee /etc/apt/sources.list.d/sisyphusmd.list >/dev/null
+
+sudo apt update && sudo apt install dreame-valetudo
+```
+
+That first step is the one part that cannot come from the repository: apt will not install a
+package to obtain the key it needs to trust that package. Fetch it over HTTPS once and apt verifies
+everything afterwards on its own. The key and list files are named for the **namespace**, not this
+project — the repository holds every SisyphusMD package.
+
+Swap `stable` for `testing` to track release candidates. A release lands in **both**, so a
+`testing` subscriber receives it too and is never stranded on the last candidate.
+
 ---
 
 ### Fedora / RHEL / openSUSE (`.rpm`)
@@ -121,6 +141,61 @@ The package includes `sunxi-fel` and sets up USB access for you. Check your arch
 sudo dnf install ./dreame-valetudo.x86_64.rpm    # or the aarch64 file (zypper/yum work too)
 dreame-valetudo
 ```
+
+**Or subscribe to the dnf repository:**
+
+```bash
+sudo dnf config-manager --add-repo \
+  https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd.repo
+
+sudo dnf install dreame-valetudo
+```
+
+(`sisyphusmd-testing.repo` in place of `sisyphusmd.repo` tracks release candidates. On dnf4,
+`--add-repo` is the same flag; on dnf5 it is `dnf config-manager addrepo --from-repofile=<url>`.)
+
+That file pins the **SisyphusMD** signing key, `CCE50015D058E9BF`, and dnf verifies every package
+against it on every install. Do **not** substitute the `.repo` file Forgejo generates at
+`…/rpm/stable.repo`: it names Forgejo's own key, which cannot verify a package signed with the
+SisyphusMD one, so the install fails with `GPG check FAILED`. Adding Forgejo's key alongside it
+"to be safe" is worse still — dnf accepts a package signed by *any* listed key, which would let the
+machine hosting the packages sign its own.
+
+**openSUSE:** import the key and install the file directly. The repository is apt and dnf only —
+zypper insists on verifying the repository index even with `repo_gpgcheck=0`, and the only key that
+would satisfy it is Forgejo's, which this configuration deliberately does not trust.
+
+```bash
+sudo rpm --import https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc
+sudo zypper install ./dreame-valetudo-<version>.x86_64.rpm
+```
+
+---
+
+### Any other Linux (standalone bundle)
+
+No apt, no dnf, no Homebrew — Arch, Gentoo, Void, a container. Extract and run: the bundle
+carries its own Python and the tools it needs.
+
+It is built in a manylinux image and links against **glibc**, so it runs on any glibc
+distribution at or above the floor the release notes state. Musl systems (Alpine) and
+NixOS without `nix-ld` or an FHS shell cannot execute it as-is — install from PyPI there instead,
+with `uv tool install dreame-valetudo` or `pipx install dreame-valetudo`.
+
+```bash
+tar -xzf dreame-valetudo-<version>-linux-amd64.tar.gz   # or -linux-arm64
+./dreame-valetudo-<version>-linux-amd64/dreame-valetudo
+```
+
+Optionally put it on your PATH — the launcher resolves its own location, so a symlink works:
+
+```bash
+sudo ln -s "$PWD/dreame-valetudo-<version>-linux-amd64/dreame-valetudo" /usr/local/bin/dreame-valetudo
+```
+
+Prefer the `.deb` or `.rpm` if your distribution uses one: they wire up the udev rule for
+sudo-less USB access and upgrade with the system. The bundle ships that rule for you to install by
+hand — see the `README` inside it.
 
 ---
 
@@ -264,19 +339,19 @@ installs over whatever version is present). To return to stable, open the `.pkg`
 normal release.
 
 **Debian `.deb`.** Download the `.deb` for your arch from the newest Pre-release. `sudo apt install
-./dreame-valetudo_<arch>.deb` handles the forward (candidate) direction; switching back to a lower
-stable version is a downgrade, which `apt` declines, so use `dpkg` there (it installs whatever the
-file holds, either direction):
+./dreame-valetudo_<version>_<arch>.deb` handles the forward (candidate) direction; switching back to
+a lower stable version is a downgrade, which `apt` declines, so use `dpkg` there (it installs
+whatever the file holds, either direction):
 ```bash
-sudo dpkg -i ./dreame-valetudo_<arch>.deb
+sudo dpkg -i ./dreame-valetudo_<version>_<arch>.deb
 ```
 
 **Fedora / RHEL / openSUSE `.rpm`.** Install the candidate with your package manager. Returning to a
 lower stable build is an explicit downgrade:
 ```bash
-sudo dnf install ./dreame-valetudo.<arch>.rpm
-sudo dnf downgrade ./dreame-valetudo.<arch>.rpm       # Fedora/RHEL: return to stable
-sudo zypper install --oldpackage ./dreame-valetudo.<arch>.rpm  # openSUSE: return to stable
+sudo dnf install ./dreame-valetudo-<version>.<arch>.rpm
+sudo dnf downgrade ./dreame-valetudo-<version>.<arch>.rpm       # Fedora/RHEL: return to stable
+sudo zypper install --oldpackage ./dreame-valetudo-<version>.<arch>.rpm  # openSUSE: return to stable
 ```
 
 **From source.** Check out the candidate's tag instead of the default branch:
@@ -428,3 +503,7 @@ How the tool handles your SSH key and the scrubbed run log is in [How it works](
 
 The software is provided "as is", without warranty of any kind; see [LICENSE](LICENSE). It is not
 affiliated with, nor endorsed by, Dreame or the Valetudo project.
+
+---
+
+<sub>Built with AI assistance. Directed decision by decision, not prompted and shipped. Backed by 99% coverage floors, transcript-equivalence tests, install channels exercised each release, hardware bench runs.</sub>

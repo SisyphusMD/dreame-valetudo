@@ -17,7 +17,7 @@ from dreame_valetudo.constants import (
 )
 from dreame_valetudo.context import Context
 from dreame_valetudo.fastboot import Fastboot, Transport
-from dreame_valetudo.profiles import load_profile
+from dreame_valetudo.models import load_model_spec
 from dreame_valetudo.run import RecordingRunner, Result
 from dreame_valetudo.workspace import Robot, Workspace
 
@@ -162,7 +162,7 @@ def make_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CtxFactory:
                 **(env or {}),
             },
             ws=ws,
-            profile=load_profile(model),
+            model_spec=load_model_spec(model),
             robot=robot,
             sleep=lambda _s: None,
             interactive=interactive,

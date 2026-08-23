@@ -9,7 +9,12 @@ cd "$(dirname "$0")/.."
 ver="${1:?version required}"
 date="${2:?release date (YYYY-MM-DD) required}"
 [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "invalid release date: $date" >&2; exit 1; }
-grep -qE '^## \[Unreleased\]' CHANGELOG.md || { echo "missing '## [Unreleased]'" >&2; exit 1; }
+# Counted, not merely found: the awk below rewrites EVERY match, so a merge that left two Unreleased
+# headings would promote both and produce duplicate release sections. The final guard checks that the
+# new heading exists, which it would, so nothing downstream notices.
+unreleased="$(grep -cE '^## \[Unreleased\]' CHANGELOG.md || true)"
+[ "$unreleased" = 1 ] || {
+  echo "expected exactly one '## [Unreleased]' heading, found $unreleased" >&2; exit 1; }
 
 DEPS="${DEPS:-}"
 export DEPS

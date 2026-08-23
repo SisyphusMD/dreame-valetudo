@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
-from dreame_valetudo.profiles import (
+from dreame_valetudo.models import (
     SUPPORTED_MODELS,
-    load_profile,
+    load_model_spec,
     reviewed_model_identities_for_key,
 )
 from libexec import verify_valetudo_contract as contract
@@ -31,13 +33,13 @@ def _upstream_fixture(root: Path) -> Path:
     classes: dict[str, list[str]] = {}
     sections: dict[str, str] = {}
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        if profile.method != "fastboot":
+        model_spec = load_model_spec(key)
+        if model_spec.method != "fastboot":
             continue
-        identities = classes.setdefault(profile.impl_class, [])
-        identities.append(f"dreame.vacuum.{profile.model_code}")
-        identities.extend(reviewed_model_identities_for_key(profile.key))
-        title = profile.model.split(" (", 1)[0].removeprefix("Dreame ").removeprefix("Mova ")
+        identities = classes.setdefault(model_spec.impl_class, [])
+        identities.append(f"dreame.vacuum.{model_spec.model_code}")
+        identities.extend(reviewed_model_identities_for_key(model_spec.key))
+        title = model_spec.model.split(" (", 1)[0].removeprefix("Dreame ").removeprefix("Mova ")
         sections.setdefault(
             title,
             f"### {title}\n**Valetudo Binary**: `aarch64`\n**Secure Boot**: `yes`\n"
@@ -59,11 +61,11 @@ def test_current_semantic_contract_fixture_passes(tmp_path: Path) -> None:
 
 def test_every_fastboot_model_has_an_explicit_upstream_contract() -> None:
     fastboot = {
-        key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"
+        key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"
     }
     assert set(MODEL_SECTION_MARKERS) == fastboot
     assert {
-        key for key in fastboot if load_profile(key).dram == "ddr3"
+        key for key in fastboot if load_model_spec(key).dram == "ddr3"
     } == DDR3_MODEL_KEYS
 
 
@@ -217,3 +219,91 @@ def test_missing_model_contract_reports_drift_instead_of_crashing(
         "lack an official per-model contract: x40-ultra" in issue
         for issue in contract.verify(upstream)
     )
+
+
+def test_missing_upstream_paths_are_reported_without_reading_partial_checkout(
+    tmp_path: Path,
+) -> None:
+    issues = verify(tmp_path)
+
+    assert len(issues) == 3
+    assert all(issue.startswith("upstream path is missing:") for issue in issues)
+
+
+def test_stale_model_contract_reports_drift_instead_of_crashing(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    stale = {**MODEL_SECTION_MARKERS, "retired-model": ()}
+    monkeypatch.setattr(contract, "MODEL_SECTION_MARKERS", stale)
+
+    assert any(
+        "official per-model contracts no longer map to local fastboot models: retired-model" in issue
+        for issue in contract.verify(upstream)
+    )
+
+
+def test_local_ddr_profile_drift_turns_the_monitor_red(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    original = contract.load_model_spec
+
+    def drifted(key: str):
+        model_spec = original(key)
+        return replace(model_spec, dram="ddr4") if key == "w10-pro" else model_spec
+
+    monkeypatch.setattr(contract, "load_model_spec", drifted)
+
+    assert any("local DDR3 model_spec set differs" in issue for issue in contract.verify(upstream))
+
+
+def test_local_fastboot_addresses_are_part_of_the_checked_contract(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    original = contract.load_model_spec
+
+    def drifted(key: str):
+        model_spec = original(key)
+        return replace(model_spec, payload_addr="0xdeadbeef") if key == "x40-ultra" else model_spec
+
+    monkeypatch.setattr(contract, "load_model_spec", drifted)
+
+    assert any(
+        "x40-ultra: local fastboot contract changed" in issue
+        for issue in contract.verify(upstream)
+    )
+
+
+def test_missing_implementation_and_supported_robot_section_are_both_reported(
+    tmp_path: Path,
+) -> None:
+    upstream = _upstream_fixture(tmp_path)
+    implementation = upstream / "backend/lib/robots/dreame/DreameX40UltraValetudoRobot.js"
+    implementation.unlink()
+    supported = upstream / "docs/pages/general/supported-robots.md"
+    text = supported.read_text()
+    start = text.index("### X40 Ultra")
+    end = text.index("\n### ", start)
+    supported.write_text(text[:start] + text[end + 1:])
+
+    issues = verify(upstream)
+
+    assert any("x40-ultra: upstream implementation disappeared" in issue for issue in issues)
+    assert any("x40-ultra: model disappeared" in issue for issue in issues)
+
+
+def test_main_reports_usage_contract_failures_and_success(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert contract.main(["verify"]) == 2
+    assert "usage:" in capsys.readouterr().err
+
+    monkeypatch.setattr(contract, "verify", lambda _path: ["drifted"])
+    assert contract.main(["verify", str(tmp_path)]) == 1
+    assert "ERROR: drifted" in capsys.readouterr().err
+
+    monkeypatch.setattr(contract, "verify", lambda _path: [])
+    assert contract.main(["verify", str(tmp_path)]) == 0
+    assert "fastboot model contracts match" in capsys.readouterr().out

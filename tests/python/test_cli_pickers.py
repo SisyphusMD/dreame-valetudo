@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from conftest import CFG, CtxFactory
 
+from dreame_valetudo import cli
 from dreame_valetudo.cli import _dispatch, select_model, select_robot
 from dreame_valetudo.console import Die, reset_print_once
 from dreame_valetudo.phases.misc import _summary
@@ -14,13 +15,13 @@ from dreame_valetudo.workspace import Robot
 def test_select_model_from_env_skips_the_picker(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(env={"DREAME_MODEL": "d10s-plus"})
     select_model(ctx)
-    assert ctx.profile.key == "d10s-plus"
+    assert ctx.model_spec.key == "d10s-plus"
 
 
 def test_select_model_picks_by_menu_number(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["1"], confirms=[])  # first entry is x40-ultra
     select_model(ctx)
-    assert ctx.profile.key == "x40-ultra"
+    assert ctx.model_spec.key == "x40-ultra"
 
 
 def test_name_and_model_are_saved_before_recon(make_ctx: CtxFactory) -> None:
@@ -71,7 +72,7 @@ def test_robot_picker_can_resume_a_known_robot_beside_an_unknown_one(
     select_robot(ctx)
 
     assert ctx.robot == known
-    assert ctx.profile.key == "d10s-plus"
+    assert ctx.model_spec.key == "d10s-plus"
     assert "unknown model 'x50-ultra'" in ctx.console.text()  # type: ignore[attr-defined]
 
 
@@ -98,14 +99,14 @@ def test_back_from_model_returns_to_robot_picker(make_ctx: CtxFactory) -> None:
     Robot(ctx.ws.robots_dir / "prior").state_dir.mkdir(parents=True)
     select_robot(ctx)
     assert ctx.robot is not None and ctx.robot.work.name == "fresh"
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
 
 
 def test_first_robot_back_restarts_selection_without_using_default(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(asks=["abandoned", "b", "chosen", "9"])
     select_robot(ctx)
     assert ctx.robot is not None and ctx.robot.work.name == "chosen"
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
     assert not (ctx.ws.robots_dir / "abandoned").exists()
 
 
@@ -171,7 +172,7 @@ def test_model_command_disarms_firmware_staged_for_the_previous_model(
 
     _dispatch("model", [], ctx)
 
-    assert ctx.profile.key == "x40-ultra"
+    assert ctx.model_spec.key == "x40-ultra"
     assert robot.state_get("model_key") == "x40-ultra"
     assert not robot.state_has("image")
     assert "model=d10s-pro" in "\n".join(robot.image_provenance())
@@ -188,6 +189,54 @@ def test_select_model_non_interactive_requires_env(make_ctx: CtxFactory) -> None
     ctx = make_ctx(interactive=False, env={})
     with pytest.raises(Die, match="isn't a terminal"):
         select_model(ctx)
+
+
+def test_new_robot_name_reprompts_after_a_name_without_usable_characters(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["---", "kitchen", "1"])
+    select_robot(ctx)
+    assert ctx.robot is not None and ctx.robot.work.name == "kitchen"
+    assert "no usable characters" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_noninteractive_picker_refuses_multiple_robots_without_an_override(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(interactive=False)
+    for name in ("one", "two"):
+        Robot(ctx.ws.robots_dir / name).state_set("model_key", "x40-ultra")
+    with pytest.raises(Die, match="Multiple robots"):
+        select_robot(ctx)
+
+
+def test_robot_picker_rejects_an_out_of_range_choice(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["99"])
+    Robot(ctx.ws.robots_dir / "one").state_set("model_key", "x40-ultra")
+    with pytest.raises(Die, match="Invalid choice"):
+        select_robot(ctx)
+
+
+def test_uncommitted_robot_cleanup_only_removes_the_exact_name_only_shape(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="temporary")
+    created = ctx.need_robot().work
+    assert cli._discard_uncommitted_robot(ctx, None) is None
+    extra = created / "evidence"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("keep")
+    cli._discard_uncommitted_robot(ctx, created)
+    assert created.is_dir()
+
+
+def test_bench_robot_cleanup_refuses_unexpected_markers_and_accepts_model_only(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="temporary")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "evidence")
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+    assert robot.work.is_dir()
+    robot.state_clear("recon")
+    robot.state_set("model_key", "x40-ultra")
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+    assert not robot.work.exists()
+    assert ctx.robot is None
 
 
 def test_select_robot_from_env(make_ctx: CtxFactory) -> None:

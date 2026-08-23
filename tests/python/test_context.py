@@ -1,11 +1,15 @@
-"""Context-derived per-profile values and the need_robot guard."""
+"""Context-derived per-model_spec values and the need_robot guard."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from conftest import CtxFactory
 
+from dreame_valetudo import context as context_module
 from dreame_valetudo.console import Die
+from dreame_valetudo.fastboot import Transport
 
 
 def test_need_robot_dies_without_a_robot(make_ctx: CtxFactory) -> None:
@@ -39,3 +43,28 @@ def test_fsbl_name_tracks_dram(make_ctx: CtxFactory) -> None:
 def test_home_honors_env(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(env={"HOME": "/tmp/somewhere"})
     assert str(ctx.home) == "/tmp/somewhere"
+
+
+def test_hardware_helpers_are_resolved_lazily_from_bundled_paths(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    ctx._fastboot = None
+    ctx._libexec = tmp_path
+    transport = Transport("binary", (str(tmp_path / "dreame-fastboot"),))
+    monkeypatch.setattr(context_module, "resolve_transport", lambda _env, _libexec: transport)
+    bundled_fel = tmp_path / "sunxi-fel"
+    monkeypatch.setattr(context_module, "find_helper", lambda _name, _env: bundled_fel)
+
+    assert ctx.fastboot.transport == transport
+    assert ctx.sunxi_fel == bundled_fel
+
+
+def test_sunxi_fel_falls_back_to_path_before_the_build_target(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(context_module, "find_helper", lambda _name, _env: None)
+    monkeypatch.setattr(context_module.shutil, "which", lambda _name: "/opt/bin/sunxi-fel")
+
+    assert ctx.sunxi_fel == Path("/opt/bin/sunxi-fel")

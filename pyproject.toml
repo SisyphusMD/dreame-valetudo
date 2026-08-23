@@ -3,13 +3,25 @@
 name = "dreame-valetudo"
 version = "0.2.1"
 description = "Guided, idempotent tool to root supported Dreame robot vacuums and install Valetudo"
-license = "AGPL-3.0-or-later"
+# Rendered as the PyPI project page. Without it the page is blank, which for a tool that rewrites
+# a robot's firmware is the last place to leave someone without context.
+readme = "README.md"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # The package itself imports no third-party runtime deps: pyusb is needed only by the fastboot
 # libusb client, which runs as a subprocess (via `uv run --with pyusb`, a pyusb-capable python, or
 # the frozen dreame-fastboot binary). PYUSB_VERSION is pinned in constants.py (Renovate-tracked).
 dependencies = []
+
+# Source points at Forgejo because that is where the code actually lives and where releases are
+# cut; GitHub is a push-mirror. Homepage, docs and issues point at GitHub because that is where
+# users are. Same split as whiskerless.
+[project.urls]
+Homepage = "https://github.com/SisyphusMD/dreame-valetudo"
+Documentation = "https://github.com/SisyphusMD/dreame-valetudo/tree/main/docs"
+Source = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
+Issues = "https://github.com/SisyphusMD/dreame-valetudo/issues"
 
 [project.scripts]
 dreame-valetudo = "dreame_valetudo.cli:main"
@@ -19,7 +31,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["dreame_valetudo"]
+packages = ["src/dreame_valetudo"]
 
 # Ship the fastboot libusb client + per-model form goldens inside the package, so an installed wheel /
 # PyInstaller bundle resolves them via resolve_libexec.
@@ -41,9 +53,23 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Vendored from project-standard. Shared files carry no project-specific noqa codes (a code the
+# sibling does not enable would fail RUF100 there), so the exemption lives with the rule set that
+# needs it. The lazy PyInstaller import is deliberate: it is a release-build dependency only.
+"packaging/check-glibc-floor.py" = ["PLC0415"]
 # False positive: ruff can't see that console.die is NoReturn across the module boundary.
-"dreame_valetudo/fastboot.py" = ["RET503"]
-"dreame_valetudo/phases/manage.py" = ["RET503"]
+"src/dreame_valetudo/fastboot.py" = ["RET503"]
+"src/dreame_valetudo/phases/manage.py" = ["RET503"]
+
+[tool.coverage.run]
+source = ["src/dreame_valetudo", "libexec"]
+branch = true
+
+[tool.coverage.report]
+# Without this, --cov-fail-under compares the total rounded to whole percent, so 94.6% passes a
+# 95% floor. Ported from whiskerless, which has had coverage since before this project had any.
+precision = 2
+exclude_also = ["if TYPE_CHECKING:", "@overload", "raise NotImplementedError"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -52,7 +78,7 @@ testpaths = ["tests/python"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["dreame_valetudo", "libexec/fastboot-libusb.py"]
+files = ["src/dreame_valetudo", "libexec/fastboot-libusb.py"]
 
 # pyusb ships no type stubs; the fastboot client is the only thing that imports it.
 [[tool.mypy.overrides]]
@@ -64,4 +90,6 @@ ignore_missing_imports = true
 # disagreement means contributors lint with a different binary than the gate. A floor is
 # permanently satisfied, which leaves pep621 nothing to raise and no way for the lockfile to move
 # in the same PR as the annotated workflow literals.
-dev = ["pytest==9.1.1", "ruff==0.16.4", "mypy==2.3.1"]
+# pyyaml is a TEST-only parser for the workflow files, not a runtime dep — the package itself
+# still imports nothing outside the stdlib.
+dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "pyyaml==6.0.3", "ruff==0.16.4", "mypy==2.3.1"]

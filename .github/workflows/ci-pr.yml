@@ -1,0 +1,162 @@
+name: CI (pull requests)
+
+# Forgejo is the source of truth and runs CI on every push to main, but issues and PRs live on the
+# GitHub mirror — where, until this existed, a contributor's PR got no checks at all.
+#
+# It is not that Forgejo declines to test them out of preference: every job in .forgejo/workflows/
+# ci.yml carries a fork-trust gate (`head.repo.full_name == github.repository`) and deliberately
+# SKIPS a PR from a fork, because that runner has access to release credentials and a fork PR is
+# untrusted code. Correct, and it leaves the contributor with nothing. This runs the same checks on
+# GitHub-hosted runners, which hold no secrets of ours, so an outsider's PR gets real signal.
+#
+# Mirrors the library, floor, hygiene and integration jobs. It deliberately does NOT mirror:
+#   build  — the buildx .deb/.rpm stage. It is the only executor of deb.Dockerfile, so a PR touching
+#            packaging/ IS under-covered here; that is a known gap, called out rather than hidden.
+#            Build it locally (see CONTRIBUTING.md) when a change touches those paths.
+#   macos  — it asserts native macOS CI ran for the mirrored commit, which is a claim about the
+#            mirror, not about the PR.
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Lint, type-check, test
+    # Forgejo Actions also reads .github/workflows; without this the same jobs would run twice there
+    # (server_url is the Forgejo instance URL on Forgejo).
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
+      - name: lint + typecheck + test
+        run: |
+          set -euo pipefail
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.16.3"
+          # renovate: datasource=pypi depName=mypy
+          MYPY="2.3.1"
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
+          python -m pip install --upgrade pip
+          # `-e .` is not optional under the src/ layout: the package is no longer
+          # importable from the working directory, which is the whole point — a module
+          # missing from the built wheel can no longer pass the tests from the checkout.
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
+          # Every tracked *.py rather than a hand-maintained list, matching ci.yml.
+          ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/' | tr '\n' ' ')
+          mypy
+          python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+      - name: Coverage does not regress
+        # A measured non-regression floor, not an aspirational number. run.py — the Runner seam
+        # every external command funnels through — is held at 100 separately, because averaging it
+        # into the total would hide a regression there.
+        run: |
+          set -euo pipefail
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          coverage report --include='*/run.py' --fail-under=100
+      - name: Shared packaging helpers match project-standard
+        # Change a shared helper in project-standard and re-vendor both projects; editing the copy
+        # here is how these two drifted apart in the first place.
+        run: python3 packaging/check-standard-sync.py
+      - name: .gitignore contains the shared base
+        run: python3 packaging/check-gitignore-base.py .
+
+  python-floor:
+    name: Test the interpreter floor the package advertises
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The oldest interpreter pyproject advertises — the one a user on a long-term distro
+          # actually gets, and the one nothing else here exercises.
+          python-version: "3.11.0"
+      - name: install and test the claimed source floor
+        run: |
+          set -euo pipefail
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.1.1"
+          python -m pip install --upgrade pip
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
+          pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
+          python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
+            packaging/stamp-version.py \
+            packaging/build-source-tar.py \
+            packaging/check-doc-links.py \
+            packaging/check-release-boundary.py
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+
+  hygiene:
+    name: Shell scripts and documentation links
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: Shellcheck
+        # The release path is shell scripts that only run during a release, so a mistake in one
+        # surfaces while cutting it rather than in review.
+        #
+        # Through a pinned image, not a preinstalled binary: GitHub's hosted runners ship shellcheck
+        # and the Forgejo runner does not, so calling it directly passes on one forge and fails on
+        # the other.
+        run: |
+          set -euo pipefail
+          # renovate: datasource=docker depName=koalaman/shellcheck
+          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
+          mapfile -t scripts < <(git ls-files '*.sh')
+          # DEFAULT severity, the SAME threshold the Forgejo gate and the release path use. At
+          # shellcheck's default this job flags informational SC1091/SC2015 that the canonical
+          # check accepts, so every pull request failed a hygiene gate the branch itself passes.
+          cid=$(docker create -w /work "$SHELLCHECK" "${scripts[@]}")
+          docker cp . "$cid":/work
+          rc=0
+          docker start -a "$cid" || rc=$?
+          docker rm "$cid" >/dev/null
+          exit "$rc"
+      - name: Documentation links
+        # Relative links rot silently: a doc moves and the link keeps rendering, just pointing at
+        # nothing.
+        run: python3 packaging/check-doc-links.py .
+      - name: Cited external sources still resolve
+        # Only the pages relied ON as evidence for the research write-up. If one moves, the claim it
+        # supports has no way back to its source. Retries inside, so a transient 5xx does not fail
+        # the build.
+        run: bash packaging/check-external-links.sh
+
+  integration:
+    name: Release-script integration (no hardware)
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+      - name: install the session wrapper's own dependency
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: run integration scripts (externals PATH-stubbed; no hardware)
+        run: |
+          set -euo pipefail
+          for t in tests/release/*.sh; do echo "== $t =="; bash "$t"; done

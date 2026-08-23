@@ -35,17 +35,25 @@ jobs:
           CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
           NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
           GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
+          # Forgejo scopes the package registry separately: the repo PATs above cannot read or
+          # delete a package, so the registry half of the sweep needs its own write:package token.
+          PACKAGE_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}
+          # The manual half opts into strict reporting: a sweep that could not finish reddens this
+          # job. publish.yml deliberately leaves it off, because there a non-zero exit would redden a
+          # release that had already published on all three registries.
+          STRICT: "true"
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -uo pipefail
-          chmod +x packaging/prune-superseded-rcs.sh
-          # Fail closed: default to --dry-run and drop it ONLY on an explicit "false". An absent or
-          # malformed dry_run (e.g. an API dispatch that omits the input) then stays a preview and never
-          # authorizes a real deletion. The input's own default is true, so the UI preselects preview.
-          args=(--dry-run)
-          [ "$DRY_RUN" = "false" ] && args=()
-          # Warn-only: a prune problem must never fail this run or make a valid stable disappear. The
-          # sweep self-verifies each stable and exits 0 on every recoverable path; this guard keeps the
-          # job green even if it ever returns nonzero.
-          bash packaging/prune-superseded-rcs.sh "${args[@]}" \
-            || echo "::warning::prune-superseded-rcs exited nonzero; no stable release is affected"
+          # The script itself fails closed on DRY_RUN: anything but an exact "false" is a preview, so
+          # an API dispatch that omits the input, or passes it through unevaluated, cannot delete.
+          #
+          # A nonzero exit is deliberately NOT swallowed here, though the automatic sweep in
+          # publish.yml does swallow one: there it could redden a release that already succeeded,
+          # while here nothing is being released.
+          #
+          # With STRICT set above, every way the sweep can fail to do its job reddens this job:
+          # stopping early on a partial picture, leaving residue behind a delete it could not verify,
+          # or keeping a candidate because a package index would not answer. That is the whole reason
+          # not to swallow the exit here. Green still certifies only that the sweep ran to completion,
+          # never that any particular rc was removed, so the log remains the real report.
+          bash packaging/prune-rcs.sh

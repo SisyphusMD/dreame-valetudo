@@ -7,9 +7,14 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+# Keyed per COMMIT and never cancelled, because the release gates read this workflow's verdict for
+# one exact SHA. Under a ref-keyed group with cancel-in-progress, a push landing while the release
+# is being cut cancels the very run the gate is waiting on, and a commit whose only run was
+# cancelled has no verdict — which the gate can only read as "not green", permanently, for a commit
+# that never failed anything.
 concurrency:
-  group: macos-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: macos-ci-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -55,18 +60,23 @@ jobs:
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" -e .
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
+          ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           mypy
           python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
       - name: Check shell scripts
-        run: shellcheck --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh
+        # Every tracked script, at DEFAULT severity — the same set and threshold every other
+        # gate uses. A hand-listed set of directories silently stops covering a script added
+        # outside them, which is how a shell defect reaches a release green.
+        run: git ls-files '*.sh' | xargs shellcheck
       - name: Run integration scripts with native tmux
         run: |
-          for t in tests/integration/*.sh; do
+          for t in tests/release/*.sh; do
             echo "== $t =="
             bash "$t"
           done

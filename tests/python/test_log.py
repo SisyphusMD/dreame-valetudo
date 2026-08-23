@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import ScriptedConsole
 
+import dreame_valetudo.log as log_module
 from dreame_valetudo.constants import RECOVERY_DUMP_NAMES
 from dreame_valetudo.log import (
     BufferingConsole,
@@ -18,9 +19,9 @@ from dreame_valetudo.log import (
     scrub,
     tail_transcript,
 )
+from dreame_valetudo.models import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases.rekey import _password_candidates
-from dreame_valetudo.profiles import KNOWN_IMPL_CLASSES, SUPPORTED_MODELS, load_profile
-from dreame_valetudo.run import RecordingRunner, Result
+from dreame_valetudo.run import RecordingRunner, Result, RunError
 
 
 class _FakeClock:
@@ -33,11 +34,31 @@ class _FakeClock:
         return self.t
 
 
+def test_recording_progress_forwards_an_explicit_line_clear() -> None:
+    cleared: list[bool] = []
+
+    class Inner:
+        def clear_line(self) -> None:
+            cleared.append(True)
+
+    progress = log_module._RecordingProgress(  # type: ignore[arg-type]
+        Inner(), [], "checking", timer=False,
+    )
+
+    progress.clear_line()
+
+    assert cleared == [True]
+
+
 # --- scrub: redact everything personal/identifying --------------------------------------------
 def test_scrub_redacts_the_home_path() -> None:
     out = scrub("saved to /Users/alice/dreame-valetudo-work/robots", Path("/Users/alice"))
     assert "/Users/alice" not in out
     assert out.startswith("saved to ~/")
+
+
+def test_scrub_never_replaces_the_filesystem_root() -> None:
+    assert scrub("saved to /var/tmp", Path("/")) == "saved to /var/tmp"
 
 
 def test_scrub_redacts_config_and_identity_hex() -> None:
@@ -136,8 +157,8 @@ def test_recon_dump_names_all_survive_scrub() -> None:
 
 def test_profile_diagnostics_all_survive_scrub() -> None:
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        for token in (profile.fsbl_addr, profile.payload_addr):
+        model_spec = load_model_spec(key)
+        for token in (model_spec.fsbl_addr, model_spec.payload_addr):
             assert token in scrub(f"diagnostic {token}")
     for token in (*KNOWN_IMPL_CLASSES, "toc0hash", "toc1hash"):
         assert token in scrub(f"diagnostic {token}")
@@ -324,6 +345,38 @@ def test_logging_runner_masks_the_oem_dust_token(tmp_path: Path) -> None:
     assert inner.calls[0] == ("/x/dreame-fastboot", "oem", "dust", "626153c7")  # real argv intact
 
 
+def test_logging_runner_redirect_is_logged_and_checked(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    inner = RecordingRunner()
+    inner.redirect_responder = lambda argv, _out, _in: Result(argv, 2, "", "failed")
+    runner = LoggingRunner(inner, log)
+    with pytest.raises(RunError):
+        runner.run_redirect(["tool", "copy"], stdout_path=str(tmp_path / "out"))
+    log.close()
+    assert "$ tool copy" in log.path.read_text()
+
+
+def test_run_log_truncates_oversized_command_lines(tmp_path: Path) -> None:
+    log = _open(tmp_path, tmp_path / "home")
+    log.command(Result(("tool", "x" * 500), 0, "", ""))
+    log.close()
+    written = log.path.read_text()
+    assert "…(truncated)" in written
+    assert "x" * 450 not in written
+
+
+def test_opening_a_run_log_prunes_only_the_oldest_logs(tmp_path: Path) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for index in range(27):
+        path = logs / f"run-{index:02d}.log"
+        path.write_text(str(index))
+        path.touch()
+    log = _open(tmp_path, tmp_path / "home")
+    log.close()
+    assert len(list(logs.glob("run-*.log"))) == 26
+
+
 # --- LoggingConsole: mirrors every message into the log, scrubbed -----------------------------
 def test_logging_console_mirrors_the_new_output_kinds(tmp_path: Path) -> None:
     log = _open(tmp_path, tmp_path / "home")
@@ -363,6 +416,18 @@ def test_logging_console_logs_a_sensitive_question_but_never_its_answer(
     assert "?? Robot serial number?" in text
     assert "-> <not recorded>" in text
     assert "TESTSERIAL0001" not in text
+
+
+@pytest.mark.parametrize(("typed", "answer"), [("y", True), ("n", False)])
+def test_logging_console_records_boolean_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, typed: str, answer: bool,
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt="": typed)
+    log = _open(tmp_path, tmp_path / "home")
+    console = LoggingConsole(log)
+    assert console.confirm("Continue?") is answer
+    log.close()
+    assert f"-> {'yes' if answer else 'no'}" in log.path.read_text()
 
 
 def test_logging_console_never_writes_an_offered_default_to_the_log(
@@ -492,6 +557,20 @@ def test_buffering_console_forwards_to_the_inner_console(tmp_path: Path) -> None
     assert buf.confirm("ok?") is True
     assert ("say", "migrating") in inner.lines
     assert ("progress", "moving") in inner.lines  # progress forwarded to the inner console
+
+
+def test_buffering_console_forwards_asks_and_redacts_sensitive_answers_on_replay(
+    tmp_path: Path,
+) -> None:
+    inner = ScriptedConsole(asks=["secret"])
+    buffered = BufferingConsole(inner)
+    assert buffered.ask("Serial?", sensitive=True) == "secret"
+    log = _open(tmp_path, tmp_path / "home")
+    buffered.flush_into(log)
+    log.close()
+    text = log.path.read_text()
+    assert "?? Serial?" in text and "-> <not recorded>" in text
+    assert "secret" not in text
 
 
 def test_buffered_progress_without_a_timer_is_idempotent_and_records_no_elapsed() -> None:

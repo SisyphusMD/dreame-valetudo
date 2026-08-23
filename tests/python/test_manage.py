@@ -10,10 +10,11 @@ from conftest import CtxFactory
 
 from dreame_valetudo import manifest
 from dreame_valetudo.cli import select_robot
-from dreame_valetudo.console import Die
+from dreame_valetudo.console import Die, UserAbort
 from dreame_valetudo.installs import Install
 from dreame_valetudo.phases import manage
 from dreame_valetudo.phases.manage import clean, forget, rename, uninstall
+from dreame_valetudo.run import Result
 from dreame_valetudo.workspace import Robot
 
 
@@ -97,7 +98,7 @@ def test_rename_persists_a_legacy_directorys_inferred_model(make_ctx: CtxFactory
     assert renamed.state_get("model_key") == "d10s-pro"
     ctx.env["DREAME_ROBOT"] = "Kitchen"
     select_robot(ctx)
-    assert ctx.profile.key == "d10s-pro"
+    assert ctx.model_spec.key == "d10s-pro"
 
 
 def test_rename_prompts_for_the_new_name_when_only_old_is_given(make_ctx: CtxFactory) -> None:
@@ -130,6 +131,54 @@ def test_rename_non_interactive_needs_both_names(make_ctx: CtxFactory) -> None:
     (ctx.ws.robots_dir / "old").mkdir(parents=True)
     with pytest.raises(Die, match="usage"):
         rename(ctx, ["old"])
+
+
+def test_picker_refuses_absent_robots_noninteractive_use_and_invalid_choices(
+    make_ctx: CtxFactory,
+) -> None:
+    empty = make_ctx()
+    with pytest.raises(Die, match="No robots"):
+        manage._pick_robot(empty, "rename")
+
+    noninteractive = make_ctx(interactive=False)
+    (noninteractive.ws.robots_dir / "kitchen").mkdir(parents=True)
+    with pytest.raises(Die, match="stdin isn't a terminal"):
+        manage._pick_robot(noninteractive, "rename")
+
+    invalid = make_ctx(asks=["0"])
+    with pytest.raises(Die, match="Invalid choice"):
+        manage._pick_robot(invalid, "rename")
+
+
+def test_rename_refuses_a_name_with_no_filesystem_safe_characters(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    (ctx.ws.robots_dir / "old").mkdir(parents=True)
+
+    with pytest.raises(Die, match="no usable characters"):
+        rename(ctx, ["old", "---"])
+
+    assert (ctx.ws.robots_dir / "old").is_dir()
+
+
+def test_rename_treats_an_uncheckable_existing_target_as_a_collision(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    src = ctx.ws.robots_dir / "old"
+    dst = ctx.ws.robots_dir / "taken"
+    src.mkdir(parents=True)
+    dst.mkdir()
+    original = Path.samefile
+
+    def fail_samefile(path: Path, other: Path) -> bool:
+        if path == dst:
+            raise OSError("unreadable target")
+        return original(path, other)
+
+    monkeypatch.setattr(Path, "samefile", fail_samefile)
+    with pytest.raises(Die, match="already exists"):
+        rename(ctx, ["old", "taken"])
+    assert src.is_dir()
 
 
 def test_rename_brings_the_name_current_in_matching_backups(
@@ -203,6 +252,34 @@ def test_forget_resolves_a_robot_by_its_display_name(make_ctx: CtxFactory) -> No
     r.set_display_name("living room")  # folder slug 'living-room', display 'living room'
     forget(ctx, ["living room"])  # given the display name, not the slug
     assert not (ctx.ws.robots_dir / "living-room").exists()
+
+
+def test_display_name_lookup_skips_nonmatching_robots(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    Robot(ctx.ws.robots_dir / "a").set_display_name("upstairs")
+    target = Robot(ctx.ws.robots_dir / "b")
+    target.set_display_name("living room")
+    assert manage._resolve_robot(ctx, "living room") == target.work
+
+
+def test_rename_can_only_update_the_display_name_without_moving_the_folder(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.work.mkdir(parents=True)
+    rename(ctx, ["kitchen", "kitchen"])
+    assert robot.display_name() == "kitchen"
+
+
+def test_forget_names_the_recovery_dumps_that_confirmation_will_remove(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=[""])
+    recon = ctx.ws.robots_dir / "kitchen" / "recon"
+    recon.mkdir(parents=True)
+    (recon / "dustx100.bin").write_bytes(b"x" * 1024)
+
+    forget(ctx, ["kitchen"])
+
+    assert "1 recon recovery dump" in ctx.console.text()  # type: ignore[attr-defined]
+    assert (recon / "dustx100.bin").is_file()
 
 
 def test_clean_removes_only_the_cache(make_ctx: CtxFactory) -> None:
@@ -333,6 +410,48 @@ def test_clean_all_refuses_non_interactive(make_ctx: CtxFactory) -> None:
         clean(ctx, ["--all"])
 
 
+def test_clean_reports_when_there_is_nothing_to_remove(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    manage._remove_tree(ctx.ws.cache)
+    clean(ctx, [])
+    assert "Nothing to clean" in ctx.console.text()  # type: ignore[attr-defined]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_clean_all_removes_abandoned_staging_and_unlinks_cache_symlinks(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    external = tmp_path / "outside-cache"
+    external.mkdir()
+    keep = external / "keep"
+    keep.write_text("external")
+    ctx.ws.base.mkdir(parents=True, exist_ok=True)
+    manage._remove_tree(ctx.ws.cache)
+    ctx.ws.cache.symlink_to(external, target_is_directory=True)
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    abandoned = robot.work / "fw.new"
+    abandoned.mkdir(parents=True)
+    (abandoned / "partial.img").write_bytes(b"partial")
+
+    clean(ctx, ["--all"])
+
+    assert not ctx.ws.cache.exists()
+    assert keep.read_text() == "external"
+    assert not abandoned.exists()
+
+
+def test_clean_all_can_clear_an_image_marker_when_no_cache_or_firmware_remains(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(confirms=[True])
+    manage._remove_tree(ctx.ws.cache)
+    robot = Robot(ctx.ws.robots_dir / "kitchen")
+    robot.state_set("image", "stale")
+    clean(ctx, ["--all"])
+    assert not robot.state_has("image")
+
+
 def _one_install() -> list[Install]:
     return [Install("Homebrew", Path("/opt/homebrew/Cellar/dreame-valetudo"),
                     ["brew", "uninstall", "dreame-valetudo"])]
@@ -346,7 +465,10 @@ def test_uninstall_removes_nothing_without_a_yes(
     still green."""
     monkeypatch.setattr(manage, "find_installs", lambda _env: _one_install())
     ctx = make_ctx(confirms=[False])
-    with pytest.raises(Die):
+    # UserAbort, not a bare Die: declining is a decision and exits 0, which is what the CLI
+    # contract in CONTRIBUTING.md promises. `Die` alone would pass either way, since UserAbort
+    # subclasses it — and this path used to raise the exit-1 kind.
+    with pytest.raises(UserAbort):
         uninstall(ctx)
     assert ctx.runner.transcript() == []          # type: ignore[attr-defined]
 
@@ -373,3 +495,36 @@ def test_uninstall_never_touches_the_backups(
     assert keep.read_text() == "irreplaceable"
     assert not any("rm" in c or str(ctx.backups_dir) in c
                    for c in ctx.runner.transcript())   # type: ignore[attr-defined]
+
+
+def test_uninstall_reports_absent_and_manual_only_installs(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(manage, "find_installs", lambda _env: [])
+    uninstall(ctx)
+    assert "No installs" in ctx.console.text()  # type: ignore[attr-defined]
+
+    manual = Install("source checkout", Path("/src"), [], "delete the clone")
+    monkeypatch.setattr(manage, "find_installs", lambda _env: [manual])
+    uninstall(ctx)
+    assert "Nothing here can be removed automatically" in ctx.console.text()  # type: ignore[attr-defined]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_uninstall_warns_for_sudo_and_reports_each_failed_removal(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = Install("macOS .pkg", Path("/pkg"), ["sudo", "/pkg/uninstall.sh"])
+    monkeypatch.setattr(manage, "find_installs", lambda _env: [package])
+    ctx = make_ctx(
+        confirms=[True],
+        responder=lambda argv: Result(argv, 1, "", "permission denied"),
+    )
+
+    uninstall(ctx)
+
+    assert ctx.runner.transcript() == ["sudo /pkg/uninstall.sh"]  # type: ignore[attr-defined]
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "need root" in text
+    assert "Couldn't remove the macOS .pkg install" in text

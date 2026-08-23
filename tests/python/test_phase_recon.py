@@ -19,13 +19,13 @@ from dreame_valetudo.console import Die
 from dreame_valetudo.constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from dreame_valetudo.context import Context
 from dreame_valetudo.fel import wait_for_fel
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
     _verify_reported_model,
     read_identity_from_robot,
     recon,
 )
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
 from dreame_valetudo.run import Result
 from dreame_valetudo.session import hold_workspace_lock, running_run
@@ -141,7 +141,7 @@ def _staging(ctx: Context) -> Path:
 
 @pytest.mark.parametrize(
     "model",
-    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+    [key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"],
 )
 def test_each_fastboot_model_follows_the_official_recon_contract(
     make_ctx: CtxFactory, model: str,
@@ -150,7 +150,7 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
     expected_dram = "ddr3" if model in DDR3_MODEL_KEYS else "ddr4"
     expected_fsbl = f"fsbl_{expected_dram}.bin"
     stage_dist(ctx, dram=expected_dram)
-    assert ctx.profile.dram == expected_dram
+    assert ctx.model_spec.dram == expected_dram
     assert ctx.fsbl_name == expected_fsbl
     recon(ctx, recovery_backup=False)
     sunxi_ops = [
@@ -159,10 +159,10 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
         if "sunxi-fel" in call[0] and call[1] in {"write", "exe"}
     ]
     assert sunxi_ops == [
-        ("write", ctx.profile.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
-        ("exe", ctx.profile.fsbl_addr),
-        ("write", ctx.profile.payload_addr, str(ctx.ws.dist / "payload.bin")),
-        ("exe", ctx.profile.payload_addr),
+        ("write", ctx.model_spec.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
+        ("exe", ctx.model_spec.fsbl_addr),
+        ("write", ctx.model_spec.payload_addr, str(ctx.ws.dist / "payload.bin")),
+        ("exe", ctx.model_spec.payload_addr),
     ]
 
 
@@ -401,7 +401,7 @@ def test_recon_binds_its_completion_marker_to_the_model_and_the_robot(
     model and the robot recon actually read — root refuses to flash on anything weaker."""
     ctx = make_ctx(model="d10s-pro", responder=config_responder())
     stage_dist(ctx)
-    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")  # d10s-pro is a ddr3 profile
+    (ctx.ws.dist / "fsbl_ddr3.bin").write_text("f")  # d10s-pro is a ddr3 model_spec
 
     recon(ctx, recovery_backup=False)
 
@@ -1238,3 +1238,101 @@ def test_adoption_is_fully_recorded_before_the_optional_serial_prompt(
     assert seen["root-origin"] == ADOPTED_ROOT
     assert seen["rooted"] == ADOPTED_ROOT
     assert seen["valetudo"] == ADOPTED_ROOT
+
+
+def test_noninteractive_revision_sensitive_model_refuses_ambiguous_bootloader_codes(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat-h", interactive=False)
+    with pytest.raises(Die, match="ambiguous model identifiers"):
+        _verify_reported_model(ctx, {"model": "r2338 r2338h"})
+
+
+def test_interactive_ambiguous_bootloader_report_is_explicitly_unverified(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="l10s-pro-ultra-heat-h")
+
+    _verify_reported_model(ctx, {"model": "r2338 r2338h"})
+
+    assert "ambiguous model identifiers" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_saved_backup_state_recognizes_the_complete_sealed_slice_set(
+    make_ctx: CtxFactory,
+) -> None:
+    robot = make_ctx(robot_name="bench").need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    for name in RECOVERY_DUMP_NAMES:
+        (robot.recon_dir / f"{name}.bin").write_bytes(b"sealed")
+
+    assert recon_module._saved_backup_state(robot) == "obtained"
+
+
+def test_recovery_capture_publish_failure_is_reported_and_staging_is_removed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    monkeypatch.setattr(recon_module, "_capture_recovery_into", lambda *_args: True)
+    monkeypatch.setattr(recon_module, "_publish_recovery_capture", lambda *_args: False)
+
+    assert recon_module._pull_recovery_backup_unprotected(ctx, robot) is False
+    assert not (robot.recon_dir / RECOVERY_STAGING_DIR).exists()
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_auxiliary_identity_read_fetches_missing_stage1_and_degrades_cleanly(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    fetched: list[bool] = []
+    monkeypatch.setattr(recon_module, "_sunxi_ready", lambda _ctx: True)
+    monkeypatch.setattr(recon_module, "stage1_ready", lambda _ctx: False)
+    monkeypatch.setattr(recon_module, "fetch_stage1", lambda _ctx: fetched.append(True))
+    monkeypatch.setattr(
+        recon_module, "check_fastboot_client",
+        lambda _ctx: (_ for _ in ()).throw(Die("fastboot unavailable")),
+    )
+
+    assert read_identity_from_robot(ctx) == {}
+    assert fetched == [True]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_recovery_capture_staging_failure_preserves_existing_recon(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    existing = robot.recon_dir / "existing.bin"
+    existing.write_bytes(b"keep")
+    staging = robot.recon_dir / RECOVERY_STAGING_DIR
+    real_mkdir = Path.mkdir
+
+    def fail_staging(path: Path, *args: object, **kwargs: object) -> None:
+        if path == staging:
+            raise OSError("read-only storage")
+        real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_staging)
+    assert recon_module._pull_recovery_backup_unprotected(ctx, robot) is False
+    assert existing.read_bytes() == b"keep"
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_recovery_capture_turns_a_fastboot_exception_into_a_retryable_false_result(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    stage_dist(ctx)
+    monkeypatch.setattr(
+        ctx.fastboot, "fbt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(Die("USB lost")),
+    )
+    staging = tmp_path / "capture"
+    staging.mkdir()
+
+    assert recon_module._capture_recovery_into(ctx, staging) is False
+    assert not any(staging.iterdir())

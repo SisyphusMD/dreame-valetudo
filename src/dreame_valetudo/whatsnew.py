@@ -1,0 +1,152 @@
+"""On-upgrade "what's new": show the CHANGELOG entries added since the version last run, once.
+
+A dedicated ``.last_version`` marker under the workspace records the version that last ran — NOT the
+``.layout`` marker's ``tool_version``, which only updates on a layout bump and so would miss most
+upgrades. On launch, if the running version differs from the marker, print the CHANGELOG delta and
+re-stamp the marker; a fresh install (no marker) records the version silently. Entirely local (no
+network), non-blocking, and a no-op once the marker is current.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import re
+import sys
+from collections.abc import Mapping
+from pathlib import Path
+
+from . import __version__
+from .console import Console
+from .migrate import base_dir
+
+_HEADER = re.compile(r"^## \[([^\]]+)\]", re.MULTILINE)
+
+
+def _marker(env: Mapping[str, str]) -> Path:
+    return base_dir(env) / ".last_version"
+
+
+def _read_last_version(env: Mapping[str, str]) -> str | None:
+    with contextlib.suppress(OSError, ValueError):
+        v = _marker(env).read_text().strip()
+        return v or None
+    return None
+
+
+def _write_last_version(env: Mapping[str, str], version: str) -> None:
+    with contextlib.suppress(OSError):
+        base_dir(env).mkdir(parents=True, exist_ok=True)
+        _marker(env).write_text(version + "\n")
+
+
+def _changelog_text() -> str:
+    """The bundled CHANGELOG.md, wherever this build keeps it: a PyInstaller onefile (`sys._MEIPASS`,
+    where build-bundle.sh add-datas it under `dreame_valetudo/`), an installed wheel (inside the
+    package, force-included there), or the repo root when running from source. "" if none present."""
+    here = Path(__file__).resolve().parent
+    candidates = [here / "CHANGELOG.md", here.parent / "CHANGELOG.md"]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.insert(0, Path(meipass) / "dreame_valetudo" / "CHANGELOG.md")
+    for cand in candidates:
+        with contextlib.suppress(OSError):
+            return cand.read_text()
+    return ""
+
+
+def _sections(text: str) -> list[tuple[str | None, str]]:
+    """(version, section-text) pairs in file order; version is None for the ``[Unreleased]`` block."""
+    heads = list(_HEADER.finditer(text))
+    out: list[tuple[str | None, str]] = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        ver = m.group(1)
+        section = text[m.start() : end].strip()
+        out.append((None if ver.lower() == "unreleased" else ver, section))
+    return out
+
+
+def _has_body(section: str) -> bool:
+    return bool(section.partition("\n")[2].strip())
+
+
+def _is_prerelease(version: str) -> bool:
+    """A version carrying any non-numeric marker (e.g. `0.2.0-rc.1`) is a prerelease — a release
+    graduates `[Unreleased]` into a `[version]` heading, but a prerelease ships it un-graduated, so
+    that section is where a prerelease's notes still live."""
+    return bool(re.search(r"[^0-9.]", version.strip().lstrip("vV")))
+
+
+def changelog_delta(text: str, last: str, current: str) -> str:
+    """The changelog sections newer than ``last`` (the file is newest-first). ``[Unreleased]`` is
+    included only when ``current`` is a prerelease (that's where an rc's not-yet-graduated notes are);
+    a stable release reads them from its graduated ``[version]`` section instead. If ``last`` isn't a
+    known released version, fall back to just ``current``'s notes rather than dump the whole history."""
+    secs = _sections(text)
+    include_unreleased = _is_prerelease(current)
+    if last not in {v for v, _ in secs if v is not None}:
+        if include_unreleased:
+            body = next((body for v, body in secs if v is None), "")
+        else:
+            body = next((body for v, body in secs if v == current), "")
+        return body.strip() if _has_body(body) else ""
+    out: list[str] = []
+    for v, body in secs:
+        if v is None:  # [Unreleased]
+            if include_unreleased and _has_body(body):
+                out.append(body)
+            continue
+        if v == last:
+            break
+        if _has_body(body):
+            out.append(body)
+    return "\n\n".join(out).strip()
+
+
+# A user who skipped many releases gets the newest few sections, not an unbounded dump at launch.
+_MAX_SECTIONS = 3
+# …and a bound on the OUTPUT, because capping sections bounds nothing when one section is long: a
+# single un-graduated [Unreleased] has already run to 166 lines, which is not "what's new", it is a
+# wall of text between the user and the command they typed.
+_MAX_LINES = 40
+
+
+def _cap_delta(delta: str) -> tuple[str, int]:
+    """(the newest ``_MAX_SECTIONS`` sections of a delta, how many older ones were dropped)."""
+    secs = [(version, body) for version, body in _sections(delta) if _has_body(body)]
+    if len(secs) <= _MAX_SECTIONS:
+        return delta, 0
+    return "\n\n".join(body for _v, body in secs[:_MAX_SECTIONS]), len(secs) - _MAX_SECTIONS
+
+
+def _cap_lines(text: str) -> tuple[str, int]:
+    """(the first ``_MAX_LINES`` lines of ``text``, how many lines were dropped)."""
+    lines = text.splitlines()
+    if len(lines) <= _MAX_LINES:
+        return text, 0
+    return "\n".join(lines[:_MAX_LINES]), len(lines) - _MAX_LINES
+
+
+def show_whats_new(env: Mapping[str, str], console: Console) -> None:
+    """Print the CHANGELOG delta since the last-run version, then re-stamp the marker. No-op when the
+    marker is already current; silent on a fresh install (records the version only). Never raises."""
+    last = _read_last_version(env)
+    if last == __version__:
+        return
+    if last is not None:
+        delta = changelog_delta(_changelog_text(), last, __version__)
+        if delta:
+            shown, dropped = _cap_delta(delta)
+            shown, trimmed = _cap_lines(shown)
+            console.say(f"Updated to dreame-valetudo {__version__} (was {last}) — what's new:")
+            console.block(shown)
+            if dropped or trimmed:
+                more = []
+                if dropped:
+                    more.append(f"{dropped} older release(s)")
+                if trimmed:
+                    more.append(f"{trimmed} more line(s)")
+                console.detail(f"(+{' and '.join(more)} not shown — full history: "
+                               "https://github.com/SisyphusMD/dreame-valetudo/blob/main/"
+                               "CHANGELOG.md)")
+    _write_last_version(env, __version__)

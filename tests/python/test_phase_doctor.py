@@ -11,6 +11,7 @@ from conftest import CtxFactory
 from dreame_valetudo.console import Die
 from dreame_valetudo.constants import SUNXI_TOOLS_REF
 from dreame_valetudo.context import Context
+from dreame_valetudo.phases import doctor as doctor_module
 from dreame_valetudo.phases.doctor import check_fastboot_client, doctor
 from dreame_valetudo.run import Result
 
@@ -25,6 +26,37 @@ def test_doctor_reports_ready_when_sunxi_present(make_ctx: CtxFactory) -> None:
     doctor(ctx)
     assert any("Toolchain ready" in m for _k, m in ctx.console.lines)  # type: ignore[attr-defined]
     assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
+
+
+def test_packaged_sunxi_helper_is_ready_without_a_source_stamp(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = tmp_path / "sunxi-fel"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr("dreame_valetudo.context.find_helper", lambda *_args: helper)
+    ctx = make_ctx()
+
+    assert doctor_module._sunxi_ready(ctx) is True
+    assert ctx.sunxi_fel == helper
+
+
+def test_doctor_reports_a_failed_sunxi_build(make_ctx: CtxFactory) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return Result(argv, 0, SUNXI_TOOLS_REF + "\n", "")
+        if argv[:1] == ("make",) and argv[-1] == "sunxi-fel":
+            return Result(argv, 2, "", "compiler error")
+        return Result(argv, 0, "", "")
+
+    ctx = make_ctx(responder=responder)
+    _no_sunxi(ctx)
+
+    with pytest.raises(Die, match="sunxi-fel build failed"):
+        doctor(ctx)
+
+    assert not ctx.ws.sunxi_fel.exists()
+    assert ctx.runner.calls[-1] == ("make", "-C", str(ctx.ws.sunxi_dir), "sunxi-fel")  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(

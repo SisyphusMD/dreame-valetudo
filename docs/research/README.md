@@ -69,7 +69,7 @@ Everything short of possessing the vendor's private key was achieved.
 ## Artifacts
 
 - **`tools/`** — the reproduction tooling, as source (sanitized). This is the concrete "how", and it
-  leans on sister tooling already shipped in this repository (`dreame_valetudo/`,
+  leans on sister tooling already shipped in this repository (`src/dreame_valetudo/`,
   `libexec/fastboot-libusb.py`).
 - **`artifacts/`** — text only: the annotated UART capture, re-sign provenance records, and the
   reproducible toc0 byte-diff.

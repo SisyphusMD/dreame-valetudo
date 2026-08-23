@@ -2,10 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- The bundled fastboot client (PyInstaller onefile) unpacks and executes an interpreter at
-       runtime, so under the hardened runtime (required for notarization) it needs these
-       exceptions. disable-library-validation also lets sunxi-fel + the client load the bundled
-       libusb dylib. USB access for a non-sandboxed Developer ID CLI needs no sandbox entitlement. -->
+  <!-- A PyInstaller bootloader unpacks and executes an interpreter at runtime, so under the
+       hardened runtime (required for notarization) it needs the JIT and unsigned-memory exceptions.
+       disable-library-validation additionally lets a bundled helper load dylibs shipped beside it
+       rather than only system ones.
+
+       Device access needs no sandbox entitlement here: for a non-sandboxed Developer ID
+       command-line tool, Bluetooth and USB are governed by TCC, and macOS prompts for the
+       *terminal's* access on first use. -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>

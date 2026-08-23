@@ -9,10 +9,11 @@ import pytest
 from conftest import VALETUDO_OLDER, VALETUDO_TARGET, CtxFactory, ScriptedConsole
 
 from dreame_valetudo import __version__, cli
-from dreame_valetudo.cli import main
-from dreame_valetudo.console import Die, UserAbort
+from dreame_valetudo.cli import _KNOWN_COMMANDS, main, usage
+from dreame_valetudo.console import Die, SafetyStop, UserAbort
 from dreame_valetudo.constants import ADOPTED_ROOT, SUNXI_TOOLS_REF
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
+from dreame_valetudo.installs import Install
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.run import RecordingRunner, Result, SubprocessRunner
 from dreame_valetudo.workspace import Robot
 
@@ -35,6 +36,87 @@ def _manual_robot(root: Path, name: str, model: str, config: str = "a" * 32) -> 
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {config}\n")
     return robot
+
+
+def test_dispatch_routes_management_and_single_phase_commands_with_exact_arguments(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    called: list[tuple[object, ...]] = []
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: None)
+    monkeypatch.setattr(cli, "uninstall", lambda _ctx: called.append(("uninstall",)))
+    monkeypatch.setattr(cli, "install_udev", lambda _ctx: 7)
+    monkeypatch.setattr(cli, "rename", lambda _ctx, rest: called.append(("rename", tuple(rest))))
+    monkeypatch.setattr(cli, "forget", lambda _ctx, rest: called.append(("forget", tuple(rest))))
+    monkeypatch.setattr(cli, "clean", lambda _ctx, rest: called.append(("clean", tuple(rest))))
+    monkeypatch.setattr(cli, "doctor", lambda _ctx: called.append(("doctor",)))
+    monkeypatch.setattr(
+        cli, "recon",
+        lambda _ctx, **kwargs: called.append(("recon", kwargs)),
+    )
+    monkeypatch.setattr(cli, "image", lambda _ctx, **kwargs: called.append(("image", kwargs)))
+    monkeypatch.setattr(cli, "root", lambda _ctx, **kwargs: called.append(("root", kwargs)))
+    monkeypatch.setattr(cli, "valetudo", lambda _ctx: called.append(("valetudo",)))
+    monkeypatch.setattr(cli, "push", lambda _ctx, key=None: called.append(("push", key)) or True)
+    monkeypatch.setattr(cli, "sshkey", lambda _ctx: called.append(("sshkey",)))
+    monkeypatch.setattr(cli, "verify_form", lambda _ctx: called.append(("verify-form",)) or False)
+
+    assert cli._dispatch("uninstall", [], ctx) == 0
+    assert cli._dispatch("install-udev", [], ctx) == 7
+    assert cli._dispatch("rename", ["old", "new"], ctx) == 0
+    assert cli._dispatch("forget", ["old"], ctx) == 0
+    assert cli._dispatch("clean", ["--all"], ctx) == 0
+    assert cli._dispatch("doctor", [], ctx) == 0
+    assert cli._dispatch("recon", ["--force", "--no-recovery-backup"], ctx) == 0
+    assert cli._dispatch("image", ["--force"], ctx) == 0
+    assert cli._dispatch("root", ["--force"], ctx) == 0
+    assert cli._dispatch("valetudo", [], ctx) == 0
+    assert cli._dispatch("push", ["key"], ctx) == 0
+    assert cli._dispatch("sshkey", [], ctx) == 0
+    assert cli._dispatch("verify-form", [], ctx) == 1
+    assert ("recon", {"force": True, "recovery_backup": False, "offer_update": True}) in called
+    assert ("push", "key") in called
+
+
+def test_dispatch_fails_visibly_if_a_robot_command_has_no_handler(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: None)
+    monkeypatch.setattr(cli, "_ROBOT_COMMANDS", {*cli._ROBOT_COMMANDS, "orphan"})
+    assert cli._dispatch("orphan", [], ctx) == 1
+    assert "Unknown command: orphan" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_usage_falls_back_to_full_help_for_a_nonexistent_filter(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    cli.usage(ctx.console, only="not-a-command")
+    assert "Supported models" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_multiple_install_warning_lists_every_detected_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installs = [
+        Install("Homebrew", Path("/brew"), ["brew", "uninstall", "dreame-valetudo"]),
+        Install("macOS .pkg", Path("/pkg"), ["sudo", "uninstall"]),
+    ]
+    monkeypatch.setattr(cli, "find_installs", lambda _env: installs)
+    console = ScriptedConsole()
+    cli._warn_on_multiple_installs(console, {})
+    text = console.text()
+    assert "2 installs" in text and "Homebrew: /brew" in text and "macOS .pkg: /pkg" in text
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 3600.0), ("30.5", 30.5), ("-2", 0.0), ("invalid", 3600.0)],
+)
+def test_idle_timeout_environment_is_bounded_and_invalid_values_use_the_default(
+    raw: str | None, expected: float,
+) -> None:
+    env = {} if raw is None else {"DREAME_IDLE_TIMEOUT": raw}
+    assert cli._idle_seconds(env) == expected
 
 
 def test_main_version() -> None:
@@ -200,7 +282,7 @@ def test_saved_robot_model_is_loaded_before_campaign_binding_check(
     monkeypatch.setattr(cli, "model_hazard_check", lambda _ctx: None)
     monkeypatch.setattr(
         cli, "bench",
-        lambda ctx, _rest, *, auto_fn: selected.append(ctx.profile.key) or 0,
+        lambda ctx, _rest, *, auto_fn: selected.append(ctx.model_spec.key) or 0,
     )
 
     assert main(
@@ -391,7 +473,10 @@ def test_destructive_subcommand_help_is_workspace_free_and_never_dispatches(
         env={"HOME": str(home), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1"},
         console=con, runner=SubprocessRunner(),
     ) == 0
-    assert _has(con, "Phase 2 DESTRUCTIVE")
+    # Each command's own line, now that --help is scoped to the command asked about: root says
+    # "Phase 2 DESTRUCTIVE", restore says "DESTRUCTIVE — return this robot…". The invariant under
+    # test is that help for a destructive verb still says so, without a workspace or a dispatch.
+    assert _has(con, "DESTRUCTIVE")
     assert called == []
     assert not (home / "dreame-valetudo").exists()
 
@@ -590,9 +675,9 @@ def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("model", "secure_boot"),
     [
-        (profile.key, profile.secure_boot == "yes")
-        for profile in (load_profile(key) for key in SUPPORTED_MODELS)
-        if profile.method == "uart"
+        (model_spec.key, model_spec.secure_boot == "yes")
+        for model_spec in (load_model_spec(key) for key in SUPPORTED_MODELS)
+        if model_spec.method == "uart"
     ],
 )
 def test_uart_walkthrough_pins_the_complete_upstream_contract(
@@ -887,6 +972,22 @@ def test_deliberate_stop_is_successful_and_does_not_invite_an_issue_report(
     assert "report the problem" not in log_text
 
 
+@pytest.mark.parametrize(
+    ("stopped", "expected"),
+    [(SafetyStop("SAFETY STOP: refused"), 2), (Die("ordinary failure"), 1),
+     (UserAbort("Stopped safely."), 0)],
+)
+def test_main_maps_control_flow_exceptions_to_distinct_exit_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: Die, expected: int,
+) -> None:
+    monkeypatch.setattr(cli, "_dispatch", lambda *_args: (_ for _ in ()).throw(stopped))
+
+    assert main(
+        ["status"], env={"HOME": str(tmp_path)}, console=ScriptedConsole(),
+        runner=RecordingRunner(),
+    ) == expected
+
+
 def test_main_migrates_before_opening_the_run_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1026,3 +1127,298 @@ def test_hardware_bench_run_retains_the_linux_usb_guard(
         console=ScriptedConsole(), runner=SubprocessRunner(),
     ) == 0
     assert checked == ["bench"]
+
+
+def test_command_help_answers_about_that_command_only(tmp_path: Path) -> None:
+    """`<command> --help` printed the entire runbook — every model and every verb."""
+    home = tmp_path / "home"
+    home.mkdir()
+    con = ScriptedConsole()
+
+    assert main(["status", "--help"], env={"HOME": str(home)}, console=con) == 0
+    assert _has(con, "dreame-valetudo status")
+    assert not _has(con, "dreame-valetudo root")
+
+
+def test_bare_help_still_lists_everything(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    con = ScriptedConsole()
+
+    assert main(["--help"], env={"HOME": str(home)}, console=con) == 0
+    assert _has(con, "dreame-valetudo status")
+    assert _has(con, "dreame-valetudo root")
+
+
+def test_dispatch_rejects_an_unknown_command_before_robot_selection(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    selected: list[bool] = []
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: selected.append(True))
+
+    assert cli._dispatch("typo", [], ctx) == 1
+
+    assert selected == []
+    assert "Unknown command: typo" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_interactive_pause_consumes_one_acknowledgement(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(asks=["ack"])
+    cli._pause(ctx)
+    assert ctx.console._asks == []  # type: ignore[attr-defined]
+
+
+def test_model_command_keeps_a_staged_image_when_the_selection_is_unchanged(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("image", "verified")
+    monkeypatch.setattr(cli, "select_robot", lambda _ctx: None)
+    monkeypatch.setattr(cli, "select_model", lambda _ctx, **_kwargs: True)
+
+    assert cli._dispatch("model", [], ctx) == 0
+
+    assert robot.state_get("image") == "verified"
+    assert "disarmed" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_auto_reports_workspace_failure_while_restoring_adoption_markers(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("root-origin", ADOPTED_ROOT)
+    real_state_set = Robot.state_set
+
+    def fail_root_marker(self: Robot, name: str, value: str = "done") -> None:
+        if self.work == robot.work and name == "rooted":
+            raise OSError("disk full")
+        real_state_set(self, name, value)
+
+    monkeypatch.setattr(Robot, "state_set", fail_root_marker)
+    with pytest.raises(Die, match=r"could not be restored.*disk full"):
+        cli.auto(ctx, [])
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_auto_stops_when_the_offered_adoption_backup_does_not_complete(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[True])
+    robot = ctx.need_robot()
+    robot.state_set("recon", "backup=obtained")
+    robot.state_set("root-origin", ADOPTED_ROOT)
+    robot.state_set("rooted", ADOPTED_ROOT)
+    robot.state_set("valetudo", ADOPTED_ROOT)
+    monkeypatch.setattr(cli, "backup", lambda _ctx: False)
+
+    cli.auto(ctx, [])
+
+    assert "All phases complete" not in ctx.console.text()  # type: ignore[attr-defined]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_discard_helpers_preserve_any_robot_with_unexpected_state(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="draft")
+    robot = ctx.need_robot()
+    robot.state_set("name", "Draft")
+    robot.state_set("unexpected", "evidence")
+
+    cli._discard_uncommitted_robot(ctx, robot.work)
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+
+    assert robot.work.is_dir()
+    assert robot.state_get("unexpected") == "evidence"
+
+
+def test_discard_bench_robot_clears_the_matching_context_binding(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="draft")
+    robot = ctx.need_robot()
+    robot.state_set("name", "Draft")
+    robot.state_set("model_key", ctx.model_spec.key)
+
+    cli._discard_uncommitted_bench_robot(ctx, robot.work)
+
+    assert ctx.robot is None
+    assert ctx.pending_name is None
+    assert not robot.work.exists()
+
+
+def test_rename_argument_validation_accepts_both_optional_names() -> None:
+    cli._validate_command_args("rename", ["old", "new"])
+
+
+def test_discarding_no_bench_robot_is_a_noop(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    cli._discard_uncommitted_bench_robot(ctx, None)
+    assert ctx.robot is None
+
+
+def test_auto_runs_the_fresh_fastboot_chain_and_falls_back_to_valetudo_guidance(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "doctor", lambda _ctx: calls.append("doctor"))
+    monkeypatch.setattr(cli, "fetch", lambda _ctx: calls.append("fetch"))
+    monkeypatch.setattr(cli, "recon", lambda _ctx, **_kwargs: calls.append("recon"))
+    monkeypatch.setattr(cli, "image", lambda _ctx: calls.append("image"))
+
+    def rooted(inner: object) -> None:
+        calls.append("root")
+        inner.need_robot().state_set("rooted")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli, "root", rooted)
+    monkeypatch.setattr(cli, "push", lambda _ctx: calls.append("push") or False)
+    monkeypatch.setattr(cli, "valetudo", lambda _ctx: calls.append("valetudo"))
+
+    cli.auto(ctx, [])
+
+    assert calls == ["doctor", "fetch", "recon", "image", "root", "push", "valetudo"]
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_tmux_session_arms_idle_timeout_only_while_no_client_is_attached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    armed: list[tuple[float, object]] = []
+    monkeypatch.setattr(cli, "working_tmux", lambda _env: "/fake/tmux")
+    monkeypatch.setattr(cli, "idle_timeout", lambda seconds, watching: armed.append((seconds, watching)))
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+
+    assert main(
+        ["version"], env={"HOME": str(tmp_path), cli.IN_SESSION: "1", "DREAME_IDLE_TIMEOUT": "12"},
+        console=ScriptedConsole(), runner=SubprocessRunner(),
+    ) == 0
+    assert len(armed) == 1 and armed[0][0] == 12
+    assert callable(armed[0][1])
+
+
+def test_in_session_followup_carries_the_robot_and_saved_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = tmp_path / "work"
+    key_file = base / "robots" / "bench" / "state" / "model_key"
+    key_file.parent.mkdir(parents=True)
+    key_file.write_text("d10s-plus\n")
+    seen_envs: list[dict[str, str]] = []
+
+    def run_once(
+        _argv: list[str] | None = None, *, env: object = None,
+        console: object = None, runner: object = None,
+    ) -> tuple[int, None]:
+        seen_envs.append(dict(env))  # type: ignore[arg-type]
+        return 0, None
+
+    monkeypatch.setattr(cli, "_run", run_once)
+    monkeypatch.setattr(cli, "running_run", lambda _lock: {
+        "robot": "Bench", "robot_dir": "bench", "step": "complete",
+    })
+    monkeypatch.setattr(cli, "release_workspace_lock", lambda: None)
+    monkeypatch.setattr(cli, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(cli.sys, "stdout", type("Tty", (), {"isatty": lambda self: True})())
+    con = ScriptedConsole(confirms=[True, False])
+    env = {"DREAME_WORK": str(base), cli.IN_SESSION: "1"}
+
+    assert main(["status"], env=env, console=con, runner=RecordingRunner()) == 0
+
+    assert len(seen_envs) == 2
+    assert seen_envs[1]["DREAME_ROBOT"] == "bench"
+    assert seen_envs[1]["DREAME_MODEL"] == "d10s-plus"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [(OSError("storage failed"), 1), (KeyboardInterrupt(), 130)],
+)
+def test_production_failures_finish_the_run_log_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException, expected: int,
+) -> None:
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "_dispatch", lambda *_args: (_ for _ in ()).throw(failure))
+    env = {
+        "HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1", "DREAME_NO_UDEV_CHECK": "1",
+    }
+
+    assert main(["status"], env=env, console=ScriptedConsole(), runner=SubprocessRunner()) == expected
+
+    log = next((tmp_path / "dreame-valetudo" / "work" / "logs").glob("run-*.log"))
+    assert f"# exit {expected}" in log.read_text()
+
+
+def test_udev_refusal_finishes_an_open_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "guard_blocks", lambda *_args, **_kwargs: True)
+    env = {
+        "HOME": str(tmp_path), "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1",
+    }
+
+    assert main(["recon"], env=env, console=ScriptedConsole(), runner=SubprocessRunner()) == 1
+
+    log = next((tmp_path / "dreame-valetudo" / "work" / "logs").glob("run-*.log"))
+    assert "# exit 1" in log.read_text()
+
+
+def test_bench_log_protects_every_regular_robot_name_and_ignores_other_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work = tmp_path / "work"
+    named = Robot(work / "robots" / "named")
+    named.set_display_name("Kitchen Robot")
+    (work / "robots" / "plain").mkdir(parents=True)
+    (work / "robots" / "file").write_text("not a robot")
+    (work / "robots" / "linked").symlink_to(work / "robots" / "plain")
+    _stub_production_probes(monkeypatch)
+    monkeypatch.setattr(cli, "_reexec_under_tmux", lambda *_args: None)
+    monkeypatch.setattr(cli, "validate_bench_args", lambda *_args: None)
+    monkeypatch.setattr(cli, "bench", lambda *_args, **_kwargs: 0)
+    env = {
+        "HOME": str(tmp_path), "DREAME_WORK": str(work), "DREAME_ROBOT": "named",
+        "DREAME_NO_TMUX": "1", "DREAME_NO_UPDATE_CHECK": "1",
+        "DREAME_NO_DECRYPT": "1", "DREAME_NO_UDEV_CHECK": "1",
+    }
+
+    assert main(
+        ["bench", "report", "--campaign", "rc"], env=env,
+        console=ScriptedConsole(), runner=SubprocessRunner(),
+    ) == 0
+
+    assert any((work / "logs").glob("run-*.log"))
+
+
+def test_scoped_help_matches_the_whole_command_token() -> None:
+    """`verify-form --help` also matched the `verify-forms` line, so the scoped help answered with
+    a command the user did not ask about."""
+    console = ScriptedConsole()
+    usage(console, only="verify-form")
+    text = "\n".join(message for _, message in console.lines)
+    assert "verify-forms" not in text
+    assert "verify-form" in text
+
+
+def test_every_known_command_has_a_scoped_help_entry() -> None:
+    """Scoped help falls back to the whole runbook when a command has no line of its own, which
+    silently undoes the scoping for exactly the commands nobody remembered to document."""
+    missing = []
+    for command in sorted(_KNOWN_COMMANDS):
+        if command.startswith("-"):
+            continue
+        console = ScriptedConsole()
+        usage(console, only=command)
+        text = "\n".join(message for _, message in console.lines)
+        if "Env overrides:" in text:
+            missing.append(command)
+    assert missing == [], f"no scoped help line for: {missing}"

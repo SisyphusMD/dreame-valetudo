@@ -14,10 +14,10 @@ class DreameValetudo < Formula
 
   desc "Root supported Dreame robot vacuums and install Valetudo"
   homepage "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
-  url "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/vREPLACE_VERSION/dreame-valetudo-REPLACE_VERSION.tar.gz"
-  mirror "https://github.com/SisyphusMD/dreame-valetudo/releases/download/vREPLACE_VERSION/dreame-valetudo-REPLACE_VERSION.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-REPLACE_VERSION.tar.gz"
   sha256 "REPLACE_TARBALL_SHA256"
-  license "AGPL-3.0-or-later"
+  license "GPL-3.0-or-later"
+REPLACE_BOTTLE_BLOCK
 
   # matches the interpreter the .pkg/.deb bundles freeze. No Renovate manager covers this formula,
   # so packaging/refresh-pins.sh rewrites it from BUNDLE_PYTHON_VERSION as a postUpgradeTask.
@@ -34,16 +34,51 @@ class DreameValetudo < Formula
   # transport that resolves pyusb from PyPI is therefore unavailable exactly where it is needed.
   # No Renovate manager covers this formula; packaging/refresh-pins.sh rewrites it from
   # PYUSB_VERSION alongside the python@ dependency.
+  # sunxi-fel, built here so the BOTTLE carries it. Before this, the first RUN cloned and compiled
+  # sunxi-tools — needing a compiler and a network at exactly the moment the host is joined to the
+  # robot's own Wi-Fi AP, which has no internet. It is also what the .deb/.rpm/.pkg have always
+  # shipped prebuilt, so this makes the brew channel consistent with the others.
+  #
+  # Pinned by COMMIT rather than a tarball checksum: the commit is itself the content hash, so
+  # packaging/refresh-pins.sh keeps this in step with SUNXI_TOOLS_REF in constants.py with one
+  # substitution and no second digest that could drift out of sync with it.
+  resource "sunxi-tools" do
+    url "https://github.com/linux-sunxi/sunxi-tools.git",
+        revision: "d7bbd172a5da601a08f94479de308c6fb714a19a"
+  end
+
   resource "pyusb" do
     url "https://files.pythonhosted.org/packages/source/p/pyusb/pyusb-1.3.1.tar.gz"
     sha256 "3af070b607467c1c164f49d5b0caabe8ac78dbed9298d703a8dbf9df4052d17e"
   end
 
   def install
-    # Install the package (with its bundled libexec data — the fastboot client + form baseline)
-    # into an isolated venv and link the `dreame-valetudo` entry point. pyusb rides along in that
-    # venv so the fastboot client works with no network; the package itself stays stdlib-only.
-    virtualenv_install_with_resources
+    # NOT virtualenv_install_with_resources: that pip-installs every resource, and sunxi-tools is
+    # a C program. pyusb still rides along in the venv so the fastboot client works with no
+    # network; the package itself stays stdlib-only.
+    venv = virtualenv_create(libexec/"venv", "python3.14")
+    venv.pip_install resources.reject { |r| r.name == "sunxi-tools" }
+    venv.pip_install buildpath
+
+    resource("sunxi-tools").stage do
+      # Pre-generate version.h so make skips its own version.h target. That target runs
+      # ./autoversion.sh, which has no shebang; invoking it through an explicit `sh` reads the
+      # script rather than exec-ing it. Without a .git directory it falls back to the tagged
+      # version, which is the right answer for a pinned commit anyway.
+      File.write("version.h", Utils.safe_popen_read("sh", "./autoversion.sh"))
+      system "make", "sunxi-fel"
+      (libexec/"tools").install "sunxi-fel"
+    end
+
+    # find_helper() consults DREAME_LIBEXEC first, which is how the tool reaches a helper that is
+    # not sitting beside the package. resolve_libexec() still falls through to the wheel's own
+    # libexec for fastboot-libusb.py, which is not in here — the two lookups are separate on
+    # purpose, so one native binary does not have to live next to the Python payload.
+    # (bin/"name"), not bin: write_env_script writes the script AT the pathname it is called
+    # on, so `bin.write_env_script` replaces the bin DIRECTORY with a file — after which
+    # every `bin/dreame-valetudo` is ENOTDIR and no install works at all.
+    (bin/"dreame-valetudo").write_env_script libexec/"venv/bin/dreame-valetudo",
+                                             DREAME_LIBEXEC: libexec/"tools"
   end
 
   def caveats
@@ -51,9 +86,9 @@ class DreameValetudo < Formula
       dreame-valetudo roots robot vacuums. Read the risks first:
         #{homepage}
 
-      Just run `dreame-valetudo` (no arguments). On the first run it builds sunxi-fel from source
-      (needs a compiler + network, one time) and fetches the pinned Valetudo binary. It talks to
-      the robot over the robot's own Wi-Fi AP, not your LAN.
+      Just run `dreame-valetudo` (no arguments). sunxi-fel is already built and bundled, so the
+      only thing the first run fetches is the pinned Valetudo binary. It talks to the robot over
+      the robot's own Wi-Fi AP, not your LAN.
 
       Your workspace lives under ~/dreame-valetudo/ (work/ + backups/). After `brew upgrade` the
       first run migrates it automatically, or run `dreame-valetudo migrate`. Uninstalling never

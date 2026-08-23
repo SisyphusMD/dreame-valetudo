@@ -22,6 +22,7 @@ from dreame_valetudo.constants import (
     STAGED_IMAGE_MANIFEST,
 )
 from dreame_valetudo.context import Context
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import root as root_module
 from dreame_valetudo.phases.root import (
     _FEL_IMAGE_MIN_BYTES,
@@ -29,7 +30,6 @@ from dreame_valetudo.phases.root import (
     _mask_interrupts,
     root,
 )
-from dreame_valetudo.profiles import SUPPORTED_MODELS, load_profile
 from dreame_valetudo.recovery import begin_recovery_refresh
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
@@ -71,9 +71,9 @@ def _stage_image(ctx: Context, dust: str = "626153c7") -> None:
         for name in FEL_IMAGE_FILES
     }
     (fw / STAGED_IMAGE_MANIFEST).write_text(
-        json.dumps({"model_key": ctx.profile.key, "files": digests}) + "\n"
+        json.dumps({"model_key": ctx.model_spec.key, "files": digests}) + "\n"
     )
-    robot.state_set("image", f"model={ctx.profile.key} staged")
+    robot.state_set("image", f"model={ctx.model_spec.key} staged")
 
 
 def _write_recon(ctx: Context, cfg: str = CFG) -> None:
@@ -83,7 +83,7 @@ def _write_recon(ctx: Context, cfg: str = CFG) -> None:
     with zipfile.ZipFile(rd / RECOVERY_BACKUP_ZIP, "w") as archive:
         for name in ("dustx100.bin", "dustx101.bin", "dustx102.bin"):
             archive.writestr(name, b"backup")
-    ctx.need_robot().state_set("recon", f"model={ctx.profile.key} backup=obtained")
+    ctx.need_robot().state_set("recon", f"model={ctx.model_spec.key} backup=obtained")
 
 
 def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
@@ -99,18 +99,18 @@ def _flash_ops(ctx: Context) -> list[tuple[str, ...]]:
 
 @pytest.mark.parametrize(
     "model",
-    [key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"],
+    [key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"],
 )
 def test_each_fastboot_model_follows_the_official_root_contract(
     make_ctx: CtxFactory, model: str,
 ) -> None:
-    profile = load_profile(model)
+    model_spec = load_model_spec(model)
     confirmations = [True, True] if (
         model.startswith("l10s-pro-ultra-heat") or model == "l20-ultra"
     ) else [True]
     ctx = make_ctx(
         model=model,
-        robot_name=f"{profile.model_code}-{CFG[:12]}",
+        robot_name=f"{model_spec.model_code}-{CFG[:12]}",
         responder=config_responder(),
         confirms=confirmations,
     )
@@ -395,7 +395,7 @@ def test_root_refuses_identity_residue_without_a_completed_recon(make_ctx: CtxFa
     robot = ctx.need_robot()
     robot.recon_dir.mkdir(parents=True, exist_ok=True)
     (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
-    robot.state_set("model_key", ctx.profile.key)
+    robot.state_set("model_key", ctx.model_spec.key)
 
     with pytest.raises(Die, match="no completed reconnaissance record"):
         root(ctx)
@@ -840,3 +840,96 @@ def test_root_skips_when_already_rooted(make_ctx: CtxFactory) -> None:
     robot.state_set("rooted")
     root(ctx)  # no --force
     assert ctx.runner.calls == []
+
+
+def test_flash_window_tolerates_signal_install_and_restore_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fail(_sig: signal.Signals, _handler: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise OSError("signal unavailable")
+
+    monkeypatch.setattr(root_module.signal, "signal", fail)
+    with _mask_interrupts():
+        pass
+    assert calls == len(_FLASH_WINDOW_SIGNALS)
+
+
+def test_flash_window_finishes_even_when_original_signal_handlers_cannot_be_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: list[signal.Signals] = []
+
+    def fail_restore(sig: signal.Signals, handler: object) -> object:
+        if handler is signal.SIG_IGN:
+            installed.append(sig)
+            return signal.SIG_DFL
+        raise OSError("handler table unavailable")
+
+    monkeypatch.setattr(root_module.signal, "signal", fail_restore)
+
+    with _mask_interrupts():
+        assert installed == list(_FLASH_WINDOW_SIGNALS)
+
+
+def test_staged_integrity_refuses_a_manifest_for_another_model_without_commands(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.state_set("image", f"model={ctx.model_spec.key}")
+    robot.fw_dir.mkdir(parents=True)
+    (robot.fw_dir / STAGED_IMAGE_MANIFEST).write_text(
+        json.dumps({"model_key": "d10s-plus", "files": {}})
+    )
+
+    with pytest.raises(Die, match="belongs to another model"):
+        root_module._check_staged_integrity(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_staged_integrity_refuses_wrong_model_marker_and_missing_manifest(
+    make_ctx: CtxFactory,
+) -> None:
+    wrong = make_ctx(robot_name="bench")
+    wrong.need_robot().state_set("image", "model=d10s-plus")
+    with pytest.raises(Die, match="not recorded for the currently selected model"):
+        root_module._check_staged_integrity(wrong)
+
+    missing = make_ctx(robot_name="bench")
+    missing.need_robot().state_set("image", f"model={missing.model_spec.key}")
+    with pytest.raises(Die, match="no readable integrity record"):
+        root_module._check_staged_integrity(missing)
+
+
+def test_root_refuses_missing_recorded_config_before_provisioning(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("recon", f"backup=not-requested model={ctx.model_spec.key}")
+
+    with pytest.raises(Die, match="no recorded config value"):
+        root(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_root_reports_every_missing_image_when_image_phase_returns_without_staging(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    robot.state_set("recon", f"backup=not-requested model={ctx.model_spec.key}")
+    monkeypatch.setattr(root_module, "_sunxi_ready", lambda _ctx: True)
+    monkeypatch.setattr(root_module, "image", lambda _ctx: None)
+
+    with pytest.raises(Die, match=r"Run 'image'.*missing"):
+        root(ctx)
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]

@@ -31,10 +31,17 @@ jobs:
           # This is the one command in this job not gated to trusted refs (see the file header) — it
           # must stay text this repo's own workflow defines, never something read back off a fork's
           # checkout and executed directly.
+          # DEFAULT severity, not --severity=warning. SC1091 (a sourced file shellcheck cannot
+          # follow) is info-level, and the vendored release helpers source project.env and
+          # release-common.sh — annotating those is how a reader knows the source is deliberate.
+          # The sibling runs at the same level; a looser one here would go green on a defect
+          # that reddens the other repo.
           # renovate: datasource=docker depName=koalaman/shellcheck
           SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
           cid=$(docker create -w /work "$SHELLCHECK" \
-            --severity=warning packaging/*.sh tests/integration/*.sh docs/research/tools/*.sh)
+            $(git ls-files '*.sh' | tr '\n' ' '))
+          # Every tracked *.sh, not three globbed directories: a shell script added
+          # anywhere else used to go unchecked because nobody widened the list.
           docker cp . "$cid":/work
           check_rc=0
           docker start -a "$cid" || check_rc=$?
@@ -47,7 +54,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_1
+        continue-on-error: true
+        with:
+          python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_1.outcome != 'success'
         with:
           python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
       - name: lint + typecheck + test
@@ -62,13 +81,49 @@ jobs:
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
-          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST"
-          ruff check dreame_valetudo libexec tests/python packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          # `-e .` is not optional under the src/ layout: the package is no longer
+          # importable from the working directory, which is the whole point — a module
+          # missing from the built wheel can no longer pass the tests from the checkout.
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
+          # Every tracked *.py rather than a hand-maintained list: a new shipped file used to
+          # escape lint simply because nobody remembered to add it here. docs/research/tools is
+          # excluded deliberately — it is reproduction scratch for the self-root write-up, held
+          # to compileall below rather than to the shipped code's rule set.
+          ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/' | tr '\n' ' ')
           mypy
           python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
           pytest -q tests/python
+
+      - name: Coverage does not regress
+        # A measured non-regression floor, not an aspirational number: the suite measures above 99%,
+        # rounded down to 99 so ordinary reporting precision cannot make the gate unstable.
+        # `run.py` (the Runner seam every external command funnels through) is held at 100
+        # separately, because averaging it into the total would hide a regression there.
+        run: |
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          # The Runner seam every external command funnels through, held at 100 separately so a
+          # regression there cannot hide inside the repository average.
+          coverage report --include='*/run.py' --fail-under=100
+
+      - name: Shared packaging helpers match project-standard
+        # Change a shared helper in project-standard and re-vendor both projects; editing the copy
+        # here is how these two drifted apart in the first place.
+        run: python3 packaging/check-standard-sync.py
+
+      - name: Cited external sources still resolve
+        # The profile table came verbatim from Valetudo's supported-robots page; the FEL/fastboot
+        # sequence came from the gen3 brief. A rotted URL leaves those claims with no way back to
+        # their evidence. Ported from whiskerless.
+        run: bash packaging/check-external-links.sh
+
+      - name: .gitignore contains the shared base
+        run: python3 packaging/check-gitignore-base.py .
 
   python-floor:
     # The package metadata promises source compatibility with Python 3.11. Running only the frozen
@@ -77,7 +132,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_2
+        continue-on-error: true
+        with:
+          # This is the literal language floor, not a current-3.11 pin. Renovate's built-in
+          # github-actions manager sees it as dependency `python`; .renovaterc.json freezes this
+          # one occurrence while the separate current-runtime pins continue to advance.
+          python-version: "3.11.0"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_2.outcome != 'success'
         with:
           # This is the literal language floor, not a current-3.11 pin. Renovate's built-in
           # github-actions manager sees it as dependency `python`; .renovaterc.json freezes this
@@ -87,9 +157,11 @@ jobs:
         run: |
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
           python -m pip install --upgrade pip
-          pip install "pytest==$PYTEST" -e .
-          python -m compileall -q dreame_valetudo libexec docs/research/tools \
+          pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
+          python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
             packaging/stamp-version.py \
             packaging/build-source-tar.py \
             packaging/check-doc-links.py \
@@ -109,12 +181,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          # The action's own default is tonistiigi/binfmt:latest — the one moving tag left in
-          # either workflow. Pin it by digest like every other image here.
-          # renovate: datasource=docker depName=tonistiigi/binfmt
-          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      # No QEMU: this job builds `--platform linux/amd64` on an amd64 runner. The setup was
+      # vestigial even before arm64 moved to a native runner.
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
@@ -124,19 +192,20 @@ jobs:
       - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
         run: |
           set -euo pipefail
-          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('dreame_valetudo/constants.py').read()).group(1))"; }
+          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
           SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
           echo "using sunxi $SREF, pyusb $PYUSB"
-          # renovate: datasource=pypi depName=pyinstaller
-          PYINSTALLER="6.22.2"
+          # The same build-time pins the release path uses, from the same file. This job exists to
+          # compile-check the release-time dependencies, so it has to be checking the versions a
+          # release would actually build with — a second inline copy here would drift and the drift
+          # would be invisible until a tag.
+          # shellcheck source=/dev/null
+          . packaging/release-pins.env
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
-          # renovate: datasource=docker depName=quay.io/pypa/manylinux_2_28_x86_64
-          PYTHON_BUILD_IMAGE="quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b"
+          PYTHON_BUILD_IMAGE="$MANYLINUX_AMD64"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
-          # renovate: datasource=docker depName=goreleaser/nfpm
-          NFPM="goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c"
           docker buildx build --platform linux/amd64 \
             --build-arg PYTHON_BUILD_IMAGE="$PYTHON_BUILD_IMAGE" \
             --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
@@ -248,7 +317,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: setup_python_3
+        continue-on-error: true
+        with:
+          python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.setup_python_3.outcome != 'success'
         with:
           python-version: "3.14.7"   # exact pin (repo convention); Renovate bumps the patch
       - name: install the session wrapper's own dependency
@@ -262,7 +343,10 @@ jobs:
           pip install -e .
       - name: run integration scripts (externals PATH-stubbed; no hardware)
         run: |
-          for t in tests/integration/*.sh; do echo "== $t =="; bash "$t"; done
+          # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
+          # That file runs offline by contract, so it never installs this itself.
+          python3 -m pip install --upgrade build
+          for t in tests/release/*.sh; do echo "== $t =="; bash "$t"; done
 
   macos:
     # By the time the Linux suites finish, the mirrored macOS workflow normally has too. This keeps
@@ -284,4 +368,4 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Require native macOS CI for this exact commit
-        run: bash packaging/wait-github-macos-ci.sh "${{ steps.mirrored.outputs.sha }}"
+        run: bash packaging/check-mirror-ci.sh "${{ steps.mirrored.outputs.sha }}" .github/workflows/ci-macos.yml

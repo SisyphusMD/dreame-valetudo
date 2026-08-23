@@ -7,11 +7,11 @@ import re
 import sys
 from pathlib import Path
 
-from dreame_valetudo.profiles import (
+from dreame_valetudo.models import (
     SUPPORTED_MODELS,
     impl_class_for_model,
     known_model_base_for_code,
-    load_profile,
+    load_model_spec,
     model_family_candidate_for_code,
     reviewed_model_identities_for_key,
 )
@@ -62,7 +62,7 @@ DDR_RULE = (
     "All the other bots use `ddr4`."
 )
 
-# Actionable model-specific text in the Supported Robots page. Every fastboot profile is listed
+# Actionable model-specific text in the Supported Robots page. Every fastboot model spec is listed
 # explicitly so a newly added model cannot silently inherit an empty contract. These are semantic
 # anchors, not whole-page bytes: layout, photos, and ordinary prose edits do not turn CI red.
 MODEL_SECTION_MARKERS: dict[str, tuple[str, ...]] = {
@@ -110,7 +110,7 @@ def _section(markdown: str, model: str) -> str | None:
 def _implementation_model_family(
     source: str, model_code: str, model_key: str, impl_class: str,
 ) -> tuple[bool, list[str], list[str]]:
-    """Accept Valetudo's regional/colour suffixes without conflating another local profile."""
+    """Accept Valetudo's regional/colour suffixes without conflating another local model_spec."""
     present = False
     unknown: list[str] = []
     reported_identities = {
@@ -144,7 +144,7 @@ def verify(upstream: Path) -> list[str]:
     issues: list[str] = []
 
     fastboot_keys = {
-        key for key in SUPPORTED_MODELS if load_profile(key).method == "fastboot"
+        key for key in SUPPORTED_MODELS if load_model_spec(key).method == "fastboot"
     }
     if set(MODEL_SECTION_MARKERS) != fastboot_keys:
         missing_contracts = sorted(fastboot_keys - set(MODEL_SECTION_MARKERS))
@@ -163,11 +163,11 @@ def verify(upstream: Path) -> list[str]:
     if _normalized(DDR_RULE) not in _normalized(guide):
         issues.append("official Dreame guide no longer contains the expected DDR3/DDR4 rule")
     local_ddr3 = {
-        key for key in fastboot_keys if load_profile(key).dram == "ddr3"
+        key for key in fastboot_keys if load_model_spec(key).dram == "ddr3"
     }
     if local_ddr3 != DDR3_MODEL_KEYS:
         issues.append(
-            "local DDR3 profile set differs from the official guide: "
+            "local DDR3 model_spec set differs from the official guide: "
             f"got {sorted(local_ddr3)}, expected {sorted(DDR3_MODEL_KEYS)}"
         )
 
@@ -180,14 +180,14 @@ def verify(upstream: Path) -> list[str]:
             position = found
 
     for key in SUPPORTED_MODELS:
-        profile = load_profile(key)
-        if profile.method != "fastboot":
+        model_spec = load_model_spec(key)
+        if model_spec.method != "fastboot":
             continue
         local_contract = {
-            "arch": profile.arch,
-            "secure_boot": profile.secure_boot,
-            "fsbl_addr": profile.fsbl_addr,
-            "payload_addr": profile.payload_addr,
+            "arch": model_spec.arch,
+            "secure_boot": model_spec.secure_boot,
+            "fsbl_addr": model_spec.fsbl_addr,
+            "payload_addr": model_spec.payload_addr,
         }
         expected_local = {
             "arch": "aarch64",
@@ -200,13 +200,13 @@ def verify(upstream: Path) -> list[str]:
                 f"{key}: local fastboot contract changed: got {local_contract}, "
                 f"expected {expected_local}"
             )
-        implementation = robot_dir / f"{profile.impl_class}.js"
+        implementation = robot_dir / f"{model_spec.impl_class}.js"
         if not implementation.is_file():
-            issues.append(f"{key}: upstream implementation disappeared: {profile.impl_class}")
+            issues.append(f"{key}: upstream implementation disappeared: {model_spec.impl_class}")
         else:
             source = implementation.read_text()
             family_present, unknown_identities, missing_identities = _implementation_model_family(
-                source, profile.model_code, profile.key, profile.impl_class,
+                source, model_spec.model_code, model_spec.key, model_spec.impl_class,
             )
             if unknown_identities:
                 issues.append(
@@ -220,10 +220,10 @@ def verify(upstream: Path) -> list[str]:
                 )
             if not family_present:
                 issues.append(
-                    f"{key}: {profile.model_code} is no longer an identity of {profile.impl_class}"
+                    f"{key}: {model_spec.model_code} is no longer an identity of {model_spec.impl_class}"
                 )
 
-        section = _section(supported, profile.model)
+        section = _section(supported, model_spec.model)
         if section is None:
             issues.append(f"{key}: model disappeared from the official Supported Robots page")
             continue
@@ -254,7 +254,7 @@ def main(argv: list[str]) -> int:
         for issue in issues:
             print(f"ERROR: {issue}", file=sys.stderr)
         return 1
-    count = sum(load_profile(key).method == "fastboot" for key in SUPPORTED_MODELS)
+    count = sum(load_model_spec(key).method == "fastboot" for key in SUPPORTED_MODELS)
     print(f"Official Valetudo guide and all {count} fastboot model contracts match.")
     return 0
 

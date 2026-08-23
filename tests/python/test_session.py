@@ -7,12 +7,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import ScriptedConsole
 
 from dreame_valetudo import cli as cli_mod
 from dreame_valetudo import migrate as migrate_mod
+from dreame_valetudo import session as session_mod
 from dreame_valetudo.cli import _offer_existing_run, _reexec_under_tmux, main
 from dreame_valetudo.console import Die
 from dreame_valetudo.phases import root as root_mod
@@ -30,6 +32,7 @@ from dreame_valetudo.session import (
     describe_run,
     ensure_workspace_lock,
     env_prefix,
+    hold_additional_workspace_lock,
     hold_workspace_lock,
     kill_session,
     lock_free,
@@ -1302,6 +1305,209 @@ def test_a_new_run_never_inherits_the_previous_runs_record(tmp_path: Path) -> No
     assert record["command"] == "status"
 
 
+def test_a_dead_preexisting_session_is_reaped_and_reports_its_recorded_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = tmp_path / "run.log"
+    log.write_text("[+ 1s] finished before attach\n")
+    killed: list[str] = []
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "kill_session", lambda _tmux, session: killed.append(session))
+    monkeypatch.setattr(cli_mod, "read_outcome", lambda _base: (7, log))
+
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {}, ScriptedConsole(), tmp_path)
+
+    assert exc.value.code == 7
+    assert killed
+
+
+def test_a_dead_preexisting_session_without_an_outcome_is_a_visible_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "kill_session", lambda *_args: None)
+    monkeypatch.setattr(cli_mod, "read_outcome", lambda _base: None)
+    con = ScriptedConsole()
+
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {}, con, tmp_path)
+
+    assert exc.value.code == 1
+    assert "without recording how it went" in con.text()
+
+
+def test_a_run_ending_during_the_rejoin_question_never_restarts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exists = iter([True, False])
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: next(exists))
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: False)
+    monkeypatch.setattr(cli_mod, "_offer_existing_run", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "read_outcome", lambda _base: None)
+    con = ScriptedConsole()
+
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {}, con, tmp_path)
+
+    assert exc.value.code == 1
+    assert "stopped while you were answering" in con.text()
+
+
+def test_a_run_ending_during_the_rejoin_question_replays_its_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = tmp_path / "run.log"
+    log.write_text("[+ 1s] ended while answering\n")
+    exists = iter([True, False])
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: next(exists))
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: False)
+    monkeypatch.setattr(cli_mod, "_offer_existing_run", lambda *_args: True)
+    monkeypatch.setattr(cli_mod, "read_outcome", lambda _base: (3, log))
+    con = ScriptedConsole()
+
+    with pytest.raises(SystemExit) as exc:
+        _reexec_under_tmux(["root"], {}, con, tmp_path)
+
+    assert exc.value.code == 3
+    assert "ended while answering" in con.text()
+
+
+def test_declining_a_live_run_waits_for_its_lock_before_falling_back_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exists = iter([True, False])
+    free = iter([False, False, True])
+    sleeps: list[float] = []
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: next(exists))
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: False)
+    monkeypatch.setattr(cli_mod, "_offer_existing_run", lambda *_args: False)
+    monkeypatch.setattr(cli_mod, "lock_free", lambda _lock: next(free))
+    monkeypatch.setattr(cli_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(cli_mod, "tmux_plan", lambda *_args, **_kwargs: None)
+
+    _reexec_under_tmux(["root"], {}, ScriptedConsole(), tmp_path)
+
+    assert sleeps == [0.1, 0.1]
+
+
+def test_missing_tmux_is_named_for_an_interactive_nonpure_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: None)
+    monkeypatch.setattr(cli_mod.sys, "stdin", _Tty(True))
+    monkeypatch.setattr(cli_mod.sys, "stdout", _Tty(True))
+    con = ScriptedConsole()
+
+    _reexec_under_tmux(["root"], {}, con, tmp_path)
+
+    assert "No tmux found" in con.text()
+
+
+def test_attach_os_error_falls_back_inline_after_session_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_mod, "working_tmux", lambda _env: str(_TMUX))
+    monkeypatch.setattr(cli_mod, "wraps_this_run", lambda *_args, **_kwargs: True)
+    exists = iter([False, True, True])
+    monkeypatch.setattr(cli_mod, "tmux_session_exists", lambda *_args: next(exists))
+    monkeypatch.setattr(cli_mod, "session_pane_dead", lambda *_args: False)
+    monkeypatch.setattr(
+        cli_mod, "tmux_plan",
+        lambda *_args, **_kwargs: [
+            ["tmux", "-L", "socket", "new-session"],
+            ["tmux", "-L", "socket", "attach-session"],
+        ],
+    )
+
+    def run(command: list[str], **_kwargs: object) -> object:
+        if "attach-session" in command:
+            raise OSError("terminal unavailable")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", run)
+    _reexec_under_tmux(["root"], {}, ScriptedConsole(), tmp_path)
+
+
+def test_replacing_the_workspace_lock_closes_the_previously_held_descriptor(tmp_path: Path) -> None:
+    first = tmp_path / "first.lock"
+    second = tmp_path / "second.lock"
+    hold_workspace_lock(first, "status")
+    old = session_mod._HELD[0]
+    # The module-level API is the observable contract: after replacement the old lock is free.
+    hold_workspace_lock(second, "status")
+    assert lock_free(first) is True
+    assert lock_free(second) is False
+    assert old.closed
+    release_workspace_lock()
+
+
+def test_ensure_workspace_lock_keeps_the_matching_inode_and_closes_other_locks(tmp_path: Path) -> None:
+    first = tmp_path / "first.lock"
+    canonical = tmp_path / "canonical.lock"
+    hold_workspace_lock(first, "status")
+    hold_additional_workspace_lock(canonical, "status")
+    first_handle, canonical_handle = session_mod._HELD
+
+    ensure_workspace_lock(canonical, "status")
+
+    assert first_handle.closed
+    assert not canonical_handle.closed
+    assert len(session_mod._HELD) == 1
+    assert session_mod._HELD[0] is canonical_handle
+    release_workspace_lock()
+
+
+def test_ensure_workspace_lock_replaces_an_unstatable_held_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.lock"
+    canonical = tmp_path / "canonical.lock"
+    hold_workspace_lock(first, "status")
+    old = session_mod._HELD[0]
+    monkeypatch.setattr(session_mod.os.path, "samestat", lambda *_args: (_ for _ in ()).throw(
+        OSError("descriptor disappeared")
+    ))
+
+    ensure_workspace_lock(canonical, "status")
+
+    assert old.closed
+    assert lock_free(first) is True
+    assert lock_free(canonical) is False
+    release_workspace_lock()
+
+
+def test_ensure_workspace_lock_is_a_noop_for_a_pure_command(tmp_path: Path) -> None:
+    ensure_workspace_lock(tmp_path / "unused.lock", "help")
+    assert not (tmp_path / "unused.lock").exists()
+
+
+def test_capture_pane_cleans_temporary_and_stale_files_after_subprocess_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale = tmp_path / SCREEN
+    stale.write_bytes(b"stale")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("tmux gone")),
+    )
+
+    assert capture_pane(_TMUX, _SESSION, tmp_path) is False
+    assert not stale.exists()
+    assert not list(tmp_path.glob(f".{SCREEN}.*"))
+
+
 def test_a_caller_inside_another_tmux_reports_the_outcome_after_attach_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1596,3 +1802,39 @@ def test_a_scrubbed_log_path_still_counts_as_already_said(
     with pytest.raises(SystemExit):
         _reexec_under_tmux(["root"], {"DREAME_LIBEXEC": str(libexec)}, con, tmp_path)
     assert con.text().count("log of this run was saved") == 1
+
+
+def test_tmux_queries_fail_closed_when_the_binary_cannot_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("missing")),
+    )
+    assert tmux_session_exists(_TMUX, _SESSION) is False
+    assert session_pane_dead(_TMUX, _SESSION) is None
+    assert client_attached(_TMUX, _SESSION) is None
+    kill_session(_TMUX, _SESSION)
+
+    tmp_path.mkdir(exist_ok=True)
+    assert capture_pane(_TMUX, _SESSION, tmp_path) is False
+    assert not (tmp_path / SCREEN).exists()
+
+
+def test_tmux_queries_treat_failed_and_malformed_replies_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "bad", ""),
+    )
+    assert session_pane_dead(_TMUX, _SESSION) is None
+    assert client_attached(_TMUX, _SESSION) is None
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "maybe", ""),
+    )
+    assert session_pane_dead(_TMUX, _SESSION) is None
+    assert client_attached(_TMUX, _SESSION) is None
+
+
+def test_invalid_outcome_rc_is_not_treated_as_a_finished_run(tmp_path: Path) -> None:
+    (tmp_path / OUTCOME).write_text(json.dumps({"rc": "zero", "log": "/tmp/log"}))
+    assert read_outcome(tmp_path) is None

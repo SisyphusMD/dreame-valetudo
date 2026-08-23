@@ -58,7 +58,7 @@ def test_fetch_verifies_and_reaches_cache_ready(
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(
-        fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: hashlib.sha256(b"s1").hexdigest()}
+        fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: hashlib.sha256(b"s1").hexdigest()}
     )
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -83,7 +83,7 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
     digest = hashlib.sha256(b"s1").hexdigest()
     monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
     stage_dist(ctx, stage1_sha256=digest)
-    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.profile.arch: "deadbeef" * 8})
+    monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
@@ -154,7 +154,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
 
     def responder(argv: tuple[str, ...]) -> Result:
@@ -168,7 +168,7 @@ def test_fetch_valetudo_does_not_provision_the_fel_toolchain(
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert not any(c[0] in {"git", "make", "tar"} for c in calls)
-    assert not any(ctx.profile.stage1_url in c for c in calls)
+    assert not any(ctx.model_spec.stage1_url in c for c in calls)
 
 
 def test_fetch_valetudo_reuses_a_matching_published_digest_offline(
@@ -220,3 +220,57 @@ def test_fetch_valetudo_can_explicitly_accept_an_unverified_override(
     ctx.runner.responder = responder  # type: ignore[attr-defined]
     fetch_valetudo(ctx)
     assert ctx.valetudo_bin.read_bytes() == b"custom valetudo"
+
+
+@pytest.mark.parametrize("staged_kind", ["file", "directory", "symlink"])
+def test_stage1_reextract_clears_every_kind_of_abandoned_staging_path(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, staged_kind: str,
+) -> None:
+    ctx = make_ctx()
+    digest = hashlib.sha256(b"archive").hexdigest()
+    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    ctx.ws.dist.mkdir(parents=True)
+    staged = ctx.ws.dist / ".stage1-extract"
+    if staged_kind == "file":
+        staged.write_text("abandoned")
+    elif staged_kind == "directory":
+        staged.mkdir()
+        (staged / "partial").write_text("abandoned")
+    else:
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        staged.symlink_to(target, target_is_directory=True)
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("payload")
+            (target / ctx.fsbl_name).write_text("fsbl")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    fetch_mod.fetch_stage1(ctx)
+    assert ctx.payload_bin.read_text() == "payload"
+    assert not staged.exists()
+
+
+def test_stage1_extract_refuses_an_archive_missing_the_profile_fsbl(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"archive").hexdigest())
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("payload")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    with pytest.raises(Die, match=r"didn't yield.*fsbl"):
+        fetch_mod.fetch_stage1(ctx)
+    assert not (ctx.ws.dist / ".stage1-extract").exists()

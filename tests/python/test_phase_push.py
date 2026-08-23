@@ -470,7 +470,7 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
     monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
 
     _silent = _ap_up_robot_silent()
@@ -487,7 +487,7 @@ def test_push_fetches_only_valetudo_when_the_cache_is_empty(
     calls = ctx.runner.calls  # type: ignore[attr-defined]
     assert ctx.valetudo_bin.read_bytes() == b"valetudo"
     assert not any(c[0] in {"git", "make", "tar"} for c in calls)
-    assert not any(ctx.profile.stage1_url in c for c in calls)
+    assert not any(ctx.model_spec.stage1_url in c for c in calls)
 
 
 def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
@@ -506,7 +506,7 @@ def test_push_explains_how_to_fetch_valetudo_after_leaving_the_robot_ap(
     assert "robot's Wi-Fi AP" in message
     assert "dreame-valetudo push" in message
     assert "download only Valetudo" in message
-    assert not any(ctx.profile.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
+    assert not any(ctx.model_spec.stage1_url in c for c in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_push_retries_the_download_after_leaving_the_robot_ap(
@@ -517,7 +517,7 @@ def test_push_retries_the_download_after_leaving_the_robot_ap(
     ctx = _ctx(make_ctx)
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256",
-        {ctx.profile.arch: hashlib.sha256(b"valetudo").hexdigest()},
+        {ctx.model_spec.arch: hashlib.sha256(b"valetudo").hexdigest()},
     )
     robot = _text(did="12345")
     ctx.runner.redirect_responder = _redirect()
@@ -842,7 +842,7 @@ def test_push_accepts_a_complete_tar_when_optional_members_make_tar_nonzero(
 def test_push_accepts_a_robot_that_carries_no_recovery_pems(
     make_ctx: CtxFactory, failure: str,
 ) -> None:
-    # Only three fastboot profiles are hardware-verified, so an absent /etc/*.pem is an unknown,
+    # Only three fastboot model specs are hardware-verified, so an absent /etc/*.pem is an unknown,
     # not a defect: validate the PEMs when the robot has them, never demand them.
     ctx = _ctx(make_ctx)
     _valetudo_bin(ctx)
@@ -1010,7 +1010,7 @@ def test_an_unflagged_model_with_an_empty_factory_key_is_still_published(
     ctx.runner.responder = _text(key="")  # type: ignore[attr-defined]
     ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
 
-    assert ctx.profile.key_in_secure_storage == "no"
+    assert ctx.model_spec.key_in_secure_storage == "no"
     assert push(ctx) is True
 
     published = next(ctx.backups_dir.iterdir())
@@ -1227,7 +1227,7 @@ def test_standalone_backup_uses_the_push_capture_without_changing_the_robot(
     published = next(ctx.backups_dir.iterdir())
     saved = json.loads((published / "manifest.json").read_text())
     assert saved["config"] == CFG
-    assert saved["model_key"] == ctx.profile.key
+    assert saved["model_key"] == ctx.model_spec.key
     assert saved["valetudo_version"] is None
     assert robot.state_get("factory-backup") == published.name
     assert robot.state_get("valetudo") == "adopted-existing"
@@ -1496,7 +1496,7 @@ def test_push_backs_up_the_dedicated_key(make_ctx: CtxFactory, tmp_path: Path) -
     assert (backups[0] / "id_dreame").read_text() == "PRIV"      # private half preserved off-workdir
     assert (backups[0] / "id_dreame.pub").read_text() == "PUB"
     m = json.loads((backups[0] / "manifest.json").read_text())   # provenance manifest written
-    assert m["model"] == ctx.profile.model
+    assert m["model"] == ctx.model_spec.model
     assert m["robot"] == "r2416-abcdef012345"
     assert m["live_model"] == "dreame.vacuum.r2416"
     assert m["live_did"] == "-117604433"
@@ -1585,3 +1585,472 @@ def test_a_first_serial_learned_from_the_robot_needs_no_prior_record(make_ctx: C
     saved = robot.serial()
     assert saved is not None and saved.verified is True
     assert "not the one the robot reports" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_archive_helpers_reject_unreadable_ambiguous_and_nonregular_members(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid.tar.gz"
+    invalid.write_text("not an archive")
+    assert push_mod._archive_members(invalid) is None
+    assert push_mod._tar_has_factory_data(invalid) is False
+    assert push_mod._archived_factory_cpuid(invalid) is None
+    assert push_mod._archived_factory_key_is_empty(invalid) is False
+    assert push_mod._tar_has_backup_trees(invalid) is False
+
+    archive = tmp_path / "ambiguous.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for _ in range(2):
+            member = tarfile.TarInfo("mnt/private/ULI/factory/cpuid.txt")
+            member.size = 1
+            tar.addfile(member, io.BytesIO(b"a"))
+    members = push_mod._archive_members(archive)
+    assert members is not None
+    assert push_mod._one_archived_file(members, "mnt/private/ULI/factory/cpuid.txt") is None
+    assert push_mod._tar_has_factory_data(archive) is False
+
+
+def test_backup_manifest_and_digest_binding_fail_closed_on_malformed_metadata(tmp_path: Path) -> None:
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    archive = backup / "files.tar.gz"
+    archive.write_bytes(b"payload")
+    (backup / "manifest.json").write_text("[]")
+    assert push_mod._backup_manifest(backup) is None
+    assert push_mod._archive_matches_manifest(archive, {"factory_archive_sha256": "bad"}) is False
+    assert push_mod._archive_matches_manifest(
+        archive, {"factory_archive_sha256": "0" * 64, "factory_archive_size": True},
+    ) is False
+
+
+def test_empty_archived_key_policy_tolerates_unknown_models_but_requires_flagged_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "files.tar.gz"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(push_mod, "_archived_factory_key_is_empty", lambda _path: True)
+    assert push_mod._archived_key_is_recoverable(archive, tmp_path, None) is True
+    assert push_mod._archived_key_is_recoverable(
+        archive, tmp_path, {"model_key": "not-a-model"},
+    ) is True
+    assert push_mod._archived_key_is_recoverable(
+        archive, tmp_path, {"model_key": "w10-pro"},
+    ) is False
+    (tmp_path / push_mod._SECURE_STORAGE_KEY_FILE).write_text("A1b2C3d4E5f6G7h8")
+    assert push_mod._archived_key_is_recoverable(
+        archive, tmp_path, {"model_key": "w10-pro"},
+    ) is True
+
+
+def test_key_fix_rejects_malformed_secret_without_any_command(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx()
+    assert push_mod._apply_key_fix(ctx, None, "bad key") is False
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_dedicated_key_backup_ignores_absent_external_and_missing_keys(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    push_mod._backup_dedicated_key(ctx, None, backup_dir)
+    external = tmp_path / "external"
+    external.write_text("private")
+    push_mod._backup_dedicated_key(ctx, external, backup_dir)
+    internal = ctx.ws.base / "missing"
+    push_mod._backup_dedicated_key(ctx, internal, backup_dir)
+    assert list(backup_dir.iterdir()) == []
+
+
+def test_live_robot_binding_handles_unselected_uart_and_unreadable_pinned_identity(
+    make_ctx: CtxFactory,
+) -> None:
+    push_mod._bind_live_robot(make_ctx(), {})
+    uart = make_ctx(model="z10-pro", robot_name="bench")
+    push_mod._bind_live_robot(uart, {})
+
+    pinned = make_ctx(robot_name="bench")
+    pinned.need_robot().state_set("cpuid", CPUID)
+    with pytest.raises(Die, match="Could not read this robot's factory SoC id"):
+        push_mod._bind_live_robot(pinned, {})
+
+
+def test_live_robot_binding_refusal_has_zero_external_effects(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench", confirms=[False])
+    with pytest.raises(UserAbort, match="not confirmed"):
+        push_mod._bind_live_robot(ctx, {"factory_cpuid": CPUID})
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+    assert ctx.need_robot().state_get("cpuid") is None
+
+
+def test_live_identity_read_failure_and_pin_without_selected_robot(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 2, "", "failed"))
+    with pytest.raises(Die, match="Could not read this robot's model identity"):
+        push_mod._live_robot_identity(ctx, None)
+    push_mod._pin_live_robot(ctx, {"factory_cpuid": CPUID})
+
+
+def test_backup_and_update_require_adopted_state_without_commands(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(robot_name="bench")
+    with pytest.raises(Die, match="requires an already-rooted"):
+        backup(ctx)
+    with pytest.raises(Die, match="requires an already-rooted"):
+        update_valetudo(ctx)
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_atomic_replace_refuses_failed_remote_cleanup(make_ctx: CtxFactory) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 1, "", "read-only"))
+    _valetudo_bin(ctx)
+    with pytest.raises(Die, match="Could not prepare"):
+        push_mod._replace_valetudo_atomically(ctx, None, install_postboot=False)
+    assert len(ctx.runner.calls) == 1  # type: ignore[attr-defined]
+
+
+def test_repair_helpers_report_failed_and_stale_repairs(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    did_ctx = make_ctx(responder=lambda argv: Result(argv, 0, "-117604433\n", ""))
+    monkeypatch.setattr(push_mod, "_device_conf_value", lambda *_args: "old")
+    monkeypatch.setattr(push_mod, "_apply_did_fix", lambda *_args: False)
+    push_mod._repair_did_if_needed(did_ctx, None)
+    assert "deviceId repair failed" in did_ctx.console.text()  # type: ignore[attr-defined]
+
+    stale_ctx = make_ctx(responder=lambda argv: Result(argv, 0, "12345\n", ""))
+    monkeypatch.setattr(push_mod, "_apply_did_fix", lambda *_args: False)
+    push_mod._repair_did_if_needed(stale_ctx, None)
+    assert "still incomplete" in stale_ctx.console.text()  # type: ignore[attr-defined]
+
+    malformed = make_ctx(responder=lambda argv: Result(argv, 0, "not-a-did\n", ""))
+    push_mod._repair_did_if_needed(malformed, None)
+    assert "Couldn't read a clean" in malformed.console.text()  # type: ignore[attr-defined]
+
+
+def test_populated_stale_key_reports_failed_repair(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 0, "A1b2C3d4E5f6G7h8\n", ""))
+    monkeypatch.setattr(push_mod, "_device_conf_value", lambda *_args: "old")
+    monkeypatch.setattr(push_mod, "_apply_key_fix", lambda *_args: False)
+    push_mod._populate_key_if_needed(ctx, None)
+    assert "miio key repair is still incomplete" in ctx.console.text()  # type: ignore[attr-defined]
+
+    empty = make_ctx(responder=lambda argv: Result(argv, 0, "", ""))
+    push_mod._populate_key_if_needed(empty, None, preserved_mikey="A1b2C3d4E5f6G7h8")
+    assert "key.txt restore failed" in empty.console.text()  # type: ignore[attr-defined]
+
+
+def test_saved_valetudo_versions_only_flag_proven_downgrades() -> None:
+    assert push_mod.valetudo_would_downgrade(None, VALETUDO_TARGET) is False
+    assert push_mod.valetudo_would_downgrade(VALETUDO_NEWER, VALETUDO_TARGET) is True
+    assert push_mod.valetudo_would_downgrade("invalid", VALETUDO_TARGET) is False
+
+
+def test_factory_archive_rejects_a_duplicated_optional_identity_member(tmp_path: Path) -> None:
+    archive = tmp_path / "duplicate.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, data in [
+            ("mnt/private/ULI/factory/cpuid.txt", CPUID.encode()),
+            ("mnt/private/ULI/factory/did.txt", b"123"),
+            ("mnt/misc/factory", b"data"),
+            ("mnt/private/ULI/factory/key.txt", b"key"),
+            ("mnt/private/ULI/factory/key.txt", b"key2"),
+        ]:
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    assert push_mod._tar_has_factory_data(archive) is False
+
+
+def test_capture_tolerates_missing_raw_partition_copies_after_valid_files_backup(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = _ctx(make_ctx)
+    _valetudo_bin(ctx)
+    ctx.runner.responder = _text(did="12345")  # type: ignore[attr-defined]
+    normal = _redirect()
+
+    def files_only(
+        argv: tuple[str, ...], stdout_path: str | None, stdin_path: str | None,
+    ) -> Result:
+        if "tar czf" in argv[-1]:
+            return normal(argv, stdout_path, stdin_path)
+        return Result(argv, 0, "", "")
+
+    ctx.runner.redirect_responder = files_only
+    assert push(ctx) is True
+    assert "raw private partition not captured" in ctx.console.text()  # type: ignore[attr-defined]
+    assert "raw misc partition not captured" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_prepare_binary_reports_retry_and_postfetch_absence(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(confirms=[False])
+    monkeypatch.setattr(push_mod, "fetch_valetudo", lambda _ctx: (_ for _ in ()).throw(Die("offline")))
+    monkeypatch.setattr(push_mod, "offer_leave_ap_for_internet", lambda _ctx: False)
+    with pytest.raises(Die, match="Rejoin your normal Wi-Fi"):
+        push_mod._prepare_valetudo_binary(ctx, retry_command="dreame-valetudo push")
+
+    absent = make_ctx()
+    monkeypatch.setattr(push_mod, "fetch_valetudo", lambda _ctx: None)
+    with pytest.raises(Die, match="Valetudo binary missing"):
+        push_mod._prepare_valetudo_binary(absent, retry_command="dreame-valetudo push")
+
+
+def test_backup_returns_false_when_capture_never_reaches_robot(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    ctx.need_robot().state_set("rooted")
+    monkeypatch.setattr(push_mod, "check_external_tools", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "_capture_live_factory_backup", lambda *_args, **_kwargs: None)
+    assert backup(ctx) is False
+    assert ctx.need_robot().state_get("factory-backup") is None
+
+
+def test_update_declines_when_robot_ap_wait_is_cancelled(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: False)
+    with pytest.raises(UserAbort, match="join the robot AP"):
+        update_valetudo(ctx)
+    assert not any(".valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("cpuid_kind", ["directory", "absent"])
+def test_archived_cpuid_requires_one_readable_regular_member(
+    tmp_path: Path, cpuid_kind: str,
+) -> None:
+    archive = tmp_path / "factory.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        unrelated = tarfile.TarInfo("etc/notice")
+        unrelated.size = 1
+        tar.addfile(unrelated, io.BytesIO(b"x"))
+        if cpuid_kind == "directory":
+            member = tarfile.TarInfo("mnt/private/ULI/factory/cpuid.txt")
+            member.type = tarfile.DIRTYPE
+            tar.addfile(member)
+
+    assert push_mod._archived_factory_cpuid(archive) is None
+
+
+def test_backup_manifest_rejects_unreadable_json(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir()
+    (backup_dir / "manifest.json").write_text("{not-json")
+    assert push_mod._backup_manifest(backup_dir) is None
+
+
+def test_archive_digest_check_fails_closed_when_stat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "files.tar.gz"
+    archive.write_bytes(b"archive")
+    real_stat = Path.stat
+
+    def failing_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == archive:
+            raise OSError("storage unavailable")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+    metadata = {"factory_archive_sha256": "a" * 64, "factory_archive_size": 7}
+    assert push_mod._archive_matches_manifest(archive, metadata) is False
+
+
+def test_factory_archive_gate_fails_closed_when_metadata_stat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "files.tar.gz"
+    archive.write_bytes(b"archive")
+    real_stat = Path.stat
+
+    def failing_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == archive:
+            raise OSError("storage unavailable")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+    assert push_mod.factory_backup_archive_valid(archive) is False
+
+
+def test_dedicated_key_copy_size_mismatch_removes_the_bad_backup(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    key = ctx.ws.base / "keys" / "id_robot"
+    key.parent.mkdir(parents=True)
+    key.write_bytes(b"private-key")
+    backup_dir = ctx.backups_dir / "capture"
+    backup_dir.mkdir(parents=True)
+
+    def short_copy(_src: Path, dst: Path) -> None:
+        Path(dst).write_bytes(b"x")
+
+    monkeypatch.setattr(shutil, "copyfile", short_copy)
+    push_mod._backup_dedicated_key(ctx, key, backup_dir)
+
+    assert not (backup_dir / key.name).exists()
+    assert "copied size does not match" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_live_backup_ap_wait_decline_has_no_remote_effects(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(UserAbort, match="do steps 1-3"):
+        push_mod._capture_live_factory_backup(
+            ctx, None, phase_title="Backup", phase_index=None, valetudo_version="test",
+        )
+
+    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
+
+
+def test_live_backup_refuses_a_robot_without_recorded_identity(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(robot_name="bench")
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(push_mod, "is_dreame_ap", lambda *_args, **_kwargs: True)
+
+    with pytest.raises(Die, match="No recorded config identity"):
+        push_mod._capture_live_factory_backup(
+            ctx, None, phase_title="Backup", phase_index=None, valetudo_version="test",
+        )
+
+    assert len(ctx.runner.transcript()) == 1  # type: ignore[attr-defined]
+
+
+def test_factory_archive_gate_rejects_small_and_structurally_empty_archives(tmp_path: Path) -> None:
+    small = tmp_path / "small.tar.gz"
+    small.write_bytes(b"tiny")
+    assert push_mod.factory_backup_archive_valid(small) is False
+
+    empty = tmp_path / "empty.tar.gz"
+    with tarfile.open(empty, "w:gz") as tar:
+        member = tarfile.TarInfo("etc/padding")
+        payload = random.Random(9).randbytes(2000)
+        member.size = len(payload)
+        tar.addfile(member, io.BytesIO(payload))
+    assert empty.stat().st_size > 1000
+    assert push_mod.factory_backup_archive_valid(empty) is False
+
+
+def test_prepare_binary_retries_once_after_leaving_the_robot_ap(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    attempts: list[int] = []
+
+    def fetch(inner: Context) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise Die("offline on AP")
+        _valetudo_bin(inner)
+
+    monkeypatch.setattr(push_mod, "fetch_valetudo", fetch)
+    monkeypatch.setattr(push_mod, "offer_leave_ap_for_internet", lambda _ctx: True)
+    push_mod._prepare_valetudo_binary(ctx, retry_command="dreame-valetudo push")
+    assert len(attempts) == 2
+
+
+@pytest.mark.parametrize("guidance", ["SSH authentication failed.", None])
+def test_update_reports_key_refusal_separately_from_an_unreachable_ap(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch, guidance: str | None,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
+    monkeypatch.setattr(push_mod, "_prepare_valetudo_binary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "check_external_tools", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        push_mod, "robot_ssh",
+        lambda *_args, **_kwargs: Result(("ssh",), 255, "", "connection failed"),
+    )
+    monkeypatch.setattr(push_mod, "ssh_failure_guidance", lambda *_args: guidance)
+
+    if guidance is not None:
+        with pytest.raises(Die, match="SSH authentication failed"):
+            update_valetudo(ctx)
+    else:
+        assert update_valetudo(ctx) is False
+        assert "Join the selected robot's AP" in ctx.console.text()  # type: ignore[attr-defined]
+
+    assert not any(".valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_update_refuses_a_reachable_non_robot_before_replacement(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
+    monkeypatch.setattr(push_mod, "_prepare_valetudo_binary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "check_external_tools", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(push_mod, "is_dreame_ap", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(Die, match="not a Dreame robot"):
+        update_valetudo(ctx)
+
+    assert not any(".valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_update_refuses_a_robot_without_recorded_recon_identity(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _update_ctx(make_ctx, installed=VALETUDO_OLDER)
+    (ctx.need_robot().recon_dir / "config.txt").unlink()
+    monkeypatch.setattr(push_mod, "_prepare_valetudo_binary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "check_external_tools", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(push_mod, "offer_ap_wait", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(push_mod, "is_dreame_ap", lambda *_args, **_kwargs: True)
+
+    with pytest.raises(Die, match="No recorded config identity"):
+        update_valetudo(ctx)
+
+    assert not any(".valetudo.update" in call[-1] for call in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_successful_stale_key_repair_reports_that_all_copies_agree(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(responder=lambda argv: Result(argv, 0, "A1b2C3d4E5f6G7h8\n", ""))
+    monkeypatch.setattr(push_mod, "_device_conf_value", lambda *_args: "old")
+    monkeypatch.setattr(push_mod, "_apply_key_fix", lambda *_args: True)
+
+    push_mod._populate_key_if_needed(ctx, None)
+
+    assert "miio key copies now agree" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_push_names_autodetected_profiles_in_the_completion_guidance(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="x30-ultra", robot_name=f"r2309-{CFG[:12]}", confirms=[True])
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    robot.remember_serial(SERIAL, verified=False)
+    _valetudo_bin(ctx)
+    ctx.runner.responder = _text(model="dreame.vacuum.r9316")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect()
+
+    assert push(ctx) is True
+    assert "recognized by Valetudo's autodetect" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_secure_storage_profile_warns_when_no_key_can_be_preserved(
+    make_ctx: CtxFactory,
+) -> None:
+    ctx = make_ctx(model="w10-pro", robot_name=f"r2104-{CFG[:12]}", confirms=[True])
+    robot = ctx.need_robot()
+    robot.recon_dir.mkdir(parents=True)
+    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
+    robot.remember_serial(SERIAL, verified=False)
+    _valetudo_bin(ctx)
+    ctx.runner.responder = _text(model="dreame.vacuum.r2104", key="")  # type: ignore[attr-defined]
+    ctx.runner.redirect_responder = _redirect(failure="files-empty-key")
+
+    assert push(ctx) is True
+    assert "secure storage returned none" in ctx.console.text()  # type: ignore[attr-defined]

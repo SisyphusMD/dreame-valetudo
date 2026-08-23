@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/SisyphusMD/dreame-valetudo/tree/main/docs
+    about: Layout, hardware testing, and the self-root research write-up.
+  - name: Valetudo documentation
+    url: https://valetudo.cloud
+    about: Questions about Valetudo itself, once your robot is rooted, belong upstream.
