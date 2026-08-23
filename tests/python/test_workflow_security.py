@@ -378,7 +378,6 @@ def test_the_manual_prune_dispatch_cannot_delete_by_accident_or_report_a_failure
     )
 
 
-
 def test_every_release_gate_runs_the_release_script_suite() -> None:
     """The release scripts are shell, so the Python gate above says nothing about them.
 
@@ -430,7 +429,6 @@ def test_every_release_gate_runs_the_release_script_suite() -> None:
         assert not relaxed, f"{name}'s release gate turns a shell guard back off: {relaxed}"
 
 
-
 def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> None:
     """The gate qualifies a release diff and the tag job reproduces it byte for byte.
 
@@ -462,7 +460,6 @@ def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> 
         )
 
 
-
 def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
     """A job that runs `pip install` has to set up its own Python first.
 
@@ -487,12 +484,40 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
             )
             if first_pip is None:
                 continue
-            # EARLIER than the pip, and not itself allowed to fail. A setup that runs afterwards, or
-            # one whose failure is swallowed, leaves the pip on the system interpreter anyway. The
-            # retry pattern pairs a `continue-on-error` attempt with an unguarded one; the unguarded
-            # one is what makes the job fail rather than proceed on the wrong Python.
-            assert any(
-                "setup-python" in str(step.get("uses", ""))
-                and step.get("continue-on-error") is not True
+            # EARLIER than the pip, and able to fail the job. A setup that runs afterwards, or whose
+            # failure is swallowed, leaves the pip on the system interpreter anyway.
+            #
+            # Two shapes qualify. A plain unconditional setup, or the retry pair used across these
+            # workflows: a `continue-on-error` attempt followed by one gated on THAT attempt's
+            # outcome. The second shape is only fail-closed while the gate really references the
+            # first attempt — an unrelated or never-true condition skips the retry and leaves the
+            # swallowed failure as the whole story.
+            soft_ids = {
+                str(step.get("id"))
                 for step in steps[:first_pip]
-            ), f"{path.name}::{name} pip-installs before any setup-python that can fail the job"
+                if "setup-python" in str(step.get("uses", ""))
+                and step.get("continue-on-error") is True
+                and step.get("id")
+            }
+            protected = False
+            for step in steps[:first_pip]:
+                if "setup-python" not in str(step.get("uses", "")):
+                    continue
+                if step.get("continue-on-error") is True:
+                    continue
+                condition = str(step.get("if", ""))
+                if not condition:
+                    protected = True
+                    break
+                # The exact fail-closed spelling the workflows document. `== 'success'` names the
+                # same outcome and skips the retry precisely when it is needed, and `== 'failure'`
+                # skips it whenever a runner leaves the outcome unset.
+                normalized = condition.replace('"', "'").replace(" ", "")
+                if any(normalized == f"steps.{i}.outcome!='success'" for i in soft_ids):
+                    protected = True
+                    break
+            assert protected, (
+                f"{path.name}::{name} pip-installs with no setup-python that can fail the job: a "
+                f"swallowed attempt and a retry gated on something other than its outcome both "
+                f"leave the system interpreter in place"
+            )
