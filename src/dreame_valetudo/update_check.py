@@ -27,6 +27,12 @@ from .context import Context
 from .migrate import base_dir
 
 _LATEST_URL = "https://api.github.com/repos/SisyphusMD/dreame-valetudo/releases/latest"
+#: Newest-first, prereleases INCLUDED. `/releases/latest` excludes them, so a machine on rc.20
+#: could never be told about rc.21 — the candidate channel was invisible to exactly the people
+#: testing it, right up until the stable release appeared.
+_RELEASES_URL = (
+    "https://api.github.com/repos/SisyphusMD/dreame-valetudo/releases?per_page=10"
+)
 
 
 def _version_tuple(v: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
@@ -44,13 +50,36 @@ def _is_newer(latest: str, current: str) -> bool:
 
 
 def _parse_latest(text: str) -> str | None:
-    """Pull `tag_name` (e.g. `v0.2.0` -> `0.2.0`) out of the GitHub release JSON; None on anything
-    unexpected."""
+    """Pull the newest `tag_name` (e.g. `v0.2.0` -> `0.2.0`) out of either endpoint's JSON.
+
+    `/releases/latest` answers with one object, `/releases` with a list. The list is documented
+    newest-first, but the winner is chosen by comparison rather than by position, so a draft or a
+    re-tagged release cannot decide it. None on anything unexpected.
+    """
     with contextlib.suppress(ValueError, TypeError, AttributeError):
-        tag = json.loads(text).get("tag_name")
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            best: str | None = None
+            for entry in payload:
+                if not isinstance(entry, dict) or entry.get("draft"):
+                    continue
+                tag = entry.get("tag_name")
+                if not isinstance(tag, str) or not tag.strip():
+                    continue
+                candidate = tag.strip().lstrip("vV")
+                if best is None or _is_newer(candidate, best):
+                    best = candidate
+            return best
+        tag = payload.get("tag_name")
         if isinstance(tag, str) and tag.strip():
             return tag.strip().lstrip("vV")
     return None
+
+
+def _channel(version: str | None = None) -> str:
+    """Read at call time, not bound as a default: a default argument would freeze `__version__` at
+    import and make the candidate channel unreachable from anything that sets it later."""
+    return "rc" if "-" in (__version__ if version is None else version) else "stable"
 
 
 def detect_install_method(env: Mapping[str, str], root: Path = Path("/")) -> str:
@@ -87,6 +116,15 @@ def detect_install_method(env: Mapping[str, str], root: Path = Path("/")) -> str
 def _upgrade_hint(method: str, current: str = __version__, latest: str | None = None) -> str:
     target = latest or current
     brew_formula = "dreame-valetudo-rc" if "-" in target else "dreame-valetudo"
+    if method == "source":
+        # A candidate source install is checked out AT ITS TAG, so it sits on a detached HEAD and
+        # `git pull` has no branch to pull. Reachable only since candidates started being told
+        # about newer candidates at all.
+        if "-" in target:
+            return f"Update: git fetch --tags && git checkout v{target}"
+        if "-" in current:
+            return "Update: git fetch --tags && git checkout main && git pull"
+        return "Update: git pull (you're running from a source checkout)."
     if method == "brew" and "-" in current and "-" not in target:
         return ("Update: brew uninstall dreame-valetudo-rc && "
                 "brew install sisyphusmd/tap/dreame-valetudo")
@@ -103,22 +141,35 @@ def _upgrade_hint(method: str, current: str = __version__, latest: str | None = 
     }[method]
 
 
-def _cache_path(env: Mapping[str, str]) -> Path:
-    return base_dir(env) / ".update_check"
+def _cache_path(env: Mapping[str, str], channel: str = "stable") -> Path:
+    """Per CHANNEL. Both installs share one base dir, and a single marker was overwritten on every
+    switch between them: alternating the two refetched on every command and paid the full timeout
+    each time, which is the cost the cache exists to avoid."""
+    return base_dir(env) / (".update_check_rc" if channel == "rc" else ".update_check")
 
 
-def _read_cache(env: Mapping[str, str]) -> dict[str, str]:
+def _read_cache(env: Mapping[str, str], channel: str = "stable") -> dict[str, str]:
     with contextlib.suppress(OSError, ValueError):
-        data = json.loads(_cache_path(env).read_text())
+        data = json.loads(_cache_path(env, channel).read_text())
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if isinstance(v, str)}
+            entry = {k: v for k, v in data.items() if isinstance(v, str)}
+            # The recorded channel is checked as well as the filename: a marker copied or restored
+            # from the other install would otherwise let an rc's answer reach a stable install,
+            # naming a prerelease its upgrade command cannot install. A marker written before the
+            # channel was recorded reads as stable, the only channel that existed then.
+            if entry.get("channel", "stable") == channel:
+                return entry
     return {}
 
 
-def _write_cache(env: Mapping[str, str], checked: str, latest: str) -> None:
+def _write_cache(
+    env: Mapping[str, str], checked: str, latest: str, channel: str = "stable"
+) -> None:
     with contextlib.suppress(OSError):
         base_dir(env).mkdir(parents=True, exist_ok=True)
-        _cache_path(env).write_text(json.dumps({"checked": checked, "latest": latest}))
+        _cache_path(env, channel).write_text(
+            json.dumps({"checked": checked, "latest": latest, "channel": channel})
+        )
 
 
 def check_for_update(ctx: Context, *, today: str | None = None) -> None:
@@ -127,16 +178,21 @@ def check_for_update(ctx: Context, *, today: str | None = None) -> None:
     if ctx.env.get("DREAME_NO_UPDATE_CHECK") == "1":
         return
     today = today or date.today().isoformat()
-    cache = _read_cache(ctx.env)
+    channel = _channel()
+    cache = _read_cache(ctx.env, channel)
     latest = cache.get("latest") or None
     if cache.get("checked") != today:
+        # Which endpoint depends on the CHANNEL. A stable install is asking about stable releases
+        # and `/releases/latest` answers exactly that; a candidate install is asking about
+        # candidates, which that endpoint never returns.
+        url = _RELEASES_URL if channel == "rc" else _LATEST_URL
         res = ctx.runner.run(
-            ["curl", "-fsSL", "-m", "3", "-H", "Accept: application/vnd.github+json", _LATEST_URL],
+            ["curl", "-fsSL", "-m", "3", "-H", "Accept: application/vnd.github+json", url],
             check=False,
         )
         fetched = _parse_latest(res.stdout) if res.ok else None
         latest = fetched or latest  # keep the prior cached value if the fetch failed
-        _write_cache(ctx.env, today, latest or "")
+        _write_cache(ctx.env, today, latest or "", channel)
     if latest and _is_newer(latest, __version__):
         ctx.console.warn(f"Update available: dreame-valetudo {latest} (you have {__version__}).")
         ctx.console.info(
