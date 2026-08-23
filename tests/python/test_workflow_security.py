@@ -460,3 +460,39 @@ def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> 
         assert not any('print "## [Unreleased]"' in c for c in commands), (
             f"the {name} job still carries an inline promotion, which cannot fail closed"
         )
+
+
+
+def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
+    """A job that runs `pip install` has to set up its own Python first.
+
+    Runner images mark their system interpreter externally managed (PEP 668), so pip refuses to
+    install into it and the job dies on `error: externally-managed-environment`. Nothing in the
+    workflow says which Python a step gets, so this is invisible until the image changes underneath
+    a job that had worked for months — and on the publish path that lands mid-release, after the
+    version is tagged and PyPI already has the upload.
+    """
+    for path in _FORGEJO:
+        document = yaml.safe_load(path.read_text())
+        for name, job in (document.get("jobs") or {}).items():
+            steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
+            first_pip = next(
+                (
+                    i
+                    for i, step in enumerate(steps)
+                    for line in str(step.get("run", "")).splitlines()
+                    if "pip install" in line and not line.strip().startswith("#")
+                ),
+                None,
+            )
+            if first_pip is None:
+                continue
+            # EARLIER than the pip, and not itself allowed to fail. A setup that runs afterwards, or
+            # one whose failure is swallowed, leaves the pip on the system interpreter anyway. The
+            # retry pattern pairs a `continue-on-error` attempt with an unguarded one; the unguarded
+            # one is what makes the job fail rather than proceed on the wrong Python.
+            assert any(
+                "setup-python" in str(step.get("uses", ""))
+                and step.get("continue-on-error") is not True
+                for step in steps[:first_pip]
+            ), f"{path.name}::{name} pip-installs before any setup-python that can fail the job"
