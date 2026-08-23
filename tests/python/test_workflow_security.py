@@ -492,16 +492,25 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
             # outcome. The second shape is only fail-closed while the gate really references the
             # first attempt — an unrelated or never-true condition skips the retry and leaves the
             # swallowed failure as the whole story.
+            def sets_up_python(step: dict[str, Any]) -> bool:
+                """An actions/setup-python that actually installs a chosen interpreter.
+
+                Without a version it may leave whatever the image already had on PATH, which is the
+                externally-managed one this guard exists to avoid.
+                """
+                if "setup-python" not in str(step.get("uses", "")):
+                    return False
+                given = step.get("with") or {}
+                return bool(given.get("python-version") or given.get("python-version-file"))
+
             soft_ids = {
                 str(step.get("id"))
                 for step in steps[:first_pip]
-                if "setup-python" in str(step.get("uses", ""))
-                and step.get("continue-on-error") is True
-                and step.get("id")
+                if sets_up_python(step) and step.get("continue-on-error") is True and step.get("id")
             }
             protected = False
             for step in steps[:first_pip]:
-                if "setup-python" not in str(step.get("uses", "")):
+                if not sets_up_python(step):
                     continue
                 if step.get("continue-on-error") is True:
                     continue
