@@ -510,7 +510,9 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
                 Without a version it may leave whatever the image already had on PATH, which is the
                 externally-managed one this guard exists to avoid.
                 """
-                if "setup-python" not in str(step.get("uses", "")):
+                # The action itself, not a name containing it: a wrapper called setup-python-cache
+                # can carry a python-version input and install no interpreter at all.
+                if not str(step.get("uses", "")).startswith("actions/setup-python@"):
                     return False
                 given = step.get("with") or {}
                 return bool(given.get("python-version") or given.get("python-version-file"))
