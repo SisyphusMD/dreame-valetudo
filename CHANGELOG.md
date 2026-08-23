@@ -6,170 +6,50 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+**The release where a lost SSH key stopped meaning a reflash.** `rekey` gets you back into an
+already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
+
 ### Added
 
-- `dreame-valetudo rekey` authorizes your SSH key on an already-rooted robot over USB, without
-  reflashing it — the only way back in when a robot's key is lost, and the only way to revoke one.
-  Firmware, Secure Boot, and calibration are untouched; `--keep-existing` keeps the current keys
-  too, and `--dry-run` prepares and checks the change without writing.
-- `dreame-valetudo rekey --over-ssh` does the same over the robot's own Wi-Fi, with no cable and
-  nothing flashed, using the serial from the label under the dustbin. Use the USB route when the
-  robot won't boot far enough for Wi-Fi, or after an interrupted `rekey` write.
-- `dreame-valetudo restore` rebuilds a stock recovery kit from the pre-root capture, keyed to that
-  one robot's identity, and puts a fastboot robot back on stock firmware. It leaves toc0 and user
-  data alone, watches for the robot dropping back into FEL on its own, and picks the boot check up
-  again without flashing twice.
-- `dreame-valetudo bench` runs hardware test campaigns against the real production phases and records
-  them, ordered by how much risk each step carries. Scenarios cover interruptions, wrong-device
-  mix-ups, restore, and package installs.
-- A rooted robot you adopt can capture a current factory backup without reinstalling anything, then
-  check and atomically update Valetudo without stepping through the intermediate WebUI releases.
-- Read-only recon can adopt a robot that was rooted by an older or manual method, no reflash needed.
-  If you would rather re-root it with the current method, it still offers that.
-- Runs now survive closed terminals and dropped SSH connections in a private tmux session. Re-running
-  the command can rejoin the run, pending questions are remembered, and concurrent runs cannot race
-  one another.
-- Fedora, RHEL 8 through 10, and openSUSE now have self-contained RPM packages. A new `uninstall`
-  command finds Homebrew, package, source-tool, and macOS installer copies without touching robot
-  backups.
-- DustBuilder guidance is now written per model and stamped with the date it was last verified. When
-  a config isn't recognized yet, the tool walks you through uploading it, with the current privacy
-  and follow-up warnings.
-- Setup now asks for the serial from the label under the dustbin and saves it, so a lost SSH key
-  never means fetching the robot and turning it over. `rekey` offers it instead of asking again.
+- `rekey` authorizes your SSH key on an already-rooted robot over USB. Firmware and calibration are untouched.
+- `rekey --over-ssh` does the same over the robot's own Wi-Fi, with no cable and nothing flashed.
+- `restore` returns a fastboot robot to stock firmware from your capture, leaving toc0 and data alone.
+- A robot rooted by an older or manual method can be adopted with no reflash, then backed up and updated.
+- Runs survive closed terminals and dropped SSH. Re-running rejoins the run.
+- RPM packages for Fedora, RHEL 8 to 10 and openSUSE, plus an `uninstall` command.
+- Setup saves the serial from the label under the dustbin, so a lost key never means turning the robot over.
+- DustBuilder guidance is written per model and stamped with the date it was last verified.
+- `bench` runs recorded hardware test campaigns against the real production phases.
 
 ### Changed
 
-- `dreame-valetudo bench campaign` runs a whole hardware session in one command: it works out what
-  the robot in front of you can actually qualify, says what to do and what to answer before each
-  scenario that needs your hands, waits for the robot's own Wi-Fi rather than whatever answers that
-  address, and explains every scenario it skips instead of failing it.
-
-- `bench` now covers `rekey`: the preview, the no-flash Wi-Fi route, the USB `misc` rewrite, and a
-  mistyped serial. Each write scenario confirms the robot accepts the new key before passing.
-- A failed `bench` scenario now records and prints why it stopped, so a report distinguishes an
-  unreachable robot from a check that actually failed.
-- `bench` no longer offers the stock-restore scenarios on a robot with no capture attested as
-  factory firmware, and its wrong-model probe now refuses correctly on an already-rooted robot
-  instead of recording a failure no healthy robot could avoid.
-- `bench campaign` now answers the questions it can work out for itself — recorded in the report
-  with the reason — and stops only for what you alone can settle. It groups scenarios by where you
-  have to be, names the step between one place and the next, and shows how far through it is.
-- Rekey bench scenarios generate their own SSH key per run instead of asking you to pick one that
-  the robot does not already authorize.
-- `bench plan` and `bench report` take `--suite` to scope them to what a release changed
-  (`smoke`, `key-recovery`, `lifecycle`, `restore`).
-- Choosing which SSH key reaches the robot now shows each key's type, fingerprint, and comment,
-  not just its path.
-- Steps needing the robot's Wi-Fi AP now wait for it and detect it, rather than asking whether you
-  have joined — a question that cannot see a VPN holding the robot's address.
-- Adopting a robot that was already rooted, and building an image for one, now say up front that the
-  key you upload will not take effect on it and point at `rekey`. Choosing to re-root in the hope of
-  regaining SSH access cost a destructive flash for nothing.
-- All persistent files now live under `~/dreame-valetudo/`, keeping disposable work apart from the
-  irreplaceable backups. Existing layouts migrate forward automatically, and the migration never
-  overwrites anything.
-- Recon now records where the complete three-slice recovery capture came from, writes it out as the
-  portable `dreame_recovery_backup.zip`, and keeps any trusted pre-root capture in place when you root
-  the robot later.
-- Release packages now require glibc 2.28 or newer, and are tested on deliberately picked oldest and
-  current Linux and macOS hosts, on both processor architectures.
-- The README now marks the X40 Ultra, X30 Ultra, and L10s Pro Ultra Heat R2338 as hardware verified.
-- Status and other informational commands no longer end with an unrelated continuation prompt, and
-  their output stays on screen after a tmux session closes.
-- The UART walkthrough now includes the known-good USB image, complete identity backup, exact
-  DustBuilder options, verified transfer, docking, and post-install success checks.
-- Recon now records the model it inspected, and rooting won't flash unless that record matches the
-  selected model, checked before the robot is touched at all. A robot whose recon completed under
-  0.2.x carries no such record, so run `recon --force` on it before rooting.
-- The Linux packages start faster and their arm64 builds are verified again: each frozen tool now
-  installs as a directory under `/usr/lib/dreame-valetudo`, reached through a symlink, instead of
-  unpacking itself on every run. Upgrading from an earlier package handles the change.
+- All persistent files now live under `~/dreame-valetudo/`. Existing layouts migrate automatically.
+- Recon records the model, and rooting refuses to flash unless it matches.
+- A robot whose recon ran under 0.2.x carries no model record. Run `recon --force` before rooting it.
+- Recon writes a portable `dreame_recovery_backup.zip` from the three-slice capture.
+- Adopting an already-rooted robot now says an uploaded key will not take effect, and points at `rekey`.
+- Linux packages start faster, installing as a directory instead of unpacking on every run.
+- Release packages require glibc 2.28 or newer.
+- The X40 Ultra, X30 Ultra and L10s Pro Ultra Heat R2338 are marked hardware verified.
 
 ### Fixed
 
-- USB work no longer needs the internet. A Homebrew install now carries the fastboot client's pyusb
-  itself, instead of fetching it on first use — which failed on the robot's own Wi-Fi AP, where
-  there is no internet and where the install actually runs. When it still cannot be prepared, the
-  error names the network rather than blaming libusb.
-- Answering "continue?" after a command failed now retries that command, instead of quietly running
-  the full setup chain and reporting every phase complete.
-- `rekey` over USB no longer announces a reboot it never confirmed: the request is sent without
-  acknowledgement, and a robot that reached fastboot over USB often stays off until its power button
-  is pressed. It now says so, and keeps waiting for the robot rather than judging the key against
-  whatever answered first — on a home network, that is the router.
-
-- `bench run rekey-over-usb` waits for you to bring the robot's Wi-Fi back before it judges
-  the key. The write reboots the robot, and the check that follows gave up long before a
-  robot could boot, so a key the robot had accepted was recorded as refused.
-- `bench` checks the implementation pin on the robot instead of asking whether the web UI
-  looks right. Valetudo never displays its implementation class, and one with a password
-  shows a login form first, so that question had no honest answer.
-- `fix-impl` no longer reports the web UI as down when it is up. The readiness check failed on any
-  HTTP error, so a Valetudo with authentication turned on — which answers 401 until you log in —
-  looked unreachable for the whole wait.
-- `bench` interrupts an install itself now, at each of the points one can be lost: the three backup
-  pulls, the deviceId and miio-key repairs, the binary copy, and the atomic rename. The factory
-  backup finishes in about a second on real hardware, so the scenarios that asked an operator to
-  pull Wi-Fi or press Ctrl+C at the right moment could never be satisfied. Do not interrupt those
-  two by hand any more.
-- Installing Valetudo and capturing a factory backup work again. Both checked the robot's identity
-  against `/mnt/private/ULI/factory/config.txt`, a file no Dreame robot has, so every run stopped at
-  that gate and no backup could ever be published. They now use the SoC id the robot really carries,
-  recorded the first time a robot is reached and required to match on every run after.
-- `bench` can now qualify the whole install path on one robot. Each install scenario used to require
-  that Valetudo had never been installed, so running any one of them made the rest unreachable for
-  good. A repeat run is refused only when it would downgrade the robot, and `bench report` marks it
-  as a reinstall so it is never mistaken for first-install coverage.
-- `rekey --over-ssh` now checks that the robot answers as Valetudo before asking for the serial,
-  so the password derived from it is not offered to your router when you are still on home Wi-Fi.
-- After a `rekey` write, a key refused by something that never identified itself as the robot is
-  now reported as unconfirmed instead of as the robot rejecting the key.
-- A refused serial now names the likelier cause first, using what actually answered rather than
-  always sending you back to the label under the dustbin.
-- Typing a different serial over the remembered one and having it refused no longer forgets the
-  remembered one, which had you fetching the robot to re-read a label that was never wrong.
-- `rekey --over-ssh` now asks before writing when the serial that authenticates is not the one
-  recorded for the selected robot, so joining the wrong robot's AP no longer silently rewrites its
-  keys. Confirming corrects the recorded serial.
-- Prompts that offer a value now say that Enter accepts it, instead of only bracketing it.
-- `rekey --over-ssh` no longer prints the whole "join the robot's AP" block twice in a row.
-- Repeating the FEL button sequence now reminds you the robot may have powered itself back on
-  while you were deciding, and must be fully off first.
-- `bench` no longer fails a rekey the robot actually accepted because the SSH key carries a
-  comment, which nearly every key does.
-- A `bench` question about what you physically saw now ignores anything typed before it was asked,
-  rather than taking a stray keypress as your answer.
-- A download that fails because you are on the robot's AP now waits for you to rejoin your normal
-  Wi-Fi and carries on, instead of ending the run.
-- When the robot's Wi-Fi AP can't be reached, the tool now names the most common cause it cannot
-  see: a VPN routing the robot's fixed address takes it before the robot ever does, and nothing
-  else about the connection looks wrong.
-- After a run pinned to one robot with `DREAME_ROBOT`, the follow-up question no longer offers to
-  set up another robot the environment has already ruled out.
-- Selecting text with the mouse now says "copied" and returns the pane to the prompt, instead of
-  leaving it in a copy mode that swallowed your answer to the question you just selected from.
-  Wheel scrolling is unaffected, and `DREAME_TMUX_MOUSE=off` still hands the mouse back entirely.
-- Destructive work now binds the selected model, staged image, saved config, live robot, and backup
-  together before writing. R2338/R2338H and L20 hardware look-alikes are matched exactly, ambiguous
-  USB setups stop, and every flash response must be `OKAY`.
-- Interrupted or rejected recon, root, restore, migration, image staging, and factory-backup work no
-  longer leaves partial state behind that could authorize a later write or overwrite a known-good
-  backup.
-- Closing a terminal or pressing Ctrl+Z during a flash no longer interrupts the write; uncertain
-  attempts stop safely instead of silently repeating, and completed stock flashes resume only their
-  physical boot check.
-- Robot SSH no longer falls back to a password or to unrelated agent keys. Factory backups are
-  checked before they're published, and the key, device-ID, Wi-Fi, and implementation repairs all
-  confirm the connected robot before changing anything on it.
-- Downloads and SSH transfers now time out instead of hanging, a verified cached Valetudo stays
-  usable on the offline robot AP, and the libusb transport streams large recovery and flash files
-  instead of loading them into memory whole.
-- Robot identities, keys, recovery data, state, and bench records are kept private; shareable logs
-  redact robot names, credentials, public keys, flash tokens, and other identifying values.
-- macOS packages now bundle all the FEL runtime libraries, Linux browser steps use `xdg-open`,
-  package updates and removals print native commands, and cutting a release backfills any missing or
-  mismatched assets across the project mirrors.
+- Installing Valetudo and capturing a factory backup work again. Both checked a file no Dreame robot has.
+- USB work no longer needs the internet, which the robot's own Wi-Fi does not have.
+- Answering "continue?" after a failure retries that command instead of running the whole setup chain.
+- Destructive work binds model, image, config, robot and backup together before writing.
+- Interrupted work no longer leaves partial state that could authorize a later write.
+- Closing a terminal or pressing Ctrl+Z during a flash no longer interrupts the write.
+- Robot SSH no longer falls back to a password or to unrelated agent keys.
+- `rekey --over-ssh` confirms the robot answers as Valetudo before using the serial-derived password.
+- `rekey --over-ssh` asks first when the serial does not match the selected robot.
+- `rekey` over USB no longer announces a reboot it never confirmed.
+- A refused serial names the likelier cause first, and no longer forgets the serial you saved.
+- `fix-impl` no longer reports the web UI as down when authentication is simply turned on.
+- An unreachable robot AP now names the usual cause: a VPN holding the robot's address.
+- Downloads and transfers time out instead of hanging, and a cached Valetudo works on the offline AP.
+- Shareable logs redact robot names, credentials, keys and flash tokens.
+- macOS packages bundle the FEL runtime libraries.
 
 ## [0.2.1] - 2026-07-24
 
