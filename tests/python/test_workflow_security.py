@@ -473,13 +473,25 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
         document = yaml.safe_load(path.read_text())
         for name, job in (document.get("jobs") or {}).items():
             steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
-            first_pip = next(
-                (
-                    i
-                    for i, step in enumerate(steps)
+            def installs_with_pip(step: dict[str, Any]) -> bool:
+                """`pip install` in any of its spellings.
+
+                pip3, `python -m pip`, flags between the two words, and backslash continuations all
+                carry the same PEP 668 risk, so matching the bare phrase would skip them.
+                """
+                body = "\n".join(
+                    line
                     for line in str(step.get("run", "")).splitlines()
-                    if "pip install" in line and not line.strip().startswith("#")
-                ),
+                    if not line.strip().startswith("#")
+                )
+                while "\\\n" in body:
+                    body = body.replace("\\\n", " ")
+                # Bounded to one shell command: `install` after a `;`, `&&`, `||` or a comment is a
+                # different program, and demanding a Python for it would be a false alarm.
+                return bool(re.search(r"\bpip3?\b[^;&|#\n]*\binstall\b", body))
+
+            first_pip = next(
+                (i for i, step in enumerate(steps) if installs_with_pip(step)),
                 None,
             )
             if first_pip is None:
