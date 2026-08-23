@@ -11,6 +11,21 @@
 # bash tests/release/release-scripts.sh
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"
+
+# This project's names, read the same way the scripts under test read them, so the fixtures below are
+# this repo's rather than a hardcoded sibling's. NAME is the repo and package name; DIST is the
+# distribution filename form, which PEP 625 spells with underscores; INITIAL is the letter PyPI files
+# its source under.
+# shellcheck source=/dev/null
+. "$root/packaging/project.env"
+
+# The give-up path is asserted below, and the real 300s CDN grace period would be paid on every
+# run of this suite in both projects, in ci.yml and in both release gates.
+export TAP_DOWNLOAD_WINDOW=2
+SLUG="$PROJECT_REPO_SLUG"
+NAME="${SLUG##*/}"
+DIST="${NAME//-/_}"
+INITIAL="${NAME:0:1}"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 calls="$tmp/curl.log"              # reset per scenario
 history="$tmp/curl-history.log"    # never reset: the global no-DELETE assertion reads this
@@ -86,11 +101,11 @@ STUB
 chmod +x "$tmp/curl"
 export PATH="$tmp:$PATH"
 export STUB_CALLS="$calls" STUB_HISTORY="$history" STUB_STATE="$state" STUB_REMOTE="$remote"
-export STUB_LOOKUPS="$lookups" STUB_ASSET="dreame-valetudo_amd64.deb"
+export STUB_LOOKUPS="$lookups" STUB_ASSET="${NAME}_amd64.deb"
 export STUB_MODE=absent STUB_PRERELEASE=false
 
 notes="$tmp/notes.md"; printf 'release notes\n' > "$notes"
-asset="$tmp/dreame-valetudo_amd64.deb"; printf 'intended asset bytes\n' > "$asset"
+asset="$tmp/${NAME}_amd64.deb"; printf 'intended asset bytes\n' > "$asset"
 
 publisher() {
   local forge=$1 mode=$2 expected=$3 tag=${4:-v9.9.9} output status
@@ -143,7 +158,7 @@ for forge in forgejo github; do
   publisher "$forge" create-race success
   [ "$(grep -c '/releases/tags/' "$calls")" -eq 2 ] \
     || fail "$forge did not recover when another publisher won release creation"
-  grep -Eq 'releases/999/assets\?name=dreame-valetudo_amd64\.deb' "$calls" \
+  grep -Eq 'releases/999/assets\?name='"$NAME"'_amd64\.deb' "$calls" \
     || fail "$forge did not upload through the concurrently created release"
 
   publisher "$forge" create success
@@ -161,21 +176,21 @@ echo "                        rejects, upload races, and create recovery OK (bot
 
 # ---- forge-specific endpoints: a wrong URL silently no-ops or 422s against the real API ----
 publisher forgejo create success
-grep -Eq 'forge\.example/api/v1/repos/SisyphusMD/dreame-valetudo/tags/v9\.9\.9' "$calls" \
+grep -Eq 'forge\.example/api/v1/repos/'"$SLUG"'/tags/v9\.9\.9' "$calls" \
   || fail "forgejo: no tag-wait call to the plain /tags endpoint"
-grep -Eq 'dreame-valetudo/releases([[:space:]]|$)' "$calls" \
+grep -Eq "$NAME"'/releases([[:space:]]|$)' "$calls" \
   || fail "forgejo: no release-create call to /releases"
-grep -Eq 'releases/999/assets\?name=dreame-valetudo_amd64\.deb.*-F attachment=@' "$calls" \
+grep -Eq 'releases/999/assets\?name='"$NAME"'_amd64\.deb.*-F attachment=@' "$calls" \
   || fail "forgejo: no multipart (-F attachment=@) upload to /releases/999/assets"
 
 publisher github create success
-grep -Eq 'api\.github\.com/repos/SisyphusMD/dreame-valetudo/git/ref/tags/v9\.9\.9' "$calls" \
+grep -Eq 'api\.github\.com/repos/'"$SLUG"'/git/ref/tags/v9\.9\.9' "$calls" \
   || fail "github: no exact tag-wait call to the singular git/ref/tags endpoint"
-! grep -Eq 'api\.github\.com/repos/SisyphusMD/dreame-valetudo/git/refs/tags/' "$calls" \
+! grep -Eq 'api\.github\.com/repos/'"$SLUG"'/git/refs/tags/' "$calls" \
   || fail "github: prefix-matching git/refs endpoint can accept an rc tag in place of stable"
-grep -Eq 'POST .*api\.github\.com/repos/SisyphusMD/dreame-valetudo/releases([[:space:]]|$)' "$calls" \
+grep -Eq 'POST .*api\.github\.com/repos/'"$SLUG"'/releases([[:space:]]|$)' "$calls" \
   || fail "github: no release-create POST to /releases"
-grep -Eq 'data-binary @.*uploads\.github\.com/repos/SisyphusMD/dreame-valetudo/releases/999/assets\?name=dreame-valetudo_amd64\.deb' "$calls" \
+grep -Eq 'data-binary @.*uploads\.github\.com/repos/'"$SLUG"'/releases/999/assets\?name='"$NAME"'_amd64\.deb' "$calls" \
   || fail "github: no data-binary upload to uploads.github.com"
 echo "  forge endpoints: tag-wait, create, and the two upload shapes hit the right URLs OK"
 
@@ -206,9 +221,13 @@ else
 # of the same source (which also proves the tarball is byte-reproducible).
 source_tree="$tmp/source-tree"
 mkdir -p "$source_tree"
-cp -R "$root/src" "$root/libexec" "$root/packaging" "$root/docs" "$source_tree/"
-cp "$root/pyproject.toml" "$root/uv.lock" "$root/README.md" "$root/LICENSE" "$root/CHANGELOG.md" \
-  "$source_tree/"
+# Only what both projects are guaranteed to have is required. `libexec/` and `uv.lock` exist in one
+# and deliberately not the other, and copying them unconditionally aborts the fixture under set -e for
+# the project that has neither, taking the whole tap section down with it.
+cp -R "$root/src" "$root/packaging" "$root/docs" "$source_tree/"
+cp "$root/pyproject.toml" "$root/README.md" "$root/LICENSE" "$root/CHANGELOG.md" "$source_tree/"
+if [ -d "$root/libexec" ]; then cp -R "$root/libexec" "$source_tree/"; fi
+if [ -f "$root/uv.lock" ]; then cp "$root/uv.lock" "$source_tree/"; fi
 # A git repo, because update-tap.sh builds the sdist from `git archive` of the tag rather than the
 # working tree — hatchling would otherwise sweep untracked neighbours into it and change the hash.
 git -C "$source_tree" init -q
@@ -242,7 +261,7 @@ build_expected() {
   python3 -m build --sdist --outdir "$tmp/expected-build" "$source_tree" >/dev/null
   # PEP 625: the sdist filename normalises `-` to `_`, and the version to PEP 440.
   pypi_v="$(printf '%s' "$1" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
-  mv "$tmp/expected-build/dreame_valetudo-$pypi_v.tar.gz" "$tmp/expected.tar.gz"
+  mv "$tmp/expected-build/${DIST}-$pypi_v.tar.gz" "$tmp/expected.tar.gz"
 }
 
 cat > "$tmp/curl" <<'STUB'
@@ -276,12 +295,12 @@ export TAP_PYPI="$tmp/expected.tar.gz"
 : > "$calls"
 bash "$source_tree/packaging/update-tap.sh" "v$version" "$tap" >/dev/null \
   || fail "update-tap.sh exited nonzero when both remotes served the locally built tarball"
-stable="$tap/Formula/dreame-valetudo.rb"
+stable="$tap/Formula/${NAME}.rb"
 digest="$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')"
 grep -Fq "sha256 \"$digest\"" "$stable" \
   || fail "formula checksum does not match an independent build of the same source"
 pypi_v="$(printf '%s' "$version" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
-grep -Fq "files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz" \
+grep -Fq "files.pythonhosted.org/packages/source/$INITIAL/$NAME/${DIST}-$pypi_v.tar.gz" \
   "$stable" || fail "stable formula does not build from the PyPI sdist"
 # The release-asset url and its GitHub mirror are what the sdist replaced. A formula carrying both
 # would be served two different archives against one checksum.
@@ -296,20 +315,23 @@ grep -Fq "files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetu
   || fail "stable formula retained an unsubstituted placeholder"
 # One copy to check now, and it is the one the formula names: the checksum must come from a local
 # build and be CONFIRMED against what PyPI actually serves, never taken from the download.
-grep -Fq "files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz" \
+grep -Fq "files.pythonhosted.org/packages/source/$INITIAL/$NAME/${DIST}-$pypi_v.tar.gz" \
   "$calls" || fail "update-tap did not verify the PyPI sdist the formula points at"
 
 # A stable tag also RE-POINTS the rc formula at the same stable tarball (fall-through), so the rc
 # brew channel keeps resolving after this version's superseded rc releases are pruned.
-rc_fallthrough="$tap/Formula/dreame-valetudo-rc.rb"
+rc_fallthrough="$tap/Formula/${NAME}-rc.rb"
 [ -f "$stable" ] && [ -f "$rc_fallthrough" ] \
   || fail "a stable tag must write BOTH the stable and the rc fall-through formula"
 for formula in "$stable" "$rc_fallthrough"; do
   grep -Fq "sha256 \"$digest\"" "$formula" \
     || fail "$formula checksum does not match the stable build"
-  grep -Fq "url \"https://files.pythonhosted.org/packages/source/d/dreame-valetudo/dreame_valetudo-$pypi_v.tar.gz\"" "$formula" \
+  grep -Fq "url \"https://files.pythonhosted.org/packages/source/$INITIAL/$NAME/${DIST}-$pypi_v.tar.gz\"" "$formula" \
     || fail "$formula does not point its url at the stable PyPI sdist"
-  ! grep -Eq 'REPLACE_(VERSION|TARBALL_SHA256)' "$formula" \
+  # Any marker, not a list of them. Naming the ones one project happens to use lets the other's
+  # spellings through, which is the same trap the checksum marker above avoids, and render-formula.sh
+  # already treats a leftover `REPLACE_` of any name as fatal.
+  ! grep -q 'REPLACE_' "$formula" \
     || fail "$formula retained an unsubstituted placeholder"
 done
 echo "  Homebrew formula: checksum from the local rebuild, PyPI confirmed to serve it OK"
@@ -337,9 +359,9 @@ build_expected "$next_rc"
 export TAP_PYPI="$tmp/expected.tar.gz"
 bash "$source_tree/packaging/update-tap.sh" "v$next_rc" "$tap" >/dev/null \
   || fail "update-tap.sh exited nonzero for a valid rc formula"
-rc="$tap/Formula/dreame-valetudo-rc.rb"
+rc="$tap/Formula/${NAME}-rc.rb"
 next_rc_pypi="$(printf '%s' "$next_rc" | sed -E 's/-rc\.([0-9]+)$/rc\1/')"
-grep -Fq "dreame_valetudo-$next_rc_pypi.tar.gz" "$rc" \
+grep -Fq "${DIST}-$next_rc_pypi.tar.gz" "$rc" \
   || fail "rc formula does not name the PEP 440 sdist for this candidate"
 grep -Fq "sha256 \"$(shasum -a 256 "$tmp/expected.tar.gz" | awk '{print $1}')\"" "$rc" \
   || fail "rc formula checksum does not match the rc source rebuild"
@@ -355,7 +377,7 @@ export TAP_PYPI="$tmp/expected.tar.gz"
 # painting a release red for behaving correctly.
 bash "$source_tree/packaging/update-tap.sh" "v$version-rc.1" "$tap" >/dev/null 2>&1 \
   || fail "update-tap.sh failed instead of skipping a stale pass"
-grep -Fq "dreame_valetudo-$next_rc_pypi.tar.gz" "$rc" \
+grep -Fq "${DIST}-$next_rc_pypi.tar.gz" "$rc" \
   || fail "the refused pass modified the formula anyway"
 echo "  Homebrew formula: a late pass for an older tag is refused, not published OK"
 stamp_version "$version"
@@ -366,9 +388,15 @@ if bash "$source_tree/packaging/update-tap.sh" v9.9.9-preview "$tmp/invalid-tap"
 fi
 [ ! -s "$calls" ] || fail "update-tap let an invalid tag reach a release registry"
 
-template="$source_tree/packaging/homebrew/dreame-valetudo.rb"
+template="$source_tree/packaging/homebrew/${NAME}.rb"
 cp "$template" "$tmp/template.rb"
-sed 's/REPLACE_TARBALL_SHA256/missing-checksum-placeholder/' "$tmp/template.rb" > "$template"
+# Read the marker out of the template rather than naming one project's spelling. render-formula.sh
+# accepts REPLACE_SDIST_SHA256 and REPLACE_TARBALL_SHA256 on purpose, because the two projects
+# describe their source archive differently, so hardcoding either makes this a no-op for the other
+# and the assertion below then passes against a template that was never actually broken.
+sha_marker="$(grep -o 'REPLACE_[A-Z]*_SHA256' "$tmp/template.rb" | head -1)"
+[ -n "$sha_marker" ] || fail "the formula template carries no sdist checksum placeholder"
+sed "s/$sha_marker/missing-checksum-placeholder/" "$tmp/template.rb" > "$template"
 build_expected "$version"
 export TAP_PYPI="$tmp/expected.tar.gz"
 if bash "$source_tree/packaging/update-tap.sh" "v$version" "$tmp/broken-tap" >/dev/null 2>&1; then
