@@ -42,5 +42,15 @@ jobs:
         run: |
           # The script itself fails closed on DRY_RUN: anything but an exact "false" is a preview, so
           # an API dispatch that omits the input, or passes it through unevaluated, cannot delete.
-          bash packaging/prune-rcs.sh \
-            || echo "::warning::prune-rcs exited nonzero; no stable release is affected"
+          #
+          # A nonzero exit is deliberately NOT swallowed here, though the automatic sweep in
+          # publish.yml does swallow one: there it could redden a release that already succeeded,
+          # while here nothing is being released.
+          #
+          # Be precise about what that buys, because the script's exit status is mixed by design.
+          # What it classes ::error:: — an unreadable package registry, a failed file listing, a
+          # transport error reading a stable — exits 1 and now reaches the maintainer. What it
+          # classes ::warning:: — an unreadable release listing, residue surviving delete+verify —
+          # exits 0. So green still does not prove anything was removed, and the warnings remain the
+          # real report; not swallowing is what makes the ::error:: half visible at all.
+          bash packaging/prune-rcs.sh
