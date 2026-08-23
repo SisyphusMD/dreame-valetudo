@@ -46,6 +46,21 @@ def _step(text: str, name: str) -> str:
     return text[start:] if end < 0 else text[start:end]
 
 
+def _is_soft(step: dict[str, Any]) -> bool:
+    """Whether a step's failure is swallowed.
+
+    Anything but an absent or literally-false setting counts: `continue-on-error: ${{ true }}` is a
+    valid spelling that reaches PyYAML as a string, so an identity test against True reads a swallowed
+    step as fail-hard.
+    """
+    setting = step.get("continue-on-error")
+    if setting is None or setting is False:
+        return False
+    # `${{ false }}` is a valid spelling that evaluates to false. Reading every expression as soft
+    # would reject a fail-hard step rather than catch a swallowed one.
+    return str(setting).replace(" ", "") not in {"${{false}}", "false", "False"}
+
+
 def _triggers(document: dict[str, Any]) -> dict[str, Any]:
     """A workflow's `on:` block. PyYAML resolves the bare key `on` to the boolean True."""
     return document.get(True, document.get("on"))  # type: ignore[return-value]
@@ -469,7 +484,14 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
     a job that had worked for months — and on the publish path that lands mid-release, after the
     version is tagged and PyPI already has the upload.
     """
-    for path in _FORGEJO:
+    # BOTH forges. The GitHub half builds and publishes the macOS and arm64 assets, so the same
+    # externally-managed interpreter can stop a release there just as easily.
+    workflows = list(_FORGEJO) + sorted(
+        list((_ROOT / ".github" / "workflows").glob("*.yml"))
+        + list((_ROOT / ".github" / "workflows").glob("*.yaml"))
+    )
+    assert workflows, "no workflows found to check"
+    for path in workflows:
         document = yaml.safe_load(path.read_text())
         for name, job in (document.get("jobs") or {}).items():
             steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
@@ -480,7 +502,7 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
                 carry the same PEP 668 risk, so matching the bare phrase would skip them.
                 """
                 body = "\n".join(
-                    line
+                    line.split(" #", 1)[0]
                     for line in str(step.get("run", "")).splitlines()
                     if not line.strip().startswith("#")
                 )
@@ -520,13 +542,13 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
             soft_ids = {
                 str(step.get("id"))
                 for step in steps[:first_pip]
-                if sets_up_python(step) and step.get("continue-on-error") is True and step.get("id")
+                if sets_up_python(step) and _is_soft(step) and step.get("id")
             }
             protected = False
             for step in steps[:first_pip]:
                 if not sets_up_python(step):
                     continue
-                if step.get("continue-on-error") is True:
+                if _is_soft(step):
                     continue
                 condition = str(step.get("if", ""))
                 if not condition:
@@ -539,6 +561,17 @@ def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
                 if any(normalized == f"steps.{i}.outcome!='success'" for i in soft_ids):
                     protected = True
                     break
+            # The pip step must not outlive a failed setup either. Only the conditions that SURVIVE
+            # a failure are rejected: `success()`, or a check that the setup itself succeeded, keeps
+            # the guarantee, and rejecting every condition would fail safe edits.
+            pip_condition = str(steps[first_pip].get("if", "")).replace(" ", "")
+            survives_failure = any(
+                token in pip_condition for token in ("always()", "failure()", "cancelled()")
+            )
+            assert not survives_failure, (
+                f"{path.name}::{name} runs its pip step under {pip_condition!r}, which executes even "
+                f"when the setup-python meant to guarantee the interpreter has failed"
+            )
             assert protected, (
                 f"{path.name}::{name} pip-installs with no setup-python that can fail the job: a "
                 f"swallowed attempt and a retry gated on something other than its outcome both "
