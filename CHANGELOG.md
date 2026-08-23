@@ -44,6 +44,7 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 - `rekey --over-ssh` confirms the robot answers as Valetudo before using the serial-derived password.
 - `rekey --over-ssh` asks first when the serial does not match the selected robot.
 - `rekey` over USB no longer announces a reboot it never confirmed.
+- Release candidates are told when a newer candidate is out, and how to move to it.
 - A refused serial names the likelier cause first, and no longer forgets the serial you saved.
 - `fix-impl` no longer reports the web UI as down when authentication is simply turned on.
 - An unreachable robot AP now names the usual cause: a VPN holding the robot's address.
