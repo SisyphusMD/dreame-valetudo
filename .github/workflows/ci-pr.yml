@@ -83,7 +83,7 @@ jobs:
         with:
           # The oldest interpreter pyproject advertises — the one a user on a long-term distro
           # actually gets, and the one nothing else here exercises.
-          python-version: "3.11.16"
+          python-version: "3.14.7"
       - name: install and test the claimed source floor
         run: |
           set -euo pipefail
