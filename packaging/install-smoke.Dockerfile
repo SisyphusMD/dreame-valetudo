@@ -164,7 +164,9 @@ COPY --from=deb-file-ubuntu-floor /passed /passed
 # --- RPM family ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=rocky-9-current packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f AS rpm-base
-RUN set -eux; dnf install -y -q curl >/dev/null
+# --allowerasing: the base image ships curl-minimal, which PROVIDES curl and therefore conflicts
+# with it. Without this dnf refuses the transaction rather than swapping the two.
+RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 
 FROM rpm-base AS rpm-file
