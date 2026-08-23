@@ -5,14 +5,20 @@
 # a postUpgradeTask, this puts the digest in the same commit as the version, which is what lets a
 # bump go green and automerge instead of waiting for someone to paste a checksum in by hand.
 #
-# Written for the Renovate container as much as for a developer: no python3 (that image is
-# Node-based and need not carry one), no GNU-only sed flags, and both sha256 spellings.
+# Written for the Renovate container as much as for a developer: no GNU-only sed flags, and both
+# sha256 spellings. The digest work below stays in pure shell so it survives a leaner image than
+# the one pinned today; only the re-vendor step needs python3, and it checks for one itself.
 #
 # Refuses to write a digest it could not download. A pin invented after a failed fetch would make
 # every later build verify against nothing.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# FIRST, because it can replace every other script in packaging/ — including this one. Renovate can
+# raise the PROJECT_STANDARD pin but cannot fetch the tag it now names, so without this the pin and
+# the vendored files disagree and the drift lock fails the PR.
+bash packaging/revendor-standard.sh
 CONSTANTS="src/dreame_valetudo/constants.py"
 BREW_FORMULAE="packaging/homebrew"
 

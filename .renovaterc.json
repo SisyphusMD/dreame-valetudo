@@ -15,7 +15,13 @@
     ],
     "fileFilters": [
       "src/dreame_valetudo/constants.py",
-      "packaging/homebrew/*.rb"
+      "packaging/homebrew/*.rb",
+      "STANDARD.lock",
+      "packaging/release-pins.env",
+      ".editorconfig",
+      ".github/PULL_REQUEST_TEMPLATE.md",
+      "packaging/**",
+      "tests/release/**"
     ],
     "executionMode": "branch"
   },
@@ -320,7 +326,7 @@
       "enabled": false
     },
     {
-      "description": "The shared standard lives on the self-hosted Forgejo, so the gitea-tags datasource has to be told which host to ask; there is no public registry to infer it from. Held for review rather than automerged: a bumped pin only says a new standard EXISTS, and the vendored files are re-synced by a separate act, so a human has to land both together.",
+      "description": "The shared standard lives on the self-hosted Forgejo, so the gitea-tags datasource has to be told which host to ask; there is no public registry to infer it from. Held for review rather than automerged: the post-upgrade task re-vendors the files on the branch, so the PR is complete, but a standard bump can change release machinery and that is worth a human read before it lands.",
       "matchDepNames": [
         "SisyphusMD/project-standard"
       ],
@@ -329,7 +335,7 @@
       ],
       "automerge": false,
       "prBodyNotes": [
-        "CI cannot reach this: the pin records which standard version this repo SHOULD carry, but nothing in this repo re-vendors the files. Run `tools/vendor.py` in project-standard for BOTH consumers and land them together, or the invariant test will refuse the mismatch."
+        "`refresh-pins.sh` re-vendors the standard at this tag on this branch, so the files and the lock should already agree with the pin. If the drift check still fails, the re-vendor did not run - check the task's output rather than re-vendoring by hand, because a manual fix here hides a broken automation."
       ]
     },
     {
