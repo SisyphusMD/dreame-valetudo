@@ -23,8 +23,10 @@ on:
 
 concurrency:
   # Deduplicate only the same tag. A single global group keeps just one pending run, so a later tag
-  # can otherwise displace an earlier tag's still-pending publication and leave it assetless.
-  group: publish-${{ github.ref_name }}
+  # can otherwise displace an earlier tag's still-pending publication and leave it assetless. The
+  # FULL ref, because `ref_name` drops refs/heads and refs/tags alike: a branch sharing a tag's
+  # name would land in the same group, and publish.yml is dispatchable.
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 

@@ -16,7 +16,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Forgejo has no rerun API, so a fault outside this repository - a runner losing the network,
+  # a hosted action failing to fetch its own manifest - leaves main red with no way back except
+  # an unrelated commit, which is a lie in the history about what changed and why.
+  workflow_dispatch:
 
+concurrency:
+  # Per ref, and superseding: a second push to the same branch makes the first run's answer
+  # irrelevant, and letting it finish only competes for runners with the run that matters.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shellcheck:
