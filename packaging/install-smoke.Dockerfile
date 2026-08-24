@@ -162,7 +162,7 @@ FROM scratch AS deb-file-ubuntu-floor-result
 COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # --- RPM family ---------------------------------------------------------------------------
-# renovate: datasource=docker depName=rocky-9-current packageName=rockylinux/rockylinux
+# renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f AS rpm-base
 # --allowerasing: the base image ships curl-minimal, which PROVIDES curl and therefore conflicts
 # with it. Without this dnf refuses the transaction rather than swapping the two.

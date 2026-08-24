@@ -438,25 +438,23 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
     assert digest.group(1) in _CI.read_text()
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    # BOTH smoke Dockerfiles: install-smoke.Dockerfile carries the synthetic depNames whose
-    # allowedVersions rules pin the compatibility floors, and the built-in dockerfile manager
-    # would see a plain `debian` instead and let those floors drift in their own PR.
-    disabled = [
-        rule
-        for rule in config["packageRules"]
-        if rule.get("matchManagers") == ["dockerfile"]
-        and "packaging/package-smoke.Dockerfile" in rule.get("matchFileNames", [])
-    ]
-    assert len(disabled) == 1
-    assert disabled[0]["enabled"] is False
-    assert "packaging/install-smoke.Dockerfile" in disabled[0]["matchFileNames"]
+    # The built-in dockerfile manager must not run at all. It reads a plain `debian` where the
+    # annotations declare `debian-12-compat`, so with both active one file yields two dependencies
+    # under two names, and the allowedVersions rules that hold the compatibility floors apply to
+    # only one of them — the floor drifts in a PR of its own that looks entirely reasonable.
+    assert "dockerfile" not in config["enabledManagers"], config["enabledManagers"]
 
-    annotated = [
+    # Asserted by matching, not by spelling: a manager that reads this file through a directory
+    # glob covers it just as well as one that names it, and naming it was never the point.
+    covered = [
         m
         for m in config["customManagers"]
-        if any("install-smoke" in pattern for pattern in m.get("managerFilePatterns", []))
+        if any(
+            re.search(pattern.strip("/"), "packaging/install-smoke.Dockerfile")
+            for pattern in m.get("managerFilePatterns", [])
+        )
     ]
-    assert annotated, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
+    assert covered, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
 
 
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
