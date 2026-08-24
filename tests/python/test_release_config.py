@@ -220,8 +220,23 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     assert ".github/workflows/ci-macos.yml" in forgejo
     assert 'github.event.pull_request.head.repo.full_name == github.repository' in forgejo
     assert 'os.environ["GITHUB_EVENT_PATH"]' in forgejo
+    # Or the repository token sits in git config while a script from a PR-controlled ref
+    # runs beside it. The release mirror gate withholds it for the same reason.
+    assert "persist-credentials: false" in forgejo, (
+        "the gate's checkout leaves the repository token in git config"
+    )
     assert '["pull_request"]["head"]["sha"]' in forgejo
-    assert "secrets." not in forgejo
+    # WRITE is the property, not "no secrets": reading public run conclusions needs a scopeless
+    # token, and going without one shares a 60-request hour with everything else leaving this
+    # network - including the sibling's copy of this gate - which turns a fine commit into a
+    # timeout. What must never appear here is anything that could write.
+    # Case-insensitive: secret expressions are not required to be shouted, and a
+    # `secrets.write_pat` that this missed would be a silently unguarded credential.
+    for secret in re.findall(r"secrets\.([A-Za-z_0-9]+)", forgejo):
+        assert secret.upper() == "GH_REPO_READ_PAT", (
+            f"the macos gate takes {secret}; it runs on every push and needs only to READ "
+            "public run conclusions"
+        )
     assert "macos-15\n" in macos
     assert "macos-15-intel" in macos
     assert "macos-26\n" in macos
