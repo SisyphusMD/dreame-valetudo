@@ -499,6 +499,12 @@ How the tool handles your SSH key and the scrubbed run log is in [How it works](
 · [dustbuilder](https://builder.dontvacuum.me)
 · [gen3 rooting deep-dive (PDF)](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf)
 
+## Support development
+
+If dreame-valetudo is useful to you and you would like to chip in: [buymeacoffee.com/sisyphusmd](https://buymeacoffee.com/sisyphusmd). Donations are
+entirely optional and change nothing about the project. Everything here is free and
+GPL-3.0-or-later.
+
 ---
 
 The software is provided "as is", without warranty of any kind; see [LICENSE](LICENSE). It is not
