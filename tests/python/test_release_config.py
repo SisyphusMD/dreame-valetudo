@@ -1594,3 +1594,68 @@ def test_dependencies_that_move_together_are_reviewed_together() -> None:
     tags = re.findall(r"manylinux_2_28_(?:x86_64|aarch64):([0-9.]+-\d+)@sha256:", (_PINS).read_text())
     assert len(tags) == 2, f"expected both manylinux pins, found {len(tags)}"
     assert tags[0] == tags[1], f"the two arches are pinned to different builder releases: {tags}"
+
+def test_homebrew_bottles_come_from_the_mirror_where_it_is_reachable() -> None:
+    """Homebrew fetches bottles with its own HTTPS client, so neither dockerd's registry mirror nor
+    BuildKit's applies to them - and they are the bulk of what these jobs download.
+
+    It has to be ARTIFACT_DOMAIN. `HOMEBREW_BOTTLE_DOMAIN` makes Homebrew request a legacy flat file
+    (`.../oniguruma-6.9.10.x86_64_linux.bottle.tar.gz`) that an OCI registry does not serve, so every
+    bottle 404s and falls back upstream: configured, and mirroring nothing. ARTIFACT_DOMAIN rewrites
+    only the scheme and host and keeps `/v2/homebrew/core/...`, which is why the registry serves that
+    namespace at its root rather than under the usual per-upstream one.
+
+    Self-hosted only. The hosted runners are not on that network, and pointing them at it buys a
+    timeout before the fallback rather than a cache hit.
+    """
+    for name in ("packaging/install-smoke.Dockerfile", "packaging/homebrew-smoke.Dockerfile"):
+        text = (_ROOT / name).read_text()
+        assert "ARG BREW_MIRROR=" in text, f"{name} cannot receive a mirror"
+        # Setting ARTIFACT_DOMAIN makes Homebrew drop the anonymous `Bearer QQ==` it would
+        # otherwise send to ghcr.io, so a bottle the mirror cannot serve falls back and gets a 401
+        # instead. That is what reverted this the first time, and nothing else in the file says so.
+        assert "HOMEBREW_DOCKER_REGISTRY_TOKEN" in text, (
+            f"{name} sets a mirror without restoring the anonymous ghcr credential, so any mirror "
+            "miss 401s on fallback instead of downloading the bottle"
+        )
+        assert "HOMEBREW_CURL_RETRIES" in text, (
+            f"{name} sets a mirror without raising the retry budget, so a cold entry expires "
+            "before the registry finishes syncing it"
+        )
+        assert 'export HOMEBREW_ARTIFACT_DOMAIN="$BREW_MIRROR"' in text, (
+            f"{name} must export ARTIFACT_DOMAIN when a mirror was given"
+        )
+        assert '[ -z "$BREW_MIRROR" ] ||' in text, (
+            f"{name} must export nothing when no mirror was given"
+        )
+        assert "HOMEBREW_BOTTLE_DOMAIN" not in text, (
+            f"{name} uses BOTTLE_DOMAIN, which an OCI registry cannot serve"
+        )
+
+    def mirrored(path: Path) -> bool:
+        for job in yaml.safe_load(path.read_text())["jobs"].values():
+            for step in job.get("steps") or []:
+                if "BREW_MIRROR" in (step.get("env") or {}):
+                    return True
+                if "BREW_MIRROR=" in str(step.get("run", "")):
+                    return True
+        return False
+
+    forgejo = _ROOT / ".forgejo" / "workflows"
+    assert mirrored(forgejo / "install-matrix.yml"), "the self-hosted matrix does not mirror bottles"
+
+    # Every self-hosted build of the formula smoke, found rather than listed: the release path
+    # builds it a second time, and a fixed list would have passed while that one bypassed the
+    # mirror to pull the same rust and llvm bottles again.
+    for path in sorted(forgejo.glob("*.yml")):
+        document = yaml.safe_load(path.read_text())
+        for job, spec in (document.get("jobs") or {}).items():
+            for step in spec.get("steps") or []:
+                if "homebrew-smoke.Dockerfile" not in str(step.get("run", "")):
+                    continue
+                assert "BREW_MIRROR=" in str(step["run"]), (
+                    f"{path.name}:{job} builds the formula smoke without the mirror"
+                )
+    assert not mirrored(_ROOT / ".github" / "workflows" / "install-matrix.yml"), (
+        "a hosted runner was pointed at a mirror it cannot reach"
+    )
