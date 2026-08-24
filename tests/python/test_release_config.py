@@ -1393,3 +1393,51 @@ def test_every_inline_shellcheck_pin_matches_the_vendored_script() -> None:
             f"{relative} pins a different shellcheck image than the vendored script; the pin is "
             "owned by the standard, so re-vendor and update every inline copy together"
         )
+
+
+def test_every_install_matrix_fetch_retries_and_stays_portable() -> None:
+    """A single-attempt download makes the matrix only as reliable as one DNS lookup.
+
+    Not hypothetical: a candidate's macOS leg died on `Could not resolve host: astral.sh`, and the
+    infra-retry workflow rightly declined to rescue it — the failure was inside one of our own
+    steps, which is exactly what that workflow refuses to launder into green.
+
+    curl's `--retry` does NOT cover a name-resolution failure; only `--retry-all-errors` does, and
+    that arrived in curl 7.71 while Rocky 8 ships 7.61 and rejects the option outright. So the
+    container fetches retry in the shell, through `fetch.sh`, which every stage carries. The uv
+    installer is the one exception: it runs on GitHub runners and Debian-family images where the
+    flag exists — and it is written to a file first, because curl cannot rewind a pipe on retry.
+    """
+    dockerfile = _ROOT / "packaging" / "install-smoke.Dockerfile"
+    text = dockerfile.read_text()
+
+    assert (_ROOT / "packaging" / "fetch.sh").is_file(), "the retrying fetch helper is missing"
+
+    # Every stage that can smoke can also fetch.
+    smoke = text.count("COPY packaging/installed-smoke.sh /smoke.sh")
+    helper = text.count("COPY packaging/fetch.sh /fetch")
+    assert smoke == helper, f"{smoke} stages carry the smoke script but {helper} carry fetch.sh"
+
+    raw = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not re.search(r"\bcurl\s+-[A-Za-z]+\s", line):
+            continue
+        if "astral.sh/uv/install.sh" in line:
+            assert "--retry-all-errors" in line, f"install-smoke.Dockerfile:{number} cannot retry DNS"
+            assert "| sh" not in line, f"install-smoke.Dockerfile:{number} pipes a retryable body to sh"
+            continue
+        raw.append(f"install-smoke.Dockerfile:{number}")
+    assert not raw, f"fetches raw instead of through /fetch, so a DNS blip is fatal: {raw}"
+
+    for name in (".github/workflows/install-matrix.yml", ".forgejo/workflows/install-matrix.yml"):
+        path = _ROOT / name
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if not re.search(r"\bcurl\s+-[A-Za-z]+\s", line):
+                continue
+            # These run on hosted runners only, never on the old curl the containers must
+            # tolerate, so the flag that actually covers a failed DNS lookup is required here.
+            assert "--retry-all-errors" in line, f"{path.name}:{number} cannot retry a DNS failure"
+            assert re.search(r"--retry(?:\s|=)\d", line), f"{path.name}:{number} does not retry"
+            assert "| sh" not in line, f"{path.name}:{number} pipes a retryable body to sh"
