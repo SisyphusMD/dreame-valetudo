@@ -255,7 +255,13 @@ jobs:
           # public repo and lifts the limit to 5,000/hour. Absent, this still works, just slowly.
           # The job holds no WRITE credential either way, which is the property that matters.
           MIRROR_CI_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
-        run: bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/ci-macos.yml
+        # Both, not just one: the formula check proves the macOS install and the CI matrix
+        # proves the library's own tests run on a Mac, and gating on either alone lets a release
+        # be cut from a commit the other found red. Named by file: a display name is prose, and a
+        # reworded one would match no runs and read as "not delivered yet".
+        run: |
+          bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/formula-macos.yml
+          bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/ci-macos.yml
 
   tag:
     name: Authorize and push release tag

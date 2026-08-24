@@ -1,0 +1,79 @@
+name: Homebrew formula (macOS)
+
+# Split out of ci-macos.yml on purpose. That workflow cancels superseded runs,
+# which is right for a fast test matrix and WRONG for this: the release gate
+# (`mirror-gate` in the Forgejo release workflows) refuses to tag until this
+# workflow is green on the commit being released, and a cancelled run counts as
+# not-green. Under the shared policy, any push landing during a release cut
+# killed the very run the release was waiting on.
+#
+# So: keyed per COMMIT, and never cancelled. Each commit's verdict stands on its
+# own and survives whatever lands after it.
+
+on:
+  # Same breadth as ci-macos.yml: a prerelease can be dispatched from any branch,
+  # and `mirror-gate` then has nothing to read for that commit — it would wait the
+  # full timeout and fail a release that was never actually broken.
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: formula-macos-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  formula:
+    name: Homebrew formula builds and runs (macOS)
+    # The only other formula check runs inside linuxbrew Docker, so it proves the
+    # resource closure and nothing about macOS. This formula compiles C on the
+    # installing machine: `sunxi-tools` is staged and built with `make sunxi-fel`
+    # against libfdt and zlib, so a macOS-only compile or link failure is reachable
+    # here and nowhere else in pre-tag CI. Bottles cover the same ground, but only
+    # after a tag exists — which is too late to stop the tag.
+    #
+    # ONE lane, and that is a real limit: this proves current arm64 only, while the
+    # tag-time bottle build covers `macos-15` and `macos-15-intel` too. A native break
+    # specific to Intel or to the macOS floor still reaches a tag. Widening this to that
+    # matrix triples the most expensive runners on every push, so it is a cost decision
+    # rather than an oversight — and the sibling's formula job has the same single lane
+    # for the same reason.
+    # A same-repo PR branch already ran on `push` above, and that is the run the release
+    # gate reads (check-mirror-ci.sh queries event=push only), so a pull_request run for
+    # the same commit decides nothing the gate will ever look at. Fork PRs never fire
+    # push in this repository, so for them the pull_request run is the ONLY coverage and
+    # has to survive the filter.
+    #
+    # This is not free, and the cost is worth naming: the two runs are not identical, as
+    # `pull_request` checks out the synthetic merge of head into base while `push` checks
+    # the head. What is given up is macOS coverage of that merge BEFORE it lands, not of
+    # the merged code — `branches: ["**"]` includes main, so the merge commit is tested
+    # the moment it arrives. Keeping the PR run instead of the push run is not an option:
+    # a prerelease can be dispatched from any branch and the gate would find no
+    # event=push run for that commit at all.
+    if: >-
+      ${{ github.server_url == 'https://github.com'
+      && (github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name != github.repository) }}
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install the rendered formula and run it
+        # The runner is disposable, which is the condition test-homebrew-formula.sh
+        # asks for. It builds its own tarball from this checkout, so no sdist has to
+        # be staged first and any commit can be tested.
+        #
+        # The tag has to match pyproject, because the script asserts the installed CLI
+        # reports it. That means the STABLE formula is the one exercised here; the rc
+        # formula carries a byte-identical dependency and install block, and the Linux
+        # smoke covers it at publish time.
+        run: |
+          set -euo pipefail
+          version="$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")"
+          bash packaging/test-homebrew-formula.sh "v${version}"

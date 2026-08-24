@@ -25,6 +25,7 @@ on:
   workflow_run:
     workflows:
       - "CI (macOS)"
+      - "Homebrew formula (macOS)"
       - "CI (pull requests)"
       - "Bottles (Homebrew)"
       - "Install matrix (macOS + Linux arm64)"
