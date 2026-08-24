@@ -53,7 +53,8 @@ esac
 echo "installing from the '$DIST' distribution, for $PLATFORM"
 
 CHANNELS=(
-  deb-file deb-lifecycle deb-file-github deb-file-floor deb-file-ubuntu-floor rpm-file
+  deb-file deb-lifecycle deb-file-github deb-file-floor deb-file-ubuntu-floor deb-file-ubuntu
+  rpm-file rpm-file-floor rpm-file-fedora
   apt-repo dnf-repo zypper zypper-floor tarball uv-tool pipx
 )
 # The bottle is poured on x86_64 only: the linuxbrew image has no arm64 build, and the arm64 bottle
