@@ -28,7 +28,6 @@
   "enabledManagers": [
     "pep621",
     "github-actions",
-    "dockerfile",
     "custom.regex"
   ],
   "github-actions": {
@@ -47,7 +46,7 @@
         "/^packaging/release-pins\\.env$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>pypi|github-releases|github-tags|gitea-tags) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
+        "# renovate: datasource=(?<datasource>pypi|python-version|github-releases|github-tags|gitea-tags) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?[:=]=?\\s*\"?(?<currentValue>\\d[\\w.-]*)"
       ]
     },
     {
@@ -82,8 +81,7 @@
       "managerFilePatterns": [
         "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/",
         "/^packaging/release-pins\\.env$/",
-        "/^packaging/package-smoke\\.Dockerfile$/",
-        "/^packaging/install-smoke\\.Dockerfile$/"
+        "/^packaging/.+\\.Dockerfile$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?\\s+[^\\n]*?:(?<currentValue>[\\w][\\w.-]*)@(?<currentDigest>sha256:[0-9a-f]+)"
@@ -106,17 +104,6 @@
       "addLabels": [
         "docker"
       ]
-    },
-    {
-      "description": "The smoke Dockerfiles' base images are claimed by the annotation-driven regex manager so they stay one dependency with ci.yml's qualification pin. install-smoke.Dockerfile carries the synthetic depNames (debian-13-current, debian-12-floor, ...) whose allowedVersions rules pin the compatibility floors; the built-in manager would see a plain `debian` instead and let those floors drift. Left enabled, the built-in dockerfile manager would also claim it as a separate `ubuntu` dep that updates in its own PR \u2014 and since publish.yml is the only thing that builds this file, that PR would automerge on a CI run that never touched it.",
-      "matchManagers": [
-        "dockerfile"
-      ],
-      "matchFileNames": [
-        "packaging/package-smoke.Dockerfile",
-        "packaging/install-smoke.Dockerfile"
-      ],
-      "enabled": false
     },
     {
       "description": "The Debian 12 and Ubuntu 22.04 legs are compatibility floors, not current-release aliases; Renovate still refreshes their immutable digests.",

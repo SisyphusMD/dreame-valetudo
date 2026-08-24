@@ -1,3 +1,4 @@
+# renovate: datasource=docker depName=homebrew/brew
 FROM homebrew/brew:latest@sha256:b0072bfdebf5934ae24b93b44a1928a88057399b3283ffa0177bb86084fdedfd AS smoke
 
 # build-tarball.sh rebuilds the source tarball via python3 to verify the formula digest; the brew

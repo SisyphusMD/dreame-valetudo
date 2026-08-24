@@ -161,8 +161,24 @@ RUN set -eux; \
 FROM scratch AS deb-file-ubuntu-floor-result
 COPY --from=deb-file-ubuntu-floor /passed /passed
 
+# renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
+FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS ubuntu-base
+RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+COPY packaging/installed-smoke.sh /smoke.sh
+
+FROM ubuntu-base AS deb-file-ubuntu
+ARG V PV DL ARCH_DEB
+RUN set -eux; \
+    curl -fsSL -o /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
+    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    bash /smoke.sh dreame-valetudo "$V"; \
+    touch /passed
+
+FROM scratch AS deb-file-ubuntu-result
+COPY --from=deb-file-ubuntu /passed /passed
+
 # --- RPM family ---------------------------------------------------------------------------
-# renovate: datasource=docker depName=rocky-9-current packageName=rockylinux/rockylinux
+# renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f AS rpm-base
 # --allowerasing: the base image ships curl-minimal, which PROVIDES curl and therefore conflicts
 # with it. Without this dnf refuses the transaction rather than swapping the two.
@@ -180,6 +196,46 @@ RUN set -eux; \
     touch /passed
 FROM scratch AS rpm-file-result
 COPY --from=rpm-file /passed /passed
+
+# --- the same .rpm, on the oldest and newest RPM distros the floor promises ---------------
+# One .rpm ships for every RPM distro, so installing it on exactly one of them proves the least
+# it could. Rocky 8 is the floor and Fedora is the newest; a package that installs on Rocky 9 can
+# still fail on either, and until these existed nothing here would have noticed.
+# renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
+FROM rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6 AS rpm-floor-base
+RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/installed-smoke.sh /smoke.sh
+
+FROM rpm-floor-base AS rpm-file-floor
+ARG V PV DL ARCH_RPM
+RUN set -eux; \
+    curl -fsSL -o /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
+    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
+    SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
+      bash /smoke.sh dreame-valetudo "$V"; \
+    touch /passed
+
+FROM scratch AS rpm-file-floor-result
+COPY --from=rpm-file-floor /passed /passed
+
+# renovate: datasource=docker depName=fedora-44-current packageName=fedora
+FROM fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898 AS fedora-base
+RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/installed-smoke.sh /smoke.sh
+
+FROM fedora-base AS rpm-file-fedora
+ARG V PV DL ARCH_RPM
+RUN set -eux; \
+    curl -fsSL -o /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
+    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
+    SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
+      bash /smoke.sh dreame-valetudo "$V"; \
+    touch /passed
+
+FROM scratch AS rpm-file-fedora-result
+COPY --from=rpm-file-fedora /passed /passed
 
 # --- the dnf repository, and the signature it is supposed to verify ----------------------
 # `gpgcheck=1` with only OUR key listed is the whole security property of this channel, so the

@@ -296,19 +296,31 @@ def test_python_version_bumps_wait_for_the_setup_python_manifest() -> None:
 
 
 def test_pinned_toolchain_matches_the_lockfile() -> None:
-    ci = _CI.read_text()
+    """EVERY workflow that names a version, not just the one this test used to read.
+
+    The literal appears in five workflow files across two forges. Checking one of them left the
+    other four free to drift, and one of them did: a Renovate bump landed the new ruff in the
+    Forgejo workflows, `pyproject.toml` and `uv.lock`, while GitHub's `ci-pr.yml` kept linting pull
+    requests with the previous release. Nothing failed, because nothing compared them.
+    """
+    workflows = sorted(
+        [*(_ROOT / ".forgejo" / "workflows").glob("*.yml"),
+         *(_ROOT / ".github" / "workflows").glob("*.yml")]
+    )
     lock = (_ROOT / "uv.lock").read_text()
     project = (_ROOT / "pyproject.toml").read_text()
-    for package, var in (("ruff", "RUFF"), ("mypy", "MYPY"), ("pytest", "PYTEST")):
-        pin = re.search(rf'{var}="([^"]+)"', ci)
+    for package, var in (("ruff", "RUFF"), ("mypy", "MYPY"), ("pytest", "PYTEST"),
+                         ("pytest-cov", "PYTEST_COV"), ("pyyaml", "PYYAML")):
         locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
         declared = re.search(rf'"{package}==([^"]+)"', project)
-        assert pin is not None and locked is not None, package
-        # CI installs the literal; `uv run` resolves the lock. Contributors lint with whatever
-        # these disagree on, and no other check compares them.
-        assert pin.group(1) == locked.group(1), (
-            f"{package}: CI installs {pin.group(1)}, uv.lock resolves {locked.group(1)}"
-        )
+        assert locked is not None, package
+
+        for workflow in workflows:
+            for literal in re.findall(rf'{var}="([^"]+)"', workflow.read_text()):
+                assert literal == locked.group(1), (
+                    f"{package}: {workflow.name} installs {literal}, "
+                    f"uv.lock resolves {locked.group(1)}"
+                )
         # An `==` pin, not a floor: a floor is permanently satisfied, so pep621 raises nothing and
         # the lock never follows the literal Renovate does move. This is what makes one PR able to
         # carry all three, so it is pinned here rather than left to the config comment.
@@ -438,25 +450,23 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
     assert digest.group(1) in _CI.read_text()
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
-    # BOTH smoke Dockerfiles: install-smoke.Dockerfile carries the synthetic depNames whose
-    # allowedVersions rules pin the compatibility floors, and the built-in dockerfile manager
-    # would see a plain `debian` instead and let those floors drift in their own PR.
-    disabled = [
-        rule
-        for rule in config["packageRules"]
-        if rule.get("matchManagers") == ["dockerfile"]
-        and "packaging/package-smoke.Dockerfile" in rule.get("matchFileNames", [])
-    ]
-    assert len(disabled) == 1
-    assert disabled[0]["enabled"] is False
-    assert "packaging/install-smoke.Dockerfile" in disabled[0]["matchFileNames"]
+    # The built-in dockerfile manager must not run at all. It reads a plain `debian` where the
+    # annotations declare `debian-12-compat`, so with both active one file yields two dependencies
+    # under two names, and the allowedVersions rules that hold the compatibility floors apply to
+    # only one of them — the floor drifts in a PR of its own that looks entirely reasonable.
+    assert "dockerfile" not in config["enabledManagers"], config["enabledManagers"]
 
-    annotated = [
+    # Asserted by matching, not by spelling: a manager that reads this file through a directory
+    # glob covers it just as well as one that names it, and naming it was never the point.
+    covered = [
         m
         for m in config["customManagers"]
-        if any("install-smoke" in pattern for pattern in m.get("managerFilePatterns", []))
+        if any(
+            re.search(pattern.strip("/"), "packaging/install-smoke.Dockerfile")
+            for pattern in m.get("managerFilePatterns", [])
+        )
     ]
-    assert annotated, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
+    assert covered, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
 
 
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
