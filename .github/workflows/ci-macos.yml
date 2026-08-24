@@ -5,6 +5,9 @@ name: CI (macOS)
 on:
   push:
     branches: ["**"]
+  # A fork's branch is never pushed here, so `push` alone leaves fork pull requests with no
+  # macOS coverage at all. Nothing in this workflow reads a secret, so a fork may run it.
+  pull_request:
   workflow_dispatch:
 
 # Keyed per COMMIT and never cancelled, because the release gates read this workflow's verdict for
