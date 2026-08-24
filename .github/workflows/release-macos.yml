@@ -142,7 +142,7 @@ jobs:
           PKG="dreame-valetudo-${VERSION}-macos-${{ matrix.arch }}.pkg"
           # Sign the native Mach-O bits with the hardened runtime (required for notarization).
           for f in ./*.dylib tmux sunxi-fel dreame-fastboot dreame-valetudo; do
-            codesign --force --options runtime --timestamp \
+            bash packaging/retry.sh 5 codesign --force --options runtime --timestamp \
               --entitlements packaging/entitlements.plist --sign "$APP_IDENTITY" "$f"
           done
           # Lay out the install tree: native binaries in libexec, a thin wrapper in bin. The main
@@ -161,11 +161,11 @@ jobs:
           chmod +x root/usr/local/bin/dreame-valetudo "$LX/dreame-valetudo"
           pkgbuild --root root --identifier com.sisyphusmd.dreame-valetudo \
             --version "$VERSION" --install-location / unsigned.pkg
-          productsign --sign "$INSTALLER_IDENTITY" unsigned.pkg "$PKG"
+          bash packaging/retry.sh 5 productsign --sign "$INSTALLER_IDENTITY" unsigned.pkg "$PKG"
           echo "$NOTARY_KEY_P8" | base64 -d > notary.p8
-          xcrun notarytool submit "$PKG" \
+          bash packaging/retry.sh 5 xcrun notarytool submit "$PKG" \
             --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
-          xcrun stapler staple "$PKG"
+          bash packaging/retry.sh 5 xcrun stapler staple "$PKG"
           # Later steps in this job need the exact name; GitHub expressions cannot strip the `v`.
           echo "PKG=$PKG" >> "$GITHUB_ENV"
 
