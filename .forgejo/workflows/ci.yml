@@ -305,7 +305,6 @@ jobs:
           VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
           rm -rf homebrew-smoke-result
           docker buildx build --platform linux/amd64 --build-arg TEST_TAG="v$VERSION" \
-            --build-arg BREW_MIRROR="https://image-mirror.nas.bryantserver.com" \
             -f packaging/homebrew-smoke.Dockerfile --target result \
             --output type=local,dest=homebrew-smoke-result .
           test -f homebrew-smoke-result/homebrew-smoke-passed

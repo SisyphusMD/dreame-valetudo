@@ -98,7 +98,6 @@ for channel in "${CHANNELS[@]}"; do
        --build-arg DL="https://$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG" \
        --build-arg DIST="$DIST" --build-arg REPOFILE="$REPOFILE" \
        --build-arg FORGE="$FORGE" \
-       --build-arg BREW_MIRROR="${BREW_MIRROR:-}" \
        --build-arg ARCH_DEB="$ARCH_DEB" --build-arg ARCH_RPM="$ARCH_RPM" \
        --build-arg TAG="$TAG" \
        --build-arg GH_DL="$GH_DL" --build-arg GH_PV="$GH_PKGVER" .; then
