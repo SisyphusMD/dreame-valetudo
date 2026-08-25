@@ -368,6 +368,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The step below runs a script from this checkout against a PR-controlled ref; leaving the
+          # repository token in git config would hand that script a WRITE credential the job has no
+          # use for. The release mirror gate withholds it for the same reason.
+          persist-credentials: false
       - name: Resolve the mirrored commit
         id: mirrored
         run: |
@@ -378,4 +383,12 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - name: Require native macOS CI for this exact commit
+        env:
+          # Optional and read-only. Unauthenticated GitHub allows 60 requests an hour PER IP, shared
+          # with everything else egressing from this network — including the sibling repository's
+          # copy of this same gate, which polls the same API for the same reason. A token needs NO
+          # scopes for a public repo and lifts the limit to 5,000/hour; exhausting it turns this gate
+          # into a timeout that blames the mirror for a commit nothing was wrong with. The job holds
+          # no WRITE credential either way, which is the property that matters.
+          MIRROR_CI_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
         run: bash packaging/check-mirror-ci.sh "${{ steps.mirrored.outputs.sha }}" .github/workflows/ci-macos.yml
