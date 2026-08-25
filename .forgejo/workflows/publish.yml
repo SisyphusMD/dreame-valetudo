@@ -155,6 +155,33 @@ jobs:
           # have. extglob rather than a second broad pattern, for exactly that reason.
           shopt -s extglob
           ASSETS+=(./dreame-valetudo-!(*-linux-*).tar.gz)
+          # One file PER ARCHITECTURE, named for `uname -m` so `sha256sum -c --ignore-missing
+          # SHA256SUMS-$(uname -m)` needs no editing anywhere. Each is written by the machine that
+          # BUILT those bytes — a checksum written by a host that did not build the artifact is
+          # worth less — and published assets are immutable, so a single combined file could not be
+          # appended to when the arm64 job lands later.
+          #
+          # This is integrity, not authenticity: served from the same host as the artifacts, it
+          # answers "did this arrive intact", which is the gap `dpkg -i` leaves open by checking
+          # nothing. The GPG signature on the packages is what proves origin, and apt/dnf verify it
+          # automatically from the repository channel. The two are complementary.
+          #
+          # The arch-independent SOURCE tarball is hashed HERE, into the x86_64 manifest, because
+          # this is the machine that built it. An aarch64 or armv7 user verifying the source channel
+          # therefore wants `SHA256SUMS-x86_64` regardless of their own `uname -m`; the per-arch rule
+          # applies to the artifacts each machine froze, and the source tarball has no architecture
+          # to be wrong about.
+          #
+          # Both spellings: GitHub's asset API rewrites `~` to `.` in the uploaded FILENAME while
+          # Forgejo serves the canonical one, so an artifact whose name contains `~` is listed twice
+          # with the same hash and --ignore-missing skips the spelling you did not download.
+          sums="SHA256SUMS-x86_64"
+          sha256sum "${ASSETS[@]}" | sed 's| \./| |' > "$sums"
+          awk '$2 ~ /~/ { name = $2; gsub(/~/, ".", name); print $1 "  " name }' "$sums" >> "$sums.alt"
+          [ -s "$sums.alt" ] && cat "$sums.alt" >> "$sums"
+          rm -f "$sums.alt"
+          ASSETS+=("$sums")
+          echo "checksums:"; cat "$sums"
           fail=0
           packaging/forgejo-release.sh forgejo.bryantserver.com \
             "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
@@ -406,11 +433,12 @@ jobs:
                     or (.name | endswith("_arm64.deb"))
                     or (.name | endswith(".aarch64.rpm"))
                     or (.name | endswith("-linux-arm64.tar.gz"))
+                    or (.name == "SHA256SUMS-aarch64")
                   ) | .browser_download_url'
           # Upload what DID arrive before going red: a half-copied NAS beats an empty one, and
           # prune-rcs reads this job's verdict before deleting candidates either way.
           partial=false
-          packaging/fetch-release-assets.sh "$GITHUB_REF_NAME" 5 "$select" > fetched.txt \
+          packaging/fetch-release-assets.sh "$GITHUB_REF_NAME" 6 "$select" > fetched.txt \
             || partial=true
           mapfile -t fetched < fetched.txt
           [ "${#fetched[@]}" -gt 0 ] || { echo "::error::nothing arrived to bridge to the NAS"; exit 1; }

@@ -105,6 +105,27 @@ jobs:
           for a in "${ASSETS[@]}"; do
             [ -s "$a" ] || { echo "::error::expected arm64 artifact missing: $a" >&2; exit 1; }
           done
+          # One file PER ARCHITECTURE, named for `uname -m` so `sha256sum -c --ignore-missing
+          # SHA256SUMS-$(uname -m)` needs no editing anywhere. Each is written by the machine that
+          # BUILT those bytes — a checksum written by a host that did not build the artifact is
+          # worth less — and published assets are immutable, so a single combined file could not be
+          # appended to when the arm64 job lands later.
+          #
+          # This is integrity, not authenticity: served from the same host as the artifacts, it
+          # answers "did this arrive intact", which is the gap `dpkg -i` leaves open by checking
+          # nothing. The GPG signature on the packages is what proves origin, and apt/dnf verify it
+          # automatically from the repository channel. The two are complementary.
+          #
+          # Both spellings: GitHub's asset API rewrites `~` to `.` in the uploaded FILENAME while
+          # Forgejo serves the canonical one, so an artifact whose name contains `~` is listed twice
+          # with the same hash and --ignore-missing skips the spelling you did not download.
+          sums="SHA256SUMS-aarch64"
+          sha256sum "${ASSETS[@]}" | sed 's| \./| |' > "$sums"
+          awk '$2 ~ /~/ { name = $2; gsub(/~/, ".", name); print $1 "  " name }' "$sums" >> "$sums.alt"
+          [ -s "$sums.alt" ] && cat "$sums.alt" >> "$sums"
+          rm -f "$sums.alt"
+          ASSETS+=("$sums")
+          echo "checksums:"; cat "$sums"
           # Both forges get the same bytes. Attempted independently so one failing does not hide
           # the other's result, the shape publish.yml uses for the same reason.
           failed=""

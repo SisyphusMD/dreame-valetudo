@@ -84,6 +84,9 @@ for _ in $(seq 1 120); do
   names="$(curl -sSf --max-time 60 "$API" 2>/dev/null | jq -r '.assets[]?.name' || true)"
   missing=""
   for role in "${_ASSET_ROLES[@]}"; do
+    # A dispatch runs the CURRENT scripts against an OLDER tag on purpose, and releases predating
+    # the checksums do not carry them.
+    optional_asset_role "$role" && continue
     found=""
     while IFS= read -r name; do
       [ -n "$name" ] || continue
