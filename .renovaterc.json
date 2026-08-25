@@ -127,20 +127,6 @@
       "allowedVersions": "/^22\\.04$/"
     },
     {
-      "description": "The `-floor` legs are the same kind of clamp as the `-compat` ones above and need it for the same reason: they exist to prove a package that installs on the current release still installs on the OLDEST one this project claims. Renovate cannot tell a floor from an alias, so unclamped it bumps the tag and the leg quietly becomes a second current test \u2014 green, and proving nothing it was written to prove. Digests still refresh, so the images stay patched.",
-      "matchDepNames": [
-        "debian-12-floor"
-      ],
-      "allowedVersions": "/^12-slim$/"
-    },
-    {
-      "description": "The `-floor` legs are the same kind of clamp as the `-compat` ones above and need it for the same reason: they exist to prove a package that installs on the current release still installs on the OLDEST one this project claims. Renovate cannot tell a floor from an alias, so unclamped it bumps the tag and the leg quietly becomes a second current test \u2014 green, and proving nothing it was written to prove. Digests still refresh, so the images stay patched.",
-      "matchDepNames": [
-        "ubuntu-22.04-floor"
-      ],
-      "allowedVersions": "/^22\\.04$/"
-    },
-    {
       "description": "Ubuntu 26.04 is the deliberately selected current qualification host; Renovate refreshes its digest but a new LTS is reviewed before replacing it.",
       "matchDepNames": [
         "ubuntu-26.04-current"

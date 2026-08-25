@@ -131,7 +131,7 @@ FROM scratch AS tarball-result
 COPY --from=tarball /passed /passed
 
 # --- the oldest Debian and Ubuntu the glibc floor claims ---------------------------------
-# renovate: datasource=docker depName=debian-12-floor packageName=debian
+# renovate: datasource=docker depName=debian-12-compat packageName=debian
 FROM debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS deb-floor-base
 RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
@@ -147,7 +147,7 @@ RUN set -eux; \
 FROM scratch AS deb-file-floor-result
 COPY --from=deb-file-floor /passed /passed
 
-# renovate: datasource=docker depName=ubuntu-22.04-floor packageName=ubuntu
+# renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
 FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS ubuntu-floor-base
 RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
@@ -203,8 +203,8 @@ COPY --from=rpm-file /passed /passed
 
 # --- the same .rpm, on the oldest and newest RPM distros the floor promises ---------------
 # One .rpm ships for every RPM distro, so installing it on exactly one of them proves the least
-# it could. Rocky 8 is the floor and Fedora is the newest; a package that installs on Rocky 9 can
-# still fail on either, and until these existed nothing here would have noticed.
+# it could. Rocky 8 is the floor, Rocky 10 the current release of the same family, and Fedora a
+# separate lineage; a package that installs on Rocky 9 can still fail on any of them.
 # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6 AS rpm-floor-base
 RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
@@ -223,6 +223,25 @@ RUN set -eux; \
 
 FROM scratch AS rpm-file-floor-result
 COPY --from=rpm-file-floor /passed /passed
+
+# renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
+FROM rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 AS rpm-current-base
+RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/installed-smoke.sh /smoke.sh
+COPY packaging/fetch.sh /fetch
+
+FROM rpm-current-base AS rpm-file-current
+ARG V PV DL ARCH_RPM
+RUN set -eux; \
+    /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
+    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
+    SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
+      bash /smoke.sh dreame-valetudo "$V"; \
+    touch /passed
+
+FROM scratch AS rpm-file-current-result
+COPY --from=rpm-file-current /passed /passed
 
 # renovate: datasource=docker depName=fedora-44-current packageName=fedora
 FROM fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898 AS fedora-base
@@ -262,6 +281,23 @@ RUN set -eux; \
     touch /passed
 FROM scratch AS dnf-repo-result
 COPY --from=dnf-repo /passed /passed
+
+# dnf5 is a reimplementation rather than a new version of dnf: it parses .repo files and enforces
+# gpgcheck in its own code, so the leg above proves nothing about it. Fedora 41 onward ships it as
+# `dnf`, which makes it the repository client a current-Fedora user actually gets.
+FROM fedora-base AS dnf5-repo
+ARG V FORGE TAG REPOFILE
+RUN set -eux; \
+    dnf --version | head -1 | grep -q '^dnf5 '; \
+    /fetch /etc/yum.repos.d/sisyphusmd.repo \
+      "https://$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
+    dnf install -y -q dreame-valetudo >/dev/null; \
+    SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
+    SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
+      bash /smoke.sh dreame-valetudo "$V"; \
+    touch /passed
+FROM scratch AS dnf5-repo-result
+COPY --from=dnf5-repo /passed /passed
 
 # --- a POURED Homebrew bottle, not a source build ----------------------------------------
 # The bottle channel is new, and the failure it guards against is specific: if the tap's block is
