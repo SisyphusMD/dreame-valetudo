@@ -1218,10 +1218,6 @@ def test_every_channel_the_matrix_builds_has_a_target() -> None:
     in the file and tests nothing at all."""
     script = _MATRIX_ARCH.read_text()
     listed = set(re.search(r"^CHANNELS=\(\n(.*?)^\)$", script, re.M | re.S).group(1).split())
-    # The amd64-only addition, appended rather than listed: the linuxbrew image has no arm64 build.
-    extra = re.search(r"CHANNELS\+=\(([a-z-]+)\)", script)
-    if extra:
-        listed.add(extra.group(1))
     targets = set(re.findall(r"AS ([a-z0-9-]+)-result", _INSTALL_SMOKE.read_text()))
     assert listed - targets == set(), f"workflow builds channels with no target: {listed - targets}"
     assert targets - listed == set(), f"Dockerfile targets nothing builds: {targets - listed}"
