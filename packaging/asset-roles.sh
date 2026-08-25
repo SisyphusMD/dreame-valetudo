@@ -18,7 +18,31 @@ _ASSET_ROLES=(
   'dreame-valetudo-*-linux-arm64.tar.gz'
   # The arch-independent SOURCE tarball the Homebrew formula builds from.
   'dreame-valetudo-!(*-linux-*).tar.gz'
+  # One checksum file per architecture, each written by the machine that built those bytes. Named
+  # for `uname -m` so the verify command is copy-pasteable. Listed separately rather than as a
+  # `SHA256SUMS-*` glob: one role matching two names is what resolve_expected calls ambiguous, and
+  # it skips the whole tag for it.
+  'SHA256SUMS-x86_64'
+  'SHA256SUMS-aarch64'
 )
+
+# Roles reconcile should heal but completeness must NOT wait for. Every release cut before the
+# checksums existed lacks them, and both install matrices deliberately support dispatching the
+# CURRENT scripts against an OLDER tag - that is what the tag input is for. Requiring these would
+# make such a dispatch wait out all 120 polls and then fail a release that is perfectly complete.
+# Reconcile keeps them above, where a missing role is a warning rather than a verdict.
+_OPTIONAL_ASSET_ROLES=(
+  'SHA256SUMS-x86_64'
+  'SHA256SUMS-aarch64'
+)
+
+optional_asset_role() {
+  local role
+  for role in "${_OPTIONAL_ASSET_ROLES[@]}"; do
+    [ "$1" = "$role" ] && return 0
+  done
+  return 1
+}
 
 # Homebrew bottles are NOT reconciled, and that is deliberate rather than an oversight.
 #
