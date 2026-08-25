@@ -132,7 +132,7 @@ COPY --from=tarball /passed /passed
 
 # --- the oldest Debian and Ubuntu the glibc floor claims ---------------------------------
 # renovate: datasource=docker depName=debian-12-floor packageName=debian
-FROM debian:12-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS deb-floor-base
+FROM debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS deb-floor-base
 RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
