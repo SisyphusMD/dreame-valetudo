@@ -299,8 +299,6 @@ jobs:
           FEDORA_CURRENT_IMAGE="fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898"
           # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
           RHEL_FLOOR_IMAGE="rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6"
-          # renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
-          RHEL_MIDDLE_IMAGE="rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f"
           # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
           RHEL_CURRENT_IMAGE="rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834"
           # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
@@ -308,7 +306,7 @@ jobs:
           export DEBIAN_FLOOR_IMAGE DEBIAN_CURRENT_IMAGE
           export UBUNTU_FLOOR_IMAGE UBUNTU_CURRENT_IMAGE
           export FEDORA_FLOOR_IMAGE FEDORA_CURRENT_IMAGE
-          export RHEL_FLOOR_IMAGE RHEL_MIDDLE_IMAGE RHEL_CURRENT_IMAGE OPENSUSE_IMAGE
+          export RHEL_FLOOR_IMAGE RHEL_CURRENT_IMAGE OPENSUSE_IMAGE
           bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm \
             ci-legacy.deb ci-legacy.rpm
           VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')

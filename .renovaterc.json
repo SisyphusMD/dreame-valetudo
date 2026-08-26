@@ -180,18 +180,11 @@
       "minimumReleaseAge": "3 days"
     },
     {
-      "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
+      "description": "Rocky 8 is the RHEL-family compatibility floor; Renovate refreshes its digest without relabeling the host.",
       "matchDepNames": [
         "rocky-8-compat"
       ],
       "allowedVersions": "/^8$/"
-    },
-    {
-      "description": "Rocky 8 and 9 are explicit maintained compatibility legs; Renovate refreshes their digests without relabeling either host.",
-      "matchDepNames": [
-        "rocky-9-compat"
-      ],
-      "allowedVersions": "/^9$/"
     },
     {
       "description": "Rocky Linux 10 is the deliberately selected current RHEL-compatible host; Renovate refreshes its digest but a new major is reviewed before replacing it.",
@@ -357,6 +350,20 @@
       "groupName": "manylinux builders",
       "versioning": "regex:^(?<major>\\d{4})\\.(?<minor>\\d{2})\\.(?<patch>\\d{2})-(?<build>\\d+)$",
       "minimumGroupSize": 2
+    },
+    {
+      "description": "Every distro's CURRENT rung moves as one review. The anti-divergence property is already carried by the depName \u2014 one identity means Renovate rewrites every file pinning that image in the same commit \u2014 so what this adds is that the currents are seen TOGETHER. They are one statement about what 'current' means in this repo, and a matrix qualified against four current releases and one stale one is the shape nobody notices in a per-image PR. Matched by suffix rather than by a list, because a list is one more place to forget a new distro.",
+      "matchDepNames": [
+        "/-current$/"
+      ],
+      "groupName": "distro current releases"
+    },
+    {
+      "description": "The same, for the floors. These move far less often \u2014 a floor bump is a deliberate narrowing of what the packages promise, and it belongs in one review with the README line it makes false, not spread across images.",
+      "matchDepNames": [
+        "/-compat$/"
+      ],
+      "groupName": "distro compatibility floors"
     }
   ]
 }

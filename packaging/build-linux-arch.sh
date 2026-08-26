@@ -123,14 +123,24 @@ bash packaging/build-linux-tarball.sh \
 # Install and execute the exact release package before any asset is published — on real hardware of
 # this architecture, which is the point of the split. The full distro upgrade matrix runs pre-merge
 # in ci.yml.
-cp "dreame-valetudo_${PKGVER}_$arch.deb" package-smoke.deb
-rm -rf "package-smoke-$arch"
-docker buildx build --platform "linux/$arch" \
-  -f packaging/package-smoke.Dockerfile --target result \
-  --output "type=local,dest=package-smoke-$arch" .
-test -f "package-smoke-$arch/package-smoke-passed"
-# Removed before publishing: a bare ./*.deb glob would otherwise pick this copy up as a stray asset.
-rm -f package-smoke.deb
+# Both formats, because nfpm builds them in separate passes that can fail independently: an .rpm
+# whose only evidence was the .deb beside it is published on the strength of a different artifact.
+smoke_pkg() { # smoke_pkg <deb|rpm> <package>
+  local fmt="$1" package="$2"
+  local dockerfile=packaging/package-smoke.Dockerfile
+  [ "$fmt" = rpm ] && dockerfile=packaging/package-smoke-rpm.Dockerfile
+  cp "$package" "package-smoke.$fmt"
+  rm -rf "package-smoke-$fmt-$arch"
+  docker buildx build --platform "linux/$arch" \
+    -f "$dockerfile" --target result \
+    --output "type=local,dest=package-smoke-$fmt-$arch" .
+  test -f "package-smoke-$fmt-$arch/package-smoke-passed"
+  # Removed before publishing: a bare ./*.deb or ./*.rpm glob would otherwise pick this
+  # architecture-neutral copy up as a stray release asset.
+  rm -f "package-smoke.$fmt"
+}
+smoke_pkg deb "dreame-valetudo_${PKGVER}_$arch.deb"
+smoke_pkg rpm "dreame-valetudo-${PKGVER}.$rpmarch.rpm"
 
 # Extract the tarball somewhere arbitrary in a clean container and run it. Both architectures get
 # this now — it used to be amd64-only because the arm64 leg would have run under emulation.

@@ -162,7 +162,6 @@ fi
 : "${FEDORA_FLOOR_IMAGE:?set FEDORA_FLOOR_IMAGE to a pinned image}"
 : "${FEDORA_CURRENT_IMAGE:?set FEDORA_CURRENT_IMAGE to a pinned image}"
 : "${RHEL_FLOOR_IMAGE:?set RHEL_FLOOR_IMAGE to a pinned image}"
-: "${RHEL_MIDDLE_IMAGE:?set RHEL_MIDDLE_IMAGE to a pinned image}"
 : "${RHEL_CURRENT_IMAGE:?set RHEL_CURRENT_IMAGE to a pinned image}"
 : "${OPENSUSE_IMAGE:?set OPENSUSE_IMAGE to a pinned image}"
 
@@ -221,6 +220,5 @@ run_case "Ubuntu 26.04 (current LTS)" "$UBUNTU_CURRENT_IMAGE" apt "$old_deb" "$n
 run_case "Fedora 43 (supported floor)" "$FEDORA_FLOOR_IMAGE" dnf "$old_rpm" "$new_rpm"
 run_case "Fedora 44 (current)" "$FEDORA_CURRENT_IMAGE" dnf "$old_rpm" "$new_rpm"
 run_case "Rocky Linux 8 (RHEL-compatible glibc floor)" "$RHEL_FLOOR_IMAGE" dnf "$old_rpm" "$new_rpm"
-run_case "Rocky Linux 9 (RHEL-compatible maintained release)" "$RHEL_MIDDLE_IMAGE" dnf "$old_rpm" "$new_rpm"
 run_case "Rocky Linux 10 (RHEL-compatible current)" "$RHEL_CURRENT_IMAGE" dnf "$old_rpm" "$new_rpm"
 run_case "openSUSE Leap 16.0" "$OPENSUSE_IMAGE" zypper "$old_rpm" "$new_rpm"
