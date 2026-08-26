@@ -778,7 +778,6 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
         'fedora:43@sha256:',
         'fedora:44@sha256:',
         'rockylinux/rockylinux:8@sha256:',
-        'rockylinux/rockylinux:9@sha256:',
         'rockylinux/rockylinux:10@sha256:',
         'opensuse/leap:16.0@sha256:',
     ):
@@ -791,7 +790,6 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
         "Fedora 43 (supported floor)",
         "Fedora 44 (current)",
         "Rocky Linux 8 (RHEL-compatible glibc floor)",
-        "Rocky Linux 9 (RHEL-compatible maintained release)",
         "Rocky Linux 10 (RHEL-compatible current)",
         "openSUSE Leap 16.0",
     ):
@@ -811,7 +809,6 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
             "fedora-43-compat",
             "fedora-44-current",
             "rocky-8-compat",
-            "rocky-9-compat",
             "rocky-10-current",
             "opensuse-leap-16-current",
         }
@@ -824,7 +821,6 @@ def test_linux_package_matrix_keeps_floors_alongside_current_releases() -> None:
         "fedora-43-compat": "/^43$/",
         "fedora-44-current": "/^44$/",
         "rocky-8-compat": "/^8$/",
-        "rocky-9-compat": "/^9$/",
         "rocky-10-current": "/^10$/",
         "opensuse-leap-16-current": r"/^16\.0$/",
     }
@@ -1794,8 +1790,6 @@ def test_the_install_matrix_is_reachable_for_every_release() -> None:
     So both halves are pinned here: the matrix must NOT race the publish, and the publish must
     still hand it over, after everything the matrix installs from exists.
     """
-    import yaml
-
     matrix = yaml.safe_load(
         (_ROOT / ".forgejo" / "workflows" / "install-matrix.yml").read_text(encoding="utf-8")
     )
@@ -1842,3 +1836,45 @@ def test_both_package_formats_are_gated_before_publish() -> None:
     assert smoked == {"deb", "rpm"}, f"pre-publish smoke covers {sorted(smoked) or 'nothing'}"
     for name in ("package-smoke.Dockerfile", "package-smoke-rpm.Dockerfile"):
         assert (_ROOT / "packaging" / name).is_file(), f"{name} is referenced but missing"
+
+
+def test_every_distro_rung_belongs_to_its_group() -> None:
+    """Each rung is annotated `-compat` or `-current`, and the groups match on that suffix.
+
+    The suffix is therefore load-bearing rather than decorative: a new distro pinned as
+    `fedora-45` instead of `fedora-45-current` still builds, still gets bumped, and silently
+    escapes the review its siblings share. Nothing else would notice, so this does.
+
+    Scanned over git-tracked files rather than a walk: the working tree also holds virtualenvs and
+    scratch files, and an annotation-shaped string in local debris would fail this on one checkout
+    and pass in CI. Tracked also picks up release-pins.env, which the docker manager reads too.
+    """
+    config = json.loads((_ROOT / ".renovaterc.json").read_text(encoding="utf-8"))
+    grouped = {
+        name
+        for rule in config["packageRules"]
+        if rule.get("groupName", "").startswith("distro ")
+        for name in rule["matchDepNames"]
+    }
+    assert grouped == {"/-current$/", "/-compat$/"}, (
+        f"the distro groups no longer match by suffix: {sorted(grouped)}"
+    )
+
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=True
+    )
+    annotated = set()
+    for name in listed.stdout.split("\0"):
+        path = _ROOT / name
+        if not name or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        annotated.update(
+            re.findall(r"depName=((?:debian|ubuntu|fedora|rocky|opensuse)[a-z0-9.-]*)", text)
+        )
+    assert annotated, "no distro annotations found — has the naming changed?"
+    stray = {n for n in annotated if not n.endswith(("-compat", "-current"))}
+    assert not stray, f"distro rungs outside both groups: {sorted(stray)}"
