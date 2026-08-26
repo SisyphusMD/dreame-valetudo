@@ -54,7 +54,7 @@ echo "installing from the '$DIST' distribution, for $PLATFORM"
 
 CHANNELS=(
   deb-file deb-lifecycle deb-file-github deb-file-floor deb-file-ubuntu-floor deb-file-ubuntu
-  rpm-file rpm-file-floor rpm-file-fedora
+  rpm-file rpm-file-floor rpm-file-fedora rpm-file-fedora-floor
   apt-repo dnf-repo dnf5-repo zypper zypper-floor tarball uv-tool pipx bottle-pour
 )
 

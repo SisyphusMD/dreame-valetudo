@@ -55,7 +55,9 @@ Older systems might work, but that isn't promised until they are part of this te
 | Ubuntu | Ubuntu 22.04 LTS | Ubuntu 26.04 LTS |
 | Fedora | Oldest maintained Fedora (currently 43) | Fedora 44 |
 | RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 10 |
-| openSUSE Leap | Leap 16.0 | — |
+| openSUSE Leap | Leap 15.6 | Leap 16.0 |
+
+Two rows are covered by inheritance rather than by a lane of their own, which is worth knowing if you are relying on either. **Raspberry Pi OS** is not tested as its own image: Bookworm *is* Debian 12, and the Debian 12 lane runs on arm64 as well as x86_64. **RHEL** is not tested directly either — it needs a subscription and has no public image to install into — so Rocky Linux stands in for it, being a bug-for-bug rebuild of the same release.
 
 The `.deb` and `.rpm` need glibc 2.28 or newer. Installing from source also needs Python 3.11 or
 newer. These are not just build targets: CI installs, upgrades, runs, and removes the real packages

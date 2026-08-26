@@ -31,6 +31,8 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 - Linux packages start faster, installing as a directory instead of unpacking on every run.
 - Release packages require glibc 2.28 or newer.
 - The X40 Ultra, X30 Ultra and L10s Pro Ultra Heat R2338 are marked hardware verified.
+- openSUSE Leap 15.6 is now listed as the minimum supported version. It was already tested; the table understated it.
+- The published `.rpm` is now installed and run on the oldest maintained Fedora, which the support table already promised.
 
 ### Fixed
 
