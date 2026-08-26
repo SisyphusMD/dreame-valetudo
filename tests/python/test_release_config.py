@@ -1828,3 +1828,17 @@ def test_the_install_matrix_is_reachable_for_every_release() -> None:
     assert "!cancelled()" in str(handoff[0].get("if", "")), (
         "the handoff is gated on its producers succeeding, so a healed release gets no matrix"
     )
+
+def test_both_package_formats_are_gated_before_publish() -> None:
+    """nfpm builds the .deb and the .rpm in separate passes, which can fail independently.
+
+    Smoking only one of them publishes the other on the strength of a different artifact — the
+    failure is invisible until a user installs it, because every later check reads the published
+    package rather than the built one. Pinned per format rather than by counting calls, so dropping
+    one and duplicating the other cannot pass.
+    """
+    script = (_ROOT / "packaging" / "build-linux-arch.sh").read_text(encoding="utf-8")
+    smoked = set(re.findall(r"^smoke_pkg (deb|rpm) ", script, re.M))
+    assert smoked == {"deb", "rpm"}, f"pre-publish smoke covers {sorted(smoked) or 'nothing'}"
+    for name in ("package-smoke.Dockerfile", "package-smoke-rpm.Dockerfile"):
+        assert (_ROOT / "packaging" / name).is_file(), f"{name} is referenced but missing"
