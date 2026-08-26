@@ -78,9 +78,15 @@ registry_ready() {
   done
 }
 
-# 40 minutes. The macOS .pkg leg signs and notarizes, and notarization is Apple's queue rather than
-# ours — it has taken over twenty minutes on a bad day.
-for _ in $(seq 1 120); do
+# 450 x 20s = 150 minutes, taken from the chain this waits on. The macOS .pkg leg signs and
+# notarizes through Apple's queue rather than ours, and the bottles cannot start until publish.yml
+# has proven the formula installs and pushed the first tap pass — build-bottles.sh waits up to 90
+# minutes for that alone, and the build then takes about half an hour. A budget under the sum does
+# not test a slow release, it fails one. Overridable so a dispatch against an already-complete tag
+# need not carry the full deadline.
+ATTEMPTS="${WAIT_ATTEMPTS:-450}"
+INTERVAL="${WAIT_INTERVAL:-20}"
+for _ in $(seq 1 "$ATTEMPTS"); do
   names="$(curl -sSf --max-time 60 "$API" 2>/dev/null | jq -r '.assets[]?.name' || true)"
   missing=""
   for role in "${_ASSET_ROLES[@]}"; do
@@ -115,20 +121,20 @@ for _ in $(seq 1 120); do
         *"bottle do"*)
           case "$formula" in
             *"$version"*) ;;
-            *) echo "  waiting: the tap has a bottle block, but not yet for $version"; sleep 20; continue ;;
+            *) echo "  waiting: the tap has a bottle block, but not yet for $version"; sleep "$INTERVAL"; continue ;;
           esac
           ;;
-        *) echo "  waiting: the tap formula $bottle_formula has no bottle block yet"; sleep 20; continue ;;
+        *) echo "  waiting: the tap formula $bottle_formula has no bottle block yet"; sleep "$INTERVAL"; continue ;;
       esac
     fi
     if ! registry_ready; then
-      echo "  waiting: the apt/dnf registry does not serve $pkgver yet"; sleep 20; continue
+      echo "  waiting: the apt/dnf registry does not serve $pkgver yet"; sleep "$INTERVAL"; continue
     fi
     echo "$tag is installable: every role in the release matrix is present, and apt/dnf have it"
     exit 0
   fi
   echo "waiting for:$missing"
-  sleep 20
+  sleep "$INTERVAL"
 done
 
 echo "::error::$tag never became fully installable — still missing:$missing" >&2
