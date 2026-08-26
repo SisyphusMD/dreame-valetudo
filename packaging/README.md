@@ -202,7 +202,7 @@ packages, and the release carries no arm64 Linux assets at all.
   with a second `nfpm -p rpm` (config in `packaging/nfpm.yaml`; `overrides.rpm.depends`). Its runtime
   deps are SONAME/file requires (`libusb-1.0.so.0()(64bit)`, `/usr/bin/ssh`, …) rather than distro
   package names. CI installs ordered RC builds on the supported and current Fedora releases, Rocky
-  Linux 8/9/10 as the maintained RHEL-compatible hosts, and openSUSE Leap 16; it exercises the
+  Linux 8 and 10 as the RHEL-compatible floor and current hosts, and openSUSE Leap 16; it exercises the
   frozen entry point and helpers, upgrades, removes, and proves backups survive. The equivalent
   `.deb` test runs on
   current Debian and Ubuntu LTS plus Debian 12 and Ubuntu 22.04 compatibility floors. Physical USB

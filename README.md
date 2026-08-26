@@ -54,7 +54,7 @@ Older systems might work, but that isn't promised until they are part of this te
 | Debian / Raspberry Pi OS | Debian 12 / Raspberry Pi OS Bookworm | Debian 13 |
 | Ubuntu | Ubuntu 22.04 LTS | Ubuntu 26.04 LTS |
 | Fedora | Oldest maintained Fedora (currently 43) | Fedora 44 |
-| RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 9 and 10 |
+| RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 10 |
 | openSUSE Leap | Leap 16.0 | — |
 
 The `.deb` and `.rpm` need glibc 2.28 or newer. Installing from source also needs Python 3.11 or

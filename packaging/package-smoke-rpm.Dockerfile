@@ -3,12 +3,12 @@
 # whose only proof was the .deb beside it is what this closes — the two are built by separate nfpm
 # passes and can fail independently.
 #
-# Rocky 9 rather than a newer RHEL: this is the install-and-run check, not the glibc floor. The floor
-# is enforced statically during the build, and the full RPM ladder (8/9/10 plus Fedora) runs in the
-# pre-merge distro matrix. Annotated as the SAME Renovate dependency ci.yml already pins, so the
-# image moves on one schedule instead of drifting under a second identity.
-# renovate: datasource=docker depName=rocky-9-compat packageName=rockylinux/rockylinux
-FROM rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f AS smoke
+# The current RPM-family release is the install-and-run check, and it is the SAME image the install
+# matrix already qualifies against — one Renovate identity for one image. This is not the glibc
+# floor: that is enforced statically during the build, and the full upgrade ladder across the family
+# runs in the pre-merge distro matrix.
+# renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
+FROM rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 AS smoke
 
 COPY package-smoke.rpm /tmp/package-smoke.rpm
 COPY packaging/test-linux-packages.sh /tmp/test-linux-packages.sh

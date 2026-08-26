@@ -11,7 +11,7 @@ transitions still require an operator: software cannot press the PCB button, mov
 robot AP, or confirm that the robot actually booted or docked.
 
 Host qualification is separate and automatic. Linux package CI covers Debian 12/13, Ubuntu
-22.04/26.04, Fedora 43/44, RHEL-compatible Rocky Linux 8/9/10, and openSUSE Leap 16. The
+22.04/26.04, Fedora 43/44, RHEL-compatible Rocky Linux 8/10, and openSUSE Leap 16. The
 native macOS matrix covers macOS 15 and 26 on both Apple Silicon and Intel. The bench campaign then
 proves the USB and robot behavior that those host-only jobs cannot reach.
 
