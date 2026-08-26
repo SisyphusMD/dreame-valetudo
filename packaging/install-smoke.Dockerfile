@@ -34,9 +34,15 @@ ARG ARCH_RPM
 ARG TAG
 
 # --- Debian-family base -----------------------------------------------------------------
+# A mirror that drops a connection mid-fetch is not this project failing, but apt treats it as
+# fatal and the whole install leg goes red for it — observed against ports.ubuntu.com. Retries are
+# set as apt POLICY rather than around each call: every derived stage inherits the file, so a new
+# leg cannot forget it. This is not laundering a flaky test, it is making a network fetch survive
+# the network; a package that genuinely does not install still fails.
 # renovate: datasource=docker depName=debian-13-current packageName=debian
 FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS deb-base
 RUN set -eux; \
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     apt-get update -qq >/dev/null; \
     apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
@@ -66,6 +72,7 @@ RUN set -eux; \
     /fetch /etc/apt/keyrings/sisyphusmd.asc "https://$FORGE/api/packages/SisyphusMD/debian/repository.key"; \
     echo "deb [signed-by=/etc/apt/keyrings/sisyphusmd.asc] https://$FORGE/api/packages/SisyphusMD/debian $DIST main" \
       | tee /etc/apt/sources.list.d/sisyphusmd.list >/dev/null; \
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     apt-get update -qq >/dev/null; \
     apt-get install -y -qq dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
@@ -133,7 +140,8 @@ COPY --from=tarball /passed /passed
 # --- the oldest Debian and Ubuntu the glibc floor claims ---------------------------------
 # renovate: datasource=docker depName=debian-12-compat packageName=debian
 FROM debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS deb-floor-base
-RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
+    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -149,7 +157,8 @@ COPY --from=deb-file-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
 FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS ubuntu-floor-base
-RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
+    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -165,7 +174,8 @@ COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
 FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS ubuntu-base
-RUN set -eux; apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
+    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
