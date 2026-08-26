@@ -223,7 +223,7 @@ right. Structure mirrors whiskerless's equivalent section so the two are readabl
 | `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
 | `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-standard's VARIANCE.md. |
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the tap jobs can push the rendered formulas. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
-| `GH_REPO_WRITE_PAT` | `publish`, `prune-rcs` | Creates and prunes releases on the GitHub mirror, which the Forgejo runner cannot do with its own token. |
+| `GH_REPO_WRITE_PAT` | GitHub PAT, Contents: read & write **and Actions: read & write** (Forgejo creates the GitHub release with it, and dispatches the macOS/arm64 install matrix with it — dispatch is an Actions permission, not a Contents one, and without it the dispatch 403s while the release itself still publishes). Same PAT used as the GitHub push-mirror password, so grant the extra permission by editing the token rather than regenerating it. |
 
 ### On GitHub (`github.com/SisyphusMD/dreame-valetudo` → Settings → Secrets and variables → Actions)
 

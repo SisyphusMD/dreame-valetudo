@@ -68,8 +68,16 @@ jobs:
           bash packaging/wait-for-release.sh "$TAG" "$FORMULA"
 
   linux:
-    name: Linux installs (amd64)
+    name: Linux installs (amd64) shard ${{ matrix.shard }}
     needs: wait
+    # Sharded because the channels are independent and were only sequential by default. On the arm64
+    # runner that sequence was the whole tail of a release: every macOS leg finished in minutes while
+    # this one job worked through two dozen channels for half an hour. Round-robin inside the script
+    # keeps the heavy channels (the bottle pour drags a multi-GB image) off any single shard.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     # NO QEMU setup, and no arm64 leg: this runner is amd64, the script refuses to build for
     # anything else, and the arm64 half runs natively on GitHub.
     runs-on: ubuntu-latest
@@ -93,7 +101,7 @@ jobs:
           # /v2/homebrew/core path and rewrites only scheme and host, so the registry serves
           # that namespace at its root specifically for this.
           BREW_MIRROR: "https://image-mirror.nas.bryantserver.com"
-        run: bash packaging/install-matrix-arch.sh amd64
+        run: bash packaging/install-matrix-arch.sh amd64 ${{ matrix.shard }} 4
 
   summary:
     name: Every Linux amd64 channel installed and ran
