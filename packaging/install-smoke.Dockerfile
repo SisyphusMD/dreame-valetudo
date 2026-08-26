@@ -239,7 +239,7 @@ FROM scratch AS rpm-file-floor-result
 COPY --from=rpm-file-floor /passed /passed
 
 # renovate: datasource=docker depName=fedora-44-current packageName=fedora
-FROM fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898 AS fedora-base
+FROM fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80 AS fedora-base
 RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
