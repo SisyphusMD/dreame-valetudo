@@ -51,12 +51,16 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
     nas = step.index("packaging/forgejo-release.sh forgejo.nas.bryantserver.com")
     assert cluster < github < nas
 
-    for name in ("homebrew-tap", "reconcile"):
-        # The condition must still OVERRIDE a failed dependency (that is the point of the repair
-        # jobs) while additionally requiring the ref guard to have passed — see
-        # test_no_publish_job_outruns_the_ref_guard for why the bare form was not enough.
+    # Both conditions OVERRIDE a failed dependency (that is the point of the repair jobs) while
+    # additionally requiring the ref guard to have passed — see test_no_publish_job_outruns_the_ref
+    # _guard for why the bare form was not enough. They differ on CANCELLATION, deliberately:
+    # reconcile only heals releases that already exist, so finishing is still the right move, while
+    # homebrew-tap pushes a formula to the tap and an operator who cancelled a release must not get
+    # one published regardless. Asserted per job rather than as a shared spelling, because that is
+    # the distinction a future edit is most likely to flatten.
+    for name, override in (("homebrew-tap", "!cancelled()"), ("reconcile", "always()")):
         condition = _job(text, name)
-        assert "always()" in condition, name
+        assert override in condition, name
         assert "needs.guard.result == 'success'" in condition, name
 
 
@@ -1818,10 +1822,16 @@ def test_the_install_matrix_is_reachable_for_every_release() -> None:
     assert "homebrew-bottles" in handoff[0]["needs"], (
         f"the handoff runs after {handoff[0]['needs']}, which can precede the bottle block"
     )
-    # A producer can fail its upload and reconcile can heal the release afterwards. Under the
-    # default needs-semantics that healed, COMPLETE release would have its handoff skipped, which
-    # is the no-matrix-at-all state this whole job exists to avoid.
-    assert "reconcile" in handoff[0]["needs"], "the handoff can precede the healing it depends on"
+    # The reverse of what you might expect: the handoff must NOT wait on reconcile. That sweep takes
+    # ~13 minutes across every historical tag, and the matrix does not need it — PROVIDED readiness
+    # covers every registry the matrix installs from, which is what test_the_wait_covers_every
+    # _registry_the_matrix_installs_from pins. Those two move together: dropping this edge while the
+    # wait polls only this forge is a race, not a saving, because deb-file-github downloads from
+    # GitHub and would 404 against a release reconcile has not repaired yet.
+    assert "reconcile" not in handoff[0]["needs"], (
+        "the handoff waits on reconcile again, putting its full-history sweep on the critical path "
+        "of every release; wait-for-release.sh already covers a late heal"
+    )
     dispatched = yaml.dump(handoff[0]).count("install-matrix.yml/dispatches")
     assert dispatched == 2, (
         f"the handoff dispatches {dispatched} matrix half/halves; both forges are one matrix and "
@@ -2005,3 +2015,66 @@ def test_each_matrix_half_runs_every_shard_it_declares() -> None:
             f"{forge}: the matrix runs shards {declared} but tells the script there are {passed}; "
             "a shard the script never selects is a channel nobody installs"
         )
+
+def test_tap_pass_one_does_not_wait_on_the_release_build() -> None:
+    """The formula's url is the PyPI sdist, so pass 1 reads no release asset.
+
+    An edge to `releases` here is invisible when it is wrong: the tap still renders correctly, it
+    just renders later, and everything downstream of it — the whole bottle chain — moves with it.
+    That is most of this workflow's critical path spent waiting on bytes the job never opens. The
+    formula's own url is the check: while it points at files.pythonhosted.org this edge is dead
+    weight, and the day it points at a release asset this assertion is the thing that says so.
+    """
+    publish = yaml.safe_load(_PUBLISH.read_text(encoding="utf-8"))
+    tap = publish["jobs"]["homebrew-tap"]
+    needs = tap["needs"] if isinstance(tap["needs"], list) else [tap["needs"]]
+
+    url = next(
+        line
+        for line in (_ROOT / "packaging" / "homebrew" / "dreame-valetudo-rc.rb").read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("url ")
+    )
+    assert "pythonhosted.org" in url, (
+        f"the formula url is now {url.strip()!r}; if it reads a release asset, pass 1 has to wait "
+        "for the release build again and this invariant is the one to change"
+    )
+    assert "releases" not in needs, (
+        f"tap pass 1 waits on {needs}, holding the bottle chain behind a build it reads nothing "
+        "from; the formula's url is the PyPI sdist"
+    )
+    assert "pypi" in needs, (
+        f"tap pass 1 runs after {needs}, which does not include the upload it takes its url from"
+    )
+
+def test_the_wait_covers_every_registry_the_matrix_installs_from() -> None:
+    """Readiness is only meaningful if it names every host the matrix downloads from.
+
+    The matrix installs one channel straight from GitHub while the wait polls this forge, so a
+    release whose GitHub upload failed reads as installable here and 404s there. That used to be
+    masked by ordering — the handoff waited on reconcile, which repairs the mirrors — and dropping
+    that edge for the ~13 minutes it costs is only safe while this check exists. Asserted against
+    the matrix's own source so adding a second GitHub-sourced channel cannot quietly widen the gap.
+    """
+    matrix = (_ROOT / "packaging" / "install-matrix-arch.sh").read_text(encoding="utf-8")
+    wait = (_ROOT / "packaging" / "wait-for-release.sh").read_text(encoding="utf-8")
+
+    assert "github.com" in matrix, (
+        "no channel downloads from GitHub any more; if that is deliberate, this invariant and the "
+        "github_ready() check it guards can both go"
+    )
+    assert "api.github.com/repos/" in wait, (
+        "github_ready() no longer asks GitHub for the release's assets"
+    )
+    # The CALL, not the definition. A function left defined but no longer invoked satisfies a
+    # name search while doing nothing at all, which is precisely the regression this guards.
+    body = wait.split("github_ready() {", 1)
+    assert len(body) == 2, "github_ready() is gone from the waiter"
+    called = [
+        line
+        for line in (body[0] + body[1].split("\n}", 1)[1]).splitlines()
+        if "github_ready" in line and not line.strip().startswith("#")
+    ]
+    assert called, (
+        "github_ready() is defined but never called, so readiness silently stops covering GitHub "
+        "while every assertion about its existence still passes"
+    )

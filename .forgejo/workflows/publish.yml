@@ -123,7 +123,7 @@ jobs:
           # is what cost rc.13 its Linux assets. build-linux-arch.sh refuses a host/target
           # mismatch rather than silently emulating, so that cannot come back by accident.
           bash packaging/build-linux-arch.sh amd64 "$GITHUB_REF_NAME"
-          # The arch-independent SOURCE tarball the Homebrew formula builds from. Built here rather
+          # The arch-independent SOURCE tarball, the standalone install route. Built here rather
           # than in the per-arch script precisely because it is not per-arch: building it twice
           # would mean two forges racing to publish two copies of one artifact.
           bash packaging/build-tarball.sh
@@ -231,14 +231,18 @@ jobs:
     name: Update the Homebrew tap formula (stable or -rc per tag)
     # The formula's url and checksum come from the PyPI sdist, so this cannot run before the
     # upload. Declared rather than polled: both jobs are on this forge.
+    # NOT `releases`, though it once was: the formula built from the release tarball, and the edge
+    # outlived the move to the PyPI sdist. Nothing rendered in this pass reads a release asset — the
+    # bottle root_url is written in pass 2 — so the edge only held the whole bottle chain behind the
+    # Linux build, which is most of this workflow's critical path.
     # Shared with homebrew-bottles and tap-bottles.yml: three jobs write this one repository, and
     # two of them cloning the same tip means the loser pushes a non-fast-forward and the tap keeps
     # whichever block lost the race.
     concurrency:
       group: tap-write
       cancel-in-progress: false
-    needs: [guard, releases, pypi]
-    if: ${{ always() && needs.guard.result == 'success' }}
+    needs: [guard, pypi]
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -498,7 +502,12 @@ jobs:
     # from a job started by the tag push cost more than it looks — the waiter and the publisher
     # competed for the same handful of runner slots, so the wait made the publish slower, which
     # made the wait longer.
-    needs: [guard, releases, registry, nas-bridge, homebrew-tap, homebrew-bottles, reconcile]
+    # Deliberately NOT waiting on `reconcile`. It sweeps every historical tag across all three
+    # registries and takes ~13 minutes, and the matrix does not need it: wait-for-release.sh polls
+    # until the release is actually installable, so a copy reconcile heals while the matrix is
+    # waiting is still picked up. Blocking on it put those 13 minutes on the critical path of every
+    # release to buy nothing.
+    needs: [guard, releases, registry, nas-bridge, homebrew-tap, homebrew-bottles]
     # Runs even when a producer reported failure, which is not laxness but the point: a destination
     # can fail its upload and `reconcile` can then heal the release across registries, leaving a
     # COMPLETE release whose handoff had already been skipped — a release with no install matrix at
