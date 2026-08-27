@@ -95,4 +95,4 @@ ignore_missing_imports = true
 # in the same PR as the annotated workflow literals.
 # pyyaml is a TEST-only parser for the workflow files, not a runtime dep — the package itself
 # still imports nothing outside the stdlib.
-dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "pyyaml==6.0.3", "ruff==0.16.4", "mypy==2.3.1"]
+dev = ["pytest==9.1.1", "pytest-cov==7.1.0", "pyyaml==6.0.3", "ruff==0.16.5", "mypy==2.3.1"]

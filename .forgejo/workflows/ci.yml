@@ -85,7 +85,7 @@ jobs:
           # change. Renovate bumps these via the `# renovate:` custom manager — surfaced as a
           # green-gated PR, not a surprise on main.
           # renovate: datasource=pypi depName=ruff
-          RUFF="0.16.4"
+          RUFF="0.16.5"
           # renovate: datasource=pypi depName=mypy
           MYPY="2.3.1"
           # renovate: datasource=pypi depName=pytest
