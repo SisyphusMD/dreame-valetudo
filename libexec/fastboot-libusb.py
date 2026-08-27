@@ -289,7 +289,7 @@ class Fastboot:
             try:
                 try:
                     maxdl = int(self.getvar("max-download-size").strip() or "0", 0)
-                except Exception:  # any probe failure means "unknown" — use one download
+                except Exception:  # noqa: BLE001 - any probe failure means "unknown", use one download
                     maxdl = 0
                 maxdl_str = _mib(maxdl) if maxdl else "unknown"
                 if maxdl and len(data) > maxdl:
