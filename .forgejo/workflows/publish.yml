@@ -507,7 +507,7 @@ jobs:
     # until the release is actually installable, so a copy reconcile heals while the matrix is
     # waiting is still picked up. Blocking on it put those 13 minutes on the critical path of every
     # release to buy nothing.
-    needs: [guard, releases, registry, nas-bridge, homebrew-tap, homebrew-bottles, reconcile]
+    needs: [guard, releases, registry, nas-bridge, homebrew-tap, homebrew-bottles]
     # Runs even when a producer reported failure, which is not laxness but the point: a destination
     # can fail its upload and `reconcile` can then heal the release across registries, leaving a
     # COMPLETE release whose handoff had already been skipped — a release with no install matrix at

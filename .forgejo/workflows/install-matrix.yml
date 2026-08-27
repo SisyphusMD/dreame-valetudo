@@ -66,6 +66,9 @@ jobs:
             *)      FORMULA=dreame-valetudo ;;
           esac
           bash packaging/wait-for-release.sh "$TAG" "$FORMULA"
+        env:
+          # Only this step reads it, so it is not granted to the shard jobs or their actions.
+          GITHUB_ASSET_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
 
   linux:
     name: Linux installs (amd64) shard ${{ matrix.shard }}

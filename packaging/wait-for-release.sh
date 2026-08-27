@@ -84,9 +84,58 @@ registry_ready() {
 # minutes for that alone, and the build then takes about half an hour. A budget under the sum does
 # not test a slow release, it fails one. Overridable so a dispatch against an already-complete tag
 # need not carry the full deadline.
+# The matrix's deb-file-github channel downloads from GitHub, not from this forge, so a release
+# whose GitHub upload failed is NOT installable however complete it looks here. That gap used to be
+# covered by accident: the handoff waited on reconcile, which heals the mirrors, so GitHub had been
+# repaired by dispatch time. The handoff no longer waits — reconcile's full-history sweep is not
+# worth the critical path — so readiness now states directly what the ordering used to imply.
+#
+# Checked only after the local roles pass, which keeps it off the polling hot path: a handful of
+# calls on a healthy release, and repeated only while a repair is genuinely in flight. That rate is
+# fine unauthenticated; a token is used when one is present.
+github_ready() {
+  local auth=() names code body
+  [ -n "${GITHUB_ASSET_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_ASSET_TOKEN}")
+  body="$(mktemp)"
+  code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 60 "${auth[@]}" \
+    -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$PROJECT_REPO_SLUG/releases/tags/$tag" || echo 000)"
+  # A throttled read is NOT an absent asset, and reporting it as one turns a quota problem into
+  # "the release never became installable" — a diagnosis pointing at the wrong system entirely.
+  case "$code" in
+    403|429) echo "  GitHub rate-limited the readiness check (HTTP $code); still waiting" ;;
+  esac
+  # `.state`, not just `.name`. GitHub keeps the asset RECORD when an upload dies partway, in state
+  # "starter" rather than "uploaded" — and a name-only match would accept that record and release the
+  # matrix against a download that still 404s, which is the precise failure this check exists to stop.
+  names="$(jq -r '.assets[]? | select(.state == "uploaded") | .name' < "$body" 2>/dev/null || true)"
+  rm -f "$body"
+  [ "$code" = 200 ] || return 1
+  [ -n "$names" ] || return 1
+  # No version match needed: the query is already scoped to this tag's release, so any .deb under
+  # it is this tag's. Both arches, because they upload one after the other and a poll landing
+  # between them would release the arm64 legs against a GitHub release that only has amd64.
+  printf '%s\n' "$names" | grep -q -- "_amd64.deb$" && \
+  printf '%s\n' "$names" | grep -q -- "_arm64.deb$"
+}
+
+# Spaced on its own cadence, not the loop's. Unauthenticated GitHub allows 60 requests an hour and
+# the loop polls far faster than that, so a repair that takes a while would burn the quota and turn
+# a slow release into a failed one — the same constraint check-mirror-ci.sh sizes its interval to. A
+# token lifts it to 5,000/hour, so use the fast cadence only when one is present.
+if [ -n "${GITHUB_ASSET_TOKEN:-}" ]; then
+  GH_INTERVAL="${GH_WAIT_INTERVAL:-20}"
+else
+  GH_INTERVAL="${GH_WAIT_INTERVAL:-60}"
+fi
 ATTEMPTS="${WAIT_ATTEMPTS:-450}"
 INTERVAL="${WAIT_INTERVAL:-20}"
-for _ in $(seq 1 "$ATTEMPTS"); do
+# A wall-clock deadline rather than a countdown of iterations. The GitHub check deliberately sleeps
+# on its own cadence, so counting iterations would make the real budget depend on WHICH thing we are
+# waiting for — a release whose local side went ready early would get a shorter deadline than one
+# that did not, and the documented budget above would stop being the budget.
+DEADLINE=$(( $(date +%s) + ATTEMPTS * INTERVAL ))
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   names="$(curl -sSf --max-time 60 "$API" 2>/dev/null | jq -r '.assets[]?.name' || true)"
   missing=""
   for role in "${_ASSET_ROLES[@]}"; do
@@ -129,6 +178,10 @@ for _ in $(seq 1 "$ATTEMPTS"); do
     fi
     if ! registry_ready; then
       echo "  waiting: the apt/dnf registry does not serve $pkgver yet"; sleep "$INTERVAL"; continue
+    fi
+    if ! github_ready; then
+      echo "  waiting: the GitHub release does not carry both .debs yet"
+      sleep "$GH_INTERVAL"; continue
     fi
     echo "$tag is installable: every role in the release matrix is present, and apt/dnf have it"
     exit 0
