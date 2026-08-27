@@ -41,10 +41,11 @@ ARG TAG
 # the network; a package that genuinely does not install still fails.
 # renovate: datasource=docker depName=debian-13-current packageName=debian
 FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS deb-base
+COPY packaging/retry.sh /retry
 RUN set -eux; \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
-    apt-get update -qq >/dev/null; \
-    apt-get install -y -qq curl ca-certificates >/dev/null
+    /retry 5 apt-get update -qq >/dev/null; \
+    /retry 5 apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -53,7 +54,7 @@ FROM deb-base AS deb-file
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
     /fetch /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -73,8 +74,8 @@ RUN set -eux; \
     echo "deb [signed-by=/etc/apt/keyrings/sisyphusmd.asc] https://$FORGE/api/packages/SisyphusMD/debian $DIST main" \
       | tee /etc/apt/sources.list.d/sisyphusmd.list >/dev/null; \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
-    apt-get update -qq >/dev/null; \
-    apt-get install -y -qq dreame-valetudo >/dev/null; \
+    /retry 5 apt-get update -qq >/dev/null; \
+    /retry 5 apt-get install -y -qq dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -89,7 +90,7 @@ FROM deb-base AS deb-lifecycle
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
     /fetch /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     apt-get install -y -qq --reinstall /tmp/d.deb >/dev/null; \
     bash /smoke.sh dreame-valetudo "$V"; \
     HOME=/tmp/home; export HOME; \
@@ -112,7 +113,7 @@ ARG V PV DL ARCH_DEB
 ARG GH_DL GH_PV
 RUN set -eux; \
     /fetch /tmp/d.deb "$GH_DL/dreame-valetudo_${GH_PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     bash /smoke.sh dreame-valetudo "$V"; \
     touch /passed
 FROM scratch AS deb-file-github-result
@@ -126,7 +127,7 @@ FROM deb-base AS tarball
 # stage failed while the arm64 tarball it was supposed to qualify went untested every release.
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
-    apt-get install -y -qq libusb-1.0-0 libfdt1 tar unzip zip openssh-client tmux >/dev/null; \
+    /retry 5 apt-get install -y -qq libusb-1.0-0 libfdt1 tar unzip zip openssh-client tmux >/dev/null; \
     mkdir -p /opt/somewhere-else; cd /opt/somewhere-else; \
     /fetch b.tar.gz "$DL/dreame-valetudo-${PV}-linux-${ARCH_DEB}.tar.gz"; \
     tar -xzf b.tar.gz; \
@@ -140,8 +141,9 @@ COPY --from=tarball /passed /passed
 # --- the oldest Debian and Ubuntu the glibc floor claims ---------------------------------
 # renovate: datasource=docker depName=debian-12-compat packageName=debian
 FROM debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS deb-floor-base
+COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
-    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+    /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -149,7 +151,7 @@ FROM deb-floor-base AS deb-file-floor
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
     /fetch /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     bash /smoke.sh dreame-valetudo "$V"; \
     touch /passed
 FROM scratch AS deb-file-floor-result
@@ -157,16 +159,18 @@ COPY --from=deb-file-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
 FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS ubuntu-floor-base
+COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
-    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+    /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
 FROM ubuntu-floor-base AS deb-file-ubuntu-floor
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
     /fetch /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     bash /smoke.sh dreame-valetudo "$V"; \
     touch /passed
 FROM scratch AS deb-file-ubuntu-floor-result
@@ -174,16 +178,18 @@ COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
 FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b AS ubuntu-base
+COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
-    apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
+    /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
 FROM ubuntu-base AS deb-file-ubuntu
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_DEB
 RUN set -eux; \
     /fetch /tmp/d.deb "$DL/dreame-valetudo_${PV}_${ARCH_DEB}.deb"; \
-    apt-get install -y -qq /tmp/d.deb >/dev/null; \
+    /retry 5 apt-get install -y -qq /tmp/d.deb >/dev/null; \
     bash /smoke.sh dreame-valetudo "$V"; \
     touch /passed
 
@@ -197,9 +203,10 @@ COPY --from=deb-file-ubuntu /passed /passed
 # interpolation rather than evidence, since a package that installs on both neighbours installs here.
 # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 AS rpm-base
+COPY packaging/retry.sh /retry
 # --allowerasing: the base image ships curl-minimal, which PROVIDES curl and therefore conflicts
 # with it. Without this dnf refuses the transaction rather than swapping the two.
-RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+RUN set -eux; /retry 5 dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -207,7 +214,7 @@ FROM rpm-base AS rpm-file
 ARG V PV DL ARCH_RPM
 RUN set -eux; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
-    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    /retry 5 dnf install -y -q /tmp/d.rpm >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -221,7 +228,8 @@ COPY --from=rpm-file /passed /passed
 # separate lineage entirely, newer than both, and the only dnf5 host.
 # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
 FROM rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6 AS rpm-floor-base
-RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/retry.sh /retry
+RUN set -eux; /retry 5 dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
@@ -229,7 +237,7 @@ FROM rpm-floor-base AS rpm-file-floor
 ARG V PV DL ARCH_RPM
 RUN set -eux; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
-    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    /retry 5 dnf install -y -q /tmp/d.rpm >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -240,15 +248,17 @@ COPY --from=rpm-file-floor /passed /passed
 
 # renovate: datasource=docker depName=fedora-44-current packageName=fedora
 FROM fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80 AS fedora-base
-RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/retry.sh /retry
+RUN set -eux; /retry 5 dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
 FROM fedora-base AS rpm-file-fedora
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM
 RUN set -eux; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
-    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    /retry 5 dnf install -y -q /tmp/d.rpm >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -263,15 +273,17 @@ COPY --from=rpm-file-fedora /passed /passed
 # which proves something else.
 # renovate: datasource=docker depName=fedora-43-compat packageName=fedora
 FROM fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42 AS fedora-floor-base
-RUN set -eux; dnf install -y -q --allowerasing curl >/dev/null
+COPY packaging/retry.sh /retry
+RUN set -eux; /retry 5 dnf install -y -q --allowerasing curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 
 FROM fedora-floor-base AS rpm-file-fedora-floor
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM
 RUN set -eux; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
-    dnf install -y -q /tmp/d.rpm >/dev/null; \
+    /retry 5 dnf install -y -q /tmp/d.rpm >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -291,7 +303,7 @@ ARG V FORGE TAG REPOFILE
 RUN set -eux; \
     /fetch /etc/yum.repos.d/sisyphusmd.repo \
       "https://$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
-    dnf install -y -q dreame-valetudo >/dev/null; \
+    /retry 5 dnf install -y -q dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -303,12 +315,13 @@ COPY --from=dnf-repo /passed /passed
 # gpgcheck in its own code, so the leg above proves nothing about it. Fedora 41 onward ships it as
 # `dnf`, which makes it the repository client a current-Fedora user actually gets.
 FROM fedora-base AS dnf5-repo
+COPY packaging/retry.sh /retry
 ARG V FORGE TAG REPOFILE
 RUN set -eux; \
-    dnf --version | head -1 | grep -q '^dnf5 '; \
+    /retry 5 dnf --version | head -1 | grep -q '^dnf5 '; \
     /fetch /etc/yum.repos.d/sisyphusmd.repo \
       "https://$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
-    dnf install -y -q dreame-valetudo >/dev/null; \
+    /retry 5 dnf install -y -q dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
       bash /smoke.sh dreame-valetudo "$V"; \
@@ -374,7 +387,7 @@ COPY --from=bottle-pour /home/linuxbrew/passed /passed
 # ran it — so a packaging change that breaks a source install (a missing hatch force-include, an
 # entry point that moves) would have shipped green. Mirrors whiskerless's pypi-uvx / pipx targets.
 FROM deb-base AS source-base
-RUN set -eux; apt-get install -y -qq tar >/dev/null
+RUN set -eux; /retry 5 apt-get install -y -qq tar >/dev/null
 
 # --- `uv tool install`, the route the README names first -----------------------------
 FROM source-base AS uv-tool
@@ -395,7 +408,7 @@ COPY --from=uv-tool /passed /passed
 FROM source-base AS pipx
 ARG V DL
 RUN set -eux; \
-    apt-get install -y -qq pipx >/dev/null; \
+    /retry 5 apt-get install -y -qq pipx >/dev/null; \
     /fetch /tmp/src.tar.gz "$DL/dreame-valetudo-${V}.tar.gz"; \
     mkdir -p /src && tar -xzf /tmp/src.tar.gz -C /src --strip-components=1; \
     PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install /src >/dev/null; \
@@ -414,6 +427,7 @@ COPY --from=pipx /passed /passed
 # apart from the base image. The sibling project runs the same pair.
 # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
 FROM opensuse/leap:16.0@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6 AS zypper
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM FORGE
 RUN set -eux; zypper --non-interactive install -y curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
@@ -423,7 +437,7 @@ RUN set -eux; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
     # Not --allow-unsigned-rpm: the imported key has to be what makes this work, or the test proves
     # nothing about the signature.
-    zypper --non-interactive install /tmp/d.rpm >/dev/null; \
+    /retry 5 zypper --non-interactive install /tmp/d.rpm >/dev/null; \
     rpm -qi dreame-valetudo | grep -qi "cce50015d058e9bf"; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
@@ -434,6 +448,7 @@ COPY --from=zypper /passed /passed
 
 # renovate: datasource=docker depName=opensuse-leap-15.6-compat packageName=opensuse/leap
 FROM opensuse/leap:15.6@sha256:79be7751205ea84559990fb76b1bec71e38d6fad41c70a4f6c921b803b58f421 AS zypper-floor
+COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM FORGE
 RUN set -eux; zypper --non-interactive install -y curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
@@ -441,7 +456,7 @@ COPY packaging/fetch.sh /fetch
 RUN set -eux; \
     rpm --import "https://$FORGE/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc"; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
-    zypper --non-interactive install /tmp/d.rpm >/dev/null; \
+    /retry 5 zypper --non-interactive install /tmp/d.rpm >/dev/null; \
     rpm -qi dreame-valetudo | grep -qi "cce50015d058e9bf"; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
