@@ -59,6 +59,8 @@ Older systems might work, but that isn't promised until they are part of this te
 
 Two rows are covered by inheritance rather than by a lane of their own, which is worth knowing if you are relying on either. **Raspberry Pi OS** is not tested as its own image: Bookworm *is* Debian 12, and the Debian 12 lane runs on arm64 as well as x86_64. **RHEL** is not tested directly either — it needs a subscription and has no public image to install into — so Rocky Linux stands in for it, being a bug-for-bug rebuild of the same release.
 
+Windows is not in that matrix and is not supported yet. Nothing installs and runs this project on Windows on any release, so whatever works there today is unverified rather than promised. Windows support is planned for a future update; until it lands and a lane exercises it every release, it is not promised in the sense the table above means.
+
 The `.deb` and `.rpm` need glibc 2.28 or newer. Installing from source also needs Python 3.11 or
 newer. These are not just build targets: CI installs, upgrades, runs, and removes the real packages
 on every Linux row. It does the same with the signed macOS package on both Apple Silicon and Intel.
