@@ -640,7 +640,7 @@ class _LiveProgress(Progress):
                         )
                         print(f"   ... {self._label}{tail}")
                         con._last_line_blank = False
-        except Exception:  # a display thread must never take down a run (e.g. BrokenPipe)
+        except Exception:  # noqa: BLE001 - a display thread must never take down a run (BrokenPipe)
             return
 
     def clear_line(self) -> None:

@@ -506,7 +506,9 @@ def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
                 ctx.fastboot.fbt("get_staged", str(dump))
             if index < total_dumps:
                 ctx.fastboot.fbt("oem", f"stage{index}")
-    except Exception:
+    # Any failure pulling a dump means the capture is incomplete, and the caller's only sane
+    # response is the same whichever way it failed: report it and let recon fall back.
+    except Exception:  # noqa: BLE001
         return False
     if any(not recovery_dump_valid(dump) for dump in dumps):
         return False
