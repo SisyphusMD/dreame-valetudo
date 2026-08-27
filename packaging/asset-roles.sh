@@ -16,7 +16,9 @@ _ASSET_ROLES=(
   'dreame-valetudo*macos-x86_64.pkg'
   'dreame-valetudo-*-linux-amd64.tar.gz'
   'dreame-valetudo-*-linux-arm64.tar.gz'
-  # The arch-independent SOURCE tarball the Homebrew formula builds from.
+  # The arch-independent SOURCE tarball, published as the standalone source-install route for
+  # distros with no package channel. NOT what the Homebrew formula builds from — that is the
+  # PyPI sdist, and this asset's absence would not break the tap.
   'dreame-valetudo-!(*-linux-*).tar.gz'
   # One checksum file per architecture, each written by the machine that built those bytes. Named
   # for `uname -m` so the verify command is copy-pasteable. Listed separately rather than as a
