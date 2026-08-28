@@ -43,6 +43,11 @@ packages = ["src/dreame_valetudo"]
 
 [tool.ruff]
 line-length = 100
+# Stated rather than inferred from requires-python, so a reader comparing the two repos sees the
+# same number in the same place. The sibling has to spell it out — its HA integration adds a second,
+# higher floor — and an inferred value here would read as a difference that isn't one.
+target-version = "py311"
+src = ["src", "tests", "libexec"]
 
 [tool.ruff.lint]
 select = [
@@ -75,6 +80,9 @@ allowed-confusables = ["–", "×"]  # EN DASH in prose/ranges, MULTIPLICATION S
 # False positive: ruff can't see that console.die is NoReturn across the module boundary.
 "src/dreame_valetudo/fastboot.py" = ["RET503"]
 "src/dreame_valetudo/phases/manage.py" = ["RET503"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dreame_valetudo"]
 
 [tool.coverage.run]
 source = ["src/dreame_valetudo", "libexec"]

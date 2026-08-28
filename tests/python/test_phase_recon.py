@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from conftest import CFG, FB, CtxFactory, config_responder, stage_dist
+from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 from dreame_valetudo import console
 from dreame_valetudo import workspace as workspace_module
@@ -35,7 +36,6 @@ from dreame_valetudo.workspace import (
     Robot,
     recovery_backup_valid,
 )
-from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 
 def _marker(backup: str, model: str = "x40-ultra") -> str:

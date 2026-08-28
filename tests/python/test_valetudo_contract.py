@@ -6,13 +6,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from pytest import MonkeyPatch
-
-from dreame_valetudo.models import (
-    SUPPORTED_MODELS,
-    load_model_spec,
-    reviewed_model_identities_for_key,
-)
 from libexec import verify_valetudo_contract as contract
 from libexec.verify_valetudo_contract import (
     DDR3_MODEL_KEYS,
@@ -20,6 +13,13 @@ from libexec.verify_valetudo_contract import (
     GUIDE_STEPS,
     MODEL_SECTION_MARKERS,
     verify,
+)
+from pytest import MonkeyPatch
+
+from dreame_valetudo.models import (
+    SUPPORTED_MODELS,
+    load_model_spec,
+    reviewed_model_identities_for_key,
 )
 
 
