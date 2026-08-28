@@ -16,7 +16,9 @@ amd64 on the Forgejo runner, arm64 on GitHub's native `ubuntu-24.04-arm`. **Noth
 Both forges call the same `packaging/build-linux-arch.sh`, which refuses to run when the host and
 target architectures disagree, so an emulated build cannot return by accident. nfpm then packages
 the exported per-arch binaries. A **reconcile** job (`packaging/reconcile-releases.sh`)
-runs after every release and fans every asset out to all three registries (Forgejo, NAS, GitHub),
+runs after every release and fans every asset in the artifact matrix out to all three
+registries (Forgejo, NAS, GitHub) — bottles are outside that matrix on purpose and reach
+the NAS via `nas-bottles` instead,
 backfilling any historical gap after two registries agree on the asset's SHA-256. It never trusts
 a filename or size alone, and ignores anything outside the exact release artifact matrix. Assets
 are produced in two places (`.deb`/tarball on Forgejo, `.pkg` on GitHub), so the quorum is available
@@ -110,7 +112,7 @@ from one).
    | Secret | What it is |
    |---|---|
    | `CLUSTER_FORGEJO_REPO_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `dreame-valetudo` (release commit/tag + create/append the Forgejo release). |
-   | `NAS_FORGEJO_REPO_WRITE_PAT` | PAT on the NAS Forgejo, repo write (NAS release + the bridged `.pkg`). |
+   | `NAS_FORGEJO_REPO_WRITE_PAT` | PAT on the NAS Forgejo, repo write (NAS release, the bridged `.pkg`, and the bottles `nas-bottles` copies over). |
 | `CLUSTER_FORGEJO_REGISTRY_PUSH_PAT` | `publish` | Package-registry write on the cluster instance. Separate from the repo PAT: the registry is a different blast radius, and it is the one credential that can overwrite what subscribers install. Org-scoped. |
 | `GPG_SIGNING_KEY` | `publish` | The namespace signing key's private half (`CCE50015D058E9BF`), shared with the sibling project because the registry groups packages by OWNER — a per-project key would buy no isolation. `publish` FAILS CLOSED without it rather than shipping unsigned packages. Org-scoped. |
 | `PYPI_API_TOKEN` | `publish` | Uploads the sdist and wheel. Project-scoped by PyPI, so the sibling's token cannot be reused. **Not yet set:** the `pypi` job skips with a warning until it exists, and the Homebrew formula keeps building from the release asset until the first upload succeeds. |
