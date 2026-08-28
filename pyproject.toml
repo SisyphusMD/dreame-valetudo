@@ -55,6 +55,18 @@ select = [
     "PLC", "PLE", "PLW",     # pylint conventions/errors/warnings (not the noisy PLR refactor set)
 ]
 
+# Kept identical to the sibling for the same reason `select` is: a contributor moving between the
+# two repos must get the same answer from the linter. Neither rule can fire here today (this project
+# has no async code and no en-dashes), which is precisely why the entry has to be written down
+# rather than discovered by whoever first adds one.
+ignore = [
+    "ASYNC109",                   # a `timeout` param that wraps asyncio.timeout is a fine API
+]
+
+# Naming the two characters keeps RUF001-3 live for every other confusable — a Cyrillic lookalike
+# in a string is a real bug that a blanket ignore of those rules would hide.
+allowed-confusables = ["–", "×"]  # EN DASH in prose/ranges, MULTIPLICATION SIGN in ratios
+
 [tool.ruff.lint.per-file-ignores]
 # Vendored from project-standard. Shared files carry no project-specific noqa codes (a code the
 # sibling does not enable would fail RUF100 there), so the exemption lives with the rule set that
