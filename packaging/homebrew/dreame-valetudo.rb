@@ -23,7 +23,6 @@ REPLACE_BOTTLE_BLOCK
   # so packaging/refresh-pins.sh rewrites it from BUNDLE_PYTHON_VERSION as a postUpgradeTask.
   depends_on "python@3.14"
   depends_on "libusb"       # the fastboot-over-libusb client + sunxi-fel load it at runtime
-  depends_on "uv"           # fallback transport for the libusb fastboot client
   depends_on "dtc"          # libfdt (sunxi-fel is built from source on first run)
   depends_on "zlib"         # sunxi-fel's fel.c needs zlib.h (system on macOS, explicit for Linux)
   depends_on "pkg-config"
