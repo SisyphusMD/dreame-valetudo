@@ -2200,3 +2200,37 @@ def test_bottles_reach_the_nas_but_stay_out_of_the_quorum() -> None:
             f"{glob} is no longer ignored by reconcile; a rebuilt bottle differs by its gzip "
             "timestamp, so the quorum would report a conflict for a healthy release"
         )
+
+
+def test_the_formula_does_not_depend_on_uv() -> None:
+    """uv is the LAST transport the fastboot client tries, and a packaged install never gets there.
+
+    resolve order in fastboot.py: the bundled helper, then the venv's python if it imports pyusb,
+    then this interpreter if it carries the pinned pyusb, and only then uv. The formula ships pyusb
+    as a resource into that venv, so a Homebrew install always stops at the second rung. Declaring
+    uv therefore bought nothing — and it is the transport the code deliberately ranks last, because
+    it resolves pyusb from PyPI on every call while flashing happens on the robot's own AP with no
+    internet.
+
+    It also cost a release: Homebrew dropped uv's Intel macOS bottle, and the dependency it was
+    never going to use made the Intel bottle unbuildable. Pinned so an upstream bottle set cannot
+    break a platform through a dependency nothing reaches.
+    """
+    for name in ("dreame-valetudo-rc.rb", "dreame-valetudo.rb"):
+        formula = (_ROOT / "packaging" / "homebrew" / name).read_text(encoding="utf-8")
+        assert 'depends_on "uv"' not in formula, (
+            f"{name} depends on uv again; the venv's pyusb wins ahead of it, so this only exposes "
+            "the build to a platform upstream may not bottle"
+        )
+
+    # The rungs above uv are what make it unreachable; if they go, the reasoning above stops holding.
+    fastboot = (_ROOT / "src" / "dreame_valetudo" / "fastboot.py").read_text(encoding="utf-8")
+    assert "PYUSB_VERSION" in fastboot and 'which("uv")' in fastboot, (
+        "the fastboot transport chain no longer pins pyusb or ranks uv last; re-derive whether the "
+        "formula needs uv before trusting this test"
+    )
+    assert 'resource "pyusb"' in (
+        _ROOT / "packaging" / "homebrew" / "dreame-valetudo-rc.rb"
+    ).read_text(encoding="utf-8"), (
+        "the formula no longer ships pyusb, so the venv rung that made uv unreachable is gone"
+    )
