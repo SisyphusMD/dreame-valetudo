@@ -1,7 +1,7 @@
 # dreame-valetudo — Python CLI to root Dreame robot vacuums and install Valetudo.
 [project]
 name = "dreame-valetudo"
-version = "0.2.1"
+version = "0.3.0-rc.44"
 description = "Guided, idempotent tool to root supported Dreame robot vacuums and install Valetudo"
 # Rendered as the PyPI project page. Without it the page is blank, which for a tool that rewrites
 # a robot's firmware is the last place to leave someone without context.
