@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -2321,4 +2322,185 @@ def test_no_real_hardware_address_is_committed() -> None:
     assert not strays, (
         "a hardware address is in the tree — if it is real it must not be committed; mask the "
         f"host half (aa:bb:cc:xx:xx:xx) or add it to _EXAMPLE_MACS: {sorted(strays)}"
+    )
+
+
+# The sibling gates serials by SHAPE — an LR4 serial is `LR4C` and six digits, which a pattern
+# recognises. A Dreame serial is `[A-Za-z0-9][A-Za-z0-9._-]{5,63}`, so shape is useless here and
+# the same guard would flag ordinary prose. What transfers is the sibling's SSID technique: match
+# the syntactic POSITIONS a serial is written in, where a value is unambiguously one, and
+# allowlist the fixtures. Free prose is not checkable; these are.
+#: Transcript keys the ROBOT emits. Outside Python these are the only places a serial appears in
+#: a position that identifies it as one, so a plain scan is right here.
+_SERIAL_TRANSCRIPT = re.compile(
+    # `serial` is included as a KEY only — `"serial":` in persisted JSON and `SERIAL=` in a shell
+    # assignment are both unambiguous positions. Python source is handled by the AST walker
+    # instead, where a bare `serial =` can be told from an expression.
+    r"""(?:serialno|factory_serial|serial)["']?\s*[:=]\s*["']?([A-Za-z0-9._/-]{4,})""",
+    re.IGNORECASE,
+)
+#: Invented fixtures. `not supported` is the bootloader's own answer, which `valid_serial`
+#: rejects, and is here because it appears in exactly this position.
+_EXAMPLE_SERIALS = frozenset(
+    {
+        "p3020000aa1234567890",
+        "dr9316ab1234",
+        "r00000000usa00000000",
+        "serial123",
+        "seriala",
+        "typedwrong12",
+        "typedwrong1234",
+        "not supported",
+        "a1b2c3d4e5f6g7h8",
+        "r22400000usa00000aa",
+        "testserial0001",
+        "zz99zz99zz99zz99",
+        "abc-123.45",
+        "a12345",
+        "1234567890",
+    }
+)
+
+
+#: Returned instead of a serial when a Python file will not parse, so the gate fails loudly.
+_UNPARSEABLE = "\x00unparseable"
+
+
+def _plausibly_a_serial(value: str) -> bool:
+    """A digit and some length. Placeholders in these positions (`---`, `SERIAL`, a function
+    name captured as a default) carry neither, and flagging them trains people to ignore this."""
+    return len(value) >= 6 and any(c.isdigit() for c in value)
+
+
+def _literal(node: ast.expr) -> str | None:
+    """The string value of a literal, decoding bytes: a USB fixture stores the same identifying
+    value as `b"R224..."`, and accepting only `str` leaves every byte position unchecked."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str | bytes):
+        v = node.value
+        return v if isinstance(v, str) else v.decode("utf-8", "ignore")
+    # An f-string with no placeholders parses as JoinedStr but is a plain literal to a reader,
+    # and is exactly as likely to hold a pasted value.
+    if isinstance(node, ast.JoinedStr) and all(
+        isinstance(p, ast.Constant) for p in node.values
+    ):
+        return "".join(str(p.value) for p in node.values if isinstance(p, ast.Constant))
+    return None
+
+
+def _serials_in_python(text: str) -> list[str]:
+    """String literals sitting where a serial goes, found by parsing rather than by pattern.
+
+    A regex cannot tell a serial-named constant assigned a literal from one assigned a call: both are
+    a serial-ish name, a separator and a token. Every attempt to separate them by punctuation
+    either lets an annotated assignment through or fails the gate on an ordinary refactor. The
+    parser already knows which one is a literal, so ask it.
+
+    Covers assignment to a serial-named target (annotated or not), a serial-named keyword
+    argument, and any call whose name ends in `serial` — which is where a pasted sample lands.
+    """
+    # A file that cannot be parsed cannot be cleared. Returning nothing would report it clean,
+    # which is the one answer an unreadable file must never produce; the sentinel makes the
+    # caller fail instead.
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [_UNPARSEABLE]
+
+    def named_serial(name: str) -> bool:
+        # `serial_number` is the canonical spelling in USB descriptors, so a fixture is as likely
+        # to use it as `serial`; trailing digits/underscores are stripped so `_SERIAL2` counts.
+        n = name.lower().rstrip("_0123456789")
+        return n.endswith(("serial", "serialno", "serial_number", "serialnumber"))
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        if targets and (lit := _literal(node.value)) is not None:
+            for t in targets:
+                name = t.id if isinstance(t, ast.Name) else getattr(t, "attr", "")
+                if named_serial(name):
+                    found.append(lit)
+        if isinstance(node, ast.Dict):
+            for k, v in zip(node.keys, node.values, strict=True):
+                if (
+                    isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    and named_serial(k.value)
+                    and (lit := _literal(v)) is not None
+                ):
+                    found.append(lit)
+        # `for serial in (...)` and `for serial, expected in ((...), ...)` alike: a table-driven
+        # fixture is the natural way this grows, and a Name-only check skips it entirely.
+        if isinstance(node, ast.For):
+            names = [
+                t.id for t in ast.walk(node.target) if isinstance(t, ast.Name)
+            ]
+            if any(named_serial(n) for n in names):
+                found += [lit for e in ast.walk(node.iter) if (lit := _literal(e)) is not None]
+        if isinstance(node, ast.Call):
+            fname = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            for kw in node.keywords:
+                if kw.arg and named_serial(kw.arg) and (lit := _literal(kw.value)) is not None:
+                    found.append(lit)
+            if named_serial(fname):
+                found += [lit for a in node.args if (lit := _literal(a)) is not None]
+    # A transcript pasted INSIDE Python — `Result("factory_serial=R224...")` — is a serial in an
+    # unambiguous position that no assignment rule reaches. Scanning string CONTENTS rather than
+    # the raw file keeps `serial = 123456` out of it, which is why the file is parsed at all.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str | bytes):
+            # Byte literals carry the same transcripts: USB and serial fixtures are written that
+            # way, and the value inside identifies a robot exactly as a str would.
+            raw = node.value if isinstance(node.value, str) else node.value.decode("utf-8", "ignore")
+            found += _SERIAL_TRANSCRIPT.findall(raw)
+    return found
+
+
+def test_no_real_robot_serial_is_committed() -> None:
+    """A serial identifies one robot, and the tree is published.
+
+    Mirrors the sibling's intent by a different mechanism: positions rather than shapes — and
+    that difference caps what it can promise. The sibling recognises an LR4 serial by SHAPE
+    (`LR4C` + six digits), so it finds one anywhere. A Dreame serial is
+    `[A-Za-z0-9][A-Za-z0-9._-]{5,63}`, indistinguishable from ordinary text, so this can only
+    check the places a serial is WRITTEN: assignment to a serial-named target, a serial-named
+    call or keyword, a serial-keyed dict entry, a `for serial in (...)` binding, and the
+    robot's own transcript keys
+    outside Python. A value reaching the tree through a generic helper — a prompt fixture, an
+    `Answer(...)`, a `default=` — is not covered, and cannot be without naming every such
+    helper. Best-effort by construction; see project-standard/VARIANCE.md.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=True
+    )
+    strays: set[str] = set()
+    for name in listed.stdout.split("\0"):
+        path = _ROOT / name
+        if not name or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        # One scanner per file kind. Running the regex over Python too re-imports the very
+        # ambiguity the parser exists to remove — `serial = 123456` has no string literal, and
+        # this suite already uses `serial` for certificate numbers.
+        if name.endswith(".py"):
+            values = _serials_in_python(text)
+        else:
+            values = _SERIAL_TRANSCRIPT.findall(text)
+        for value in values:
+            if value == _UNPARSEABLE:
+                strays.add(f"{name}: file does not parse, so it cannot be checked")
+                continue
+            if value.lower() in _EXAMPLE_SERIALS:
+                continue
+            if _plausibly_a_serial(value):
+                strays.add(f"{name}: {value}")
+    assert not strays, (
+        "a serial is written where a real one would go — if it belongs to a robot it must not "
+        f"be committed; if it is a new fixture, add it to _EXAMPLE_SERIALS: {sorted(strays)}"
     )
