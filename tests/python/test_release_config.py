@@ -2234,3 +2234,91 @@ def test_the_formula_does_not_depend_on_uv() -> None:
     ).read_text(encoding="utf-8"), (
         "the formula no longer ships pyusb, so the venv rung that made uv unreachable is gone"
     )
+
+
+# Mirrored from the sibling, which added it after a real robot's hardware address reached two
+# shipped docs and a test fixture and would have entered a stable sdist. Nothing there caught it
+# because the guard of the day only knew serials.
+#
+# The sibling's SERIAL guard is deliberately NOT mirrored: an LR4 serial has a fixed shape
+# (`LR4C` + six digits) that a pattern can recognise, while this project's serials are
+# `[A-Za-z0-9][A-Za-z0-9._-]{5,63}` — almost any token, so a pattern would match everything and
+# be deleted within a week. A MAC has the same shape everywhere, so this half transfers.
+#: Maximal runs per separator, then judged by shape. Six two-digit groups is an address;
+#: seven is a label glued to one (`id:`, or the trailing letters of `mac:`) and is ambiguous
+#: about which end, so both readings are offered and the allowlist decides; eight or more is
+#: a byte sequence or an IPv6 address. Matching a fixed six groups instead would read the
+#: tail of `2001:db8:12:34:56:78:9a:bc` as hardware and the head of `01-02-...-08` as well.
+_RUN_COLON = re.compile(r"[0-9A-F]{1,4}(?::[0-9A-F]{1,4})+", re.IGNORECASE)
+_RUN_HYPHEN = re.compile(r"[0-9A-F]{1,4}(?:-[0-9A-F]{1,4})+", re.IGNORECASE)
+#: Cisco-style dotted notation: exactly three four-digit groups, never part of a longer run.
+_RUN_DOT = re.compile(r"[0-9A-F]{4}(?:\.[0-9A-F]{4})+", re.IGNORECASE)
+_FROMHEX = re.compile(r"fromhex\(\s*[\"']([0-9A-F\s]+)[\"']\s*\)", re.IGNORECASE)
+
+
+def _addresses_in(run: str, sep: str) -> list[str]:
+    groups = run.split(sep)
+    if len(groups) == 6 and all(len(g) == 2 for g in groups):
+        return [":".join(groups)]
+    if len(groups) == 7:
+        return [
+            ":".join(groups[i : i + 6])
+            for i in range(2)
+            if all(len(g) == 2 for g in groups[i : i + 6])
+        ]
+    return []
+_EXAMPLE_MACS = frozenset({"001122334455", "aabbccddeeff", "000000000000"})
+
+
+def _canon_mac(mac: str) -> str:
+    return re.sub(r"[:-]", "", mac).lower()
+
+
+def _macs_in(text: str) -> list[str]:
+    """Addresses worth judging, one entry per run rather than per window.
+
+    Six groups is a hardware address; eight is an IPv6 address written in two-digit groups, so
+    long runs are skipped. A seven-group run is an address with a hex-looking character stuck to
+    its front, and a run containing an approved fixture is taken to be that fixture — otherwise a
+    label written flush against an allowed address would fail the gate.
+    """
+    found: list[str] = []
+    allowed = {_canon_mac(m) for m in _EXAMPLE_MACS}
+    for rx, sep in ((_RUN_COLON, ":"), (_RUN_HYPHEN, "-")):
+        for run in rx.finditer(text):
+            readings = _addresses_in(run.group(0), sep)
+            if readings and not any(_canon_mac(r) in allowed for r in readings):
+                found.extend(readings)
+    for run in _RUN_DOT.finditer(text):
+        groups = run.group(0).split(".")
+        if len(groups) == 3:
+            found.append("".join(groups))
+    for literal in _FROMHEX.findall(text):
+        packed = re.sub(r"\s+", "", literal)
+        if len(packed) == 12:
+            found.append(packed)
+    return found
+
+
+def test_no_real_hardware_address_is_committed() -> None:
+    """A MAC in the tree identifies a specific unit, and the tree is published."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=True
+    )
+    allowed = {_canon_mac(m) for m in _EXAMPLE_MACS}
+    strays: set[str] = set()
+    for name in listed.stdout.split("\0"):
+        path = _ROOT / name
+        if not name or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        strays |= {
+            f"{name}: {found}" for found in _macs_in(text) if _canon_mac(found) not in allowed
+        }
+    assert not strays, (
+        "a hardware address is in the tree — if it is real it must not be committed; mask the "
+        f"host half (aa:bb:cc:xx:xx:xx) or add it to _EXAMPLE_MACS: {sorted(strays)}"
+    )
