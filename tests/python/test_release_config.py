@@ -492,11 +492,15 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
 def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
     bridge = _MACOS_WAIT.read_text()
 
-    # Two Forgejo runners share one public egress IP and GitHub allows 60 unauthenticated requests
-    # an hour. A 2400s deadline polled every 300s is 8 requests per gate, so several can be in
-    # flight at once and still sit well under the shared limit.
+    # The poll is authenticated, so the ceiling is 5,000 requests an hour rather than the 60 an
+    # unauthenticated caller gets from a public egress IP two Forgejo runners share. A 2400s
+    # deadline polled every 30s is 80 requests per gate, under 2% of that quota.
     assert 'MIRROR_CI_TIMEOUT:-2400' in bridge
-    assert 'MIRROR_CI_INTERVAL:-300' in bridge
+    assert 'MIRROR_CI_INTERVAL:-30' in bridge
+    # And the token is REQUIRED. An optional one does not fail when the budget is gone: it answers
+    # 403, which this gate reads as "could not ask" and waits out, turning somebody else's traffic
+    # into a timed-out release.
+    assert 'MIRROR_CI_TOKEN:?' in bridge
     # A throttled response is a statement about the quota, not about the commit. Failing the gate
     # on one would turn somebody else's traffic into a red release.
     assert '403|429)' in bridge
