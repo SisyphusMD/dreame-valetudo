@@ -1208,6 +1208,13 @@ def test_the_infra_triage_is_the_shared_one() -> None:
     # The attempt-specific endpoint: plain /jobs returns the LATEST attempt, so after a retry it
     # reports the retry's green jobs and the triage sees nothing to explain.
     assert "attempts/$ATTEMPT/jobs" in retry
+    # One log per failed job, fetched with escapes allowed: build logs carry ANSI colour and
+    # `gh api` refuses to write such a body without the flag. Losing it would not fail the
+    # workflow — every log fetch would fail, every failure would count as ours, and the
+    # resolver-failure retry class would silently stop existing.
+    assert "--allow-escape-sequences" in retry
+    assert "/logs" in retry
+    assert "triage-infra-failure.py jobs.json logs" in retry
 
 
 # --- the install matrix ---------------------------------------------------------------
