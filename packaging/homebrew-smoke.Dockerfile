@@ -3,8 +3,14 @@ FROM homebrew/brew:latest@sha256:b0072bfdebf5934ae24b93b44a1928a88057399b3283ffa
 
 # build-tarball.sh rebuilds the source tarball via python3 to verify the formula digest; the brew
 # image ships without any python.
+#
+# The image also ships an apt source for the GitHub CLI whose signing key is baked in at image
+# build time. When GitHub rotates that key, `apt-get update` refuses the whole index and nothing
+# installs — for a repository this smoke never uses. Dropped rather than re-keyed: gh plays no
+# part here, and fetching a fresh keyring would trade one stale pin for a live network trust.
 USER root
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+RUN rm -f /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 USER linuxbrew
 
 WORKDIR /work
