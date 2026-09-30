@@ -93,6 +93,7 @@ docker buildx build --platform "linux/$arch" \
   --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
   --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
   --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
+  ${PIP_INDEX_URL:+--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL"} \
   -f packaging/deb.Dockerfile --target export --output "type=local,dest=out-$arch" .
 
 rm -rf dist && mkdir dist

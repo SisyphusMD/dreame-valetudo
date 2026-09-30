@@ -171,6 +171,7 @@ jobs:
           PYTEST="9.1.1"
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
+          sudo sed -i 's#http://archive.ubuntu.com#http://artifacts.nas.bryantserver.com/archive.ubuntu.com#; s#http://security.ubuntu.com#http://artifacts.nas.bryantserver.com/security.ubuntu.com#' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           # renovate: datasource=pypi depName=pyyaml
           PYYAML="6.0.3"

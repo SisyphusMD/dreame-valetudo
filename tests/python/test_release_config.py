@@ -205,7 +205,7 @@ def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
 
 
 def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:
-    mirror = 'mirrors = ["dockerhub-mirror.nas.bryantserver.com"]'
+    mirror = 'mirrors = ["image-mirror.nas.bryantserver.com/docker.io"]'
     for workflow in (_CI, _PUBLISH):
         text = workflow.read_text()
         assert "buildkitd-config-inline: |" in text

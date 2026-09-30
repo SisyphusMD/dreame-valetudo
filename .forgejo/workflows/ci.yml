@@ -197,7 +197,15 @@ jobs:
           # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
           buildkitd-config-inline: |
             [registry."docker.io"]
-              mirrors = ["dockerhub-mirror.nas.bryantserver.com"]
+              mirrors = ["image-mirror.nas.bryantserver.com/docker.io"]
+            [registry."ghcr.io"]
+              mirrors = ["image-mirror.nas.bryantserver.com/ghcr.io"]
+            [registry."quay.io"]
+              mirrors = ["image-mirror.nas.bryantserver.com/quay.io"]
+            [registry."registry.k8s.io"]
+              mirrors = ["image-mirror.nas.bryantserver.com/registry.k8s.io"]
+            [registry."public.ecr.aws"]
+              mirrors = ["image-mirror.nas.bryantserver.com/public.ecr.aws"]
       - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
         run: |
           set -euo pipefail
@@ -220,6 +228,7 @@ jobs:
             --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
             --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
             --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
+            --build-arg PIP_INDEX_URL=https://artifacts.nas.bryantserver.com/pypi.org/simple/ \
             -f packaging/deb.Dockerfile --target export --output type=local,dest=out .
           chmod +x out/dreame-valetudo/dreame-valetudo out/dreame-fastboot/dreame-fastboot out/sunxi-fel
           ./out/dreame-valetudo/dreame-valetudo version        # the frozen launcher runs
@@ -346,6 +355,7 @@ jobs:
           # pass — which is how this feature stayed broken through 473 green tests. Install it so
           # the suite actually runs, and install the tool so argv[0] is a real executable (tmux
           # has to exec it; `python -m` gives a non-executable __main__.py).
+          sudo sed -i 's#http://archive.ubuntu.com#http://artifacts.nas.bryantserver.com/archive.ubuntu.com#; s#http://security.ubuntu.com#http://artifacts.nas.bryantserver.com/security.ubuntu.com#' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           python -m pip install --upgrade pip
           pip install -e .
