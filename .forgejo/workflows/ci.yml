@@ -229,6 +229,7 @@ jobs:
             --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
             --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
             --build-arg PIP_INDEX_URL=https://artifacts.nas.bryantserver.com/pypi.org/simple/ \
+            --build-arg DNF_MIRROR=https://artifacts.nas.bryantserver.com \
             -f packaging/deb.Dockerfile --target export --output type=local,dest=out .
           chmod +x out/dreame-valetudo/dreame-valetudo out/dreame-fastboot/dreame-fastboot out/sunxi-fel
           ./out/dreame-valetudo/dreame-valetudo version        # the frozen launcher runs

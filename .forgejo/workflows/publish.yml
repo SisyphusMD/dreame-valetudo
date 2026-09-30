@@ -178,6 +178,8 @@ jobs:
           # Step-local, not job-wide: the key is needed by exactly this step, and a job-level
           # secret is visible to every other one.
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          # The manylinux builder's dnf installs, through the NAS artifact cache.
+          DNF_MIRROR: https://artifacts.nas.bryantserver.com
         run: |
           set -euo pipefail
           # The build-time pins live in packaging/release-pins.env and the script sources them
