@@ -220,7 +220,7 @@ jobs:
           . packaging/release-pins.env
           PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
           PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
-          PYTHON_BUILD_IMAGE="$MANYLINUX_AMD64"
+          PYTHON_BUILD_IMAGE="$MANYLINUX"
           export GLIBC_FLOOR
           GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
           docker buildx build --platform linux/amd64 \
