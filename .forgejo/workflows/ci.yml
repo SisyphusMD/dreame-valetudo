@@ -298,7 +298,7 @@ jobs:
           # renovate: datasource=docker depName=debian-12-compat packageName=debian
           DEBIAN_FLOOR_IMAGE="debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587"
           # renovate: datasource=docker depName=debian-13-current packageName=debian
-          DEBIAN_CURRENT_IMAGE="debian:13-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a"
+          DEBIAN_CURRENT_IMAGE="debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
           # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
           UBUNTU_FLOOR_IMAGE="ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401"
           # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
