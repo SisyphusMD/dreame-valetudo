@@ -58,8 +58,8 @@ BUNDLE_PYTHON_SHA256 = "c2215904f02b175596dc49351585104f4bc20341e1c47378b26a2c27
 # Every run is wrapped in a tmux session. The deb/rpm/brew channels get tmux from their package
 # manager; a .pkg install has none, so the release build bundles this version.
 # renovate: datasource=github-releases depName=tmux/tmux
-TMUX_VERSION = "3.7"
-TMUX_SHA256 = "2344f191501b8a73eb71dd6c5fd5dcf8c765f5066f34ab46f04b3013dc7bc1a5"
+TMUX_VERSION = "3.8"
+TMUX_SHA256 = "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e"
 
 # The robot's own Wi-Fi AP address (also, on a home LAN, usually the user's router — hence the
 # is_dreame_ap guard before any AP-side command).
