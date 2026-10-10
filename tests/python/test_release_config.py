@@ -49,7 +49,7 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
     assert 'exit "$fail"' in step
     cluster = step.index("packaging/forgejo-release.sh forgejo.bryantserver.com")
     github = step.index("packaging/github-release.sh", cluster)
-    nas = step.index("packaging/forgejo-release.sh forgejo.nas.bryantserver.com")
+    nas = step.index("packaging/forgejo-release.sh forgejo.lan.bryantserver.com")
     assert cluster < github < nas
 
     # Both conditions OVERRIDE a failed dependency (that is the point of the repair jobs) while
@@ -205,7 +205,7 @@ def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
 
 
 def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:
-    mirror = 'mirrors = ["image-mirror.nas.bryantserver.com/docker.io"]'
+    mirror = 'mirrors = ["image-mirror.lan.bryantserver.com/docker.io"]'
     for workflow in (_CI, _PUBLISH):
         text = workflow.read_text()
         assert "buildkitd-config-inline: |" in text
@@ -2186,7 +2186,7 @@ def test_bottles_reach_the_nas_but_stay_out_of_the_quorum() -> None:
     assert "homebrew-bottles" in needs, (
         f"the bottle bridge runs after {needs}, which does not guarantee the bottles exist yet"
     )
-    assert "forgejo.nas.bryantserver.com" in yaml.dump(bottles_job), (
+    assert "forgejo.lan.bryantserver.com" in yaml.dump(bottles_job), (
         "the bottle bridge no longer targets the NAS"
     )
 

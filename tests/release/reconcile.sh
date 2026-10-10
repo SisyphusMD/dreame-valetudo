@@ -19,7 +19,7 @@ set -u
 printf 'curl %s\n' "$*" >> "$STUB_CALLS"
 printf 'curl %s\n' "$*" >> "$STUB_HISTORY"
 case "$*" in
-  *forgejo.nas.bryantserver.com*) registry=nas ;;
+  *forgejo.lan.bryantserver.com*) registry=nas ;;
   *github.com*) registry=github ;;
   *) registry=cluster ;;
 esac
@@ -153,7 +153,7 @@ fi
 # A registry missing an asset that two others agree on is filled from that content quorum.
 [ "$(cat "$remotes/nas/990/dreame-valetudo-9.9.0.tar.gz")" = TARBALL ] \
   || fail "missing NAS tarball was not filled from the cluster+GitHub quorum"
-grep -Eq 'forgejo\.nas\.bryantserver\.com/.*/releases/990/assets\?name=dreame-valetudo-9\.9\.0\.tar\.gz.*attachment=@' "$calls" \
+grep -Eq 'forgejo\.lan\.bryantserver\.com/.*/releases/990/assets\?name=dreame-valetudo-9\.9\.0\.tar\.gz.*attachment=@' "$calls" \
   || fail "the NAS tarball was not uploaded through the Forgejo publisher"
 
 # The versioned scheme reconciles by the same roles, with no rule that knows how a version is spelled.

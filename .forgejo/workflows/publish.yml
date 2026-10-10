@@ -162,15 +162,15 @@ jobs:
           # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
           buildkitd-config-inline: |
             [registry."docker.io"]
-              mirrors = ["image-mirror.nas.bryantserver.com/docker.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/docker.io"]
             [registry."ghcr.io"]
-              mirrors = ["image-mirror.nas.bryantserver.com/ghcr.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/ghcr.io"]
             [registry."quay.io"]
-              mirrors = ["image-mirror.nas.bryantserver.com/quay.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/quay.io"]
             [registry."registry.k8s.io"]
-              mirrors = ["image-mirror.nas.bryantserver.com/registry.k8s.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/registry.k8s.io"]
             [registry."public.ecr.aws"]
-              mirrors = ["image-mirror.nas.bryantserver.com/public.ecr.aws"]
+              mirrors = ["image-mirror.lan.bryantserver.com/public.ecr.aws"]
 
       - name: Build the amd64 .deb, .rpm and tarball (native — nothing is emulated here)
         id: build
@@ -179,7 +179,7 @@ jobs:
           # secret is visible to every other one.
           GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
           # The manylinux builder's dnf installs, through the NAS artifact cache.
-          DNF_MIRROR: https://artifacts.nas.bryantserver.com
+          DNF_MIRROR: https://artifacts.lan.bryantserver.com
         run: |
           set -euo pipefail
           # The build-time pins live in packaging/release-pins.env and the script sources them
@@ -257,7 +257,7 @@ jobs:
           packaging/github-release.sh \
             "${{ secrets.GH_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
             || fail=1
-          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
+          packaging/forgejo-release.sh forgejo.lan.bryantserver.com \
             "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${ASSETS[@]}" \
             || fail=1
           exit "$fail"
@@ -551,7 +551,7 @@ jobs:
           mapfile -t fetched < fetched.txt
           [ "${#fetched[@]}" -gt 0 ] || { echo "::error::nothing arrived to bridge to the NAS"; exit 1; }
           bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
-          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
+          packaging/forgejo-release.sh forgejo.lan.bryantserver.com \
             "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${fetched[@]}"
           if [ "$partial" = true ]; then
             echo "::error::the NAS release is incomplete for $GITHUB_REF_NAME"
@@ -608,7 +608,7 @@ jobs:
           # different bytes under the same name. The immutable default would reject them and leave
           # the NAS holding the superseded copy — refusing the repair this job exists to perform.
           REL_REPLACE_POLICY=replace \
-          packaging/forgejo-release.sh forgejo.nas.bryantserver.com \
+          packaging/forgejo-release.sh forgejo.lan.bryantserver.com \
             "${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md "${fetched[@]}"
           if [ "$partial" = true ]; then
             echo "::error::the NAS is missing bottles for $GITHUB_REF_NAME"
