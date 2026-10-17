@@ -21,7 +21,7 @@ REPLACE_BOTTLE_BLOCK
 
   # matches the interpreter the .pkg/.deb bundles freeze. No Renovate manager covers this formula,
   # so packaging/refresh-pins.sh rewrites it from BUNDLE_PYTHON_VERSION as a postUpgradeTask.
-  depends_on "python@3.14"
+  depends_on "python@3.15"
   depends_on "libusb"       # the fastboot-over-libusb client + sunxi-fel load it at runtime
   depends_on "dtc"          # libfdt (sunxi-fel is built from source on first run)
   depends_on "zlib"         # sunxi-fel's fel.c needs zlib.h (system on macOS, explicit for Linux)
