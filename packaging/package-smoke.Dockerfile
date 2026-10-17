@@ -1,7 +1,7 @@
 # This must stay the same image ci.yml qualifies the .deb against; the annotation makes it one
 # Renovate dependency with that pin instead of a second one that drifts on its own schedule.
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS smoke
+FROM ubuntu:26.04@sha256:2e27ff302056b2b96df4a524ce48e72c595abfe3fd7a3d923adf8e782e16896f AS smoke
 
 COPY package-smoke.deb /tmp/package-smoke.deb
 COPY packaging/test-linux-packages.sh /tmp/test-linux-packages.sh

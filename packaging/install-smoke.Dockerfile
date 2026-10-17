@@ -177,7 +177,7 @@ FROM scratch AS deb-file-ubuntu-floor-result
 COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS ubuntu-base
+FROM ubuntu:26.04@sha256:2e27ff302056b2b96df4a524ce48e72c595abfe3fd7a3d923adf8e782e16896f AS ubuntu-base
 COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
@@ -426,7 +426,7 @@ COPY --from=pipx /passed /passed
 # on Leap 16 can still fail on 15.6, and nothing else here would notice. Both stages are identical
 # apart from the base image. The sibling project runs the same pair.
 # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
-FROM opensuse/leap:16.0@sha256:39b396dc198d775c253da4f7987d99ad42f6d164654baf3a327bbb2d13a19038 AS zypper
+FROM opensuse/leap:16.0@sha256:5e54545c0726b48ed1c86253f6ad3da65886cd4c447123b8019569de4c157c76 AS zypper
 COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM FORGE
 RUN set -eux; zypper --non-interactive install -y curl >/dev/null
