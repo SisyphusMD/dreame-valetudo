@@ -42,7 +42,7 @@ RECOVERY_DUMP_BYTES = 0x18F00000
 
 # sunxi-tools is built from source; pin to a commit for reproducible builds.
 # renovate: datasource=git-refs depName=https://github.com/linux-sunxi/sunxi-tools
-SUNXI_TOOLS_REF = "b92f4ed3115a520e3ec406697d268239e3f29488"
+SUNXI_TOOLS_REF = "4ab7b32ddf5f1ed76644069a7eec5c2f90463847"
 
 # pyusb feeds the libusb fastboot client (fetched on the fly by `uv run --with`, or frozen into the
 # standalone dreame-fastboot binary at release). Pin it so the transport is reproducible.
