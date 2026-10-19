@@ -302,7 +302,7 @@ jobs:
           # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
           UBUNTU_FLOOR_IMAGE="ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956"
           # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-          UBUNTU_CURRENT_IMAGE="ubuntu:26.04@sha256:2e27ff302056b2b96df4a524ce48e72c595abfe3fd7a3d923adf8e782e16896f"
+          UBUNTU_CURRENT_IMAGE="ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944"
           # renovate: datasource=docker depName=fedora-43-compat packageName=fedora
           FEDORA_FLOOR_IMAGE="fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42"
           # renovate: datasource=docker depName=fedora-44-current packageName=fedora
