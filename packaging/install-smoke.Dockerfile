@@ -40,7 +40,7 @@ ARG TAG
 # leg cannot forget it. This is not laundering a flaky test, it is making a network fetch survive
 # the network; a package that genuinely does not install still fails.
 # renovate: datasource=docker depName=debian-13-current packageName=debian
-FROM debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS deb-base
+FROM debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS deb-base
 COPY packaging/retry.sh /retry
 RUN set -eux; \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
@@ -426,7 +426,7 @@ COPY --from=pipx /passed /passed
 # on Leap 16 can still fail on 15.6, and nothing else here would notice. Both stages are identical
 # apart from the base image. The sibling project runs the same pair.
 # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
-FROM opensuse/leap:16.0@sha256:5e54545c0726b48ed1c86253f6ad3da65886cd4c447123b8019569de4c157c76 AS zypper
+FROM opensuse/leap:16.0@sha256:40b8e1fc290b203380b9adc7cd147ef2141f5a613c7cf7117f678f626855654e AS zypper
 COPY packaging/retry.sh /retry
 ARG V PV DL ARCH_RPM FORGE
 RUN set -eux; zypper --non-interactive install -y curl >/dev/null
