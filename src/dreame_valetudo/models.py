@@ -1,6 +1,6 @@
 """Device model specs — the single, typed source of truth for every supported robot.
 
-Every robot is the same Allwinner MR813 "gen3" family; a model is just a model_spec (name, dustbuilder
+Every robot is the same Allwinner MR813 "gen3" family; a model is just a model_spec (name, Dustfab
 page, Valetudo class, DRAM, and — for the older UART devices — method/arch/secure-boot). The table
 is pinned by ``tests/python/test_profiles.py`` against checked-in goldens so it cannot silently
 drift.
@@ -27,9 +27,9 @@ Dram = Literal["ddr3", "ddr4"]
 YesNo = Literal["yes", "no"]
 Autodetect = Literal["yes", "no", "maybe"]
 Arch = Literal["aarch64", "armv7", "armv7-lowmem"]
+Brand = Literal["dreame", "mova"]
 
-DUSTBUILDER_HOST = "builder.dontvacuum.me"
-STAGE1_URL = f"https://{DUSTBUILDER_HOST}/nextgen/dust-fel-mr813.tar.gz"
+DUSTFAB_HOST = "fab.valetudo.cloud"
 
 # The model worked on when nothing else selects one (also the pre-picker default).
 DEFAULT_MODEL_KEY = "x40-ultra"
@@ -59,7 +59,8 @@ class ModelSpec:
     autodetect_ok: Autodetect
     method: Method = "fastboot"
     arch: Arch = "aarch64"
-    dram: Dram = "ddr4"           # only changes which FSBL is pushed
+    # Dustfab now picks the FSBL per model, so this no longer selects one; it is reference data.
+    dram: Dram = "ddr4"
     secure_boot: YesNo = "yes"
     # The miio cloudKey lives ONLY in secure storage on these units, so their factory key.txt is
     # legitimately empty and a backup is incomplete until the key is read out and preserved.
@@ -67,6 +68,8 @@ class ModelSpec:
     baud: str = "115200"
     fsbl_addr: str = "0x28000"
     payload_addr: str = "0x4a000000"
+    # Dustfab files every page under the brand on the box: Mova units are not under /dreame/.
+    brand: Brand = "dreame"
 
     def __post_init__(self) -> None:
         # A static table, so these are dev-time guards against a bad edit (mypy catches bad literals
@@ -78,6 +81,7 @@ class ModelSpec:
             ("key_in_secure_storage", get_args(YesNo)),
             ("autodetect_ok", get_args(Autodetect)),
             ("arch", get_args(Arch)),
+            ("brand", get_args(Brand)),
         ):
             value = getattr(self, field)
             if value not in allowed:
@@ -85,11 +89,14 @@ class ModelSpec:
 
     @property
     def stage1_url(self) -> str:
-        return STAGE1_URL
+        # Only the FEL models have a recon package; Dustfab serves none for the UART family.
+        if self.method != "fastboot":
+            return ""
+        return f"https://{DUSTFAB_HOST}/robot/{self.brand}/{self.dust_code}/fel/recon"
 
     @property
     def dustbuilder_page(self) -> str:
-        return f"https://{DUSTBUILDER_HOST}/_dreame_{self.dust_code}.html"
+        return f"https://{DUSTFAB_HOST}/build/{self.brand}/{self.dust_code}"
 
 
 _MODEL_SPECS: dict[str, ModelSpec] = {
@@ -124,9 +131,9 @@ _MODEL_SPECS: dict[str, ModelSpec] = {
                 key_in_secure_storage="yes"),
         # ---- Mova-branded (ddr4) ----
         ModelSpec("mova-s20-ultra", "Mova S20 Ultra", "r2385", "r2385",
-                "DreameMovaS20UltraValetudoRobot", "maybe"),
+                "DreameMovaS20UltraValetudoRobot", "maybe", brand="mova"),
         ModelSpec("mova-p10-pro-ultra", "Mova P10 Pro Ultra", "r2491", "r2491",
-                "DreameMovaP10ProUltraValetudoRobot", "maybe"),
+                "DreameMovaP10ProUltraValetudoRobot", "maybe", brand="mova"),
         # ---- UART serial-shell method (older MR813-NAND + armv7 devices) ----
         ModelSpec("z10-pro", "Dreame Z10 Pro", "p2028", "p2028",
                 "DreameZ10ProValetudoRobot", "maybe", method="uart", secure_boot="yes"),
@@ -155,7 +162,7 @@ _MODEL_SPECS: dict[str, ModelSpec] = {
                 secure_boot="no"),
         ModelSpec("mova-z500", "Mova Z500", "p2156", "p2156",
                 "DreameMovaZ500ValetudoRobot", "maybe", method="uart", arch="armv7",
-                secure_boot="no"),
+                secure_boot="no", brand="mova"),
     ]
 }
 

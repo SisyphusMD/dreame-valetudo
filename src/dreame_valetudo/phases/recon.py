@@ -499,13 +499,14 @@ def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
     try:
         total_dumps = len(dumps)
         for index, dump in enumerate(dumps, 1):
+            # The Dustfab payload samples a slice only after its stage is selected, the first
+            # included (Valetudo's guide: `oem stage0` before the first sample).
+            ctx.fastboot.fbt("oem", f"stage{index - 1}")
             suffix = ", over USB" if index == 1 else ""
             with ctx.console.progress(
                 f"Pulling {dump.name} ({index} of {total_dumps}{suffix})"
             ):
                 ctx.fastboot.fbt("get_staged", str(dump))
-            if index < total_dumps:
-                ctx.fastboot.fbt("oem", f"stage{index}")
     # Any failure pulling a dump means the capture is incomplete, and the caller's only sane
     # response is the same whichever way it failed: report it and let recon fall back.
     except Exception:  # noqa: BLE001

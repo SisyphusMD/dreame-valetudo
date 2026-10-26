@@ -177,15 +177,17 @@ class Context:
 
     @property
     def dustbuilder_page(self) -> str:
-        return self.env.get("DUSTBUILDER_PAGE") or self.model_spec.dustbuilder_page
+        # DUSTBUILDER_PAGE is the pre-Dustfab name, still honoured for one release.
+        return (self.env.get("DUSTFAB_PAGE") or self.env.get("DUSTBUILDER_PAGE")
+                or self.model_spec.dustbuilder_page)
 
     @property
     def stage1_tgz(self) -> Path:
-        return self.ws.dist / "dust-fel-mr813.tar.gz"
+        return self.ws.dist / f"dust-fel-recon-{self.model_spec.dust_code}.tar.gz"
 
     @property
     def fsbl_name(self) -> str:
-        return f"fsbl_{self.model_spec.dram}.bin"
+        return "fsbl.bin"
 
     @property
     def payload_bin(self) -> Path:

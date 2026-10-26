@@ -347,6 +347,8 @@ def _enter_fel(ctx: Context, config: str, purpose: str) -> str:
 def _pull_slice(ctx: Context, staging: Path, index: int) -> Path:
     """Pull one flash slice. Read-only: no `oem dust`, no `oem prep`, no flash command."""
     dump = staging / f"{RECOVERY_DUMP_NAMES[index]}.bin"
+    # Selecting the stage is what makes the payload sample it, slice 0 included.
+    ctx.fastboot.fbt("oem", f"stage{index}")
     with ctx.console.progress(f"Reading flash slice {index + 1} over USB"):
         ctx.fastboot.fbt("get_staged", str(dump))
     if not recovery_dump_valid(dump):
@@ -983,9 +985,7 @@ def rekey(
     needed = -(-(misc.start + misc.size) // RECOVERY_DUMP_BYTES)
     if needed > len(RECOVERY_DUMP_NAMES):
         die("The robot's 'misc' partition lies past the readable flash window.")
-    for index in range(1, needed):
-        ctx.fastboot.fbt("oem", f"stage{index}")
-        dumps.append(_pull_slice(ctx, staging, index))
+    dumps.extend(_pull_slice(ctx, staging, index) for index in range(1, needed))
     image = _read_flash_range(dumps, keystream, misc.start, misc.size)
     for dump in dumps:  # 400 MiB each, and the partition is in hand now
         dump.unlink(missing_ok=True)

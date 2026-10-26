@@ -203,11 +203,11 @@ def dreame_ap_prefix(argv: tuple[str, ...], *, is_dreame: bool = True) -> Result
 
 
 def stage_dist(
-    ctx: Context, *, payload: str = "p", fsbl: str = "f", dram: str = "ddr4",
-    stage1_sha256: str | None = None,
+    ctx: Context, *, payload: str = "p", fsbl: str = "f", stage1_sha256: str | None = None,
 ) -> None:
     """Populate ctx.ws.dist with an already-extracted stage1 (payload/fsbl + pin marker)."""
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     (ctx.ws.dist / "payload.bin").write_text(payload)
-    (ctx.ws.dist / f"fsbl_{dram}.bin").write_text(fsbl)
-    (ctx.ws.dist / ".stage1-sha256").write_text(f"{stage1_sha256 or STAGE1_SHA256}\n")
+    (ctx.ws.dist / "fsbl.bin").write_text(fsbl)
+    pin = stage1_sha256 or STAGE1_SHA256[ctx.model_spec.dust_code]
+    (ctx.ws.dist / ".stage1-sha256").write_text(f"{pin}\n")

@@ -55,7 +55,7 @@ def test_fetch_verifies_and_reaches_cache_ready(
     ctx = make_ctx()
     # Pre-stage the extracted files so no tar is needed, and pin stage1 to the test bytes.
     digest = hashlib.sha256(b"s1").hexdigest()
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    monkeypatch.setitem(fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, digest)
     stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(
         fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: hashlib.sha256(b"s1").hexdigest()}
@@ -81,13 +81,13 @@ def test_fetch_refuses_valetudo_on_digest_mismatch(
 ) -> None:
     ctx = make_ctx()
     digest = hashlib.sha256(b"s1").hexdigest()
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    monkeypatch.setitem(fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, digest)
     stage_dist(ctx, stage1_sha256=digest)
     monkeypatch.setattr(fetch_mod, "VALETUDO_SHA256", {ctx.model_spec.arch: "deadbeef" * 8})
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl" and "-o" in argv:
-            data = b"s1" if "dust-fel" in argv[-1] else b"the wrong valetudo"
+            data = b"s1" if "fel/recon" in argv[-1] else b"the wrong valetudo"
             _write_curl_target(argv, data)
         return Result(argv, 0, "", "")
 
@@ -103,7 +103,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
     ctx = make_ctx()
     stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
     digest = hashlib.sha256(b"new archive").hexdigest()
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    monkeypatch.setitem(fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, digest)
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl":
@@ -112,7 +112,7 @@ def test_fetch_reextracts_payloads_when_the_stage1_pin_changes(
             target = Path(argv[argv.index("-C") + 1])
             (target / "nested").mkdir()
             (target / "nested" / "payload.bin").write_text("new payload")
-            (target / "nested" / "fsbl_ddr4.bin").write_text("new fsbl")
+            (target / "nested" / "fsbl.bin").write_text("new fsbl")
         return Result(argv, 0, "", "")
 
     ctx.runner.responder = responder  # type: ignore[attr-defined]
@@ -129,7 +129,7 @@ def test_failed_stage1_reextraction_cannot_leave_old_payloads_usable(
 ) -> None:
     ctx = make_ctx()
     stage_dist(ctx, payload="old payload", fsbl="old fsbl", stage1_sha256="old-digest")
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"new archive").hexdigest())
+    monkeypatch.setitem(fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, hashlib.sha256(b"new archive").hexdigest())
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl":
@@ -228,7 +228,7 @@ def test_stage1_reextract_clears_every_kind_of_abandoned_staging_path(
 ) -> None:
     ctx = make_ctx()
     digest = hashlib.sha256(b"archive").hexdigest()
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", digest)
+    monkeypatch.setitem(fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, digest)
     ctx.ws.dist.mkdir(parents=True)
     staged = ctx.ws.dist / ".stage1-extract"
     if staged_kind == "file":
@@ -260,7 +260,9 @@ def test_stage1_extract_refuses_an_archive_missing_the_profile_fsbl(
     make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = make_ctx()
-    monkeypatch.setattr(fetch_mod, "STAGE1_SHA256", hashlib.sha256(b"archive").hexdigest())
+    monkeypatch.setitem(
+        fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, hashlib.sha256(b"archive").hexdigest()
+    )
 
     def responder(argv: tuple[str, ...]) -> Result:
         if argv[0] == "curl":
@@ -274,3 +276,59 @@ def test_stage1_extract_refuses_an_archive_missing_the_profile_fsbl(
     with pytest.raises(Die, match=r"didn't yield.*fsbl"):
         fetch_mod.fetch_stage1(ctx)
     assert not (ctx.ws.dist / ".stage1-extract").exists()
+
+
+def test_a_pre_dustfab_cache_is_refetched_and_its_ddr_named_files_removed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    dist = ctx.ws.dist
+    dist.mkdir(parents=True)
+    for name in ("payload.bin", "fsbl_ddr3.bin", "fsbl_ddr4.bin", "dust-fel-mr813.tar.gz"):
+        (dist / name).write_text("old")
+    # The last pin of the shared dontvacuum tarball; no per-model pin can ever equal it.
+    (dist / ".stage1-sha256").write_text(
+        "d53292fa35a4241aa6ce3ed6f391f0ab53a248c10cd28fbb8e00e6c0e56f1934\n"
+    )
+    assert not fetch_mod.stage1_ready(ctx)
+    monkeypatch.setitem(
+        fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, hashlib.sha256(b"archive").hexdigest()
+    )
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("payload")
+            (target / "fsbl.bin").write_text("fsbl")
+            (target / "valetudo-helper-felroot-amd64").write_text("unused")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    fetch_mod.fetch_stage1(ctx)
+    assert fetch_mod.stage1_ready(ctx)
+    assert sorted(p.name for p in dist.iterdir()) == [
+        ".stage1-sha256", "dust-fel-recon-r2416.tar.gz", "fsbl.bin", "payload.bin",
+    ]
+    curls = [c for c in ctx.runner.calls if c[0] == "curl"]  # type: ignore[attr-defined]
+    assert any("https://fab.valetudo.cloud/robot/dreame/r2416/fel/recon" in c for c in curls)
+
+
+def test_switching_model_invalidates_the_other_models_stage1(make_ctx: CtxFactory) -> None:
+    x40 = make_ctx(model="x40-ultra")
+    stage_dist(x40)
+    assert fetch_mod.stage1_ready(x40)
+    w10 = make_ctx(model="w10-pro")
+    stage_dist(w10, stage1_sha256=fetch_mod.STAGE1_SHA256["r2416"])
+    assert not fetch_mod.stage1_ready(w10)
+
+
+def test_a_model_without_a_fel_package_dies_before_touching_the_toolchain(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx(model="z10-pro")
+    monkeypatch.setattr(fetch_mod, "doctor", lambda _ctx: pytest.fail("doctor was called"))
+    with pytest.raises(Die, match="no pinned FEL stage1 package"):
+        fetch_mod.fetch_stage1(ctx)
+    assert not ctx.runner.calls  # type: ignore[attr-defined]
