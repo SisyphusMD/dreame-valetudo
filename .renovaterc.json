@@ -8,7 +8,6 @@
   "prHourlyLimit": 0,
   "platformAutomerge": false,
   "separateMinorPatch": true,
-  "rebaseWhen": "behind-base-branch",
   "fetchChangeLogs": "pr",
   "postUpgradeTasks": {
     "commands": [
