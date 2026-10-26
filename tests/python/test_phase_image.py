@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -200,6 +201,8 @@ def _staging_responder(argv: tuple[str, ...]) -> Result:
     """_curl_only, plus an unzip that produces the six FEL files the staging check requires."""
     if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
         return _curl_only(argv)
+    if argv[:2] == ("unzip", "-Z1"):
+        return Result(argv, 0, "", "")
     if argv and argv[0] == "unzip":
         dest = Path(argv[argv.index("-d") + 1])
         dest.mkdir(parents=True, exist_ok=True)
@@ -240,7 +243,7 @@ def test_a_zip_older_than_the_build_order_is_never_staged_silently(
     stale = tmp_path / "home" / "Downloads" / "dreame.vacuum.r9316_1782_fel_ng.zip"
     stale.write_text("previous robot's build")
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
-    with pytest.raises(Die, match="No zip found"):
+    with pytest.raises(Die, match="No build found"):
         image(ctx)
     assert not ctx.need_robot().state_has("image")
     assert not any(c and c[0] == "unzip" for c in ctx.runner.calls)  # type: ignore[attr-defined]
@@ -337,7 +340,7 @@ def test_image_refuses_a_lookalike_as_the_only_download(
     lookalike = tmp_path / "home" / "Downloads" / "dreame.vacuum.r2338h_1782_fel_ng.zip"
     _lands_during_the_wait(ctx, lookalike)
 
-    with pytest.raises(Die, match="No zip found"):
+    with pytest.raises(Die, match="No build found"):
         image(ctx)
 
     assert not ctx.need_robot().state_has("image")
@@ -404,6 +407,8 @@ def _two_build_responder(
     def r(argv: tuple[str, ...]) -> Result:
         if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
             return _curl_only(argv)
+        if argv[:2] == ("unzip", "-Z1"):
+            return Result(argv, 0, "", "")
         if argv and argv[0] == "unzip":
             seen["unzips"] += 1
             dest = Path(argv[argv.index("-d") + 1])
@@ -457,7 +462,7 @@ def test_an_unzip_that_fails_after_writing_leaves_fw_dir_and_the_marker_alone(
     robot = ctx.need_robot()
     prior = robot.state_get("image")
     robot.state_clear("image-history")  # simulate a marker written by a pre-history release
-    with pytest.raises(Die, match="unzip failed"):
+    with pytest.raises(Die, match="Couldn't unpack"):
         image(ctx, force=True)
     assert not robot.state_has("image")
     assert prior in robot.image_provenance()
@@ -487,3 +492,203 @@ def test_an_interrupted_publish_never_destroys_the_previous_image(
     ]
     assert survivors, "the previous build was destroyed by the interrupted publish"
     assert not robot.state_has("image")  # root() re-runs image() rather than flashing a gap
+
+
+def _tar_responder(
+    members: dict[str, str], *, top: str = "dreame.vacuum.r9316_1726_fel", rc: int = 0,
+    link: str | None = None, listing: str | None = None,
+) -> Callable[[tuple[str, ...]], Result]:
+    """A `tar -xf` that lays the build out the way Dustfab's tarball does: one top directory."""
+    def r(argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
+            return _curl_only(argv)
+        if argv[:2] == ("tar", "-tf"):
+            names = [f"{top}/{name}" for name in members] + ([f"{top}/{link}"] if link else [])
+            return Result(argv, 0, listing if listing is not None else "\n".join(names), "")
+        if argv[:2] == ("tar", "-xf"):
+            dest = Path(argv[argv.index("-C") + 1]) / top
+            dest.mkdir(parents=True, exist_ok=True)
+            for name, body in members.items():
+                (dest / name).write_text(body)
+            if link is not None:
+                (dest / link).symlink_to("/etc/hostname")
+            return Result(argv, rc, "", "")
+        return Result(argv, 0, "OKAY", "")
+    return r
+
+
+def _tar_ctx(
+    make_ctx: CtxFactory, tmp_path: Path, responder: Callable[[tuple[str, ...]], Result],
+    name: str = "dreame.vacuum.r9316_1726_fel.tar.gz",
+) -> tuple[Context, Path]:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True, True],
+                      responder=responder)
+    downloads = tmp_path / "home" / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    built = downloads / name
+    _lands_during_the_wait(ctx, built)
+    return ctx, built
+
+
+_DUSTFAB_BUILD = {**{name: f"dustfab {name}" for name in _FEL},
+                  "valetudo-helper-felroot-amd64": "helper"}
+
+
+@pytest.mark.parametrize("name", [
+    "dreame.vacuum.r9316_1726_fel.tar.gz",
+    "dreame.vacuum.r9316_1726_fel (1).tar.gz",
+    "dreame.vacuum.r9316_1726_fel(1).tar.gz",
+    "dreame.vacuum.r9316_1726_fel.tgz",
+    "dreame.vacuum.r9316_1726_fel.tar",
+])
+def test_a_dustfab_tarball_is_found_unpacked_and_flattened(
+    make_ctx: CtxFactory, tmp_path: Path, name: str,
+) -> None:
+    ctx, built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD), name)
+    image(ctx)
+    robot = ctx.need_robot()
+    assert all((robot.fw_dir / f).read_text() == f"dustfab {f}" for f in _FEL)
+    assert not (robot.fw_dir / "valetudo-helper-felroot-amd64").exists()
+    assert not (robot.fw_dir / ".unpacked").exists()
+    tar_calls = [list(c[:3]) for c in ctx.runner.calls if c and c[0] == "tar"]  # type: ignore[attr-defined]
+    assert tar_calls == [["tar", "-tf", str(built)], ["tar", "-xf", str(built)]]
+    assert f"from {built} sha256=" in (robot.state_get("image") or "")
+
+
+def test_a_download_still_in_progress_is_not_staged(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx, built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD))
+    partial = built.with_name(built.name + ".part")
+    partial.write_text("")
+    with pytest.raises(Die, match="No build found"):
+        image(ctx)
+    assert not any(c and c[0] == "tar" for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_the_watcher_waits_for_a_growing_download_to_settle(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx, built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD))
+    sizes = iter(["a", "ab", "abc", "abc"])
+    seen: list[int] = []
+
+    def _grow(_seconds: float) -> None:
+        built.write_text(next(sizes, "abc"))
+        seen.append(built.stat().st_size)
+
+    ctx.sleep = _grow
+    image(ctx)
+    assert seen[:4] == [1, 2, 3, 3]
+    assert ctx.need_robot().state_has("image")
+
+
+def test_a_build_with_dtbo_is_refused_rather_than_flashed_without_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx, _built = _tar_ctx(
+        make_ctx, tmp_path, _tar_responder({**_DUSTFAB_BUILD, "dtbo.img": "dtbo"}),
+    )
+    with pytest.raises(Die, match=r"dtbo\.img, which this tool does not flash yet"):
+        image(ctx)
+    assert not ctx.need_robot().state_has("image")
+    assert not ctx.need_robot().fw_dir.exists()
+
+
+def test_a_link_in_the_build_never_stands_in_for_an_image(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    members = {k: v for k, v in _DUSTFAB_BUILD.items() if k != "boot.img"}
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, _tar_responder(members, link="boot.img"))
+    with pytest.raises(Die, match=r"boot\.img in the build is not a plain file"):
+        image(ctx)
+    assert not ctx.need_robot().state_has("image")
+
+
+def test_two_copies_of_one_image_are_refused(make_ctx: CtxFactory, tmp_path: Path) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        result = _tar_responder(_DUSTFAB_BUILD)(argv)
+        if argv[:2] == ("tar", "-xf"):
+            extra = Path(argv[argv.index("-C") + 1]) / "other"
+            extra.mkdir()
+            (extra / "rootfs.img").write_text("other rootfs")
+        return result
+
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, responder)
+    with pytest.raises(Die, match=r"2 copies of rootfs\.img"):
+        image(ctx)
+
+
+def test_a_repeated_member_is_refused_before_extraction_can_collapse_it(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    listing = "build/\nbuild/boot.img\nbuild/rootfs.img\nbuild/boot.img\n"
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD, listing=listing))
+    with pytest.raises(Die, match=r"2 copies of boot\.img"):
+        image(ctx)
+    assert not any(c[:2] == ("tar", "-xf") for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_an_unreadable_archive_is_refused_before_extraction(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[:2] == ("tar", "-tf"):
+            return Result(argv, 2, "", "not in gzip format")
+        return _tar_responder(_DUSTFAB_BUILD)(argv)
+
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, responder)
+    with pytest.raises(Die, match="Couldn't read dreame"):
+        image(ctx)
+    assert not any(c[:2] == ("tar", "-xf") for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_a_build_already_present_is_still_waited_on_until_it_settles(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True, True],
+                      responder=_tar_responder(_DUSTFAB_BUILD))
+    downloads = tmp_path / "home" / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    built = downloads / "dreame.vacuum.r9316_1726_fel.tar.gz"
+    built.write_text("a")  # present before the watcher ever polls
+    pauses: list[float] = []
+
+    def _grow(seconds: float) -> None:
+        pauses.append(seconds)
+        if len(pauses) < 3:
+            built.write_text("a" * (len(pauses) + 1))
+
+    ctx.sleep = _grow
+    image(ctx)
+    assert len(pauses) >= 3
+    assert ctx.need_robot().state_has("image")
+
+
+def test_a_download_that_never_settles_is_not_staged(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD))
+    monkeypatch.setattr(image_module, "_download_settled", lambda *_a, **_k: False)
+    with pytest.raises(Die, match="still downloading"):
+        image(ctx)
+    assert not any(c and c[0] == "tar" for c in ctx.runner.calls)  # type: ignore[attr-defined]
+
+
+def test_a_failed_tar_names_the_build_and_stages_nothing(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx, _built = _tar_ctx(make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD, rc=2))
+    with pytest.raises(Die, match=re.escape("Couldn't unpack dreame.vacuum.r9316_1726_fel.tar.gz")):
+        image(ctx)
+    assert not ctx.need_robot().state_has("image")
+
+
+def test_an_installer_package_is_not_mistaken_for_a_fel_build(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx, _built = _tar_ctx(
+        make_ctx, tmp_path, _tar_responder(_DUSTFAB_BUILD), "dreame.vacuum.r9316_1726_fw.tar.gz",
+    )
+    with pytest.raises(Die, match="No build found"):
+        image(ctx)

@@ -87,9 +87,12 @@ TMUX_SHA256 = "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e"
 # is_dreame_ap guard before any AP-side command).
 ROBOT_AP_IP = "192.168.5.1"
 
-# The six files a built dustbuilder FEL image must contain to flash (image stages them, root
+# The six files a built FEL image must contain to flash (image stages them, root
 # checks + flashes them). Single-sourced so the two phases can't drift.
 FEL_IMAGE_FILES = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
+# Valetudo's guide flashes a build's dtbo.img to dtbo1 and dtbo2 on the newer robots that have it.
+# root() does not do that yet, so a build carrying one is refused rather than flashed without it.
+FEL_IMAGE_UNSUPPORTED = ("dtbo.img",)
 STAGED_IMAGE_MANIFEST = ".dreame-valetudo-image.json"
 
 # Every SSH to the robot skips host-key recording/checking: the AP reuses ROBOT_AP_IP and its host
