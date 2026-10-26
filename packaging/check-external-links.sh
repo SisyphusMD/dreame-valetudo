@@ -4,34 +4,50 @@
 # Only load-bearing citations belong here — pages whose content we relied on and would have to
 # re-derive if they moved. The supported-robots table is where every profile row's model code,
 # firmware family and Valetudo support status came from, verbatim; the Dreame install guide is the
-# procedure this tool automates; the gen3 PDF is the hardware brief behind the FEL/fastboot
-# sequence. A rotted URL there leaves a claim with no way back to its evidence.
+# procedure this tool automates. A rotted URL there leaves a claim with no way back to its evidence.
+#
+# The gen3 PDF behind the FEL/fastboot sequence is gone with builder.dontvacuum.me, which Dustfab
+# replaced in October 2026. Its archived copy is
+# https://web.archive.org/web/20260218013252/https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf
+# and stays out of this list: the Wayback Machine rate-limits, and a check that fails on someone
+# else's throttling gets ignored the one time it is right. Dustfab itself stays out too, because
+# ci-pr.yml runs this on GitHub's runners and Dustfab says it may block datacenter addresses.
 #
 # NOT a link checker for every URL in the repo: badges, release-download links and issue links come
 # and go, and failing CI on someone else's outage buys nothing. packaging/check-doc-links.py covers
 # the relative links, which are the ones we can actually break ourselves.
 #
-# Ported from whiskerless, which had this gate and this reasoning first.
+# The loop below is identical in whiskerless; keep the two in step.
 set -euo pipefail
 
 URLS=(
   "https://valetudo.cloud/pages/general/supported-robots/"
   "https://valetudo.cloud/pages/installation/dreame/"
-  "https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf"
 )
 
-failed=0
+fail=0
 for url in "${URLS[@]}"; do
-  # HEAD first; some hosts answer 405 to it, so fall back to a ranged GET rather than
-  # downloading a PDF to prove it exists.
-  code=$(curl -fsS --max-time 30 --retry 2 --retry-delay 2 -o /dev/null -w '%{http_code}' -I "$url" 2>/dev/null || true)
-  case "$code" in
-    2*|3*) echo "  ok   $code  $url"; continue ;;
+  # Retry before believing a failure: a transient 5xx from a CDN is not a repo problem. HEAD first,
+  # then a one-byte ranged GET, because some hosts answer HEAD with 405 while serving the page, and
+  # a cited PDF should not be downloaded just to prove it exists.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 \
+    --retry 3 --retry-delay 2 --retry-all-errors -A "check-external-links" -I "$url" || true)
+  case "${code:-000}" in
+    2*|3*) echo "ok   $code  $url"; continue ;;
   esac
-  code=$(curl -fsS --max-time 30 --retry 2 --retry-delay 2 -o /dev/null -w '%{http_code}' -r 0-0 "$url" 2>/dev/null || true)
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 20 \
+    --retry 3 --retry-delay 2 --retry-all-errors -A "check-external-links" -r 0-0 "$url" || true)
+  code=${code:-000}
   case "$code" in
-    2*|3*) echo "  ok   $code  $url" ;;
-    *)     echo "  FAIL $code  $url" >&2; failed=1 ;;
+    2*|3*) echo "ok   $code  $url (GET; HEAD refused)" ;;
+    *)     echo "FAIL $code  $url"; fail=1 ;;
   esac
 done
-exit "$failed"
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "A cited source no longer resolves. Find where it moved, update the doc that" >&2
+  echo "cites it, and update this list — do not just delete the citation." >&2
+  exit 1
+fi
+echo "all cited sources resolve"

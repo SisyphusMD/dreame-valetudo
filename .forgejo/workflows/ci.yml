@@ -126,9 +126,9 @@ jobs:
         run: python3 packaging/check-standard-sync.py
 
       - name: Cited external sources still resolve
-        # The profile table came verbatim from Valetudo's supported-robots page; the FEL/fastboot
-        # sequence came from the gen3 brief. A rotted URL leaves those claims with no way back to
-        # their evidence. Ported from whiskerless.
+        # The profile table came verbatim from Valetudo's supported-robots page and the procedure
+        # from its Dreame install guide. A rotted URL leaves those claims with no way back to their
+        # evidence. The script says why the retired gen3 brief is no longer listed.
         run: bash packaging/check-external-links.sh
 
       - name: .gitignore contains the shared base
