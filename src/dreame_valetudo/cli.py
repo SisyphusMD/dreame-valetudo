@@ -352,7 +352,7 @@ def _pcb_help(ctx: Context) -> None:
     ctx.console.detail("Gerbers: https://github.com/Hypfer/valetudo-dreameadapter/releases "
                        "(1.2mm board)")
     ctx.console.detail("Assembly + FEL button sequence, with photos: "
-                       "https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf")
+                       "https://valetudo.cloud/pages/installation/dreame/")
 
 
 def _auto_intro(ctx: Context) -> None:
@@ -362,7 +362,7 @@ def _auto_intro(ctx: Context) -> None:
                         "guided and resumable):")
         ctx.console.steps([
             "Recon (read-only): validate the USB path and record the robot's identity.",
-            "Build (browser): follow the exact DustBuilder form and download its image.",
+            "Build (browser): follow the exact Dustfab form and download its image.",
             "Root (the one destructive step): verify and flash that image.",
             "Install: push Valetudo onto the robot over its own Wi-Fi AP.",
         ])
@@ -391,8 +391,8 @@ def uart(ctx: Context) -> None:
            "activity LED")
     c.warn("The debug-connector orientation VARIES per model — use the photos, don't guess the "
            "pinout:", lead=True)
-    c.detail("dontvacuum UART guide (pinout + wiring, pictures): "
-             "https://builder.dontvacuum.me/dreameadapter/uart.pdf")
+    c.detail("UART guide (pinout + wiring, pictures): "
+             "https://github.com/dgiese/dustbuilder-howto/blob/master/dreameadapter/uart.pdf")
     c.detail("Valetudo 'UART shell' walkthrough: "
              "https://valetudo.cloud/pages/installation/dreame/")
     _pause(ctx)
@@ -422,18 +422,20 @@ def uart(ctx: Context) -> None:
            "Mi Home / Xiaomi Home app or any API — a robot that got a replacement mainboard from "
            "service has a serial that no longer matches its silicon, and a look-alike serial has "
            "permanently bricked units (secure-boot signature rejection). Stop and ask in the "
-           "dontvacuum / Valetudo community first.", lead=True)
+           "Valetudo community first.", lead=True)
     if p.secure_boot == "yes":
         c.warn(f"{p.model} has SECURE BOOT: make no filesystem changes beyond the /tmp staging "
                "commands below until install.sh runs — other changes can BRICK it. The "
-               "DustBuilder install.sh defeats secure boot for you; let it run first.", lead=True)
+               "install.sh in the Dustfab package defeats secure boot for you; let it run first.",
+               lead=True)
     _pause(ctx)
     c.steps(start=7, items=[
-        ("Build a manual-installation package on the DustBuilder page below. Select BOTH "
-         "'Prepackage Valetudo' and 'Patch DNS' before Create Job:\n"
+        ("Build an 'Installer package' on the Dustfab page below. Keep 'Disable Cloud' and "
+         "'Valetudo' checked (the defaults), queue the build, wait for its job to finish, and "
+         "download the .tar.gz:\n"
          f"{ctx.fab_page}"),
         ("On the laptop, run valetudo-helper-httpbridge, connect to the robot's 192.168.5.x "
-         "Wi-Fi AP, and put the emailed .tar.gz in its www folder. Record its byte size and "
+         "Wi-Fi AP, and put the downloaded .tar.gz in its www folder. Record its byte size and "
          "SHA-256 first:\n"
          "https://github.com/Hypfer/valetudo-helper-httpbridge/releases"),
         ("Before changing the robot, create the complete recovery archive from the UART shell:\n"
@@ -446,13 +448,13 @@ def uart(ctx: Context) -> None:
         ("Use the bridge's wget command to download the firmware .tar.gz into /tmp on the robot, "
          "then verify and extract it into a new, empty directory:\n"
          "cd /tmp && sha256sum dreame.vacuum.pxxxx_fw.tar.gz\n"
-         "mkdir dustbuilder-install && tar -xvzf dreame.vacuum.pxxxx_fw.tar.gz "
-         "-C dustbuilder-install && cd dustbuilder-install\n"
+         "mkdir dustfab-install && tar -xvzf dreame.vacuum.pxxxx_fw.tar.gz "
+         "-C dustfab-install && cd dustfab-install\n"
          "Replace pxxxx with the downloaded package's actual model name. The robot hash must "
          "match the one recorded on the laptop, and every command must succeed. Put the robot "
          "on its dock before continuing."),
         (f"Run ./install.sh and wait for the automatic reboot. This package contains the "
-         f"valetudo-{p.arch} binary. A new 'built with dustbuilder' UART MOTD confirms success."),
+         f"valetudo-{p.arch} binary. A new 'Built by Dustfab' UART MOTD confirms success."),
     ])
     if p.key == "xiaomi-1c":
         c.warn("Only the 'mc1808' hardware revision of the 1C is rootable; ma1808/mb1808 are "
@@ -599,7 +601,7 @@ def _emit_usage(console: Console, only: str | None = None) -> None:
         "  dreame-valetudo doctor     set up + verify the toolchain\n"
         "  dreame-valetudo fetch      download stage1 pkg + Valetudo binary (verified)\n"
         "  dreame-valetudo recon      Phase 1 NON-DESTRUCTIVE — validate USB + record config\n"
-        "  dreame-valetudo image      open the dustbuilder, auto-unpack the built zip\n"
+        "  dreame-valetudo image      open Dustfab, auto-unpack the downloaded build\n"
         "  dreame-valetudo root       Phase 2 DESTRUCTIVE — flash the rooted image (OKAY-checked)\n"
         "  dreame-valetudo rekey      authorize your SSH key on an ALREADY-rooted robot, over USB\n"
         "  dreame-valetudo restore    DESTRUCTIVE — return this robot to captured stock firmware\n"
@@ -619,7 +621,7 @@ def _emit_usage(console: Console, only: str | None = None) -> None:
         "  dreame-valetudo fix-did    repair a NEGATIVE factory deviceId\n"
         "  dreame-valetudo fix-key    restore the miio key some units keep only in secure storage\n"
         "  dreame-valetudo fix-wifi   post-root Wi-Fi drop-out helper\n"
-        "  dreame-valetudo sshkey     show/generate the SSH public key for the dustbuilder\n"
+        "  dreame-valetudo sshkey     show/generate the SSH public key for the Dustfab build\n"
         "  dreame-valetudo verify-form  check this model's live Dustfab form against its golden\n"
         "  dreame-valetudo verify-forms check every fastboot model's live Dustfab pages (CI/maintenance)\n"
         "  dreame-valetudo bench ...    run and record a hardware qualification campaign\n"

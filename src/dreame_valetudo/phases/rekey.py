@@ -1,6 +1,6 @@
 """Phase: rekey — authorize a new SSH key on an already-rooted robot.
 
-Rooting installs a key only ONCE. The DustBuilder image copies its baked-in `/authorized_keys` to
+Rooting installs a key only ONCE. The rooted image copies its baked-in `/authorized_keys` to
 `/mnt/misc/authorized_keys` only when that file is absent, and `/mnt/misc` survives a root flash —
 `root` writes toc1 and both boot/rootfs slots and nothing else. So re-rooting a robot whose key was
 lost changes nothing about who can log in, and there is no way back in over SSH by definition.

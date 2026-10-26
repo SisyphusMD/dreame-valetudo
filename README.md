@@ -36,7 +36,7 @@ up where you left off.
 | Stage | Connection | What happens |
 |---|---|---|
 | 1. Recon | USB through the Breakout PCB | Read-only hardware and model checks; saves the pre-root recovery capture |
-| 2. Build | Browser on your normal network | Guides the exact DustBuilder form and stages the returned firmware zip |
+| 2. Build | Browser on your normal network | Guides the exact Dustfab form and stages the downloaded FEL package |
 | 3. Root | USB through the Breakout PCB | The one destructive step; verifies identity and every flash response |
 | 4. Install | The robot's own Wi-Fi AP | Saves the factory identity, installs Valetudo, and opens its local web UI |
 
@@ -232,8 +232,7 @@ Before you start, gather these things. The tool prints the same checklist on a f
   [valetudo-dreameadapter releases](https://github.com/Hypfer/valetudo-dreameadapter/releases) and
   specify **1.2 mm thickness**; a thicker board will not fit the connector. Community boards are
   sometimes available through the dontvacuum [Telegram group](https://t.me/+vuPbtb23w0g0NGIy) or
-  hobby shops such as Tindie. For assembly, connection, and the button sequence, see the illustrated
-  [dreame_gen3.pdf](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf) and the
+  hobby shops such as Tindie. For assembly, connection, and the button sequence, see the
   [Valetudo Dreame install page](https://valetudo.cloud/pages/installation/dreame/).
 - **A USB cable** from the board (micro-USB) to your computer.
 - **A computer**: a Mac or Linux box. Apple Silicon is the hardware-bench reference; native CI
@@ -244,11 +243,11 @@ Before you start, gather these things. The tool prints the same checklist on a f
 ## Supported models
 
 The fastboot models below use the same Allwinner MR813 "gen3" platform and the same USB FEL →
-fastboot process. The model choice tells the tool which loader, DustBuilder page, and Valetudo build
+fastboot process. The model choice tells the tool which loader, Dustfab page, and Valetudo build
 to use. You can pick from the menu or set `DREAME_MODEL=<key>`; the rest is automatic.
 
 **✅ Verified** means the whole process has been run end to end on that model. **🧪 Untested** means
-its profile comes from Valetudo and DustBuilder, but nobody has run this tool's full flow on that
+its profile comes from Valetudo and Dustfab, but nobody has run this tool's full flow on that
 exact hardware yet. The read-only recon phase still checks the actual robot before any flash is allowed.
 
 | Key | Model | Code | Status |
@@ -422,7 +421,7 @@ DREAME_MODEL=x30-ultra DREAME_ROBOT=kitchen dreame-valetudo
 dreame-valetudo doctor     # toolchain: fastboot + build sunxi-fel
 dreame-valetudo fetch      # auto-download stage1 pkg + Valetudo binary
 dreame-valetudo recon      # Phase 1 NON-DESTRUCTIVE: validate USB + record `config` value
-dreame-valetudo image      # opens the model's dustbuilder page, auto-unpacks the built zip
+dreame-valetudo image      # opens the model's Dustfab page, auto-unpacks the downloaded build
 dreame-valetudo root       # Phase 2 DESTRUCTIVE: flash the rooted image (guided, OKAY-checked)
 dreame-valetudo push [key] # Phase 3: SSH-pipe backup + binary + reboot onto the rooted robot
 dreame-valetudo backup [key] # capture/refresh factory data without changing or rebooting the robot
@@ -456,7 +455,7 @@ resumes the check without flashing again. Older captures whose history cannot be
 recovery evidence, but the tool will ask you to confirm where they came from before treating them as
 stock.
 
-Restore intentionally leaves toc0 and `/data` alone. Normal DustBuilder rooting does not change
+Restore intentionally leaves toc0 and `/data` alone. Normal Dustfab rooting does not change
 toc0, and recon does not copy the robot's entire user-data partition. Once stock boots, use the
 physical factory reset to clear Valetudo, Wi-Fi, maps, and settings. The detailed validation and A/B
 selection rules are in [How it works](docs/DESIGN.md#factory-backups-and-stock-restore).
@@ -500,8 +499,7 @@ How the tool handles your SSH key and the scrubbed run log is in [How it works](
 
 **References:** [Valetudo Dreame install (fastboot)](https://valetudo.cloud/pages/installation/dreame/#fastboot)
 · [supported robots](https://valetudo.cloud/pages/general/supported-robots/)
-· [dustbuilder](https://builder.dontvacuum.me)
-· [gen3 rooting deep-dive (PDF)](https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf)
+· [Dustfab](https://fab.valetudo.cloud)
 
 ## Support development
 

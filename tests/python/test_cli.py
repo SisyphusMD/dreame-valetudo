@@ -699,20 +699,21 @@ def test_uart_walkthrough_pins_the_complete_upstream_contract(
         "3.3V adapter (NOT 5V)",
         "swap RX/TX",
         "including a Xiaomi prefix",
-        "Prepackage Valetudo",
-        "Patch DNS",
+        "'Installer package'",
+        "'Disable Cloud' and 'Valetudo' checked",
         "valetudo-helper-httpbridge/releases",
         "/mnt/private/ /mnt/misc/ /etc/OTA_Key_pub.pem /etc/publickey.pem",
         "tar tf /tmp/backup.tar",
         "tar exits successfully",
         "same byte size and SHA-256",
         "sha256sum dreame.vacuum.pxxxx_fw.tar.gz",
-        "mkdir dustbuilder-install",
+        "mkdir dustfab-install",
         "every command must succeed",
         "robot on its dock",
-        "built with dustbuilder",
+        "Built by Dustfab",
     ):
         assert required in text
+    assert "dontvacuum" not in text and "DustBuilder" not in text
     assert ("has SECURE BOOT" in text) is secure_boot
 
 

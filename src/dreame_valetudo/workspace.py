@@ -301,7 +301,7 @@ class Robot:
 
         ``state/image`` means the files in ``fw/`` are ready to flash, so cleanup and forced
         restaging must clear it. Its path and digest also prevent one robot from silently reusing
-        another robot's dustbuilder image, which must outlive those staged files.
+        another robot's FEL image, which must outlive those staged files.
         """
         marker = self.state_get("image")
         if marker is None:
@@ -312,7 +312,7 @@ class Robot:
             self.state_set("image-history", "\n".join([*records, marker]))
 
     def image_provenance(self) -> tuple[str, ...]:
-        """Every current or previously consumed dustbuilder image record for this robot."""
+        """Every current or previously consumed FEL image record for this robot."""
         records: list[str] = []
         for name in ("image", "image-history"):
             value = self.state_get(name)
@@ -377,8 +377,8 @@ class Robot:
         return True
 
     def identity(self) -> dict[str, str]:
-        """The extra fastboot getvar values recon captured (serialno/toc0hash/toc1hash), for the
-        dustbuilder's manual checker. Empty if none were recorded (an older recon, or a bootloader
+        """The extra fastboot getvar values recon captured (serialno/toc0hash/toc1hash), kept for
+        diagnosis. Empty if none were recorded (an older recon, or a bootloader
         that didn't expose them)."""
         out: dict[str, str] = {}
         f = self.recon_dir / "identity.txt"

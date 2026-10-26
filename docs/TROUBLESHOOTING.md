@@ -9,9 +9,9 @@ Back to the [README](../README.md).
   often one lost with an old machine. The image's dropbear init copies its baked-in
   `/authorized_keys` to `/mnt/misc/authorized_keys` **only when that file is absent**, and `misc`
   is not one of the five partitions a root flash writes — so the key uploaded to the builder takes
-  effect only on a robot that has never been rooted. Nothing about a failed flash is involved: the
-  DustBuilder host key is a constant across builds, and Valetudo keeps serving from persistent
-  storage, so neither one tells you which firmware booted. Run **`dreame-valetudo rekey`** on the
+  effect only on a robot that has never been rooted. Nothing about a failed flash is involved:
+  Valetudo keeps serving from persistent storage, so its UI coming up does not tell you which
+  firmware booted. Run **`dreame-valetudo rekey`** on the
   robot over USB: it reads the live `misc` partition, makes your key the one in `authorized_keys`,
   and writes the partition back, leaving firmware and Secure Boot alone. It asks for the **FEL
   button sequence twice** — once to read and once to write — because the robot's power MCU cuts the
@@ -44,15 +44,15 @@ Back to the [README](../README.md).
   secure storage (`dreame_release.na -c 7`), writes it to `key.txt` (backing up the original), and
   reboots — a safe no-op when the key is already present. Documented in the W10 Pro
   [supported-robots comments](https://valetudo.cloud/pages/general/supported-robots/#w10-pro).
-- **Won't stay on Wi-Fi** → `dreame-valetudo fix-wifi` prints the [reset one-liner](https://builder.dontvacuum.me/dreame/cmds-reset.txt); then
+- **Won't stay on Wi-Fi** → `dreame-valetudo fix-wifi` prints the reset one-liner; then
   reconfigure Wi-Fi from Valetudo.
 - **`device.conf` missing/empty on first root** → Valetudo can't start (same null-parse as the
   negative `did`). Regenerate it: `rm /data/config/miio/device.conf && reboot`. Only if that
   doesn't repopulate it do a factory reset (which also wipes Valetudo; reinstall after).
   `diagnose` checks `did`/`key`/`model` presence and reports exactly which is wrong.
 - **L10s Pro Ultra Heat won't dock / no cleaning modes** → a known MCU↔Linux firmware mismatch
-  (rooting flashes newer firmware than the factory MCU expects). Build a "manual installation"
-  image on the dustbuilder and install it over SSH; that runs the normal OTA path and resyncs
+  (rooting flashes newer firmware than the factory MCU expects). Build an "Installer package"
+  on Dustfab and install it over SSH; that runs the normal OTA path and resyncs
   the MCU. Not a rooting failure.
 - **`Invalid sparse file format` during the flash is benign** *if* the next line is `OKAY`;
   only a step that does **not** return `OKAY` means stop.

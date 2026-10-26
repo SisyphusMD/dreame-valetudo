@@ -32,7 +32,7 @@ from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .image import image
 
 _POSIX_SPACE_DELETE = str.maketrans("", "", " \t\n\v\f\r")
-# The dustbuilder derives check.txt as hex8(config[0:4] XOR this), so the token carries the
+# The builder derives check.txt as hex8(config[0:4] XOR this), so the token carries the
 # identity of the config the image was built for (see log.py's redact_dust_token).
 _DUST_XOR = 0xC9ACBCC6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -221,7 +221,7 @@ def root(ctx: Context, *, force: bool = False) -> None:
     ctx.console.phase("Flash the rooted image — DESTRUCTIVE", index=2, total=3)
     missing = [f for f in FEL_IMAGE_FILES if not (robot.fw_dir / f).is_file()]
     if missing:
-        die(f"Run 'image' to stage the dustbuilder FEL image first (missing: {', '.join(missing)}).")
+        die(f"Run 'image' to stage the Dustfab FEL image first (missing: {', '.join(missing)}).")
     undersized = [
         f"{name} ({(robot.fw_dir / name).stat().st_size} bytes; need at least {minimum})"
         for name, minimum in _FEL_IMAGE_MIN_BYTES.items()

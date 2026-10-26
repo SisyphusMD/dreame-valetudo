@@ -2,7 +2,7 @@
 
 Bundles the injected seams (runner, console) with the workspace, the selected model_spec, and the
 current robot, and lazily resolves the fastboot transport + FEL helper. Derived per-model_spec values
-(the Valetudo binary path/URL, dustbuilder page, stage1 filenames) live here so the phases read
+(the Valetudo binary path/URL, Dustfab page, stage1 filenames) live here so the phases read
 them off it.
 """
 

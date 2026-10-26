@@ -63,11 +63,13 @@ def ui(ctx: Context) -> bool:
 def sshkey(ctx: Context) -> None:
     key = choose_sshkey(ctx)
     pub = stage_pub_for_upload(ctx.runner, ctx.ws.base, key)
-    ctx.console.say("SSH public key for the dustbuilder 'Your SSH-Public key' field:")
+    ctx.console.say("SSH public key for Dustfab's authorized_keys field:")
     pubfile = Path(f"{key}.pub")
     if pubfile.is_file():
         ctx.console.info(pubfile.read_text().strip())
-    ctx.console.info(f"Upload this copy (in a normal, non-hidden folder): {pub}")
+    ctx.console.info(f"Paste it, or use 'Load from file' with this copy (in a normal, non-hidden "
+                     f"folder): {pub}. Do not use Dustfab's 'Generate new keypair': this tool "
+                     "already manages the key.")
     ctx.console.detail(f"Private key '{key}' is what 'push' will use. Override with "
                        "DREAME_SSHKEY=...")
 

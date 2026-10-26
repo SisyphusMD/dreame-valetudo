@@ -23,6 +23,9 @@ set -euo pipefail
 URLS=(
   "https://valetudo.cloud/pages/general/supported-robots/"
   "https://valetudo.cloud/pages/installation/dreame/"
+  # The UART pinout and wiring the uart walkthrough sends people to. Its builder.dontvacuum.me
+  # original is gone; this byte-identical copy is the author's own repository.
+  "https://github.com/dgiese/dustbuilder-howto/blob/master/dreameadapter/uart.pdf"
 )
 
 fail=0

@@ -4,7 +4,7 @@ The fastboot implementation follows the official
 [Dreame rooting guide](https://valetudo.cloud/pages/installation/dreame/#fastboot) and each
 model's entry on the
 [Supported Robots page](https://valetudo.cloud/pages/general/supported-robots/). The weekly
-`DustBuilder forms` workflow checks a fresh checkout of `Hypfer/Valetudo`; the local rooting flow
+`Dustfab forms` workflow checks a fresh checkout of `Hypfer/Valetudo`; the local rooting flow
 never depends on that network check.
 
 ## Per-model contract
@@ -44,7 +44,7 @@ transcript separately for all 13 profiles, not just one representative model.
 | Load the model's DDR3/DDR4 FSBL at `0x28000`, then `payload.bin` at `0x4a000000`. | Same files, addresses, order, five-second wait, and fastboot wait. |
 | Read `dustversion`, then `config`. | Both are read. `config` is intentionally read first because it creates or binds the per-robot workspace before the remaining diagnostic values are persisted. |
 | Pull `dustx100`, select stage 1, pull `dustx101`, select stage 2, and pull `dustx102`; check sizes and zip them. | Same command order, with exact pinned-payload size, ZIP-member, and corruption checks before the backup is accepted. |
-| Build and download a DustBuilder FEL image. | Same FEL format and model-specific form choices. The installed guide is static so a website outage cannot stop rooting; separate CI compares every live form with a semantic golden. |
+| Build and download a Dustfab FEL package. | Same FEL format and model-specific form choices. The installed guide is static so a website outage cannot stop rooting; separate CI compares every live form with a semantic golden. |
 | Re-enter FEL using `fsbl.bin` and `payload.bin` from the built ZIP. | Same files, addresses, order, and wait. Extracted members are additionally bound to the selected model and SHA-256 checked immediately before flashing. |
 | Read live `config`; run `oem dust`, `oem prep`, flash `toc1`, then both boot/rootfs slots; require `OKAY`; reboot. | Same wire order. The tool additionally binds the ZIP, recon identity, live device, model revision, and recovery evidence before the first write, masks terminal-loss signals during the flash window, and stops on the first non-`OKAY`. |
 | Download the model's Valetudo binary, use the helper HTTP bridge, back up `/mnt/private` and `/mnt/misc`, install the postboot hook, and reboot. | The same `aarch64` binary and robot-side destinations are used. Direct SSH streaming replaces the helper webserver intentionally. The backup is expanded to raw private/misc partitions and `/etc/*.pem`, validated before publication, and bound to the live robot identity before Valetudo is copied. |

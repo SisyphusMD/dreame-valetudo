@@ -75,7 +75,7 @@ and a `ScriptedConsole` with canned answers.
 ## Adding a supported model
 
 A fastboot Dreame is a `ModelSpec` row in `models.py` plus a golden update. `models.py` is the single typed
-source of truth, taken verbatim from Valetudo's source and the dustbuilder, and pinned byte-for-byte
+source of truth, taken verbatim from Valetudo's source and Dustfab, and pinned byte-for-byte
 by TSV goldens in `tests/python/golden/`. `SUPPORTED_MODELS` order is the picker's numbering, so it
 is pinned too.
 

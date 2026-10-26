@@ -35,8 +35,8 @@ from ..workspace import (
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 
-# The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
-# asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
+# Fastboot identity vars beyond config, kept with the robot's records for diagnosis. The tool always
+# reads these itself — the user never runs fastboot.
 _IDENTITY_VARS = (
     "serialno", "dustversion", "ramsize", "toc0hash", "toc1hash", "toc1version", "product",
     "model", "variant", "hw-revision", "version-bootloader",
@@ -48,7 +48,7 @@ def _print_intro(ctx: Context) -> None:
         ctx.console.phase("Reconnaissance — reads only, writes NOTHING to the robot",
                           index=1, total=3)
         ctx.console.info("Validates the whole USB path with zero brick risk and records the "
-                         "'config' value that identifies the robot + drives the dustbuilder.")
+                         "'config' value that identifies the robot + drives the Dustfab build.")
         ctx.console.action("BEFORE you start: if this is a STOCK robot that was ever set up in "
                            "the Mi Home / Dreame Home app, factory-reset it first "
                            "(Settings -> Reset).")
@@ -288,9 +288,8 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # later place that identifies this run. This is also after every adoption branch above.
     ctx.bind_robot()
 
-    # Also capture the extra fastboot identity vars the dustbuilder's manual checker
-    # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
-    # robot's config isn't auto-recognized. The robot is already in fastboot here.
+    # Also capture the extra fastboot identity vars for the robot's records. The robot is already
+    # in fastboot here.
     capture_identity(ctx, robot)
     # The reported-model gate above must pass before the config and model become durable inputs to
     # image/root. A rejected recon intentionally leaves only an empty, untrusted robot directory.
@@ -423,7 +422,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")
-    ctx.console.info("Next: image  (opens the dustbuilder and waits for your built .zip)")
+    ctx.console.info("Next: image  (opens Dustfab and waits for your downloaded build)")
 
 
 def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
@@ -456,8 +455,8 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
             return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (upload to check.builder.dontvacuum.me "
-                     "if the builder rejects your config)")
+    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (Dustfab's check page takes it as the "
+                     "samples zip if it rejects your config)")
     ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
                      "partition and miio device key. Share it only intentionally.")
     return True
