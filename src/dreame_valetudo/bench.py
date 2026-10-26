@@ -3400,8 +3400,8 @@ _CONDUCTOR_DEFERRED = frozenset({
 # nothing, and on an H3 scenario a partition write as well.
 _CONDUCTOR_RUNNABLE = frozenset({"READY", "FAILED", "INTERRUPTED", "OBSERVE"})
 
-# Markers no scenario produces, and the command that does. Staging an image means visiting the
-# dustbuilder and downloading a build, so a campaign can only stop and say so.
+# Markers no scenario produces, and the command that does. Staging an image means visiting
+# Dustfab and downloading a build, so a campaign can only stop and say so.
 _UNBLOCKING_COMMANDS: Mapping[str, str] = {
     "image": "dreame-valetudo image",
 }

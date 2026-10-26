@@ -42,7 +42,7 @@ def parse_cpuid(text: str) -> str | None:
 
 # A fastboot getvar reply: the libusb client (default transport) prints 'OKAY <value>' on stdout;
 # Google's fastboot prints '<var>: <value>' on stderr. Only used for the non-config identity vars
-# (serialno/toc0hash/toc1hash) the dustbuilder's manual checker wants — config has its own parser.
+# (serialno/toc0hash/toc1hash) — config has its own parser.
 _GETVAR_LABEL_RE = re.compile(r"^[\w-]+:\s*(\S.*)$")
 
 
@@ -89,7 +89,7 @@ def parse_mikey(output: str) -> str | None:
 
 
 def zip_matches_model(path: str | Path, model_code: str) -> bool:
-    """True iff a dustbuilder zip filename was built for EXACTLY ``model_code``.
+    """True iff a build's filename was built for EXACTLY ``model_code``.
 
     A look-alike whose code merely has ``model_code`` as a prefix (r2338 vs r2338h — one
     character, different firmware, a brick if cross-flashed) must NOT match. The code sits in the

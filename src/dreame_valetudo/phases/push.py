@@ -935,7 +935,7 @@ def push(ctx: Context, key: str | Path | None = None) -> bool:
     if ctx.model_spec.key.startswith("l10s-pro-ultra-heat"):
         ctx.console.warn(f"{ctx.model_spec.model} note: if it later won't DOCK or you can't select "
                          "cleaning MODES, that's the known MCU/firmware mismatch — build a "
-                         "'manual installation' image on the dustbuilder and install it over SSH "
+                         "'Installer package' on Dustfab and install it over SSH "
                          "to resync the MCU.")
     ctx.console.detail("Getting started: https://valetudo.cloud/pages/general/getting-started/")
     ctx.console.warn(f"BACK THIS UP OFF THIS {ctx.host}: {captured} — factory identity/keys, NOT in "
