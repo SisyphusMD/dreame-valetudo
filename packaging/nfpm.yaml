@@ -37,7 +37,7 @@ depends:
   - libfdt1              # sunxi-fel also links libfdt at runtime
   - curl                 # downloads (stage1 pkg + Valetudo binary) still shell out to curl
   - tar                  # fetch extracts the verified stage1 archive
-  - unzip                # the image phase unpacks the dustbuilder FEL zip
+  - unzip                # the image phase unpacks a FEL zip downloaded from the retired DustBuilder
   - zip                  # recon archives the pre-root recovery backup (recon.py's `zip -q -j`)
   - openssh-client       # phase 3 push + the fix-*/diagnose helpers run ssh
   - tmux                 # every run is wrapped in a session so a lost terminal can't end it

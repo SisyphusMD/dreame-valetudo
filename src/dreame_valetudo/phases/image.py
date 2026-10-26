@@ -1,7 +1,7 @@
 """Phase: image — build the rooted FEL image on Dustfab, then stage the built package.
 
 The web form can't be pre-filled (captcha + POST), so the phase prints exactly what to enter,
-watches for the built zip, and unpacks it, binding the picked zip to THIS exact model code so a look-alike
+watches for the downloaded build, and unpacks it, binding the picked build to THIS exact model code so a look-alike
 build (r2338 vs r2338h) can't be staged.
 """
 
@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..console import abort, die
-from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
+from ..constants import FEL_IMAGE_FILES, FEL_IMAGE_UNSUPPORTED, STAGED_IMAGE_MANIFEST
 from ..context import Context
 from ..dustfab import form_guide, forms_verified_on
 from ..platform_env import open_url
@@ -93,9 +93,9 @@ def _open_dustfab(ctx: Context) -> None:
             abort("No problem — re-run 'dreame-valetudo' for this robot when ready.")
         if not open_url(ctx.runner, ctx.system, ctx.fab_page, env=ctx.env):
             ctx.console.info(f"Open this yourself: {ctx.fab_page}")
-    # The receipt is the floor that decides whether a downloaded zip belongs to this build, so it
+    # The receipt is the floor that decides whether a downloaded file belongs to this build, so it
     # moves forward whenever a build is (re)ordered — but NOT on a plain re-run, which would
-    # strand the zip the user downloaded between runs after a Ctrl+C.
+    # strand the build the user downloaded between runs after a Ctrl+C.
     if reopened or not had_receipt:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
         receipt.write_text(ctx.now() + "\n")
@@ -136,7 +136,7 @@ def _when(ts: float) -> str:
 
 
 def _submitted_at(robot: Robot) -> float:
-    """When this robot's build was ordered — the floor a candidate zip's download time must clear.
+    """When this robot's build was ordered — the floor a candidate build's download time must clear.
 
     0.0 when there is no receipt, which keeps every candidate eligible rather than blocking.
     """
@@ -144,25 +144,45 @@ def _submitted_at(robot: Robot) -> float:
     return receipt.stat().st_mtime if receipt.is_file() else 0.0
 
 
-def _matching_zips(ctx: Context, robot: Robot) -> list[Path]:
+# Dustfab delivers a gzipped tarball (`dreame.vacuum.r2228_3407_fel.tar.gz`); a browser that
+# unpacks "safe" downloads may leave the plain `.tar`. The `_fel_ng` zip is what DustBuilder used to
+# send, still accepted for a build downloaded before it shut down.
+_BUILD_SUFFIXES = (".tar.gz", ".tgz", ".tar")
+# Names a browser gives a download still in progress, beside or instead of the final name.
+_PARTIAL_SUFFIXES = (".part", ".crdownload", ".download")
+
+
+def _is_build_name(name: str) -> bool:
+    if "_fel_ng" in name and name.endswith(".zip"):
+        return True
+    return "_fel" in name and name.endswith(_BUILD_SUFFIXES)
+
+
+def _download_in_progress(path: Path) -> bool:
+    return any(path.with_name(path.name + suffix).exists() for suffix in _PARTIAL_SUFFIXES)
+
+
+def _matching_builds(ctx: Context, robot: Robot) -> list[Path]:
     """Downloaded builds for this exact model code, newest first.
 
-    Globs `*_fel_ng*.zip`, not `*_fel_ng.zip`: a browser de-duplicates a repeat download to
-    `..._fel_ng (1).zip`, and the tighter pattern cannot see that file at all — so the previous
-    robot's stale zip stays the only match while this robot's real build sits beside it unseen.
+    Matched on the name's shape rather than one exact name: a browser de-duplicates a repeat
+    download to `..._fel (1).tar.gz`, and a tighter pattern cannot see that file at all — so the
+    previous robot's stale build stays the only match while this robot's real one sits beside it.
     """
     out: list[Path] = []
     for d in (ctx.home / "Downloads", robot.fw_dir):
         if d.is_dir():
-            out += [c for c in d.glob("*_fel_ng*.zip")
-                    if zip_matches_model(c, ctx.model_spec.model_code)]
+            out += [c for c in d.iterdir()
+                    if c.is_file() and not c.is_symlink() and _is_build_name(c.name)
+                    and zip_matches_model(c, ctx.model_spec.model_code)
+                    and not _download_in_progress(c)]
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str) -> str | None:
-    """The sibling robot that already staged this same zip, if any.
+    """The sibling robot that already staged this same build, if any.
 
-    A Dustfab build belongs to ONE robot, so a zip consumed elsewhere is by definition not
+    A Dustfab build belongs to ONE robot, so a build consumed elsewhere is by definition not
     this robot's — matched on digest as well as name, since a re-download is renamed but identical.
     """
     for d in sorted(ctx.ws.robots_dir.glob("*")):
@@ -174,14 +194,83 @@ def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str)
     return None
 
 
-def _watch_for_zip(ctx: Context, floor: float, tries: int = 720) -> str | None:
+def _watch_for_build(ctx: Context, floor: float, tries: int = 720) -> str | None:
     robot = ctx.need_robot()
     for _ in range(tries):
-        for c in _matching_zips(ctx, robot):
+        for c in _matching_builds(ctx, robot):
             if c.stat().st_mtime >= floor:
                 return str(c)
         ctx.sleep(5)
     return None
+
+
+def _download_settled(ctx: Context, path: Path, tries: int = 720) -> bool:
+    """Whether the file's size held still across one poll with no partial download beside it.
+
+    A browser can write the final name before the last byte lands, and a truncated tarball would
+    fail, or worse, half-extract. Applied to every candidate, however it was picked.
+    """
+    previous: int | None = None
+    for _ in range(tries):
+        size = path.stat().st_size if path.is_file() and not _download_in_progress(path) else None
+        if size and size == previous:
+            return True
+        previous = size
+        ctx.sleep(5)
+    return False
+
+
+def _archive_members(ctx: Context, archive: str) -> list[str]:
+    argv = (["unzip", "-Z1", archive] if archive.endswith(".zip")
+            else ["tar", "-tf", archive])
+    listing = ctx.runner.run(argv, check=False)
+    if not listing.ok:
+        die(f"Couldn't read {Path(archive).name}.")
+    return [line for line in listing.stdout.splitlines() if line.strip()]
+
+
+def _unpack_build(ctx: Context, archive: str, staging: Path) -> None:
+    """Unpack a build into `staging`, keeping only the files a flash uses, at its top level.
+
+    A Dustfab tarball nests everything under one directory beside the helper binary this tool does
+    not use; an old DustBuilder zip was flat. Both go through the same refusal of anything that is
+    not a plain file, so a link in the archive can never stand in for an image the root flashes.
+    """
+    # Checked in the listing, before extraction: both extractors silently let a later member of the
+    # same name overwrite an earlier one, so on disk two candidates would look like one.
+    wanted = set(FEL_IMAGE_FILES) | set(FEL_IMAGE_UNSUPPORTED)
+    names = [Path(member.rstrip("/")).name for member in _archive_members(ctx, archive)]
+    for name in sorted(wanted):
+        if names.count(name) > 1:
+            die(f"The build holds {names.count(name)} copies of {name}; refusing to guess which one "
+                "to flash.")
+    unpacked = staging / ".unpacked"
+    unpacked.mkdir()
+    if archive.endswith(".zip"):
+        argv = ["unzip", "-o", "-j", archive, "-d", str(unpacked)]
+    else:
+        # tar auto-detects gzip on both GNU and BSD tar, and both refuse absolute and `..` members.
+        argv = ["tar", "-xf", archive, "-C", str(unpacked)]
+    if not ctx.runner.run(argv, check=False).ok:
+        die(f"Couldn't unpack {Path(archive).name}.")
+    found: dict[str, list[Path]] = {}
+    for p in sorted(unpacked.rglob("*")):
+        if p.name in wanted:
+            found.setdefault(p.name, []).append(p)
+    unsupported = [name for name in FEL_IMAGE_UNSUPPORTED if name in found]
+    if unsupported:
+        die(f"This build contains {', '.join(unsupported)}, which this tool does not flash yet. "
+            "Rooting without it would leave the robot half-flashed, so nothing was staged.")
+    for name in FEL_IMAGE_FILES:
+        copies = found.get(name, [])
+        if len(copies) > 1:
+            die(f"The build holds {len(copies)} copies of {name}; refusing to guess which one to "
+                "flash.")
+        if copies:
+            if copies[0].is_symlink() or not copies[0].is_file():
+                die(f"{name} in the build is not a plain file; refusing to stage it.")
+            copies[0].rename(staging / name)
+    shutil.rmtree(unpacked)
 
 
 @records_step("building the rooted image")
@@ -219,61 +308,63 @@ def image(ctx: Context, *, force: bool = False) -> None:
         abort("Config not recognized yet — follow the steps above, then re-run 'dreame-valetudo' "
               "for this robot once you have a working FEL image.")
 
-    # A zip downloaded BEFORE this robot's build was ordered is almost always the previous robot's
+    # A build downloaded BEFORE this robot's build was ordered is almost always the previous robot's
     # build: same model code, same filename, still sitting in ~/Downloads. This robot's own build
     # does not exist yet, so the watcher would return that stale file on its first pass, instantly
     # and deterministically. Never stage one silently — name it and its age, and ask.
     floor = _submitted_at(robot)
-    zip_path = next((str(c) for c in _matching_zips(ctx, robot) if c.stat().st_mtime >= floor), None)
-    if not zip_path:
-        for c in _matching_zips(ctx, robot):
+    build_path = next((str(c) for c in _matching_builds(ctx, robot) if c.stat().st_mtime >= floor), None)
+    if not build_path:
+        for c in _matching_builds(ctx, robot):
             if ctx.console.confirm(
                 f"{c.name} was downloaded {_when(c.stat().st_mtime)}, before this robot's build was "
                 f"ordered ({_when(floor)}) — it may belong to another robot. Stage it anyway?"
             ):
-                zip_path = str(c)
+                build_path = str(c)
                 break
 
-    if not zip_path:
-        ctx.console.say("Watching ~/Downloads and the robot's fw dir for the built zip...")
-        with ctx.console.progress("Waiting for the built zip to land (builds take ~5-60 min; "
+    if not build_path:
+        ctx.console.say("Watching ~/Downloads and the robot's fw dir for the downloaded build...")
+        with ctx.console.progress("Waiting for the build to land (builds take ~5-60 min; "
                                   "Ctrl+C is safe — re-run once it downloads)") as p:
-            zip_path = _watch_for_zip(ctx, floor)
-            if not zip_path:
+            build_path = _watch_for_build(ctx, floor)
+            if not build_path:
                 p.close(done=False)
-    if not zip_path:
-        die("No zip found — re-run once the built zip is downloaded.")
+    if not build_path:
+        die("No build found — re-run once the FEL package is downloaded from the Dustfab job page.")
+    if not _download_settled(ctx, Path(build_path)):
+        die(f"{Path(build_path).name} is still downloading — re-run once it has finished.")
 
-    digest = sha256_of(zip_path)
-    used_by = _staged_by_another_robot(ctx, robot, Path(zip_path).name, digest)
+    digest = sha256_of(build_path)
+    used_by = _staged_by_another_robot(ctx, robot, Path(build_path).name, digest)
     if used_by and not ctx.console.confirm(
-        f"This zip is already staged for '{used_by}'. A Dustfab build belongs to ONE robot and "
+        f"This build is already staged for '{used_by}'. A Dustfab build belongs to ONE robot and "
         "flashing another robot's build can brick this one. Stage it here anyway?"
     ):
         die("Refused — re-run once this robot's own build has downloaded.")
 
-    ctx.console.say(f"Found: {zip_path} (downloaded "
-                    f"{_when(Path(zip_path).stat().st_mtime)}) — unpacking into {robot.fw_dir}")
-    # Extract into a fresh sibling and swap, rather than over fw_dir. `unzip -o -j` leaves any
-    # file the new zip lacks untouched, and a member that fails CRC is written before unzip reports
-    # the failure — either way fw_dir becomes a MIXTURE of two builds that every later is_file()
-    # check happily accepts, and root() would flash one build's toc1 beside another's kernel.
+    ctx.console.say(f"Found: {build_path} (downloaded "
+                    f"{_when(Path(build_path).stat().st_mtime)}) — unpacking into {robot.fw_dir}")
+    # Extract into a fresh sibling and swap, rather than over fw_dir. Unpacking over it leaves any
+    # file the new build lacks untouched, and a member that fails its check is written before the
+    # extractor reports the failure — either way fw_dir becomes a MIXTURE of two builds that every
+    # later is_file() check happily accepts, and root() would flash one build's toc1 beside another's
+    # kernel.
     staging = robot.work / "fw.new"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
-    if not ctx.runner.run(["unzip", "-o", "-j", zip_path, "-d", str(staging)], check=False).ok:
-        die("unzip failed")
+    _unpack_build(ctx, build_path, staging)
     missing = [f for f in FEL_IMAGE_FILES if not (staging / f).is_file()]
     if missing:
-        die(f"The zip didn't contain the expected files (missing: {', '.join(missing)}) — wrong "
-            "build type? Rebuild as 'FEL image'.")
-    zp = Path(zip_path)
-    if zp.parent == robot.fw_dir:  # a zip staged from the robot's own fw dir must survive the swap
+        die(f"The build didn't contain the expected files (missing: {', '.join(missing)}) — wrong "
+            "output format? Rebuild it as 'FEL package'.")
+    zp = Path(build_path)
+    if zp.parent == robot.fw_dir:  # a build staged from the robot's own fw dir must survive the swap
         zp.rename(staging / zp.name)
-        zip_path = str(robot.fw_dir / zp.name)
+        build_path = str(robot.fw_dir / zp.name)
     # Supersede the previous build; never delete it first. An rmtree-then-rename leaves an instant
     # where fw_dir is gone with nothing in its place, so a crash there would strand recovery on the
-    # downloaded zip still existing. Set the old build aside, move the staged one into the freed
+    # downloaded build still existing. Set the old build aside, move the staged one into the freed
     # slot, then drop the old copy — a complete build survives an interruption at any point.
     superseded = robot.work / "fw.superseded"
     shutil.rmtree(superseded, ignore_errors=True)
@@ -290,6 +381,6 @@ def image(ctx: Context, *, force: bool = False) -> None:
     )
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
-    robot.state_set("image", f"model={ctx.model_spec.key} from {zip_path} sha256={digest}")
+    robot.state_set("image", f"model={ctx.model_spec.key} from {build_path} sha256={digest}")
     robot.remember_image()
     ctx.console.say("Image staged. Next: root (DESTRUCTIVE)")

@@ -28,7 +28,7 @@ _FW_SIZES = {
 def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / "Downloads").mkdir(parents=True)
-    built_zip = home / "Downloads" / "dreame.vacuum.r2416_fel_ng.zip"
+    built_zip = home / "Downloads" / "dreame.vacuum.r2416_1782_fel.tar.gz"
 
     def responder(argv: tuple[str, ...]) -> Result:
         joined = " ".join(argv)
@@ -45,8 +45,9 @@ def test_recon_image_root_compose(make_ctx: CtxFactory, tmp_path: Path) -> None:
             return Result(argv, 0, f"OKAY {CFG}", "")
         if argv[0] == "curl":
             return Result(argv, 0, "<form><input name='config'></form>", "")
-        if argv[0] == "unzip":
-            dest = Path(argv[argv.index("-d") + 1])
+        if argv[0] == "tar" and "-xf" in argv:
+            dest = Path(argv[argv.index("-C") + 1]) / "dreame.vacuum.r2416_1782_fel"
+            dest.mkdir()
             for f in _FW:
                 if f == "check.txt":
                     (dest / f).write_text("626153c7\n")

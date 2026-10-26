@@ -36,6 +36,7 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 - Stage 1 now comes from Dustfab, one package per model, because builder.dontvacuum.me is gone. The first run after upgrading downloads it again.
 - Recon and `rekey` select each flash slice with `oem stage<n>` before reading it, the first included, as Valetudo's current guide does.
 - The image step walks you through Dustfab's build form, and a rejected config through that model's Dustfab check page. The old DustBuilder voucher, e-mail and support-mail steps are gone.
+- The image step picks up Dustfab's `.tar.gz` FEL package, waits until the download has finished, and stages only the files a flash uses. A build that includes `dtbo.img` is refused, because the tool does not flash it yet. A DustBuilder zip you already downloaded still works.
 - The "last verified" date shown beside those steps now comes from the release that shipped them, which checks every Dustfab page first. A weekly job still reports drift.
 
 ### Fixed

@@ -855,6 +855,8 @@ def test_gitignore_covers_release_and_device_artifacts_created_in_the_repo() -> 
     patterns = set((_ROOT / ".gitignore").read_text().splitlines())
     assert {
         "*_fel_ng*.zip",
+        "*.vacuum.*_fel*.tar.gz",
+        "*.vacuum.*_fel*.tgz",
         ".dreame-valetudo-image.json",
         ".private.json",
         "dreame-*-stock-recovery/",
