@@ -1,4 +1,4 @@
-key	MODEL	DUST_CODE	MODEL_CODE	IMPL_CLASS	AUTODETECT_OK	METHOD	ARCH	DRAM	SECURE_BOOT	KEY_IN_SECURE_STORAGE	BAUD	FSBL_ADDR	PAYLOAD_ADDR	BRAND	STAGE1_URL	DUSTBUILDER_PAGE
+key	MODEL	DUST_CODE	MODEL_CODE	IMPL_CLASS	AUTODETECT_OK	METHOD	ARCH	DRAM	SECURE_BOOT	KEY_IN_SECURE_STORAGE	BAUD	FSBL_ADDR	PAYLOAD_ADDR	BRAND	STAGE1_URL	FAB_PAGE
 x40-ultra	Dreame X40 Ultra	r2416	r2416	DreameX40UltraValetudoRobot	no	fastboot	aarch64	ddr4	yes	no	115200	0x28000	0x4a000000	dreame	https://fab.valetudo.cloud/robot/dreame/r2416/fel/recon	https://fab.valetudo.cloud/build/dreame/r2416
 x40-master	Dreame X40 Master	r2465	r2465	DreameX40MasterValetudoRobot	maybe	fastboot	aarch64	ddr4	yes	no	115200	0x28000	0x4a000000	dreame	https://fab.valetudo.cloud/robot/dreame/r2465/fel/recon	https://fab.valetudo.cloud/build/dreame/r2465
 x30-ultra	Dreame X30 Ultra	r9316	r9316	DreameX30UltraValetudoRobot	yes	fastboot	aarch64	ddr4	yes	no	115200	0x28000	0x4a000000	dreame	https://fab.valetudo.cloud/robot/dreame/r9316/fel/recon	https://fab.valetudo.cloud/build/dreame/r9316

@@ -95,8 +95,13 @@ class ModelSpec:
         return f"https://{DUSTFAB_HOST}/robot/{self.brand}/{self.dust_code}/fel/recon"
 
     @property
-    def dustbuilder_page(self) -> str:
+    def fab_page(self) -> str:
         return f"https://{DUSTFAB_HOST}/build/{self.brand}/{self.dust_code}"
+
+    @property
+    def fab_check_page(self) -> str:
+        # Where Dustfab takes the samples zip for a config value it does not recognize yet.
+        return f"{self.fab_page}/check"
 
 
 _MODEL_SPECS: dict[str, ModelSpec] = {

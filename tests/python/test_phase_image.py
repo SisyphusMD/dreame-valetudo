@@ -1,10 +1,8 @@
-"""Image phase: the config-rejected check-in and its check.builder rescue block.
+"""Image phase: the Dustfab checklist, and the config-rejected check-in with its check-page block.
 
 The happy path (config accepted -> watch -> stage the zip) is covered by test_integration_flow;
-these pin the NEW behaviour — when the builder can't auto-detect the robot, the tool stops cleanly
-and prints exactly what check.builder.dontvacuum.me needs. Crucially, when recon didn't record the
-serialno/toc0hash/toc1hash, the TOOL reads them off the robot itself; it never tells the user to run
-fastboot by hand.
+these pin that when Dustfab does not recognize the robot, the tool stops cleanly and prints exactly
+what that model's check page needs.
 """
 
 from __future__ import annotations
@@ -20,10 +18,10 @@ from conftest import CFG, CtxFactory, stage_dist
 
 from dreame_valetudo.console import Die
 from dreame_valetudo.context import Context
-from dreame_valetudo.dustbuilder import FORM_GUIDES, forms_verified_on
+from dreame_valetudo.dustfab import FORM_GUIDES, forms_verified_on
 from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import image as image_module
-from dreame_valetudo.phases.image import _open_dustbuilder, _print_checklist, image
+from dreame_valetudo.phases.image import _open_dustfab, _print_checklist, image
 from dreame_valetudo.phases.manage import clean
 from dreame_valetudo.run import Result
 from dreame_valetudo.util import sha256_of
@@ -47,32 +45,18 @@ def test_every_model_checklist_is_static_and_matches_its_exact_guide(
 
     guide = FORM_GUIDES[ctx.model_spec.dust_code]
     text = ctx.console.text()  # type: ignore[attr-defined]
-    assert f"Firmware version ..... SELECT '{guide.firmware_label}'" in text
-    assert ("Prepackage Valetudo" in text) is guide.prepackage_valetudo
+    assert f"Base firmware ........ SELECT '{guide.firmware_label}'" in text
+    assert "SELECT 'FEL package'" in text
     assert f"last verified: {forms_verified_on(ctx.libexec)}" in text
     assert ctx.runner.calls == []  # type: ignore[attr-defined]  # no website can gate rooting
 
 
 def _curl_only(argv: tuple[str, ...]) -> Result:
-    # The unsupported list is empty (no match); everything else is a benign OKAY.
+    # Everything is a benign OKAY.
     if argv[:2] == ("ssh-keygen", "-y"):  # the staged .pub is proven against its private half
         return Result(argv, 0, "ssh-ed25519 AAAA\n", "")
     if argv and argv[0] == "curl":
-        if any("unsupported.txt" in a for a in argv):
-            return Result(argv, 0, "", "")
         return Result(argv, 0, "<form><input name='config'></form>", "")
-    return Result(argv, 0, "OKAY", "")
-
-
-def _curl_plus_getvars(argv: tuple[str, ...]) -> Result:
-    # Like _curl_only, but answers the identity getvars (and the FEL/fastboot bring-up returns OKAY),
-    # so the tool-driven on-demand read succeeds.
-    joined = " ".join(argv)
-    if argv[:2] == ("ssh-keygen", "-y") or (argv and argv[0] == "curl"):
-        return _curl_only(argv)
-    for var, val in _IDENT.items():
-        if f"getvar {var}" in joined:
-            return Result(argv, 0, f"OKAY {val}", "")
     return Result(argv, 0, "OKAY", "")
 
 
@@ -109,7 +93,7 @@ def _reject_ctx(
     return ctx
 
 
-def test_dustbuilder_prints_the_url_when_the_desktop_launcher_fails(
+def test_dustfab_prints_the_url_when_the_desktop_launcher_fails(
     make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True])
@@ -120,18 +104,18 @@ def test_dustbuilder_prints_the_url_when_the_desktop_launcher_fails(
         return False
 
     monkeypatch.setattr("dreame_valetudo.phases.image.open_url", fail_open)
-    _open_dustbuilder(ctx)
+    _open_dustfab(ctx)
 
-    assert attempted == [(ctx.system, ctx.dustbuilder_page)]
-    assert f"Open this yourself: {ctx.dustbuilder_page}" in ctx.console.text()  # type: ignore[attr-defined]
+    assert attempted == [(ctx.system, ctx.fab_page)]
+    assert f"Open this yourself: {ctx.fab_page}" in ctx.console.text()  # type: ignore[attr-defined]
 
 
-def test_dustbuilder_refuses_missing_config_before_key_or_browser_side_effects(
+def test_dustfab_refuses_missing_config_before_key_or_browser_side_effects(
     make_ctx: CtxFactory,
 ) -> None:
     ctx = make_ctx(robot_name="bench")
     with pytest.raises(Die, match="No config value"):
-        _open_dustbuilder(ctx)
+        _open_dustfab(ctx)
     assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
 
 
@@ -144,16 +128,16 @@ def test_existing_builder_receipt_can_be_reopened_and_warns_for_an_already_roote
     receipt = robot.recon_dir / ".submitted"
     receipt.write_text("earlier")
     monkeypatch.setattr(image_module, "open_url", lambda *_args, **_kwargs: False)
-    _open_dustbuilder(ctx)
+    _open_dustfab(ctx)
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert "ALREADY ROOTED" in text
-    assert "already opened the builder" in text
+    assert "already opened Dustfab" in text
     assert "Open this yourself" in text
     assert receipt.read_text() == "earlier"
 
     ctx.console._confirms.append(True)  # type: ignore[attr-defined]
     monkeypatch.setattr(image_module, "open_url", lambda *_args, **_kwargs: True)
-    _open_dustbuilder(ctx)
+    _open_dustfab(ctx)
     assert receipt.read_text() != "earlier"
 
 
@@ -162,94 +146,54 @@ def test_declining_to_open_a_first_builder_session_stops_without_a_receipt(
 ) -> None:
     ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[False])
     with pytest.raises(Die, match="re-run"):
-        _open_dustbuilder(ctx)
+        _open_dustfab(ctx)
     assert not (ctx.need_robot().recon_dir / ".submitted").exists()
 
 
-def test_rejected_config_prints_the_rescue_block_and_stops(make_ctx: CtxFactory, tmp_path: Path) -> None:
-    # confirms: [open browser? yes] [config accepted? no]; values already recorded -> no read offer.
+def test_rejected_config_prints_the_check_page_block_and_stops(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    # confirms: [open browser? yes] [build queued? no].
     ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=True, confirms=[True, False])
     with pytest.raises(Die, match="not recognized"):
         image(ctx)
 
     text = ctx.console.text()  # type: ignore[attr-defined]
-    assert "check.builder.dontvacuum.me" in text
-    assert all(v in text for v in _IDENT.values())      # captured values, verbatim
-    assert "dreame_recovery_backup.zip" in text         # the get_staged image to upload
+    assert "https://fab.valetudo.cloud/build/dreame/r9316/check" in text
+    assert "dreame_recovery_backup.zip" in text         # the samples zip to upload
+    assert CFG in text
     assert "fastboot getvar" not in text                # the tool never punts a command to the user
-    assert "SELECT this upload radio" in text           # neither radio is selected by the page
-    assert "Prepackage Valetudo" not in text             # absent from this X30 form
-    assert "Firmware version ..... SELECT 'r9316 (ver 1726, 05/2024)'" in text
-    assert "I am human ........... complete the hCaptcha check" in text
-    assert "Patch DNS ............ leave CHECKED (the default" in text
-    assert "Preinstall tools ..... leave CHECKED (the default" in text
-    assert "raw copy of the robot's flash" in text
-    assert "miio device key" in text
-    assert "DustBuilder form instructions last verified:" in text
-    assert "Model radio            SELECT 'X30 Ultra'" in text
-    assert "up to 24 hours" in text
-    assert "subject 'config'" in text
+    assert "Base firmware ........ SELECT 'r9316 (ver 1726, 05/2024) (latest)'" in text
+    assert "SELECT 'FEL package' (NOT the default 'Installer package')" in text
+    assert "'Load from file'" in text and "do NOT use 'Generate new keypair'" in text
+    assert "Hostkey seed ......... leave EMPTY" in text
+    assert "'Queue build'" in text
+    assert "raw slices of the robot's flash" in text
     assert "Wi-Fi SSIDs/passwords and camera frames" in text
+    assert "Dustfab form instructions last verified:" in text
+    assert "Check-page instructions last verified:" in text
+    assert "dontvacuum" not in text and "DustBuilder" not in text
+    assert all(v not in text for v in _IDENT.values())  # the check page asks for none of these
     assert any(kind == "action" for kind, _ in ctx.console.lines)  # type: ignore[attr-defined]
     assert not ctx.need_robot().state_has("image")      # not staged -> re-run resumes
 
 
-def test_prepackage_instruction_appears_only_for_a_model_whose_page_has_it(
+def test_r2338h_and_mova_robots_get_their_own_check_page(
     make_ctx: CtxFactory, tmp_path: Path,
 ) -> None:
-    ctx = _reject_ctx(
-        make_ctx, tmp_path, identity=True, zip_=True, confirms=[True, False],
-        model="d10s-pro", model_code="r2250",
-    )
-    with pytest.raises(Die, match="not recognized"):
-        image(ctx)
-
-    text = ctx.console.text()  # type: ignore[attr-defined]
-    assert "Prepackage Valetudo .. leave UNCHECKED" in text
-    assert "Firmware version ..... SELECT 'r2250 (ver 1413, 08/2024) latest'" in text
-
-
-def test_r2338h_checker_help_never_invents_the_incompatible_r2338_radio(
-    make_ctx: CtxFactory, tmp_path: Path,
-) -> None:
-    ctx = _reject_ctx(
-        make_ctx, tmp_path, identity=True, zip_=True, confirms=[True, False],
-        model="l10s-pro-ultra-heat-h", model_code="r2338h",
-    )
-    with pytest.raises(Die, match="not recognized"):
-        image(ctx)
-
-    text = ctx.console.text()  # type: ignore[attr-defined]
-    assert "no 'R2338H' choice exists" in text
-    assert "before choosing a different revision" in text
-    assert "Model radio            SELECT 'L10S Pro Ultra Heat'" not in text
-
-
-def test_missing_values_are_read_off_the_robot_by_the_tool(make_ctx: CtxFactory, tmp_path: Path) -> None:
-    # No identity.txt (older recon). confirms: [open browser] [not accepted] [reconnect+FEL? yes].
-    ctx = _reject_ctx(make_ctx, tmp_path, identity=False, zip_=True,
-                      confirms=[True, False, True], responder=_curl_plus_getvars, pre_staged=True)
-    with pytest.raises(Die, match="not recognized"):
-        image(ctx)
-
-    text = ctx.console.text()  # type: ignore[attr-defined]
-    assert all(v in text for v in _IDENT.values())   # the tool read them and filled the block
-    assert "fastboot getvar" not in text
-    # ...and persisted them so a later run has them without another read.
-    assert ctx.need_robot().identity() == _IDENT
-
-
-def test_missing_values_declined_never_tells_the_user_to_run_fastboot(make_ctx: CtxFactory, tmp_path: Path) -> None:
-    # No identity.txt and the user declines the read. confirms: [open] [not accepted] [read? no].
-    ctx = _reject_ctx(make_ctx, tmp_path, identity=False, zip_=False, confirms=[True, False, False])
-    with pytest.raises(Die, match="not recognized"):
-        image(ctx)
-
-    text = ctx.console.text()  # type: ignore[attr-defined]
-    assert "fastboot getvar" not in text              # never a raw command for the user
-    assert "not recorded" in text                     # marked as unread, pointing back at the tool
-    assert "reads these off the robot for you" in text
-    assert "MISSING" in text                          # the get_staged image was never built
+    for model, code, page in (
+        ("l10s-pro-ultra-heat-h", "r2338h", "/build/dreame/r2338h/check"),
+        ("mova-p10-pro-ultra", "r2491", "/build/mova/r2491/check"),
+    ):
+        root = tmp_path / code
+        root.mkdir()
+        ctx = _reject_ctx(
+            make_ctx, root, identity=True, zip_=True, confirms=[True, False],
+            model=model, model_code=code,
+        )
+        with pytest.raises(Die, match="not recognized"):
+            image(ctx)
+        assert f"https://fab.valetudo.cloud{page}" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def _staging_responder(argv: tuple[str, ...]) -> Result:
@@ -358,27 +302,6 @@ def test_complete_image_marker_skips_every_network_and_unpack_command(
     image(ctx)
     assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
     assert "already staged" in ctx.console.text()  # type: ignore[attr-defined]
-
-
-def test_unsupported_model_warning_is_advisory_and_staging_continues(
-    make_ctx: CtxFactory, tmp_path: Path,
-) -> None:
-    unpack = _two_build_responder(_FEL, 0)
-
-    def responder(argv: tuple[str, ...]) -> Result:
-        if argv and argv[0] == "curl" and any("unsupported.txt" in item for item in argv):
-            return Result(argv, 0, "r9316\n", "")
-        return unpack(argv)
-
-    ctx = _reject_ctx(
-        make_ctx, tmp_path, identity=True, zip_=False, confirms=[True, True], responder=responder,
-    )
-    (tmp_path / "home" / "Downloads").mkdir(parents=True, exist_ok=True)
-    built = tmp_path / "home/Downloads/dreame.vacuum.r9316_1782_fel_ng.zip"
-    _lands_during_the_wait(ctx, built)
-    image(ctx)
-    assert "unsupported list" in ctx.console.text()  # type: ignore[attr-defined]
-    assert ctx.need_robot().state_has("image")
 
 
 def test_image_stages_the_exact_model_not_its_lookalike(
@@ -564,27 +487,3 @@ def test_an_interrupted_publish_never_destroys_the_previous_image(
     ]
     assert survivors, "the previous build was destroyed by the interrupted publish"
     assert not robot.state_has("image")  # root() re-runs image() rather than flashing a gap
-
-
-def test_rejected_config_uses_physical_serial_guidance_and_prints_saved_pdf_diagnostics(
-    make_ctx: CtxFactory,
-) -> None:
-    ctx = make_ctx(robot_name="bench", interactive=False)
-    robot = ctx.need_robot()
-    robot.recon_dir.mkdir(parents=True)
-    (robot.recon_dir / "config.txt").write_text(f"config: {CFG}\n")
-    (robot.recon_dir / "identity.txt").write_text(
-        "serialno: not supported\n"
-        "toc0hash: 0011\n"
-        "toc1hash: 2233\n"
-        "dustversion: 42\n"
-        "ramsize: 1024\n"
-        "toc1version: 7\n"
-    )
-
-    image_module._config_rejected_help(ctx)
-
-    text = ctx.console.text()  # type: ignore[attr-defined]
-    assert "physical serial under the dustbin" in text
-    assert "Saved diagnostics" in text
-    assert "dustversion" in text and "ramsize" in text and "toc1version" in text

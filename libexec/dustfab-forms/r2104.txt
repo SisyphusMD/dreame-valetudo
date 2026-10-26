@@ -1,0 +1,16 @@
+input	type=hidden	name=model	value=dreame-r2104
+input	type=radio	name=baseFirmware	value=1130	checked=yes	label=r2104 (ver 1130, 12/2022) (latest)
+button	type=button
+input	type=text	name=sn	placeholder=P/R	required=yes	label=Serial number
+input	type=radio	name=outputFormat	value=installer	checked=yes	label=Installer package Installer package to be used via SSH, UART, ADB or Telnet shell access
+input	type=radio	name=outputFormat	value=fel	checked=no	label=FEL package FEL package to be used for initial rooting
+input	type=text	name=config	placeholder=aabbccddeeff11223344556677889900	label=Config value
+input	type=checkbox	name=diff	value=true	checked=no	label=Create diff between original and modified image
+input	type=checkbox	name=actions	value=disable_cloud	checked=yes	label=Disable Cloud Required for Valetudo to work
+input	type=checkbox	name=actions	value=inject_cli_tools	checked=yes	label=Additional tools Preinstall tools like htop, curl, nano, etc.
+input	type=checkbox	name=actions	value=install_valetudo	checked=yes	label=Valetudo Prepackage Valetudo <version>
+button	type=button	label=Generate new keypair
+textarea	type=textarea	name=authorized_keys	placeholder=ssh-ed25519 AAAA... you@host	required=yes	label=authorized_keys (public key(s), one per line)
+input	type=text	name=seed	placeholder=arbitrary string here	maxlength=128	pattern=.{6,128}	label=Hostkey seed (optional)
+button	type=button	label=I am human
+button	type=submit	disabled=yes	label=Queue build

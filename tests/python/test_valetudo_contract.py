@@ -71,7 +71,7 @@ def test_every_fastboot_model_has_an_explicit_upstream_contract() -> None:
 
 def test_workflow_invokes_the_verifier_as_a_module_from_the_checkout() -> None:
     workflow = (
-        Path(__file__).resolve().parents[2] / ".forgejo/workflows/dustbuilder-forms.yml"
+        Path(__file__).resolve().parents[2] / ".forgejo/workflows/dustfab-forms.yml"
     ).read_text()
     assert "python -m libexec.verify_valetudo_contract /tmp/upstream-valetudo" in workflow
     assert "python libexec/verify_valetudo_contract.py" not in workflow

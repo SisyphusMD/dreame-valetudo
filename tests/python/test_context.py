@@ -75,8 +75,8 @@ def test_sunxi_fel_falls_back_to_path_before_the_build_target(
 
 
 def test_the_build_page_override_prefers_the_dustfab_name(make_ctx: CtxFactory) -> None:
-    assert make_ctx().dustbuilder_page == "https://fab.valetudo.cloud/build/dreame/r2416"
+    assert make_ctx().fab_page == "https://fab.valetudo.cloud/build/dreame/r2416"
     legacy = make_ctx(env={"DUSTBUILDER_PAGE": "https://old.test"})
-    assert legacy.dustbuilder_page == "https://old.test"
+    assert legacy.fab_page == "https://old.test"
     both = make_ctx(env={"DUSTBUILDER_PAGE": "https://old.test", "DUSTFAB_PAGE": "https://new.test"})
-    assert both.dustbuilder_page == "https://new.test"
+    assert both.fab_page == "https://new.test"

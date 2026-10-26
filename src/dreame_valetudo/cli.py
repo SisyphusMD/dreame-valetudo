@@ -24,7 +24,7 @@ from .bench import (
 from .console import Console, Die, SafetyStop, UserAbort, die, idle_timeout, safety_stop
 from .constants import ADOPTED_ROOT, RESTORE_BOOT_PENDING, ROBOT_AP_IP
 from .context import Context
-from .dustbuilder import verify_all_forms, verify_form
+from .dustfab import verify_all_forms, verify_form
 from .fastboot import resolve_libexec
 from .hazards import model_hazard_check
 from .installs import find_installs
@@ -431,7 +431,7 @@ def uart(ctx: Context) -> None:
     c.steps(start=7, items=[
         ("Build a manual-installation package on the DustBuilder page below. Select BOTH "
          "'Prepackage Valetudo' and 'Patch DNS' before Create Job:\n"
-         f"{ctx.dustbuilder_page}"),
+         f"{ctx.fab_page}"),
         ("On the laptop, run valetudo-helper-httpbridge, connect to the robot's 192.168.5.x "
          "Wi-Fi AP, and put the emailed .tar.gz in its www folder. Record its byte size and "
          "SHA-256 first:\n"
@@ -620,8 +620,8 @@ def _emit_usage(console: Console, only: str | None = None) -> None:
         "  dreame-valetudo fix-key    restore the miio key some units keep only in secure storage\n"
         "  dreame-valetudo fix-wifi   post-root Wi-Fi drop-out helper\n"
         "  dreame-valetudo sshkey     show/generate the SSH public key for the dustbuilder\n"
-        "  dreame-valetudo verify-form  check this model's live DustBuilder form against its golden\n"
-        "  dreame-valetudo verify-forms check every fastboot model's live form (CI/maintenance)\n"
+        "  dreame-valetudo verify-form  check this model's live Dustfab form against its golden\n"
+        "  dreame-valetudo verify-forms check every fastboot model's live Dustfab pages (CI/maintenance)\n"
         "  dreame-valetudo bench ...    run and record a hardware qualification campaign\n"
         "  dreame-valetudo install-udev  Linux only, one-time, needs sudo: grant sudo-less USB access\n"
         "  dreame-valetudo uninstall  find every copy of this tool and remove the ones you pick\n"

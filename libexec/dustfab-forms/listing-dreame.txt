@@ -1,0 +1,17 @@
+/build/dreame/p2008
+/build/dreame/p2009
+/build/dreame/p2027
+/build/dreame/p2028
+/build/dreame/p2029
+/build/dreame/p2187
+/build/dreame/r2104
+/build/dreame/r2228
+/build/dreame/r2240
+/build/dreame/r2250
+/build/dreame/r2338
+/build/dreame/r2338h
+/build/dreame/r2394
+/build/dreame/r2416
+/build/dreame/r2465
+/build/dreame/r2492
+/build/dreame/r9316

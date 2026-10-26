@@ -176,10 +176,10 @@ class Context:
         )
 
     @property
-    def dustbuilder_page(self) -> str:
+    def fab_page(self) -> str:
         # DUSTBUILDER_PAGE is the pre-Dustfab name, still honoured for one release.
         return (self.env.get("DUSTFAB_PAGE") or self.env.get("DUSTBUILDER_PAGE")
-                or self.model_spec.dustbuilder_page)
+                or self.model_spec.fab_page)
 
     @property
     def stage1_tgz(self) -> Path:

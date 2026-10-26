@@ -1,0 +1,6 @@
+/build/dreame/mc1808
+/build/dreame/p2041
+/build/dreame/p2114
+/build/dreame/p2148
+/build/dreame/p2150
+/build/roborock/v1
