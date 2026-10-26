@@ -283,3 +283,16 @@ def test_all_page_verification_accumulates_every_failure(
     assert verify_all_forms(ctx) is False
     assert len(urls) == 2 * len(_FASTBOOT) + len(BRAND_LISTINGS)
     assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+def test_snapshot_closes_a_self_closing_element_rather_than_nesting_the_rest_inside_it() -> None:
+    plain = form_snapshot(_form(
+        '<input type="checkbox" id="d" name="diff" value="true"><label for="d">Create diff</label>'
+    ))
+    selfclosed = form_snapshot(_form(
+        '<div/><svg/><input type="checkbox" id="d" name="diff" value="true">'
+        '<label for="d">Create diff</label>'
+    ))
+    # An unclosed <svg> would hide every following text node, so the label would vanish.
+    assert selfclosed == plain
+    assert "label=Create diff" in selfclosed

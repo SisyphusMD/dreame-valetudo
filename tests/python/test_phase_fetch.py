@@ -332,3 +332,28 @@ def test_a_model_without_a_fel_package_dies_before_touching_the_toolchain(
     with pytest.raises(Die, match="no pinned FEL stage1 package"):
         fetch_mod.fetch_stage1(ctx)
     assert not ctx.runner.calls  # type: ignore[attr-defined]
+
+
+def test_stage1_flattening_never_lets_a_nested_copy_replace_a_top_level_file(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    monkeypatch.setitem(
+        fetch_mod.STAGE1_SHA256, ctx.model_spec.dust_code, hashlib.sha256(b"archive").hexdigest()
+    )
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[0] == "curl":
+            _write_curl_target(argv, b"archive")
+        elif argv[0] == "tar":
+            target = Path(argv[argv.index("-C") + 1])
+            (target / "payload.bin").write_text("top")
+            (target / "nested").mkdir()
+            (target / "nested" / "payload.bin").write_text("nested")
+            (target / "nested" / ctx.fsbl_name).write_text("fsbl")
+        return Result(argv, 0, "", "")
+
+    ctx.runner.responder = responder  # type: ignore[attr-defined]
+    fetch_mod.fetch_stage1(ctx)
+    assert (ctx.ws.dist / "payload.bin").read_text() == "top"
+    assert (ctx.ws.dist / ctx.fsbl_name).read_text() == "fsbl"
