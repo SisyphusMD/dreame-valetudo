@@ -16,7 +16,6 @@ on:
       - src/dreame_valetudo/models.py
       - libexec/dustbuilder-forms/**
       - libexec/verify_valetudo_contract.py
-      - pyproject.toml
   push:
     branches: [main]
     paths:
@@ -28,7 +27,6 @@ on:
       - src/dreame_valetudo/models.py
       - libexec/dustbuilder-forms/**
       - libexec/verify_valetudo_contract.py
-      - pyproject.toml
 
 concurrency:
   group: dustbuilder-forms
