@@ -692,3 +692,45 @@ def test_an_installer_package_is_not_mistaken_for_a_fel_build(
     )
     with pytest.raises(Die, match="No build found"):
         image(ctx)
+
+
+def test_rejected_config_without_samples_says_how_to_rebuild_them(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True, False])
+    with pytest.raises(Die, match="not recognized"):
+        image(ctx)
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "Samples zip MISSING" in text
+    assert "recon --force" in text
+
+
+def test_the_config_value_goes_on_the_clipboard_when_pbcopy_exists(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _reject_ctx(make_ctx, tmp_path, identity=True, zip_=False, confirms=[True])
+    monkeypatch.setattr(image_module.shutil, "which",
+                        lambda name: "/usr/bin/pbcopy" if name == "pbcopy" else None)
+    monkeypatch.setattr(image_module, "open_url", lambda *_args, **_kwargs: True)
+    piped: list[str | None] = []
+    record = ctx.runner.run
+
+    def run(argv: list[str], **kwargs: object) -> Result:
+        if argv[:1] == ["pbcopy"]:
+            piped.append(kwargs.get("stdin"))  # type: ignore[arg-type]
+        return record(argv, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ctx.runner, "run", run)
+    _open_dustfab(ctx)
+    assert piped == [CFG]
+    assert "on your clipboard" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_a_download_that_keeps_growing_never_counts_as_settled(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    ctx = make_ctx()
+    build = tmp_path / "dust-fel.tar.gz"
+    build.write_text("a")
+    ctx.sleep = lambda _seconds: build.write_text(build.read_text() + "a")  # type: ignore[method-assign]
+    assert image_module._download_settled(ctx, build, tries=4) is False
