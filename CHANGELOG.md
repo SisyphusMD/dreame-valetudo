@@ -35,6 +35,8 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 - The published `.rpm` is now installed and run on the oldest maintained Fedora, which the support table already promised.
 - Stage 1 now comes from Dustfab, one package per model, because builder.dontvacuum.me is gone. The first run after upgrading downloads it again.
 - Recon and `rekey` select each flash slice with `oem stage<n>` before reading it, the first included, as Valetudo's current guide does.
+- The image step walks you through Dustfab's build form, and a rejected config through that model's Dustfab check page. The old DustBuilder voucher, e-mail and support-mail steps are gone.
+- The "last verified" date shown beside those steps now comes from the release that shipped them, which checks every Dustfab page first. A weekly job still reports drift.
 
 ### Fixed
 

@@ -45,7 +45,7 @@ def test_directory_name_inference_uses_known_prefixes_and_safe_defaults(tmp_path
 def test_profile_fields_match_golden() -> None:
     header, *rows = _rows("models.tsv")
     columns = ["key" if field.name == "key" else field.name.upper() for field in fields(P.ModelSpec)]
-    columns += ["STAGE1_URL", "DUSTBUILDER_PAGE"]
+    columns += ["STAGE1_URL", "FAB_PAGE"]
     assert header == columns
     seen = set()
     for row in rows:
@@ -56,7 +56,7 @@ def test_profile_fields_match_golden() -> None:
             column = "key" if field.name == "key" else field.name.upper()
             assert getattr(p, field.name) == rec[column], rec["key"]
         assert p.stage1_url == rec["STAGE1_URL"], rec["key"]
-        assert p.dustbuilder_page == rec["DUSTBUILDER_PAGE"], rec["key"]
+        assert p.fab_page == rec["FAB_PAGE"], rec["key"]
     # Neither the picker, the backing table, nor the golden may carry an unrepresented model.
     assert seen == set(P.SUPPORTED_MODELS) == set(P._MODEL_SPECS)
 

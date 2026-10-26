@@ -476,6 +476,83 @@ def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> 
         )
 
 
+def _run_lines(job: dict[str, Any]) -> list[str]:
+    return [
+        line.strip()
+        for step in (job.get("steps") or [])
+        if isinstance(step, dict)
+        for line in str(step.get("run", "")).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def test_both_release_workflows_ship_the_dustfab_date_their_gate_verified() -> None:
+    """Branch protection refuses a bot commit to main, so the shipped verified-on date is written
+    by the release itself. The gate checks the live pages before it hashes the intended diff, and the
+    tag job replays only the date the gate qualified: it never goes online, and it can neither drop
+    the stamp nor invent one without the byte-compare failing."""
+    stamp = "libexec/dustfab-forms/verified-on.txt"
+    for workflow in ("release.yml", "prerelease.yml"):
+        jobs = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / workflow).read_text())["jobs"]
+        gate, tag = jobs["gate"], jobs["tag"]
+        assert gate["outputs"]["forms_verified_on"] == "${{ steps.forms.outputs.verified_on }}"
+
+        names = [step.get("id") or step.get("name") for step in gate["steps"]]
+        forms = names.index("forms")
+        snapshot = names.index("intent")
+        assert forms < snapshot, f"{workflow}: the date must be in place before the diff is hashed"
+        forms_run = str(gate["steps"][forms]["run"])
+        assert "python -m dreame_valetudo verify-forms" in forms_run
+        assert 'bash packaging/stamp-forms-verified.sh "$verified_on"' in forms_run
+        assert 'bash packaging/stamp-forms-verified.sh ""' in str(gate["steps"][snapshot]["run"])
+
+        tag_lines = _run_lines(tag)
+        assert any(
+            line.startswith('bash packaging/stamp-forms-verified.sh "$QUALIFIED_FORMS_VERIFIED_ON"')
+            for line in tag_lines
+        ), f"{workflow}: the tag job does not replay the qualified date"
+        assert 'bash packaging/stamp-forms-verified.sh ""' in tag_lines
+        assert not any("verify-forms" in line for line in tag_lines)
+        assert any(stamp in line for line in tag_lines if "git add" in line or line == stamp)
+
+
+def test_the_weekly_dustfab_check_only_reports() -> None:
+    workflow = (_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text()
+    assert "git push" not in workflow and "secrets." not in workflow
+    assert "pyproject.toml" not in workflow  # a dependency bump never reaches Dustfab
+
+
+def test_the_forms_stamp_script_writes_only_a_well_formed_date(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "packaging").mkdir(parents=True)
+    (repo / "libexec" / "dustfab-forms").mkdir(parents=True)
+    script = repo / "packaging" / "stamp-forms-verified.sh"
+    script.write_text((_ROOT / "packaging" / "stamp-forms-verified.sh").read_text())
+    stamp = repo / "libexec" / "dustfab-forms" / "verified-on.txt"
+    stamp.write_text("2026.10.01\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["bash", str(script), *args], capture_output=True, text=True, check=False)
+
+    unchanged = run("")
+    assert unchanged.returncode == 0 and unchanged.stdout == ""
+    assert stamp.read_text() == "2026.10.01\n"
+
+    moved = run("2026.10.26")
+    assert moved.returncode == 0
+    assert moved.stdout == "libexec/dustfab-forms/verified-on.txt\n"
+    assert stamp.read_text() == "2026.10.26\n"
+    assert run("").stdout == "libexec/dustfab-forms/verified-on.txt\n"  # still reported as moved
+
+    bad = run("2026-10-26")
+    assert bad.returncode != 0 and "invalid verified-on date" in bad.stderr
+    assert stamp.read_text() == "2026.10.26\n"
+
+
 def test_no_job_pip_installs_into_whatever_interpreter_it_finds() -> None:
     """A job that runs `pip install` has to set up its own Python first.
 

@@ -33,6 +33,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
       release_date: ${{ steps.ver.outputs.release_date }}
+      forms_verified_on: ${{ steps.forms.outputs.verified_on }}
       intent_sha256: ${{ steps.intent.outputs.sha256 }}
     steps:
       - name: Refuse non-main dispatches
@@ -142,14 +143,32 @@ jobs:
         with:
           python-version: "3.14.8"
 
+      - name: Check the live Dustfab pages (a failure keeps the previous verified-on date)
+        id: forms
+        run: |
+          set -euo pipefail
+          # Non-fatal by design: an outage or an upstream edit must not block a release. It only
+          # means this build ships the previous date, which the rooting checklist prints beside its
+          # Dustfab instructions, so a stale guide stays visible to the user.
+          verified_on=""
+          if PYTHONPATH=src python -m dreame_valetudo verify-forms; then
+            verified_on=$(date -u +%Y.%m.%d)
+          else
+            echo "::warning::Dustfab pages did not all match their goldens; keeping verified-on $(cat libexec/dustfab-forms/verified-on.txt)"
+          fi
+          bash packaging/stamp-forms-verified.sh "$verified_on" >/dev/null
+          echo "verified_on=${verified_on}" >> "$GITHUB_OUTPUT"
+
       - name: Snapshot the exact intended release diff
         id: intent
         run: |
           set -euo pipefail
-          # The release is exactly these five files and nothing else. Hashing the patch here, before
-          # any third-party tool is installed, is what the tag job later reproduces byte-for-byte.
-          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
-            | sort > "$RUNNER_TEMP/expected-release-paths"
+          # The release is exactly these five files, plus the Dustfab verified-on stamp when the check
+          # above moved it, and nothing else. Hashing the patch here, before any third-party tool is
+          # installed, is what the tag job later reproduces byte-for-byte.
+          { printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock
+            bash packaging/stamp-forms-verified.sh ""
+          } | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
           test -z "$(git diff --cached --name-only)"
@@ -286,6 +305,7 @@ jobs:
           QUALIFIED_VERSION: ${{ needs.gate.outputs.version }}
           QUALIFIED_TAG: ${{ needs.gate.outputs.tag }}
           QUALIFIED_DATE: ${{ needs.gate.outputs.release_date }}
+          QUALIFIED_FORMS_VERIFIED_ON: ${{ needs.gate.outputs.forms_verified_on }}
           QUALIFIED_INTENT_SHA256: ${{ needs.gate.outputs.intent_sha256 }}
         run: |
           set -euo pipefail
@@ -304,8 +324,10 @@ jobs:
           bash packaging/promote-changelog.sh "$version" "$QUALIFIED_DATE"
           python3 packaging/stamp-version.py "$version"
           sed -i -E "s#(releases/download/)[^/]+/#\1${tag}/#g" README.md
-          printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
-            | sort > "$RUNNER_TEMP/expected-release-paths"
+          bash packaging/stamp-forms-verified.sh "$QUALIFIED_FORMS_VERIFIED_ON" >/dev/null
+          { printf '%s\n' CHANGELOG.md README.md src/dreame_valetudo/__init__.py pyproject.toml uv.lock
+            bash packaging/stamp-forms-verified.sh ""
+          } | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
           test -z "$(git diff --cached --name-only)"
@@ -322,7 +344,8 @@ jobs:
           set -euo pipefail
           git config user.name "forgejo-actions[bot]"
           git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add CHANGELOG.md README.md pyproject.toml src/dreame_valetudo/__init__.py uv.lock
+          git add CHANGELOG.md README.md pyproject.toml src/dreame_valetudo/__init__.py uv.lock \
+            libexec/dustfab-forms/verified-on.txt
           git commit -m "release: ${VERSION}"
           # Fail closed: never tag a commit that doesn't actually carry the version bump.
           python3 packaging/stamp-version.py "$VERSION" --check

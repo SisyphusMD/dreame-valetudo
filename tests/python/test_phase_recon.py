@@ -24,7 +24,6 @@ from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 from dreame_valetudo.phases import recon as recon_module
 from dreame_valetudo.phases.recon import (
     _verify_reported_model,
-    read_identity_from_robot,
     recon,
 )
 from dreame_valetudo.recovery import PROVENANCE_FILE, RECOVERY_REFRESH_FILE
@@ -245,51 +244,6 @@ def test_recon_omits_identity_vars_the_bootloader_wont_answer(make_ctx: CtxFacto
     assert robot.identity() == {}
 
 
-def test_read_identity_from_robot_brings_it_up_and_records(make_ctx: CtxFactory) -> None:
-    # The on-demand reader used by the image rescue when an older recon didn't capture identity:
-    # the TOOL does the FEL->fastboot bring-up and the getvars; the user only does the buttons.
-    vals = {"serialno": "DR9316AB1234", "toc0hash": "0011aabb", "toc1hash": "2233ccdd"}
-
-    def responder(argv: tuple[str, ...]) -> Result:
-        joined = " ".join(str(a) for a in argv)
-        for var, val in vals.items():
-            if f"getvar {var}" in joined:
-                return Result(argv, 0, f"OKAY {val}", "")
-        return Result(argv, 0, "OKAY", "")  # sunxi-fel ver/write/exe + fastboot wait all succeed
-
-    ctx = make_ctx(model="x30-ultra", robot_name=f"r9316-{CFG[:12]}", responder=responder)
-    stage_dist(ctx)
-    assert read_identity_from_robot(ctx) == vals
-    assert ctx.need_robot().identity() == vals  # persisted for later runs
-
-
-def test_auxiliary_identity_read_revalidates_a_stale_sunxi_cache(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}")
-    (ctx.ws.sunxi_dir / ".built-ref").write_text("old-pin\n")
-
-    def pin_revalidation(_ctx: Context) -> None:
-        raise Die("pin revalidation reached")
-
-    monkeypatch.setattr(recon_module, "doctor", pin_revalidation)
-    assert read_identity_from_robot(ctx) == {}
-    assert "pin revalidation reached" in ctx.console.text()  # type: ignore[attr-defined]
-
-
-def test_auxiliary_identity_read_checks_the_fastboot_host_before_fel(make_ctx: CtxFactory) -> None:
-    def responder(argv: tuple[str, ...]) -> Result:
-        if argv[-1] == "devices":
-            return Result(argv, 1, "", "FAILED no libusb backend available")
-        return Result(argv, 0, "OKAY", "")
-
-    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder)
-    stage_dist(ctx)
-    assert read_identity_from_robot(ctx) == {}
-    assert "fastboot client" in ctx.console.text()  # type: ignore[attr-defined]
-    assert ctx.runner.calls == [("python3", "/x/fastboot-libusb.py", "devices")]
-
-
 def test_recon_waits_for_interactive_readiness_before_polling(make_ctx: CtxFactory) -> None:
     ctx = make_ctx(responder=config_responder())
     stage_dist(ctx)
@@ -346,16 +300,6 @@ def test_recon_declined_fel_retry_still_dies(make_ctx: CtxFactory) -> None:
     ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
     with pytest.raises(Die, match="No FEL device"):
         recon(ctx, recovery_backup=False)
-
-
-def test_identity_read_declined_fel_retry_still_returns_empty(make_ctx: CtxFactory) -> None:
-    def responder(argv: tuple[str, ...]) -> Result:
-        return Result(argv, 0, "", "usb device not found")
-
-    ctx = make_ctx(robot_name=f"r2416-{CFG[:12]}", responder=responder, confirms=[False])
-    stage_dist(ctx)
-    ctx.fel.poll_fel = lambda: False  # type: ignore[method-assign]
-    assert read_identity_from_robot(ctx) == {}
 
 
 def test_recon_dies_when_config_unreadable(make_ctx: CtxFactory) -> None:
@@ -1280,24 +1224,6 @@ def test_recovery_capture_publish_failure_is_reported_and_staging_is_removed(
 
     assert recon_module._pull_recovery_backup_unprotected(ctx, robot) is False
     assert not (robot.recon_dir / RECOVERY_STAGING_DIR).exists()
-    assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
-
-
-def test_auxiliary_identity_read_fetches_missing_stage1_and_degrades_cleanly(
-    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = make_ctx(robot_name="bench")
-    fetched: list[bool] = []
-    monkeypatch.setattr(recon_module, "_sunxi_ready", lambda _ctx: True)
-    monkeypatch.setattr(recon_module, "stage1_ready", lambda _ctx: False)
-    monkeypatch.setattr(recon_module, "fetch_stage1", lambda _ctx: fetched.append(True))
-    monkeypatch.setattr(
-        recon_module, "check_fastboot_client",
-        lambda _ctx: (_ for _ in ()).throw(Die("fastboot unavailable")),
-    )
-
-    assert read_identity_from_robot(ctx) == {}
-    assert fetched == [True]
     assert ctx.runner.transcript() == []  # type: ignore[attr-defined]
 
 

@@ -32,6 +32,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
+      forms_verified_on: ${{ steps.forms.outputs.verified_on }}
       intent_sha256: ${{ steps.intent.outputs.sha256 }}
     steps:
       - name: Checkout (full history + tags)
@@ -91,14 +92,32 @@ jobs:
         with:
           python-version: "3.14.8"
 
+      - name: Check the live Dustfab pages (a failure keeps the previous verified-on date)
+        id: forms
+        run: |
+          set -euo pipefail
+          # Non-fatal by design: an outage or an upstream edit must not block a release. It only
+          # means this build ships the previous date, which the rooting checklist prints beside its
+          # Dustfab instructions, so a stale guide stays visible to the user.
+          verified_on=""
+          if PYTHONPATH=src python -m dreame_valetudo verify-forms; then
+            verified_on=$(date -u +%Y.%m.%d)
+          else
+            echo "::warning::Dustfab pages did not all match their goldens; keeping verified-on $(cat libexec/dustfab-forms/verified-on.txt)"
+          fi
+          bash packaging/stamp-forms-verified.sh "$verified_on" >/dev/null
+          echo "verified_on=${verified_on}" >> "$GITHUB_OUTPUT"
+
       - name: Snapshot the exact intended prerelease diff
         id: intent
         run: |
           set -euo pipefail
-          # The rc stamp is exactly these three files and nothing else. Hashing the patch here,
-          # before any third-party tool is installed, is what the tag job reproduces byte-for-byte.
-          printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
-            | sort > "$RUNNER_TEMP/expected-release-paths"
+          # The rc stamp is exactly these three files, plus the Dustfab verified-on stamp when the
+          # check above moved it, and nothing else. Hashing the patch here, before any third-party
+          # tool is installed, is what the tag job reproduces byte-for-byte.
+          { printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock
+            bash packaging/stamp-forms-verified.sh ""
+          } | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
           test -z "$(git diff --cached --name-only)"
@@ -196,6 +215,7 @@ jobs:
           BUMP: ${{ inputs.bump }}
           QUALIFIED_VERSION: ${{ needs.gate.outputs.version }}
           QUALIFIED_TAG: ${{ needs.gate.outputs.tag }}
+          QUALIFIED_FORMS_VERIFIED_ON: ${{ needs.gate.outputs.forms_verified_on }}
           QUALIFIED_INTENT_SHA256: ${{ needs.gate.outputs.intent_sha256 }}
         run: |
           set -euo pipefail
@@ -210,8 +230,10 @@ jobs:
           python3 packaging/check-release-boundary.py "$version"
           python3 packaging/stamp-version.py "$version"
           python3 packaging/stamp-version.py "$version" --check
-          printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock \
-            | sort > "$RUNNER_TEMP/expected-release-paths"
+          bash packaging/stamp-forms-verified.sh "$QUALIFIED_FORMS_VERIFIED_ON" >/dev/null
+          { printf '%s\n' src/dreame_valetudo/__init__.py pyproject.toml uv.lock
+            bash packaging/stamp-forms-verified.sh ""
+          } | sort > "$RUNNER_TEMP/expected-release-paths"
           git diff --name-only | sort > "$RUNNER_TEMP/actual-release-paths"
           diff -u "$RUNNER_TEMP/expected-release-paths" "$RUNNER_TEMP/actual-release-paths"
           test -z "$(git diff --cached --name-only)"
@@ -231,7 +253,7 @@ jobs:
           # out the tag, so the built artifacts still report the rc version.
           git config user.name "forgejo-actions[bot]"
           git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add pyproject.toml src/dreame_valetudo/__init__.py uv.lock
+          git add pyproject.toml src/dreame_valetudo/__init__.py uv.lock libexec/dustfab-forms/verified-on.txt
           git commit -m "prerelease: ${VERSION}"
           python3 packaging/stamp-version.py "$VERSION" --check
           git tag -a -m "prerelease: ${VERSION}" "$TAG"

@@ -12,7 +12,7 @@ import re
 import shutil
 from pathlib import Path
 
-from ..console import Die, die, safety_stop, warn_if_low_disk
+from ..console import die, safety_stop, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry, wait_for_fel
@@ -117,37 +117,6 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
         safety_stop(f"SAFETY STOP: the chosen model is {ctx.model_spec.model}, but the bootloader reports "
             f"{reported.model}. Choose {reported.model} to fix the mismatch.")
     ctx.console.info(f"Bootloader model verified: {ctx.model_spec.model}.")
-
-
-def read_identity_from_robot(ctx: Context) -> dict[str, str]:
-    """Bring the robot up in FEL->fastboot (the non-destructive recon path) solely to read the
-    dustbuilder-checker identity vars and record them — for when an older recon didn't capture them.
-    The TOOL drives every fastboot step; the user only does the FEL button sequence. Returns the
-    captured {var: value} (possibly partial), or {} if the robot never came up in fastboot."""
-    robot = ctx.need_robot()
-    try:
-        if not _sunxi_ready(ctx):
-            doctor(ctx)
-        if not stage1_ready(ctx):
-            fetch_stage1(ctx)
-        check_fastboot_client(ctx)
-        print_fel_entry(ctx.console, ctx.host)
-        if not wait_for_fel(ctx):
-            ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
-                             "connected to try again.")
-            return {}
-        ctx.fel.fel_boot_fastboot(
-            ctx.ws.dist, ctx.fsbl_name, "payload.bin",
-            ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr,
-        )
-    except Die as exc:  # this is an auxiliary read, not the flash — never abort the caller over it
-        ctx.console.warn(f"Couldn't bring the robot up in fastboot to read the values ({exc}).")
-        return {}
-    captured = capture_identity(ctx, robot)
-    if captured:
-        ctx.console.info(f"Read {len(captured)} value(s) off the robot: {', '.join(captured)}.")
-    ctx.console.action("Power the robot OFF again (hold power ~15s), then unplug the USB cable.")
-    return captured
 
 
 def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:

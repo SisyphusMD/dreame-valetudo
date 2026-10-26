@@ -90,7 +90,7 @@ installed_smoke() {
   # Data frozen into the bundle that no phase below reads. A tree that lost it still installs,
   # still reports its version and still passes the host smoke, then fails on real hardware.
   test -f /usr/lib/dreame-valetudo/app/_internal/libexec/fastboot-libusb.py
-  test -d /usr/lib/dreame-valetudo/app/_internal/libexec/dustbuilder-forms
+  test -d /usr/lib/dreame-valetudo/app/_internal/libexec/dustfab-forms
   test -f /usr/lib/dreame-valetudo/app/_internal/dreame_valetudo/CHANGELOG.md
   command -v tmux >/dev/null
 

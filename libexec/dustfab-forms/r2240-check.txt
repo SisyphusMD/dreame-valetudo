@@ -1,0 +1,24 @@
+input	type=text	name=config	placeholder=aabbccddeeff11223344556677889900	maxlength=64	required=yes
+input	type=file	name=zip	accept=.zip,application/zip	required=yes	label=Select zip
+button	type=button	label=I am human
+button	type=submit	disabled=yes	label=Upload
+button	type=button	label=Cancel
+text=The config value serves as a way to determine that a) you've selected the right model of robot and b) your specific unit is actually rootable. If you're here, that likely means that your value was unknown to the system.
+text=This requires investigation. You can start that process here by uploading the samples.
+text=Privacy Warning:
+text=The data you're about to upload may contain chunks and bits of sensitive information like Wi-Fi SSIDs, passwords and camera frames. Obviously, I dislike that as much as you probably do, given that this kind of stuff is why I have started doing what I do in the first place.
+text=Still, if you do not trust me to handle it responsibly, please do not proceed with the upload.
+text=FWIW, I really do not care about who you are - unless your actions force me to.
+text=As always, the best user is the one I don't even know exists.
+text=Config value
+text=As per fastboot getvar config .
+text=Sample zip
+text=Select zip
+text=Samples zip containing the dustx<n>.bin files collected using the FEL recon package.
+text=The rooting instructions told you how to create this.
+text=Human verification
+text=I am human
+text=Loading…
+text=Upload
+text=Uploading…
+text=Cancel

@@ -634,8 +634,8 @@ def test_root_self_provisions_image_when_unstaged(make_ctx: CtxFactory) -> None:
     _write_recon(ctx)  # recon present, but image NOT staged
     with pytest.raises(Die):
         root(ctx)
-    assert any("unsupported.txt" in " ".join(str(a) for a in c)
-               for c in ctx.runner.calls)  # type: ignore[attr-defined]
+    # The image phase is the one that picks the key it bakes into the build.
+    assert "Which SSH key should reach the robot?" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_root_restages_when_the_image_marker_outlives_its_files(make_ctx: CtxFactory) -> None:
@@ -646,8 +646,8 @@ def test_root_restages_when_the_image_marker_outlives_its_files(make_ctx: CtxFac
     with pytest.raises(Die):
         root(ctx)
 
-    assert any("unsupported.txt" in " ".join(str(a) for a in call)
-               for call in ctx.runner.calls)  # type: ignore[attr-defined]
+    # The image phase is the one that picks the key it bakes into the build.
+    assert "Which SSH key should reach the robot?" in ctx.console.text()  # type: ignore[attr-defined]
 
 
 def test_root_reads_config_from_stderr_like_system_fastboot(make_ctx: CtxFactory) -> None:
