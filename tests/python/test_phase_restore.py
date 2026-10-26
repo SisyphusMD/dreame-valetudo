@@ -332,8 +332,9 @@ def _stage1(ctx: object) -> None:
     dist = ctx.ws.dist  # type: ignore[attr-defined]
     dist.mkdir(parents=True, exist_ok=True)
     (dist / "payload.bin").write_bytes(b"payload")
-    (dist / "fsbl_ddr4.bin").write_bytes(b"fsbl")
-    (dist / ".stage1-sha256").write_text(STAGE1_SHA256 + "\n")
+    (dist / "fsbl.bin").write_bytes(b"fsbl")
+    pin = STAGE1_SHA256[ctx.model_spec.dust_code]  # type: ignore[attr-defined]
+    (dist / ".stage1-sha256").write_text(pin + "\n")
 
 
 def _hardware_responder(config: str = _CONFIG, *, returns_to_fel: bool = False):

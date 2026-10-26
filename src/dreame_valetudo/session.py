@@ -376,7 +376,7 @@ def env_prefix(env: Mapping[str, str]) -> list[str]:
     the Pi is a first-class target here. `env` is POSIX and needs nothing of tmux at all.
     """
     non_dreame_overrides = {
-        "DUSTBUILDER_PAGE", "NO_COLOR", "VALETUDO_URL", "VALETUDO_VERSION",
+        "DUSTBUILDER_PAGE", "DUSTFAB_PAGE", "NO_COLOR", "VALETUDO_URL", "VALETUDO_VERSION",
     }
     carried = {
         k: v for k, v in env.items()

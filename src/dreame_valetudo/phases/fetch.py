@@ -1,8 +1,8 @@
 """Phase: fetch — pull every scriptable download up front, verified (idempotent).
 
-Nothing reaches the SoC or the robot unverified: the stage1 FEL tarball is checked against a
-pinned sha256 BEFORE extraction, and the Valetudo binary against GitHub's published per-asset
-digest.
+Nothing reaches the SoC or the robot unverified: the model's stage1 FEL package from Dustfab is
+checked against a pinned sha256 BEFORE extraction, and the Valetudo binary against GitHub's
+published per-asset digest.
 """
 
 from __future__ import annotations
@@ -18,12 +18,23 @@ from ..download import download, valetudo_published_sha256
 from ..util import sha256_of
 from .doctor import _sunxi_ready, doctor
 
-_STAGE1_FILES = ("payload.bin", "fsbl_ddr3.bin", "fsbl_ddr4.bin")
+_STAGE1_FILES = ("payload.bin", "fsbl.bin")
+# What a pre-Dustfab cache held. The stamp mismatch already forces a re-fetch; removing these keeps
+# a stale DRAM-named FSBL from lingering beside the one now in use.
+_LEGACY_STAGE1_FILES = ("fsbl_ddr3.bin", "fsbl_ddr4.bin", "dust-fel-mr813.tar.gz")
 _STAGE1_STAMP = ".stage1-sha256"
 
 
+def stage1_pin(ctx: Context) -> str:
+    """The pinned digest of this model's stage1 package; dies for a model with no FEL path."""
+    pin = STAGE1_SHA256.get(ctx.model_spec.dust_code)
+    if pin is None:
+        die(f"{ctx.model_spec.model} has no pinned FEL stage1 package; it is not a fastboot model.")
+    return pin
+
+
 def _flatten_stage1(dist: Path) -> None:
-    """Move nested payload.bin / fsbl_*.bin up into dist (no-clobber)."""
+    """Move nested payload.bin / fsbl.bin up into dist (no-clobber)."""
     wanted = set(_STAGE1_FILES)
     for p in sorted(dist.rglob("*")):
         if p.is_file() and p.parent != dist and p.name in wanted:
@@ -33,23 +44,24 @@ def _flatten_stage1(dist: Path) -> None:
 
 
 def stage1_ready(ctx: Context) -> bool:
-    """Whether the extracted payloads came from the currently pinned archive."""
+    """Whether the extracted payloads came from this model's currently pinned archive."""
     try:
         stamped = (ctx.ws.dist / _STAGE1_STAMP).read_text().strip()
     except (OSError, UnicodeError):
         return False
-    return (stamped == STAGE1_SHA256 and ctx.payload_bin.is_file()
+    return (stamped == STAGE1_SHA256.get(ctx.model_spec.dust_code) and ctx.payload_bin.is_file()
             and ctx.fsbl_bin.is_file())
 
 
 def _clear_stage1_cache(dist: Path) -> None:
     (dist / _STAGE1_STAMP).unlink(missing_ok=True)
-    for name in _STAGE1_FILES:
+    for name in _STAGE1_FILES + _LEGACY_STAGE1_FILES:
         (dist / name).unlink(missing_ok=True)
 
 
 def fetch_stage1(ctx: Context) -> None:
     """Fetch and verify the FEL payloads, provisioning sunxi-fel when necessary."""
+    pin = stage1_pin(ctx)
     if not _sunxi_ready(ctx):
         doctor(ctx)
     dist = ctx.ws.dist
@@ -57,10 +69,10 @@ def fetch_stage1(ctx: Context) -> None:
     tgz = ctx.stage1_tgz
     download(ctx.runner, ctx.console, ctx.model_spec.stage1_url, tgz)
     got = sha256_of(tgz)
-    if got != STAGE1_SHA256:
+    if got != pin:
         tgz.unlink(missing_ok=True)
         die(
-            f"stage1 tarball checksum mismatch — expected {STAGE1_SHA256}, got {got or 'none'}. "
+            f"stage1 tarball checksum mismatch — expected {pin}, got {got or 'none'}. "
             "Refusing to extract it; re-run to redownload."
         )
     ctx.console.info("stage1 tarball verified (sha256 ok).")

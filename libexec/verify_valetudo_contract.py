@@ -16,37 +16,28 @@ from dreame_valetudo.models import (
     reviewed_model_identities_for_key,
 )
 
+# The guide now drives every FEL and fastboot step through Dustfab's helper binary, so these anchor
+# its verbs without the helper's name or the download directory in front of them.
 GUIDE_STEPS = (
-    "fsbl_ddr3.bin",
-    "sunxi-fel write 0x28000 fsbl_ddr4.bin",
-    "sunxi-fel exe 0x28000",
-    "sleep 5",
-    "sunxi-fel write 0x4a000000 payload.bin",
-    "sunxi-fel exe 0x4a000000",
-    "fastboot devices",
-    "fastboot getvar dustversion",
-    "fastboot getvar config",
-    "fastboot get_staged dustx100.bin",
-    "fastboot oem stage1",
-    "fastboot get_staged dustx101.bin",
-    "fastboot oem stage2",
-    "fastboot get_staged dustx102.bin",
-    "Create FEL image (for initial rooting via USB)",
-    "sunxi-fel write 0x28000 fsbl.bin",
-    "sunxi-fel exe 0x28000",
-    "sleep 5",
-    "sunxi-fel write 0x4a000000 payload.bin",
-    "sunxi-fel exe 0x4a000000",
-    "fastboot devices",
-    "fastboot getvar config",
-    "fastboot oem dust <value>",
-    "fastboot oem prep",
-    "fastboot flash toc1 toc1.img",
-    "fastboot flash boot1 boot.img",
-    "fastboot flash rootfs1 rootfs.img",
-    "fastboot flash boot2 boot.img",
-    "fastboot flash rootfs2 rootfs.img",
-    "fastboot reboot",
+    "boot fsbl.bin payload.bin",
+    "getvar config",
+    "oem stage0",
+    "get_samples ./dustx100.bin",
+    "oem stage1",
+    "get_samples ./dustx101.bin",
+    "oem stage2",
+    "get_samples ./dustx102.bin",
+    "reboot",
+    "boot fsbl.bin payload.bin",
+    "getvar config",
+    "oem dust 12345xx",
+    "oem prep",
+    "flash toc1 toc1.img",
+    "flash boot1 boot.img",
+    "flash rootfs1 rootfs.img",
+    "flash boot2 boot.img",
+    "flash rootfs2 rootfs.img",
+    "reboot",
     "ssh -i ./your/keyfile root@192.168.5.1",
     "tar cvf /tmp/backup.tar /mnt/private/ /mnt/misc/",
     "mv /tmp/valetudo /data/valetudo",
@@ -57,10 +48,9 @@ GUIDE_STEPS = (
 )
 
 DDR3_MODEL_KEYS = frozenset({"d10s-pro", "d10s-plus", "w10-pro"})
-DDR_RULE = (
-    "For the D10s Pro/Plus or W10 Pro, pick the `ddr3` variant. "
-    "All the other bots use `ddr4`."
-)
+# The guide used to tell the user which DRAM's FSBL to pick. Dustfab's per-model recon package now
+# carries the right one, which is what fetch relies on when it uses that package's fsbl.bin as is.
+FSBL_RULE = "the right `fsbl.bin` and the right `payload.bin`"
 
 # Actionable model-specific text in the Supported Robots page. Every fastboot model spec is listed
 # explicitly so a newly added model cannot silently inherit an empty contract. These are semantic
@@ -160,14 +150,14 @@ def verify(upstream: Path) -> list[str]:
                 + ", ".join(stale_contracts)
             )
 
-    if _normalized(DDR_RULE) not in _normalized(guide):
-        issues.append("official Dreame guide no longer contains the expected DDR3/DDR4 rule")
+    if _normalized(FSBL_RULE) not in _normalized(guide):
+        issues.append("official Dreame guide no longer says the recon package carries the FSBL")
     local_ddr3 = {
         key for key in fastboot_keys if load_model_spec(key).dram == "ddr3"
     }
     if local_ddr3 != DDR3_MODEL_KEYS:
         issues.append(
-            "local DDR3 model_spec set differs from the official guide: "
+            "local DDR3 model_spec set differs from the reviewed set: "
             f"got {sorted(local_ddr3)}, expected {sorted(DDR3_MODEL_KEYS)}"
         )
 

@@ -775,10 +775,12 @@ def test_non_dreame_build_overrides_reach_an_existing_tmux_server() -> None:
         "VALETUDO_VERSION": "latest",
         "VALETUDO_URL": "https://example.test/valetudo",
         "DUSTBUILDER_PAGE": "https://example.test/form",
+        "DUSTFAB_PAGE": "https://example.test/fab",
     })
     assert "VALETUDO_VERSION=latest" in flags
     assert "VALETUDO_URL=https://example.test/valetudo" in flags
     assert "DUSTBUILDER_PAGE=https://example.test/form" in flags
+    assert "DUSTFAB_PAGE=https://example.test/fab" in flags
 
 
 def test_the_create_step_actually_carries_the_environment() -> None:

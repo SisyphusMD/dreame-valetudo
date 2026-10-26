@@ -9,7 +9,7 @@ import pytest
 from libexec import verify_valetudo_contract as contract
 from libexec.verify_valetudo_contract import (
     DDR3_MODEL_KEYS,
-    DDR_RULE,
+    FSBL_RULE,
     GUIDE_STEPS,
     MODEL_SECTION_MARKERS,
     verify,
@@ -51,7 +51,7 @@ def _upstream_fixture(root: Path) -> Path:
         source = ", ".join(f'"{identity}"' for identity in sorted(set(identities)))
         (robots / f"{implementation}.js").write_text(source)
     (docs / "general/supported-robots.md").write_text("\n".join(sections.values()))
-    (docs / "installation/dreame.md").write_text(DDR_RULE + "\n" + "\n".join(GUIDE_STEPS))
+    (docs / "installation/dreame.md").write_text(FSBL_RULE + "\n" + "\n".join(GUIDE_STEPS))
     return root
 
 
@@ -175,35 +175,35 @@ def test_model_specific_guidance_drift_turns_the_monitor_red(tmp_path: Path) -> 
     )
 
 
-def test_ddr_rule_drift_turns_the_monitor_red(tmp_path: Path) -> None:
+def test_fsbl_rule_drift_turns_the_monitor_red(tmp_path: Path) -> None:
     upstream = _upstream_fixture(tmp_path)
     guide = upstream / "docs/pages/installation/dreame.md"
-    guide.write_text(guide.read_text().replace("D10s Pro/Plus or W10 Pro", "different models"))
+    guide.write_text(guide.read_text().replace("the right `fsbl.bin`", "an `fsbl.bin`"))
 
-    assert any("expected DDR3/DDR4 rule" in issue for issue in verify(upstream))
+    assert any("recon package carries the FSBL" in issue for issue in verify(upstream))
 
 
 def test_guide_command_reorder_turns_the_monitor_red(tmp_path: Path) -> None:
     upstream = _upstream_fixture(tmp_path)
     guide = upstream / "docs/pages/installation/dreame.md"
     guide.write_text(guide.read_text().replace(
-        "fastboot oem prep\nfastboot flash toc1 toc1.img",
-        "fastboot flash toc1 toc1.img\nfastboot oem prep",
+        "oem prep\nflash toc1 toc1.img",
+        "flash toc1 toc1.img\noem prep",
     ))
 
     assert any("expected ordered step" in issue for issue in verify(upstream))
 
 
-def test_second_phase_device_check_disappearing_turns_the_monitor_red(tmp_path: Path) -> None:
+def test_second_phase_config_check_disappearing_turns_the_monitor_red(tmp_path: Path) -> None:
     upstream = _upstream_fixture(tmp_path)
     guide = upstream / "docs/pages/installation/dreame.md"
     guide.write_text(guide.read_text().replace(
-        "sunxi-fel exe 0x4a000000\nfastboot devices\nfastboot getvar config",
-        "sunxi-fel exe 0x4a000000\nfastboot getvar config",
+        "getvar config\noem dust 12345xx",
+        "oem dust 12345xx",
     ))
 
     assert any(
-        "expected ordered step: fastboot devices" in issue for issue in verify(upstream)
+        "expected ordered step: getvar config" in issue for issue in verify(upstream)
     )
 
 

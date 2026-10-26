@@ -18,9 +18,31 @@ VALETUDO_SHA256 = {
     "armv7-lowmem": "d959043560db41f173abfd70efab4ab1f401c19e732f37918440b1feaa4de855",  # 2026.10.0
 }
 
-# The stage1 FEL tarball runs on the SoC before rooting starts, so it is pinned + verified before
-# extraction. Re-pin by hand if the upstream MR813 tarball changes (no datasource to track).
-STAGE1_SHA256 = "d53292fa35a4241aa6ce3ed6f391f0ab53a248c10cd28fbb8e00e6c0e56f1934"
+# The stage1 FEL package runs on the SoC before rooting starts, so it is pinned + verified before
+# extraction. Dustfab serves one per model (by dust code). Each holds the same payload.bin
+# (80fe99fd…, the 2026.10.00 "Dustfab edition"), an fsbl.bin Dustfab picks for the model, and a
+# valetudo-helper-felroot-amd64 this tool does not use. The FSBLs: the DDR4 models get the old
+# shared tarball's fsbl_ddr4.bin (12ba0bfe…), the D10s models its fsbl_ddr3.bin (25afb268…), and
+# the W10 Pro a 39040-byte one of its own (5780e43f…) that the old tarball never carried. The
+# archives are built reproducibly (zero tar and gzip mtimes), so the outer digest is stable across
+# fetches. Re-pin by hand if Dustfab changes them (no datasource to track).
+_STAGE1_DDR4 = "a30bb18f34e13d7657dc8f51f5055ed065d5a9cccb58b7151757d6cbcbfaa8c0"
+_STAGE1_D10S = "e075287b3e8bd1453494cb67f4f84194b7edcefaa90c291d6b1dfc5c3bee3c24"
+STAGE1_SHA256 = {
+    "r2416": _STAGE1_DDR4,
+    "r2465": _STAGE1_DDR4,
+    "r9316": _STAGE1_DDR4,
+    "r2492": _STAGE1_DDR4,
+    "r2394": _STAGE1_DDR4,
+    "r2228": _STAGE1_DDR4,
+    "r2338": _STAGE1_DDR4,
+    "r2338h": _STAGE1_DDR4,
+    "r2385": _STAGE1_DDR4,
+    "r2491": _STAGE1_DDR4,
+    "r2250": _STAGE1_D10S,
+    "r2240": _STAGE1_D10S,
+    "r2104": "540721a8825c46c4d908f721b7f06aeaaf5fd28f79531a9f724cadab82ff90bc",
+}
 
 # The fixed transport keystream is recovered from the robot's sealed flash dumps rather than
 # shipped, but its known digest distinguishes the real key from a plausible constant-XOR offset.

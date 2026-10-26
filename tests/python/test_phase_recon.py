@@ -147,10 +147,10 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
     make_ctx: CtxFactory, model: str,
 ) -> None:
     ctx = make_ctx(model=model, responder=config_responder())
-    expected_dram = "ddr3" if model in DDR3_MODEL_KEYS else "ddr4"
-    expected_fsbl = f"fsbl_{expected_dram}.bin"
-    stage_dist(ctx, dram=expected_dram)
-    assert ctx.model_spec.dram == expected_dram
+    # Dustfab's package carries the model's own FSBL, so DRAM no longer picks a file name.
+    expected_fsbl = "fsbl.bin"
+    stage_dist(ctx)
+    assert ctx.model_spec.dram == ("ddr3" if model in DDR3_MODEL_KEYS else "ddr4")
     assert ctx.fsbl_name == expected_fsbl
     recon(ctx, recovery_backup=False)
     sunxi_ops = [
@@ -768,7 +768,7 @@ def test_failed_provenance_publication_keeps_refresh_generation_untrusted(
 def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> None:
     """Recon promises zero writes to flash, so pin every fastboot verb it is allowed to issue.
 
-    The `oem stage1`/`stage2` commands only select the next readback slice. In particular, neither
+    The `oem stage0`/`stage1`/`stage2` commands only select the next readback slice. In particular, neither
     `oem prep` (which disables Secure Boot) nor any flash/erase command may enter this phase.
     """
     ctx = make_ctx(model="x40-ultra", responder=_sampling_responder(blob=b"\x00" * 1024))
@@ -793,6 +793,7 @@ def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> No
         ("getvar", "version-bootloader"),
         # Slices land in staging and only supersede a previous capture once all three plus the
         # zip validate, so an interrupted re-pull cannot destroy the existing un-brick copy.
+        ("oem", "stage0"),
         ("get_staged", str(_staging(ctx) / "dustx100.bin")),
         ("oem", "stage1"),
         ("get_staged", str(_staging(ctx) / "dustx101.bin")),
@@ -882,8 +883,8 @@ def test_forced_recon_on_a_rooted_robot_preserves_the_pre_root_recovery_capture(
     assert robot.state_get("recon") == _marker("obtained")
     fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
                 if call[:len(FB)] == FB]
-    assert not any(call[0] == "get_staged" or call[:2] == ("oem", "stage1")
-                   or call[:2] == ("oem", "stage2") for call in fastboot)
+    assert not any(call[0] == "get_staged" or call[:2] in {("oem", "stage0"), ("oem", "stage1"),
+                   ("oem", "stage2")} for call in fastboot)
     assert "preserving any pre-root" in ctx.console.text()  # type: ignore[attr-defined]
 
 

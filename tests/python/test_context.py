@@ -35,9 +35,13 @@ def test_valetudo_version_and_url_overrides(make_ctx: CtxFactory) -> None:
     assert ctx.valetudo_url == "https://example/v"
 
 
-def test_fsbl_name_tracks_dram(make_ctx: CtxFactory) -> None:
-    assert make_ctx(model="x40-ultra").fsbl_name == "fsbl_ddr4.bin"
-    assert make_ctx(model="d10s-plus").fsbl_name == "fsbl_ddr3.bin"
+def test_stage1_files_are_per_model_and_the_fsbl_is_the_packaged_one(
+    make_ctx: CtxFactory,
+) -> None:
+    x40, d10s = make_ctx(model="x40-ultra"), make_ctx(model="d10s-plus")
+    assert x40.fsbl_name == d10s.fsbl_name == "fsbl.bin"
+    assert x40.stage1_tgz.name == "dust-fel-recon-r2416.tar.gz"
+    assert d10s.stage1_tgz.name == "dust-fel-recon-r2240.tar.gz"
 
 
 def test_home_honors_env(make_ctx: CtxFactory) -> None:
@@ -68,3 +72,11 @@ def test_sunxi_fel_falls_back_to_path_before_the_build_target(
     monkeypatch.setattr(context_module.shutil, "which", lambda _name: "/opt/bin/sunxi-fel")
 
     assert ctx.sunxi_fel == Path("/opt/bin/sunxi-fel")
+
+
+def test_the_build_page_override_prefers_the_dustfab_name(make_ctx: CtxFactory) -> None:
+    assert make_ctx().dustbuilder_page == "https://fab.valetudo.cloud/build/dreame/r2416"
+    legacy = make_ctx(env={"DUSTBUILDER_PAGE": "https://old.test"})
+    assert legacy.dustbuilder_page == "https://old.test"
+    both = make_ctx(env={"DUSTBUILDER_PAGE": "https://old.test", "DUSTFAB_PAGE": "https://new.test"})
+    assert both.dustbuilder_page == "https://new.test"

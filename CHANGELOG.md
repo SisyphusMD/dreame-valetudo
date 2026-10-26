@@ -33,6 +33,8 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 - The X40 Ultra, X30 Ultra and L10s Pro Ultra Heat R2338 are marked hardware verified.
 - openSUSE Leap 15.6 is now listed as the minimum supported version. It was already tested; the table understated it.
 - The published `.rpm` is now installed and run on the oldest maintained Fedora, which the support table already promised.
+- Stage 1 now comes from Dustfab, one package per model, because builder.dontvacuum.me is gone. The first run after upgrading downloads it again.
+- Recon and `rekey` select each flash slice with `oem stage<n>` before reading it, the first included, as Valetudo's current guide does.
 
 ### Fixed
 
