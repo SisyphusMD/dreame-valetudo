@@ -23,6 +23,7 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 
 ### Changed
 
+- Homebrew bottles are no longer built for Intel Macs, because Homebrew stopped building Intel bottles itself. On an Intel Mac, install the `.pkg`, or `brew install` builds from source.
 - All persistent files now live under `~/dreame-valetudo/`. Existing layouts migrate automatically.
 - Recon records the model, and rooting refuses to flash unless it matches.
 - A robot whose recon ran under 0.2.x carries no model record. Run `recon --force` before rooting it.

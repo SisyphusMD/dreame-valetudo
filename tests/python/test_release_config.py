@@ -1095,7 +1095,7 @@ def test_the_tap_updater_refuses_a_bottle_pass_that_produced_no_block() -> None:
     text = (_ROOT / "packaging" / "update-tap.sh").read_text()
     assert 'if [ -n "$manifests" ] && ! grep -Fq "bottle do" "$out"; then' in text
     # --expect-tags is what makes a platform whose bottle never arrived visible at all.
-    assert "--expect-tags 4" in text
+    assert "--expect-tags 3" in text
 
 
 def test_every_job_that_writes_the_tap_shares_one_concurrency_group() -> None:
@@ -1109,8 +1109,8 @@ def test_every_job_that_writes_the_tap_shares_one_concurrency_group() -> None:
 
 def test_a_stable_tag_bottles_both_formulae() -> None:
     bottles = _job(_PUBLISH.read_text(), "homebrew-bottles")
-    assert "*-rc.*) expected=4 ;;" in bottles
-    assert "*)      expected=8 ;;" in bottles
+    assert "*-rc.*) expected=3 ;;" in bottles
+    assert "*)      expected=6 ;;" in bottles
 
 
 def test_the_formulae_build_sunxi_fel_at_the_pinned_commit() -> None:
@@ -2508,3 +2508,16 @@ def test_no_real_robot_serial_is_committed() -> None:
         "a serial is written where a real one would go — if it belongs to a robot it must not "
         f"be committed; if it is a new fixture, add it to _EXAMPLE_SERIALS: {sorted(strays)}"
     )
+
+
+def test_every_bottle_wait_agrees_with_the_matrix() -> None:
+    """publish.yml and the tap-bottles repair path each count bottles twice: the manifests, then
+    archives plus manifests for the NAS. A count left behind when the matrix changes makes the
+    repair path refuse a complete set, which is what dropping the Intel leg nearly did."""
+    bottles = yaml.safe_load((_ROOT / ".github" / "workflows" / "bottles.yml").read_text())
+    platforms = len(bottles["jobs"]["build"]["strategy"]["matrix"]["include"])
+    want = sorted([platforms, platforms * 2, platforms * 2, platforms * 4])
+    for name in ("publish.yml", "tap-bottles.yml"):
+        text = (_ROOT / ".forgejo" / "workflows" / name).read_text()
+        found = sorted(int(n) for n in re.findall(r"expected=(\d+) ;;", text))
+        assert found == want, (name, found)
