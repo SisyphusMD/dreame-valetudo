@@ -260,7 +260,10 @@ def test_protect_backups_never_follows_a_symlink_outside_the_backup_tree(
     tmp_path: Path,
 ) -> None:
     outside = tmp_path / "outside"
-    outside.mkdir(mode=0o755)
+    outside.mkdir()
+    # chmod, not mkdir(mode=): mkdir's mode is masked by the umask, so under 077 the
+    # directory starts at 0700 and the assertion below blames protect_backups for it.
+    outside.chmod(0o755)
     secret = outside / "identity.txt"
     secret.write_text("private")
     secret.chmod(0o644)
