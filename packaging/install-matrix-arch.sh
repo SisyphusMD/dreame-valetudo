@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install every published Linux channel for ONE architecture, and run the tool from each.
 #   install-matrix-arch.sh <amd64|arm64>
-# env: TAG (e.g. v0.3.0-rc.18), VERSION (TAG without the v), FORGE (bare host, no scheme)
+# env: TAG (e.g. v0.3.0-rc.18), VERSION (TAG without the v), FORGE (base URL)
 #
 # Called by BOTH forges, for the same reason build-linux-arch.sh is: architecture decides where a
 # job runs — amd64 on the self-hosted Forgejo runner, arm64 on GitHub's native arm runner — and the
@@ -122,7 +122,7 @@ for channel in "${CHANNELS[@]}"; do
        --target "${channel}-result" \
        --output "type=local,dest=out/$channel" \
        --build-arg V="$VERSION" --build-arg PV="$PKGVER" \
-       --build-arg DL="https://$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG" \
+       --build-arg DL="$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG" \
        --build-arg DIST="$DIST" --build-arg REPOFILE="$REPOFILE" \
        --build-arg FORGE="$FORGE" \
        --build-arg BREW_MIRROR="${BREW_MIRROR:-}" \

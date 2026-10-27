@@ -7,7 +7,9 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +61,11 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
     # reconcile only heals releases that already exist, so finishing is still the right move, while
     # homebrew-tap pushes a formula to the tap and an operator who cancelled a release must not get
     # one published regardless. Asserted per job rather than as a shared spelling, because that is
-    # the distinction a future edit is most likely to flatten.
+    # the distinction a future edit is most likely to flatten. Read from the parsed `if:`, because
+    # both jobs explain their condition in a comment that would satisfy a text search on its own.
+    jobs = yaml.safe_load(text)["jobs"]
     for name, override in (("homebrew-tap", "!cancelled()"), ("reconcile", "always()")):
-        condition = _job(text, name)
+        condition = str(jobs[name].get("if") or "")
         assert override in condition, name
         assert "needs.guard.result == 'success'" in condition, name
 
@@ -70,8 +74,8 @@ def test_reconcile_requires_both_github_qualified_macos_packages() -> None:
     reconcile = _job(_PUBLISH.read_text(), "reconcile")
 
     assert "fail=0" in reconcile
-    # Per-ARCH, and by suffix because the filenames now carry the version. Still not a blanket
-    # `.pkg` match: one arch qualifying must never stand in for the other.
+    # Per-ARCH, and by suffix because the filenames carry the version. Not a blanket `.pkg`
+    # match: one arch qualifying must never stand in for the other.
     assert 'any(endswith("-macos-arm64.pkg"))' in reconcile
     assert 'any(endswith("-macos-x86_64.pkg"))' in reconcile
     assert 'endswith(".pkg")' not in reconcile
@@ -80,6 +84,10 @@ def test_reconcile_requires_both_github_qualified_macos_packages() -> None:
     assert "bash packaging/reconcile-releases.sh || fail=1" in reconcile
     assert 'exit "$fail"' in reconcile
     assert "::warning::current tag's .pkgs" not in reconcile
+    # The 30 minutes the error promises: a wall clock, and no request that can stall past it.
+    assert "deadline=$(( $(date +%s) + 1800 ))" in reconcile
+    polls = [line for line in reconcile.splitlines() if "curl " in line and "releases/tags" in line]
+    assert polls and all("--max-time" in line and "--connect-timeout" in line for line in polls), polls
 
 
 def test_ci_checks_each_required_deb_binary_independently() -> None:
@@ -243,11 +251,31 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
             f"the macos gate takes {secret}; it runs on every push and needs only to READ "
             "public run conclusions"
         )
+    assert "MIRROR_CI_TOKEN" in forgejo, "the gate does not hand the mirror poll a read token"
+    # It must not run for a TAG. A prerelease stamps a commit that is pushed only as a tag, and the
+    # mirrored workflow runs on branch pushes, so no run can ever exist for that sha - the gate
+    # would poll to its timeout and fail every prerelease. Either this repository's CI does not
+    # trigger on tags at all, or the gate excludes them.
+    document = yaml.safe_load(_CI.read_text())
+    triggers = document.get("on") or document.get(True) or {}
+    # A push filter that names only branches skips tags, and one that names tags runs for them;
+    # one that names neither (a bare `push:`) runs for both, so it counts as tagged too.
+    if isinstance(triggers, dict):
+        push = triggers.get("push", False)
+    else:  # `on: push` or `on: [push, ...]`, both unfiltered
+        push = None if "push" in triggers else False
+    filters = set(push or {}) & {"branches", "branches-ignore", "tags", "tags-ignore"}
+    tagged = push is not False and (not filters or bool(filters & {"tags", "tags-ignore"}))
+    if tagged:
+        assert "refs/tags/" in str(document["jobs"]["macos"].get("if", "")), (
+            "CI runs on tags and the macOS gate does not exclude them, so every prerelease will "
+            "wait for a mirrored run that cannot exist and fail"
+        )
     assert "macos-15\n" in macos
     assert "macos-15-intel" in macos
     assert "macos-26\n" in macos
     assert "macos-26-intel" in macos
-    assert "ruff check src/dreame_valetudo libexec tests/python" in macos
+    assert "ruff check $(git ls-files '*.py' | tr '\\n' ' ')" in macos
     assert "mypy" in macos
     assert "pytest -q tests/python" in macos
     assert "tests/release/*.sh" in macos
@@ -278,7 +306,7 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
 
     assert 'requires-python = ">=3.11"' in project
     assert 'python-version: "3.11.0"' in floor_job
-    assert 'pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .' in floor_job
+    assert 'pip install "ruff==$RUFF" "pytest==$PYTEST" "pyyaml==$PYYAML" -e .' in floor_job
     assert "pytest -q tests/python" in floor_job
 
     config = json.loads((_ROOT / ".renovaterc.json").read_text())
@@ -871,17 +899,54 @@ def test_gitignore_covers_release_and_device_artifacts_created_in_the_repo() -> 
 def test_every_shipped_python_file_is_linted() -> None:
     """A new shipped .py must not escape ruff by nobody remembering to add it to a list.
 
-    CI globs the tracked set instead of enumerating it; this pins the one deliberate exclusion so
-    widening it is a visible edit rather than a silent one.
+    Every workflow that runs ruff - CI for pushes and fork PRs, and the release and prerelease
+    gates, which once linted a fixed directory list and so let a release through on less than CI
+    held main to - globs the tracked set instead of enumerating it, with the same spelling in both
+    projects. A deliberate exclusion lives in pyproject.toml, where force-exclude makes ruff honour
+    it for files named on the command line, and it may never cover shipped code.
     """
-    workflow = (_ROOT / ".forgejo" / "workflows" / "ci.yml").read_text()
-    assert "ruff check $(git ls-files '*.py'" in workflow, "ruff no longer discovers its own inputs"
-    excluded = [
-        line for line in workflow.splitlines()
-        if "ruff check $(git ls-files" in line
-    ]
-    assert len(excluded) == 1
-    assert "grep -v '^docs/research/tools/'" in excluded[0], "the only permitted exclusion changed"
+    lint = "ruff check $(git ls-files '*.py' | tr '\\n' ' ')"
+    required = {
+        _ROOT / ".forgejo" / "workflows" / name
+        for name in ("ci.yml", "release.yml", "prerelease.yml")
+    } | {_ROOT / ".github" / "workflows" / "ci-pr.yml"}
+    workflows = sorted(
+        [*(_ROOT / ".forgejo" / "workflows").glob("*.yml"), *(_ROOT / ".github" / "workflows").glob("*.yml")]
+    )
+    linting = set()
+    for workflow in workflows:
+        lines = [
+            line.strip().removeprefix("run: ")
+            for line in workflow.read_text(encoding="utf-8").splitlines()
+            if "ruff check" in line and not line.lstrip().startswith("#")
+        ]
+        if lines:
+            linting.add(workflow)
+        for line in lines:
+            assert line == lint, f"{workflow.name} lints an enumerated or filtered set: {line}"
+    assert required <= linting, (
+        f"no longer runs ruff: {sorted(p.name for p in required - linting)}"
+    )
+
+    ruff = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
+    assert ruff.get("force-exclude") is True, (
+        "without force-exclude, a config exclusion is ignored for the files the workflows name"
+    )
+    assert "exclude" not in ruff, "`exclude` replaces ruff's defaults; extend it instead"
+    tracked = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    shipped = [f for f in tracked if f.split("/", 1)[0] in {*ruff["src"], "packaging"}]
+    assert shipped, "git ls-files found no shipped Python — is this running outside the checkout?"
+    # Ruff decides what its exclusions mean (they are globs), so ask it rather than re-implementing
+    # the matching: the files it would actually lint, given exactly what the workflows pass it.
+    linted = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--show-files", *tracked],
+        cwd=_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    seen = {Path(line.strip()).resolve() for line in linted.splitlines() if line.strip()}
+    skipped = [f for f in shipped if (_ROOT / f).resolve() not in seen]
+    assert not skipped, f"a lint exclusion covers shipped code: {skipped}"
 
 
 def test_every_release_path_gates_coverage_not_just_ci() -> None:
@@ -1095,8 +1160,8 @@ def test_the_tap_updater_refuses_a_bottle_pass_that_produced_no_block() -> None:
     source — the exact failure the second pass exists to remove."""
     text = (_ROOT / "packaging" / "update-tap.sh").read_text()
     assert 'if [ -n "$manifests" ] && ! grep -Fq "bottle do" "$out"; then' in text
-    # --expect-tags is what makes a platform whose bottle never arrived visible at all.
-    assert "--expect-tags 3" in text
+    # The count --expect-tags demands is checked against the matrix in
+    # test_the_merge_demands_exactly_as_many_bottles_as_the_matrix_builds.
 
 
 def test_every_job_that_writes_the_tap_shares_one_concurrency_group() -> None:
@@ -1278,10 +1343,20 @@ def test_a_stable_tag_is_installed_from_the_stable_distribution() -> None:
 
 def test_every_channel_proves_itself_with_an_exported_file() -> None:
     """buildx caches aggressively, so an exit status can be a cache hit for a build that did
-    nothing. The marker file is the only thing that cannot be."""
-    assert '[ -f "out/$channel/passed" ]' in _MATRIX_ARCH.read_text()
-    exported = re.findall(r"COPY --from=([a-z0-9-]+) [^\n]*passed", _INSTALL_SMOKE.read_text())
-    assert len(exported) >= 9, f"only {len(exported)} channels export a marker"
+    nothing. The marker file is the only thing that cannot be.
+
+    Every channel the matrix runs, rather than a floor of nine: a count is satisfied by the
+    channels that already export while a new one quietly does not."""
+    script = _MATRIX_ARCH.read_text()
+    assert '[ -f "out/$channel/passed" ]' in script
+    listed = re.search(r"^CHANNELS=\(\n(.*?)^\)$", script, re.M | re.S)
+    assert listed is not None
+    # The destination too: a marker copied anywhere but /passed is one the script never looks for.
+    exported = set(
+        re.findall(r"^COPY --from=([a-z0-9-]+) \S*/passed /passed$", _INSTALL_SMOKE.read_text(), re.M)
+    )
+    missing = set(listed.group(1).split()) - exported
+    assert not missing, f"channels that export no marker: {sorted(missing)}"
 
 
 
@@ -2614,3 +2689,372 @@ def test_no_exception_outlives_the_job_it_excused() -> None:
     present = {(w, "*") for w, _, _ in _github_jobs()} | {(w, j) for w, j, _ in _github_jobs()}
     stale = sorted(f"{w}:{j}" for (w, j) in GITHUB_ONLY if (w, j) not in present)
     assert stale == [], f"GITHUB_ONLY excuses jobs that no longer exist: {stale}"
+
+
+# --- both Homebrew formulae, one install ---------------------------------------------
+#
+# Mirrors whiskerless's test_repo_invariants. The macOS build fix there had to be applied to each
+# formula by hand, and nothing checked either.
+_FORMULAE = [
+    _ROOT / "packaging" / "homebrew" / "dreame-valetudo.rb",
+    _ROOT / "packaging" / "homebrew" / "dreame-valetudo-rc.rb",
+]
+
+
+def _between(text: str, start: str, end: str) -> str:
+    body = text.split(start, 1)
+    assert len(body) == 2, f"marker {start!r} missing"
+    return body[1].split(end, 1)[0]
+
+
+def test_both_formulae_declare_the_same_dependencies() -> None:
+    """A build dependency added to one and not the other is a formula that fails
+    only on the channel nobody tested."""
+    declared = [
+        sorted(
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("depends_on")
+        )
+        for path in _FORMULAE
+    ]
+    assert declared[0], "the stable formula declares no dependencies — has its shape changed?"
+    assert declared[0] == declared[1], f"formula dependencies drifted: {declared}"
+
+
+def test_both_formulae_install_the_same_way() -> None:
+    """Only one formula is exercised by any given CI run, so a change to one
+    install body and not the other ships untested on the channel nobody ran."""
+    bodies = [_between(p.read_text(encoding="utf-8"), "def install", "\n  end") for p in _FORMULAE]
+    assert bodies[0] == bodies[1], "install bodies drifted between the two formulae"
+
+
+# --- one renderer, and it never emits a marker ----------------------------------------
+#
+# Three places used to perform this substitution — the tap's two passes and the
+# install smoke — and teaching only two of them about a newly added marker shipped
+# a formula carrying the bare word `REPLACE_BOTTLE_BLOCK`. Ruby PARSES a bare word
+# happily (it is a constant reference), so `ruby -c` cannot catch it and neither
+# can any container: it surfaced only when Homebrew loaded the formula, on macOS,
+# on the job that gates every release.
+#
+# The fix is structural — one renderer — so these check the structure holds, by
+# running the real script rather than reimplementing what it does.
+_RENDER_CALLERS = [
+    _ROOT / "packaging" / "update-tap.sh",
+    _ROOT / "packaging" / "test-homebrew-formula.sh",
+]
+
+
+def test_the_renderer_refuses_a_template_it_cannot_fully_render(tmp_path: Path) -> None:
+    """The property the whole consolidation rests on: an unhandled marker is fatal
+    where it is introduced, not silent until Homebrew loads the formula."""
+    bad = tmp_path / "bad.rb"
+    bad.write_text('class X < Formula\n  url "u"\n  REPLACE_SOMETHING_NEW\nend\n')
+    proc = subprocess.run(
+        [str(_RENDERER), str(bad), "0.3.0", "0" * 64], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode != 0, "an unrendered marker was emitted instead of refused"
+    assert "REPLACE_SOMETHING_NEW" in proc.stderr
+
+
+def _checksum_markers() -> set[str]:
+    # Read out of the templates, never assumed: the two projects spell this marker differently on
+    # purpose (project-standard VARIANCE.md, "The formula's checksum marker"), and a hardcoded
+    # spelling would make this a silent no-op for whichever project does not use it.
+    found = {
+        match
+        for path in _FORMULAE
+        for match in re.findall(r'^\s*sha256 "(REPLACE_[A-Z0-9_]+)"', path.read_text(), re.M)
+    }
+    assert found, "no template carries a checksum marker — has the formula's shape changed?"
+    return found
+
+
+def test_nothing_renders_a_formula_behind_the_renderers_back() -> None:
+    """A fourth copy of the substitution would reintroduce exactly the drift that
+    broke the release gate, so the callers must delegate rather than sed it."""
+    markers = _checksum_markers()
+    for caller in _RENDER_CALLERS:
+        text = caller.read_text(encoding="utf-8")
+        assert "render-formula.sh" in text, f"{caller.name} does not use the shared renderer"
+    # Not just the known callers: a copy that grows anywhere else in the release machinery is the
+    # same drift, and the renderer is the one file that may name the marker.
+    candidates = [
+        *(_ROOT / "packaging").glob("*.sh"),
+        *(_ROOT / "packaging").glob("*.py"),
+        *(_ROOT / ".forgejo" / "workflows").glob("*.yml"),
+        *(_ROOT / ".github" / "workflows").glob("*.yml"),
+    ]
+    for path in candidates:
+        if path == _RENDERER:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            assert marker not in text, (
+                f"{path.name} substitutes {marker} itself instead of delegating to render-formula.sh"
+            )
+
+
+# --- bottles: the matrix and the expected counts agree --------------------------------
+#
+# Three files have to agree on the platform count at once — the build matrix, the merge
+# that refuses a short set, and the wait that counts manifests off the release.
+# Nothing fails when they drift: the release publishes, and whoever is on the
+# platform that lost its bottle quietly builds the formula from source, which is
+# the entire cost bottles were added to remove.
+_BOTTLES_WORKFLOW = _ROOT / ".github" / "workflows" / "bottles.yml"
+
+
+def _bottle_matrix() -> list[dict[str, str]]:
+    loaded = yaml.safe_load(_BOTTLES_WORKFLOW.read_text(encoding="utf-8"))
+    include: list[dict[str, str]] = loaded["jobs"]["build"]["strategy"]["matrix"]["include"]
+    return include
+
+
+def test_the_bottle_matrix_covers_one_arch_per_platform() -> None:
+    labels = sorted(entry["label"] for entry in _bottle_matrix())
+    assert labels == ["arm64_linux", "arm64_sequoia", "x86_64_linux"], labels
+
+
+def test_the_merge_demands_exactly_as_many_bottles_as_the_matrix_builds() -> None:
+    """`--expect-tags` is what turns a missing platform from silent into fatal;
+    it is only true while it matches the matrix."""
+    tap = (_ROOT / "packaging" / "update-tap.sh").read_text(encoding="utf-8")
+    demanded = re.findall(r"--expect-tags (\d+)", tap)
+    assert demanded, "update-tap.sh no longer demands a bottle count"
+    # Every mention, the explaining comment included: a comment left at the old count is how
+    # the next reader puts the old count back.
+    assert {int(n) for n in demanded} == {len(_bottle_matrix())}, demanded
+
+
+# --- the install matrix is a gate, not a notification ---------------------------------
+#
+# It was written, it went red on a real candidate, and nothing stopped that
+# candidate being promotable — because the workflow's own header said "what it can
+# gate is the next stable cut" and no such gate had been built. A comment is not a
+# control. These assert the control.
+_RC_GATE = _ROOT / "packaging" / "check-rc-install-matrix.sh"
+
+
+def test_a_stable_cut_is_gated_on_the_candidates_install_matrix() -> None:
+    release = yaml.safe_load(_RELEASE.read_text(encoding="utf-8"))
+    assert "candidate-gate" in release["jobs"], "the candidate gate is gone"
+    assert "candidate-gate" in release["jobs"]["tag"]["needs"], (
+        "the tag job no longer waits on the candidate gate — a red candidate is promotable again"
+    )
+
+
+def test_the_candidate_gate_checks_out_the_tags_it_reasons_about() -> None:
+    """It derives the version from the tags. A shallow checkout has none, so it
+    would ask about 0.0.1, find no candidates, and pass — loudest silence there
+    is."""
+    release = yaml.safe_load(_RELEASE.read_text(encoding="utf-8"))
+    checkout = release["jobs"]["candidate-gate"]["steps"][0]
+    assert checkout["with"]["fetch-depth"] == 0, "candidate-gate would run on a tagless checkout"
+
+
+def test_both_install_matrices_record_which_tag_they_tested() -> None:
+    """Each forge keeps it in a different place, and the gate reads both.
+
+    A tag PUSH is self-describing (head_branch on GitHub, prettyref on Forgejo). A
+    re-dispatch is not: it runs from main on purpose, so a fix to these scripts is
+    what re-runs rather than the copies frozen at the tag. GitHub records the
+    subject in the run-name; Forgejo IGNORES run-name entirely — a dispatched run's
+    title is just the workflow name — so there it has to live in a job name, which
+    Forgejo does evaluate. Lose either and a re-dispatched green matrix becomes
+    unfindable, and the gate blocks a release that is fine."""
+    gate = _RC_GATE.read_text(encoding="utf-8")
+
+    github = yaml.safe_load(_INSTALL_MATRIX_GH.read_text(encoding="utf-8"))
+    run_name = github.get("run-name", "")
+    assert run_name.startswith("Install matrix (macOS + Linux arm64)"), run_name
+    assert "inputs.tag" in run_name and "github.ref_name" in run_name, run_name
+    assert "Install matrix (macOS + Linux arm64) $TAG" in gate, (
+        "the gate stopped matching the GitHub run-name"
+    )
+
+    linux = yaml.safe_load(_INSTALL_MATRIX.read_text(encoding="utf-8"))
+    assert "run-name" not in linux, "Forgejo ignores run-name; it would be a decoy here"
+    wait_name = linux["jobs"]["wait"]["name"]
+    assert "inputs.tag" in wait_name and "github.ref_name" in wait_name, wait_name
+    assert "/jobs" in gate and "contains($t)" in gate, (
+        "the gate stopped reading job names, which is the only place Forgejo keeps the tag"
+    )
+
+
+def test_a_stable_cut_requires_both_halves_of_the_install_matrix() -> None:
+    """Linux amd64 runs on Forgejo, macOS and Linux arm64 on GitHub, so a gate that
+    asked only one forge would qualify a candidate on half a matrix — the same
+    fail-open as not asking at all."""
+    gate = _RC_GATE.read_text(encoding="utf-8")
+    assert "api.github.com" in gate, "the gate stopped asking GitHub about the macOS + arm64 half"
+    assert "forgejo.bryantserver.com" in gate, "the gate stopped asking Forgejo about the amd64 half"
+    # Scoped server-side on both forges. Unscoped, each asks for a page of every
+    # run there has ever been and stops containing the one it wants.
+    assert "actions/workflows/install-matrix.yml/runs" in gate, "the GitHub query lost its scope"
+    assert "workflow_id=install-matrix.yml" in gate, "the Forgejo query lost its scope"
+
+
+def test_the_wait_is_one_definition_used_by_both_matrices() -> None:
+    """A stable release carries both formulae's bottles. Pooling them makes the
+    checksum comparison unsatisfiable, and the wait spends its whole deadline
+    before failing a release that was fine. Two COPIES of this would drift, and
+    the drift shows up as one forge passing a half-published release.
+
+    The script is vendored from project-standard, so everything project-specific
+    comes from project.env and asset-roles.sh; this pins that both callers use it
+    the same way and that the derivation lands on formulae this repository ships."""
+    for path in (_INSTALL_MATRIX_GH, _INSTALL_MATRIX):
+        text = path.read_text(encoding="utf-8")
+        # The whole line: a caller passing anything else is no longer running the same wait.
+        assert re.search(r'^\s+bash packaging/wait-for-release\.sh "\$TAG"$', text, re.M), (
+            f"{path.name} grew its own copy of the wait, or calls it differently"
+        )
+        # The one convention every consumer reads: a base URL with its scheme. The script refuses a
+        # bare host, so a caller spelling it the other way fails at the wait rather than at a 404.
+        assert re.search(r"^\s+FORGE: https://[^\s/]+$", text, re.M), (
+            f"{path.name} does not set FORGE to a base URL"
+        )
+    wait = (_ROOT / "packaging" / "wait-for-release.sh").read_text(encoding="utf-8")
+    assert 'PKG="${PROJECT_REPO_SLUG#*/}"' in wait, "the formula name is no longer the repo's"
+    assert re.search(r'\*-rc\.\*\)\s*FORMULA="\$PKG-rc"', wait), "rc tags lost their formula"
+    assert re.search(r'\*\)\s*FORMULA="\$PKG"', wait), "stable tags lost their formula"
+    assert '"$FORGE/$PROJECT_TAP_SLUG/raw/branch/main/Formula/$FORMULA.rb"' in wait, (
+        "the tap is no longer read from project.env"
+    )
+    env = (_ROOT / "packaging" / "project.env").read_text(encoding="utf-8")
+    slug = re.search(r'^PROJECT_REPO_SLUG="([^"]+)"', env, re.M)
+    assert slug, "project.env no longer defines PROJECT_REPO_SLUG"
+    assert re.search(r'^PROJECT_TAP_SLUG="[^"/]+/[^"/]+"', env, re.M), (
+        "project.env no longer defines PROJECT_TAP_SLUG"
+    )
+    pkg = slug.group(1).split("/", 1)[1]
+    assert pkg not in wait, f"the shared wait names {pkg!r}; it must stay project-agnostic"
+    for formula in (pkg, f"{pkg}-rc"):
+        assert (_ROOT / "packaging" / "homebrew" / f"{formula}.rb").is_file(), (
+            f"the wait derives the formula {formula!r}, which this repository does not ship"
+        )
+    assert 'select(.formula.name == $f)' in wait, (
+        "the wait pools every manifest again — it can never balance on a stable tag"
+    )
+    # The checksum comparison is the half of "ready" that a version-substring check fakes: a
+    # bottle REBUILD replaces the archives under an unchanged tag, and only the sha256s differ.
+    assert "tap_ready" in wait.split("tap_ready() {", 1)[-1], "tap_ready() is defined but never called"
+    assert ".bottle.tags[].sha256" in wait, "the wait no longer compares the tap against the manifests"
+    # What the wait demands is the role table, not a list of its own. An optional role outside
+    # that table would relax nothing, and its predecessor would be demanded of no release at all.
+    roles = (_ROOT / "packaging" / "asset-roles.sh").read_text(encoding="utf-8")
+
+    def table(name: str) -> list[str]:
+        found = re.search(rf"^{name}=\((.*?)\)$", roles, re.M | re.S)
+        assert found, f"asset-roles.sh no longer declares {name}"
+        return re.findall(r"^\s*'([^']+)'", found.group(1), re.M)
+
+    required, optional = table("_ASSET_ROLES"), table("_OPTIONAL_ASSET_ROLES")
+    table("_OPTIONAL_ASSET_PREDECESSORS")
+    assert required, "_ASSET_ROLES is empty; the wait would demand nothing but a bottle"
+    assert set(optional) <= set(required), (
+        f"optional roles {sorted(set(optional) - set(required))} are not roles at all"
+    )
+    assert '"${_ASSET_ROLES[@]}"' in wait, "the wait no longer reads the role table"
+
+
+def test_forge_is_spelled_one_way_everywhere() -> None:
+    """FORGE is a base URL with its scheme, in every workflow, script and Dockerfile.
+
+    The two projects once split on it — one passed a URL, the other a bare host that each consumer
+    prefixed with `https://` itself — and a script vendored into both then had to guess which it was
+    given. A consumer that adds the scheme again turns a URL into `https://https://…`."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "packaging", ".forgejo/workflows", ".github/workflows"],
+        cwd=_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    names = [n for n in listed.split("\0") if n]
+    assert names, "git ls-files found nothing — is this running outside the checkout?"
+    offenders = []
+    for name in names:
+        path = _ROOT / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if re.search(r"://\$\{?FORGE\b", line):
+                offenders.append(f"{name}:{lineno}: prefixes a scheme onto FORGE")
+            value = re.match(r"^\s+FORGE:\s*(.+?)\s*$", line)
+            if value and not re.fullmatch(r"https://[^\s/]+|\$\{\{ github\.server_url \}\}", value.group(1)):
+                offenders.append(f"{name}:{lineno}: FORGE is not a base URL")
+    assert offenders == [], "FORGE spelled the other way:\n  " + "\n  ".join(offenders)
+
+
+# --- in-page anchors, which two forges do not agree how to spell ----------------------
+#
+# The project is read on Forgejo and on the GitHub mirror, and their heading
+# sluggers differ on exactly one character: an apostrophe. GitHub DROPS it
+# (`What's not here` -> `whats-not-here`); Forgejo turns it into a hyphen
+# (`what-s-not-here`). The link is rewritten to GitHub's spelling either way, so a
+# heading with an apostrophe renders a link that works on the mirror and is dead
+# on the primary — silently, and only for the people reading it there.
+#
+# Commas, colons and parentheses were checked against both rendered pages and
+# agree; the apostrophe is the whole rule.
+def test_no_in_page_anchor_targets_a_heading_with_an_apostrophe() -> None:
+    offenders = []
+    # TRACKED files only. `.claude/` holds git-ignored working notes; letting a
+    # local-only file fail the suite would block work on content that cannot even
+    # be committed, and it renders on neither site.
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "*.md"],
+        cwd=_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    names = list(filter(None, listed.split("\0")))
+    assert names, "git ls-files found no Markdown — is this running outside the checkout?"
+    for name in names:
+        md = _ROOT / name
+        text = md.read_text(encoding="utf-8")
+        headings = [
+            re.sub(r"[*_`]", "", h).strip() for h in re.findall(r"^#+\s+(.*)$", text, re.M)
+        ]
+        targeted = set(re.findall(r"\]\((#[^)]+)\)", text))
+        for heading in headings:
+            if not ("'" in heading or "\u2019" in heading):
+                continue
+            lowered = heading.lower()
+            # Both spellings are broken, just on opposite sites: whichever one is
+            # written, the other forge computes the other and finds nothing.
+            github = re.sub(r"[^a-z0-9 -]", "", lowered).replace(" ", "-")
+            # Only the apostrophe differs. Commas, colons and parentheses were
+            # read off both rendered pages and slug identically, so hyphenating
+            # them here would compute a slug neither forge emits — and the check
+            # would look for a link nobody could have written.
+            forgejo = re.sub(r"[^a-z0-9 -]", "", lowered.replace("'", "-").replace("\u2019", "-"))
+            forgejo = forgejo.replace(" ", "-")
+            offenders.extend(
+                f"{name}: {heading!r} <- #{slug}"
+                for slug in (github, forgejo)
+                if f"#{slug}" in targeted
+            )
+    assert offenders == [], (
+        "an apostrophe in a linked heading is dead on one of the two forges:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_bottle_leg_installs_the_formula_the_tag_names() -> None:
+    """A stable tag must pour the stable formula, not the candidate one.
+
+    The wait step checks the formula the tag names, so a leg that always installs the rc formula
+    tests a different package than the one it waited for, and a broken stable bottle ships green.
+    """
+    text = (_ROOT / ".github" / "workflows" / "install-matrix.yml").read_text(encoding="utf-8")
+    brew = [line.strip() for line in text.splitlines()
+            if line.strip().startswith(("brew install", "brew uninstall"))]
+    assert brew, "no brew install/uninstall in the GitHub install matrix"
+    for line in brew:
+        assert '"sisyphusmd/tap/$FORMULA"' in line or '"$FORMULA"' in line, \
+            f"a brew call names its formula literally instead of by tag: {line}"
+    # One choice per step that touches brew: the pour and the cleanup before the PyPI smoke.
+    assert text.count('*-rc.*) FORMULA=') >= 2, "the formula is not chosen from the tag in every step"

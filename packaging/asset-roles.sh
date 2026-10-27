@@ -28,23 +28,20 @@ _ASSET_ROLES=(
   'SHA256SUMS-aarch64'
 )
 
-# Roles reconcile should heal but completeness must NOT wait for. Every release cut before the
-# checksums existed lacks them, and both install matrices deliberately support dispatching the
-# CURRENT scripts against an OLDER tag - that is what the tag input is for. Requiring these would
-# make such a dispatch wait out all 120 polls and then fail a release that is perfectly complete.
-# Reconcile keeps them above, where a missing role is a warning rather than a verdict.
+# Roles reconcile should heal but completeness must NOT demand of a release that predates them. Both
+# install matrices deliberately support dispatching the CURRENT scripts against an OLDER tag - that
+# is what the tag input is for - and wait-for-release.sh would otherwise wait out its whole deadline
+# and then fail a release that is perfectly complete. Reconcile keeps them above, where a missing
+# role is a warning rather than a verdict. The wait still treats them as all-or-nothing: a release
+# carrying either checksum was cut after they existed, so the other is late, not absent.
 _OPTIONAL_ASSET_ROLES=(
   'SHA256SUMS-x86_64'
   'SHA256SUMS-aarch64'
 )
 
-optional_asset_role() {
-  local role
-  for role in "${_OPTIONAL_ASSET_ROLES[@]}"; do
-    [ "$1" = "$role" ] && return 0
-  done
-  return 1
-}
+# What a release cut before the optional roles carries in their place, which the wait then demands
+# instead. None here: releases before the per-architecture checksums carried no checksum file at all.
+_OPTIONAL_ASSET_PREDECESSORS=()
 
 # Homebrew bottles are NOT reconciled, and that is deliberate rather than an oversight. Note the
 # narrow claim: not reconciled, which is not the same as not mirrored. The NAS carries a complete

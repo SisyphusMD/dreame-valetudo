@@ -36,7 +36,7 @@ permissions:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
-  FORGE: forgejo.bryantserver.com
+  FORGE: https://forgejo.bryantserver.com
 
 jobs:
   # One poll for everyone. Every leg waiting on the same release would spend several times the API
@@ -56,13 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          # The tap formula too, because one leg pours a bottle. A stable tag writes the
-          # `dreame-valetudo` formula; a candidate writes only `dreame-valetudo-rc`.
-          case "$TAG" in
-            *-rc.*) FORMULA=dreame-valetudo-rc ;;
-            *)      FORMULA=dreame-valetudo ;;
-          esac
-          bash packaging/wait-for-release.sh "$TAG" "$FORMULA"
+          bash packaging/wait-for-release.sh "$TAG"
         env:
           # Readiness reads this repo's own release, which the built-in token already covers.
           GITHUB_ASSET_TOKEN: ${{ github.token }}
@@ -91,7 +85,7 @@ jobs:
           VERSION: ${{ needs.wait.outputs.version }}
         run: |
           set -euo pipefail
-          DL="https://$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG"
+          DL="$FORGE/SisyphusMD/dreame-valetudo/releases/download/$TAG"
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 -o /tmp/d.pkg "$DL/dreame-valetudo-${VERSION}-macos-${{ matrix.arch }}.pkg"
           # Gatekeeper's own verdict, before installing. `installer` does not enforce notarization,
           # so installing successfully proves nothing about whether a user double-clicking it would
@@ -118,7 +112,7 @@ jobs:
             *)      FORMULA=dreame-valetudo ;;
           esac
           brew update --quiet >/dev/null 2>&1
-          brew tap sisyphusmd/tap "https://$FORGE/SisyphusMD/homebrew-tap.git" >/dev/null 2>&1
+          brew tap sisyphusmd/tap "$FORGE/SisyphusMD/homebrew-tap.git" >/dev/null 2>&1
           # Homebrew refuses to LOAD a formula from an untrusted third-party tap, and installing the rc
           # loads the stable one its `conflicts_with` names. Guarded on the subcommand existing: an older
           # Homebrew has no `trust` and needs none, while one that exists and fails must stop the job.

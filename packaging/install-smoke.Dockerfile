@@ -70,8 +70,8 @@ FROM deb-base AS apt-repo
 ARG V DIST FORGE
 RUN set -eux; \
     install -d /etc/apt/keyrings; \
-    /fetch /etc/apt/keyrings/sisyphusmd.asc "https://$FORGE/api/packages/SisyphusMD/debian/repository.key"; \
-    echo "deb [signed-by=/etc/apt/keyrings/sisyphusmd.asc] https://$FORGE/api/packages/SisyphusMD/debian $DIST main" \
+    /fetch /etc/apt/keyrings/sisyphusmd.asc "$FORGE/api/packages/SisyphusMD/debian/repository.key"; \
+    echo "deb [signed-by=/etc/apt/keyrings/sisyphusmd.asc] $FORGE/api/packages/SisyphusMD/debian $DIST main" \
       | tee /etc/apt/sources.list.d/sisyphusmd.list >/dev/null; \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; \
@@ -302,7 +302,7 @@ FROM rpm-base AS dnf-repo
 ARG V FORGE TAG REPOFILE
 RUN set -eux; \
     /fetch /etc/yum.repos.d/sisyphusmd.repo \
-      "https://$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
+      "$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
     /retry 5 dnf install -y -q dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
@@ -320,7 +320,7 @@ ARG V FORGE TAG REPOFILE
 RUN set -eux; \
     /retry 5 dnf --version | head -1 | grep -q '^dnf5 '; \
     /fetch /etc/yum.repos.d/sisyphusmd.repo \
-      "https://$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
+      "$FORGE/SisyphusMD/dreame-valetudo/raw/tag/$TAG/packaging/$REPOFILE"; \
     /retry 5 dnf install -y -q dreame-valetudo >/dev/null; \
     SMOKE_LIBEXEC=/usr/lib/dreame-valetudo \
     SMOKE_UDEV=/usr/lib/udev/rules.d/99-dreame-valetudo.rules \
@@ -362,7 +362,7 @@ COPY packaging/fetch.sh /fetch
 RUN set -eux; \
     [ -z "$BREW_MIRROR" ] || { export HOMEBREW_ARTIFACT_DOMAIN="$BREW_MIRROR"; export HOMEBREW_CURL_RETRIES=8; export HOMEBREW_DOCKER_REGISTRY_TOKEN=QQ==; }; \
     brew update --quiet >/dev/null 2>&1; \
-    brew tap sisyphusmd/tap "https://$FORGE/SisyphusMD/homebrew-tap.git" >/dev/null 2>&1; \
+    brew tap sisyphusmd/tap "$FORGE/SisyphusMD/homebrew-tap.git" >/dev/null 2>&1; \
     if brew commands 2>/dev/null | tr ' ' '\n' | grep -qx trust; then brew trust sisyphusmd/tap; fi; \
     case "$V" in *-rc.*) formula=dreame-valetudo-rc ;; *) formula=dreame-valetudo ;; esac; \
     brew install "sisyphusmd/tap/$formula" > /tmp/i.log 2>&1 || { tail -20 /tmp/i.log; exit 1; }; \
@@ -433,7 +433,7 @@ RUN set -eux; zypper --non-interactive install -y curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 RUN set -eux; \
-    rpm --import "https://$FORGE/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc"; \
+    rpm --import "$FORGE/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc"; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
     # Not --allow-unsigned-rpm: the imported key has to be what makes this work, or the test proves
     # nothing about the signature.
@@ -454,7 +454,7 @@ RUN set -eux; zypper --non-interactive install -y curl >/dev/null
 COPY packaging/installed-smoke.sh /smoke.sh
 COPY packaging/fetch.sh /fetch
 RUN set -eux; \
-    rpm --import "https://$FORGE/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc"; \
+    rpm --import "$FORGE/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd-signing-key.asc"; \
     /fetch /tmp/d.rpm "$DL/dreame-valetudo-${PV}.${ARCH_RPM}.rpm"; \
     /retry 5 zypper --non-interactive install /tmp/d.rpm >/dev/null; \
     rpm -qi dreame-valetudo | grep -qi "cce50015d058e9bf"; \

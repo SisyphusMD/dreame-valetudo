@@ -53,7 +53,7 @@ jobs:
           # missing from the built wheel can no longer pass the tests from the checkout.
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           # Every tracked *.py rather than a hand-maintained list, matching ci.yml.
-          ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/' | tr '\n' ' ')
+          ruff check $(git ls-files '*.py' | tr '\n' ' ')
           mypy
           python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
           python docs/research/tools/compute_dust_token.py --selftest
@@ -87,12 +87,14 @@ jobs:
       - name: install and test the claimed source floor
         run: |
           set -euo pipefail
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.17.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.1.1"
           python -m pip install --upgrade pip
           # renovate: datasource=pypi depName=pyyaml
           PYYAML="6.0.3"
-          pip install "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
+          pip install "ruff==$RUFF" "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
           python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
             packaging/stamp-version.py \
             packaging/build-source-tar.py \

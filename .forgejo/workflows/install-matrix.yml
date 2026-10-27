@@ -39,7 +39,7 @@ on:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
-  FORGE: forgejo.bryantserver.com
+  FORGE: https://forgejo.bryantserver.com
 
 jobs:
   wait:
@@ -59,13 +59,7 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           # Waits on the same asset-role table reconcile replicates, so a new artifact is added in
           # one place and both learn about it.
-          # The tap formula too, because one leg pours a bottle. A stable tag writes the
-          # `dreame-valetudo` formula; a candidate writes only `dreame-valetudo-rc`.
-          case "$TAG" in
-            *-rc.*) FORMULA=dreame-valetudo-rc ;;
-            *)      FORMULA=dreame-valetudo ;;
-          esac
-          bash packaging/wait-for-release.sh "$TAG" "$FORMULA"
+          bash packaging/wait-for-release.sh "$TAG"
         env:
           # Only this step reads it, so it is not granted to the shard jobs or their actions.
           GITHUB_ASSET_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}

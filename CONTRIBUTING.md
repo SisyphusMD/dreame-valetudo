@@ -12,7 +12,7 @@ locked in `uv.lock`, so contributors lint with the same binary the gate does.
 uv run dreame-valetudo                                 # run from source
 uv run pytest -q tests/python                          # the Python suite
 uv run pytest -q tests/python/test_fel.py::test_name   # one test
-uv run ruff check $(git ls-files '*.py' | grep -v '^docs/research/tools/')
+uv run ruff check $(git ls-files '*.py' | tr '\n' ' ')  # exactly as CI runs it
 uv run mypy                                            # strict
 bash tests/release/release-scripts.sh              # release scripts, curl stubbed, no network
 ```
@@ -32,7 +32,7 @@ package first.** `pip install -e .`, or `uv run` (which syncs). Every CI job tha
 this; a job that installs only the toolchain will collect zero importable modules.
 
 Paths that follow the package: `pyproject.toml`'s `packages`/`source`/`files` entries and the ruff
-per-file ignores, the workflows' `ruff check` and `compileall` arguments, `.renovaterc.json`'s
+per-file ignores, the workflows' `compileall` arguments, `.renovaterc.json`'s
 manager patterns, `packaging/check-release-boundary.py`'s tables, and the source-tarball copies.
 Paths that do NOT: anything naming the *module* (`python -m dreame_valetudo`, imports, the
 entry point) and the force-include destinations, which describe the layout *inside* the wheel.

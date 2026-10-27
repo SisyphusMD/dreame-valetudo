@@ -178,7 +178,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           # The shipped tool: lint, typecheck, unit tests, and the version-of-record.
-          ruff check src/dreame_valetudo libexec tests/python packaging/stamp-version.py
+          ruff check $(git ls-files '*.py' | tr '\n' ' ')
           mypy
           # Gated HERE too, not only in CI: ci.yml runs on a branch, and a release is cut from a
           # tag. Without this the release path was the one way a coverage regression could ship.
