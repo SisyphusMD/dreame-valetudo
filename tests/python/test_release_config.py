@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -2521,3 +2522,95 @@ def test_every_bottle_wait_agrees_with_the_matrix() -> None:
         text = (_ROOT / ".forgejo" / "workflows" / name).read_text()
         found = sorted(int(n) for n in re.findall(r"expected=(\d+) ;;", text))
         assert found == want, (name, found)
+
+
+# --- which forge runs what ----------------------------------------------------------
+#
+# Forgejo runs everything; GitHub runs only what cannot run anywhere else. The rule and its
+# reasoning are in docs/design/ci-split.md; this is what keeps it true. Mirrors whiskerless's
+# test_repo_invariants, because a guard one sibling has and the other lacks is how they drift.
+#
+# An exception is fine. An exception nobody wrote a reason for is not.
+GITHUB_ONLY: dict[tuple[str, str], str] = {
+    ("ci-pr.yml", "*"):
+        "pull requests are on GitHub by project policy, so Forgejo never sees the event",
+    ("retry-infra-failures.yml", "*"):
+        "it re-runs GitHub workflow runs through the GitHub API — nothing to do elsewhere",
+    ("bottles.yml", "*"):
+        "two of the three tags need macOS or native arm64 anyway; x86_64_linux is built "
+        "beside them because the append job uploads every leg's bottle and manifest from "
+        "this run's artifacts, which are run-scoped — splitting this one leg across forges "
+        "would mean collecting them across forges too",
+    ("release-macos.yml", "publish"):
+        "it appends the artifacts the macOS jobs produced IN THE SAME RUN; artifacts are "
+        "run-scoped, so on another forge there would be nothing to append",
+    ("install-matrix.yml", "wait"):
+        "sequences the macOS and native-arm64 legs that must run on this forge",
+    ("install-matrix.yml", "summary"):
+        "reports the macOS and native-arm64 legs that must run on this forge",
+    ("ci-macos.yml", "scope"):
+        "decides whether this run's own macOS job may be skipped; a job's `needs` cannot "
+        "reach across forges, so the decision has to run where the job it gates does",
+    ("formula-macos.yml", "scope"):
+        "decides whether this run's own macOS job may be skipped; a job's `needs` cannot "
+        "reach across forges, so the decision has to run where the job it gates does",
+}
+
+
+def _runner_labels(job: dict[str, Any]) -> set[str]:
+    """Every concrete runner a job can land on, resolving a matrix expression."""
+    runs_on = job.get("runs-on", "")
+    if isinstance(runs_on, list):
+        return {str(r) for r in runs_on}
+    runs_on = str(runs_on)
+    if "${{" not in runs_on:
+        return {runs_on}
+    key = runs_on.split(".")[-1].split("}")[0].strip()
+    matrix = job.get("strategy", {}).get("matrix", {})
+    labels = {str(entry[key]) for entry in matrix.get("include", []) if key in entry}
+    if isinstance(matrix.get(key), list):
+        labels |= {str(value) for value in matrix[key]}
+    # An unresolvable expression must not read as "no Linux here".
+    return labels or {runs_on}
+
+
+def _github_jobs() -> list[tuple[str, str, set[str]]]:
+    found = []
+    # Both spellings: Actions accepts .yaml too, and a rule that only sees .yml is
+    # a rule anyone can step around without meaning to.
+    workflows = _ROOT / ".github" / "workflows"
+    for path in sorted([*workflows.glob("*.yml"), *workflows.glob("*.yaml")]):
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_id, job in (loaded.get("jobs") or {}).items():
+            found.append((path.name, str(job_id), _runner_labels(job)))
+    return found
+
+
+def test_there_are_github_jobs_to_check() -> None:
+    """The sweep below passes trivially if the glob ever stops matching."""
+    assert len(_github_jobs()) >= 8
+
+
+def test_github_only_runs_what_only_github_can_run() -> None:
+    unjustified = []
+    for workflow, job_id, labels in _github_jobs():
+        # Architecture decides the forge: macOS and arm64 have no native runner here,
+        # and the alternative to GitHub for either is emulation, which this project
+        # does not do anywhere. Everything else belongs on Forgejo.
+        if labels and all(label.startswith("macos") or label.endswith("-arm") for label in labels):
+            continue
+        if (workflow, "*") in GITHUB_ONLY or (workflow, job_id) in GITHUB_ONLY:
+            continue
+        unjustified.append(f"{workflow}:{job_id} runs on {sorted(labels)}")
+    assert unjustified == [], (
+        "these run on GitHub without being macOS or a recorded exception — move them to "
+        ".forgejo/workflows/, or add them to GITHUB_ONLY with the reason "
+        "(see docs/design/ci-split.md):\n  " + "\n  ".join(unjustified)
+    )
+
+
+def test_no_exception_outlives_the_job_it_excused() -> None:
+    """A stale entry silently re-permits whatever later takes that name."""
+    present = {(w, "*") for w, _, _ in _github_jobs()} | {(w, j) for w, j, _ in _github_jobs()}
+    stale = sorted(f"{w}:{j}" for (w, j) in GITHUB_ONLY if (w, j) not in present)
+    assert stale == [], f"GITHUB_ONLY excuses jobs that no longer exist: {stale}"
