@@ -166,7 +166,7 @@ jobs:
           # renovate: datasource=pypi depName=ruff
           RUFF="0.17.1"
           # renovate: datasource=pypi depName=mypy
-          MYPY="2.4.0"
+          MYPY="2.4.1"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.2.0"
           # renovate: datasource=pypi depName=pytest-cov
