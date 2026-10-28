@@ -168,7 +168,7 @@ jobs:
           # renovate: datasource=pypi depName=mypy
           MYPY="2.4.0"
           # renovate: datasource=pypi depName=pytest
-          PYTEST="9.1.1"
+          PYTEST="9.2.0"
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
           sudo sed -i 's#http://archive.ubuntu.com#http://artifacts.lan.bryantserver.com/archive.ubuntu.com#; s#http://security.ubuntu.com#http://artifacts.lan.bryantserver.com/security.ubuntu.com#' /etc/apt/sources.list.d/ubuntu.sources

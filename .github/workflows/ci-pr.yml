@@ -42,7 +42,7 @@ jobs:
           # renovate: datasource=pypi depName=mypy
           MYPY="2.4.0"
           # renovate: datasource=pypi depName=pytest
-          PYTEST="9.1.1"
+          PYTEST="9.2.0"
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
           # renovate: datasource=pypi depName=pyyaml
@@ -90,7 +90,7 @@ jobs:
           # renovate: datasource=pypi depName=ruff
           RUFF="0.17.1"
           # renovate: datasource=pypi depName=pytest
-          PYTEST="9.1.1"
+          PYTEST="9.2.0"
           python -m pip install --upgrade pip
           # renovate: datasource=pypi depName=pyyaml
           PYYAML="6.0.3"
