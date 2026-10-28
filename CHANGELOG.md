@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- `dreame-valetudo uninstall` exits non-zero when a removal fails, and repeats any steps left to do
+  by hand at the end. As root it no longer needs `sudo`, which containers and minimal servers
+  often lack.
+
 - Intel Macs are no longer supported: no Intel `.pkg` from this release on. v0.2.1 was the last
   stable release with one.
 

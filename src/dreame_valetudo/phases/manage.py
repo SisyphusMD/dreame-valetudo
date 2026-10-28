@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from .. import manifest
@@ -201,11 +202,19 @@ def uninstall(ctx: Context) -> None:
     if not found:
         ctx.console.say("No installs of dreame-valetudo found to remove.")
         return
+    # Already root, `sudo` is at best redundant and at worst missing: a container or a minimal
+    # server often has no sudo at all, and prefixing it failed every removal there.
+    if ctx.is_root:
+        found = [replace(i, removal=i.removal[1:]) if i.removal[:1] == ["sudo"] else i
+                 for i in found]
 
     ctx.console.say("Found these installs:")
     for i in found:
         ctx.console.info(f"   {i.kind}  ({i.marker})")
-        ctx.console.detail(f"      {' '.join(i.removal) if i.removal else i.note}")
+        detail = " ".join(i.removal) if i.removal else i.note
+        if i.removal and i.note:
+            detail = f"{detail}, {i.note}"
+        ctx.console.detail(f"      {detail}")
     ctx.console.info(f"Your robots' backups in {ctx.backups_dir} are NOT touched.")
 
     removable = [i for i in found if i.removal]
@@ -229,5 +238,11 @@ def uninstall(ctx: Context) -> None:
     for i in failed:
         ctx.console.err(f"Couldn't remove the {i.kind} install — run it yourself: "
                         f"{' '.join(i.removal)}")
-    if not failed:
-        ctx.console.say(f"Removed. Your robot backups are still in {ctx.backups_dir}.")
+    # Every note, whether or not something failed: a removable install can still carry a manual
+    # step, and leaving it unsaid ends the command as if nothing were left to do.
+    for i in found:
+        if i.note:
+            ctx.console.say(f"Still to do by hand: {i.note}")
+    if failed:
+        die("Some installs could not be removed; run the commands above yourself.")
+    ctx.console.say(f"Removed. Your robot backups are still in {ctx.backups_dir}.")

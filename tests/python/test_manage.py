@@ -522,9 +522,37 @@ def test_uninstall_warns_for_sudo_and_reports_each_failed_removal(
         responder=lambda argv: Result(argv, 1, "", "permission denied"),
     )
 
-    uninstall(ctx)
+    # Die, not success: a removal that failed is a failure, exit 1, as in the sibling project.
+    with pytest.raises(Die):
+        uninstall(ctx)
 
     assert ctx.runner.transcript() == ["sudo /pkg/uninstall.sh"]  # type: ignore[attr-defined]
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert "need root" in text
     assert "Couldn't remove the macOS .pkg install" in text
+
+
+def test_uninstall_as_root_runs_the_removal_without_sudo(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A container or a minimal server often has no sudo, and as root it is never needed."""
+    package = Install("macOS .pkg", Path("/pkg"), ["sudo", "/pkg/uninstall.sh"])
+    monkeypatch.setattr(manage, "find_installs", lambda _env: [package])
+    ctx = make_ctx(confirms=[True], is_root=True)
+    uninstall(ctx)
+    # The fake runner records argv[0] by name; what matters is that sudo is no longer argv[0].
+    assert ctx.runner.transcript() == ["uninstall.sh"]  # type: ignore[attr-defined]
+    assert "need root" not in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_uninstall_repeats_manual_steps_after_removing(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The .pkg note names `pkgutil --forget`; a receipt left behind blocks a later reinstall."""
+    package = Install("macOS .pkg", Path("/pkg"), ["/pkg/uninstall.sh"], "then forget the receipt")
+    monkeypatch.setattr(manage, "find_installs", lambda _env: [package])
+    ctx = make_ctx(confirms=[True])
+    uninstall(ctx)
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "/pkg/uninstall.sh, then forget the receipt" in text
+    assert "Still to do by hand: then forget the receipt" in text
