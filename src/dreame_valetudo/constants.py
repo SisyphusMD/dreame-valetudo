@@ -52,8 +52,8 @@ PYUSB_VERSION = "1.3.1"
 # Release bundles freeze this exact CPython source. Linux compiles it inside the glibc-floor
 # builder; macOS setup-python supplies the same release on native hosts.
 # renovate: datasource=github-tags depName=python/cpython versioning=pep440
-BUNDLE_PYTHON_VERSION = "3.15.1"
-BUNDLE_PYTHON_SHA256 = "673ae7232d84c894729882c8257d300ef2d26523911bfd3917ec8ce7f526f99b"
+BUNDLE_PYTHON_VERSION = "3.15.2"
+BUNDLE_PYTHON_SHA256 = "8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de"
 
 # Every run is wrapped in a tmux session. The deb/rpm/brew channels get tmux from their package
 # manager; a .pkg install has none, so the release build bundles this version.
