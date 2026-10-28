@@ -140,7 +140,7 @@ COPY --from=tarball /passed /passed
 
 # --- the oldest Debian and Ubuntu the glibc floor claims ---------------------------------
 # renovate: datasource=docker depName=debian-12-compat packageName=debian
-FROM debian:12-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS deb-floor-base
+FROM debian:12-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS deb-floor-base
 COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
