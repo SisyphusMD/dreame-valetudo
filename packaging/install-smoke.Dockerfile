@@ -40,7 +40,7 @@ ARG TAG
 # leg cannot forget it. This is not laundering a flaky test, it is making a network fetch survive
 # the network; a package that genuinely does not install still fails.
 # renovate: datasource=docker depName=debian-13-current packageName=debian
-FROM debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS deb-base
+FROM debian:13-slim@sha256:89c1ea91e897f0fe0a3731595330bc45b8bdef4047464a07116f891a94054b31 AS deb-base
 COPY packaging/retry.sh /retry
 RUN set -eux; \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
@@ -177,7 +177,7 @@ FROM scratch AS deb-file-ubuntu-floor-result
 COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-FROM ubuntu:26.04@sha256:19fcd1bf268f02b60aca3bd30bd8a6d9a11759a430e32921833e65f16d87348a AS ubuntu-base
+FROM ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS ubuntu-base
 COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
