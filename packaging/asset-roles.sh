@@ -13,6 +13,9 @@ _ASSET_ROLES=(
   'dreame-valetudo*.x86_64.rpm'
   'dreame-valetudo*.aarch64.rpm'
   'dreame-valetudo*macos-arm64.pkg'
+  # Intel Macs are no longer built for, but stable releases that shipped an Intel .pkg are never
+  # pruned, and this role is what lets reconcile repair a missing copy of one. Newer tags log a
+  # warn-only "no asset matches" for it.
   'dreame-valetudo*macos-x86_64.pkg'
   'dreame-valetudo-*-linux-amd64.tar.gz'
   'dreame-valetudo-*-linux-arm64.tar.gz'

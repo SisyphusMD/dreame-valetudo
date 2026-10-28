@@ -9,7 +9,7 @@ then pauses when it needs you to press buttons, build the firmware in a browser,
 actual flash.
 
 The official Valetudo instructions are written around Debian. This project brings the same process
-to **macOS** (Apple Silicon or Intel), including a workaround for the USB problem that keeps Google's
+to **macOS** (Apple Silicon), including a workaround for the USB problem that keeps Google's
 `fastboot` from seeing these robots on Apple Silicon. It also runs on **Linux** (amd64 or arm64).
 
 ![dreame-valetudo running in Terminal on macOS: Phase 2 flashes the rooted image (OKAY-checked, with the flash-authorization token redacted in the shareable log), then Phase 3 installs Valetudo over the robot's own Wi-Fi AP, pausing at a highlighted ACTION banner for the one hands-on step.](docs/terminal-demo.svg)
@@ -50,12 +50,14 @@ Older systems might work, but that isn't promised until they are part of this te
 
 | Operating system | Minimum supported version | Also tested on |
 |---|---|---|
-| macOS, Apple Silicon or Intel | macOS 15 | macOS 26 |
+| macOS, Apple Silicon | macOS 15 | macOS 26 |
 | Debian / Raspberry Pi OS | Debian 12 / Raspberry Pi OS Bookworm | Debian 13 |
 | Ubuntu | Ubuntu 22.04 LTS | Ubuntu 26.04 LTS |
 | Fedora | Oldest maintained Fedora (currently 43) | Fedora 44 |
 | RHEL-compatible | RHEL / Rocky Linux 8 | Rocky Linux 10 |
 | openSUSE Leap | Leap 15.6 | Leap 16.0 |
+
+Intel Macs are no longer supported; v0.2.1 was the last stable release with an Intel `.pkg`.
 
 Two rows are covered by inheritance rather than by a lane of their own, which is worth knowing if you are relying on either. **Raspberry Pi OS** is not tested as its own image: Bookworm *is* Debian 12, and the Debian 12 lane runs on arm64 as well as x86_64. **RHEL** is not tested directly either — it needs a subscription and has no public image to install into — so Rocky Linux stands in for it, being a bug-for-bug rebuild of the same release.
 
@@ -63,7 +65,7 @@ Windows is not in that matrix and is not supported yet. Nothing installs and run
 
 The `.deb` and `.rpm` need glibc 2.28 or newer. Installing from source also needs Python 3.11 or
 newer. These are not just build targets: CI installs, upgrades, runs, and removes the real packages
-on every Linux row. It does the same with the signed macOS package on both Apple Silicon and Intel.
+on every Linux row. It does the same with the signed macOS package on Apple Silicon.
 
 ## Install
 
@@ -94,11 +96,9 @@ happens while your machine is joined to the robot's own Wi-Fi, which has no inte
 
 ### Signed macOS installer (`.pkg`, double-click)
 
-This bundles everything, so there is no Homebrew setup or local build. If you are not sure which Mac
-you have, open Apple menu → About This Mac. "Apple M…" means Apple Silicon; otherwise it will say
-Intel. Open the matching installer, then run `dreame-valetudo`.
+This bundles everything, so there is no Homebrew setup or local build. Open the Apple Silicon
+installer, then run `dreame-valetudo`.
 - **Apple Silicon**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-arm64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-arm64.pkg)
-- **Intel**: [forgejo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-x86_64.pkg) · [github](https://github.com/SisyphusMD/dreame-valetudo/releases/download/v0.2.1/dreame-valetudo-macos-x86_64.pkg)
 
 ---
 
@@ -237,7 +237,7 @@ Before you start, gather these things. The tool prints the same checklist on a f
   [Valetudo Dreame install page](https://valetudo.cloud/pages/installation/dreame/).
 - **A USB cable** from the board (micro-USB) to your computer.
 - **A computer**: a Mac or Linux box. Apple Silicon is the hardware-bench reference; native CI
-  exercises both Apple Silicon and Intel Macs, plus amd64/arm64 Linux packages.
+  exercises Apple Silicon Macs, plus amd64/arm64 Linux packages.
 - **An email address** — the image builder emails you the finished firmware build.
 - **~30-45 minutes**.
 

@@ -2,7 +2,7 @@
 # Make a Mach-O binary carry its non-system libraries, so it runs on a Mac that has no Homebrew.
 #
 # A binary built on the CI runner references its dependencies by absolute Homebrew path
-# (/opt/homebrew/... on arm64, /usr/local/... on Intel). Those paths do not exist on a user's
+# (/opt/homebrew/... on arm64). Those paths do not exist on a user's
 # machine, so the binary dies at load time. Copy each such library next to the binary and rewrite
 # both the reference and the library's own id to @loader_path.
 #

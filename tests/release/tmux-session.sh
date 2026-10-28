@@ -212,8 +212,8 @@ wait_sessions() {
 }
 
 # How long a pane may take to show the text a step is waiting for. Generous and overridable on
-# purpose: these are shared runners, and the x86_64 macOS tier is the slowest CI has, so a budget
-# that is comfortable on a quiet machine is a coin flip there.
+# purpose: these are shared runners, so a budget that is comfortable on a quiet machine can
+# be a coin flip under load.
 PANE_TRIES="${TMUX_PANE_TRIES:-240}"   # x 0.25s
 PANE_SECONDS=$(( PANE_TRIES / 4 ))
 # A driver has to outlive the pane waits its own case performs. Derived rather than a constant: a

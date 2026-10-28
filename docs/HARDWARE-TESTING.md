@@ -12,7 +12,7 @@ robot AP, or confirm that the robot actually booted or docked.
 
 Host qualification is separate and automatic. Linux package CI covers Debian 12/13, Ubuntu
 22.04/26.04, Fedora 43/44, RHEL-compatible Rocky Linux 8/10, and openSUSE Leap 16. The
-native macOS matrix covers macOS 15 and 26 on both Apple Silicon and Intel. The bench campaign then
+native macOS matrix covers macOS 15 and 26 on Apple Silicon. The bench campaign then
 proves the USB and robot behavior that those host-only jobs cannot reach.
 
 ## Running a campaign
@@ -353,7 +353,6 @@ tests as hardware passes.
 |---|---|
 | macOS Apple Silicon `.pkg` | install on a Mac without Homebrew libraries; H0, H1, H2; uninstall leaves backups |
 | macOS Apple Silicon Homebrew RC | H0, H1, H2; stable-to-RC and RC-to-stable switch |
-| macOS Intel `.pkg` or Homebrew | H0 and H1 when hardware is available |
 | Debian/Ubuntu amd64 `.deb` | install/upgrade/remove, udev access, H1 and H2 |
 | Debian/Raspberry Pi arm64 `.deb` | SSH terminal-loss behavior, udev access, H1 and H2 |
 | Fedora/openSUSE RPM | install/update/remove guidance, udev access, H1 and H2 |

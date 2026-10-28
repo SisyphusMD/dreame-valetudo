@@ -152,8 +152,8 @@
       "matchDatasources": [
         "github-runners"
       ],
-      "matchCurrentValue": "/^macos-15(?:-intel)?$/",
-      "allowedVersions": "/^macos-15(?:-intel)?$/"
+      "matchCurrentValue": "/^macos-15$/",
+      "allowedVersions": "/^macos-15$/"
     },
     {
       "description": "Python 3.11.0 is the literal source floor; Renovate must not move even its patch version and turn this into a current-3.11 test.",

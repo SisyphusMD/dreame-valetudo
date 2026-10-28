@@ -9,7 +9,7 @@ Six distribution channels, one release flow:
 | Debian/Ubuntu/Pi | `dreame-valetudo_{amd64,arm64}.deb` (version-less name, bundles sunxi-fel) | `publish.yml` (buildx `deb.Dockerfile` + nfpm) | none (unsigned .deb) |
 | Fedora/RHEL/SUSE | `dreame-valetudo.{x86_64,aarch64}.rpm` (version-less name, bundles sunxi-fel) | `publish.yml` (same buildx binaries, `nfpm -p rpm`) | none (unsigned .rpm) |
 | Plain tarball | `dreame-valetudo-<v>.tar.gz` | `publish.yml` (`build-tarball.sh`) | none |
-| macOS installer | `dreame-valetudo-macos-{arm64,x86_64}.pkg` (per-arch matrix) | `release-macos.yml` (GitHub) | Developer ID + notarized |
+| macOS installer | `dreame-valetudo-macos-arm64.pkg` (Apple Silicon) | `release-macos.yml` (GitHub) | Developer ID + notarized |
 
 Each architecture is built on its own hardware through **buildx** (`packaging/deb.Dockerfile`):
 amd64 on the Forgejo runner, arm64 on GitHub's native `ubuntu-24.04-arm`. **Nothing is emulated.**
@@ -27,9 +27,9 @@ installs the newest candidate for hardware testing without touching the stable f
 
 Pre-merge CI installs the Linux packages at every supported floor and current release, and installs
 the source tarball into an isolated environment. Native macOS CI runs the full suite on macOS 15
-and 26 on both Apple Silicon and Intel. Tag builds additionally execute both `.deb` architectures;
-each `.pkg` is built and exercised on macOS 15, then installed and exercised again on macOS 26
-before either release asset is published.
+and 26 on Apple Silicon. Tag builds additionally execute both `.deb` architectures;
+the `.pkg` is built and exercised on macOS 15, then installed and exercised again on macOS 26
+before the release asset is published.
 
 ## How a release flows
 
@@ -46,10 +46,10 @@ before either release asset is published.
    AND re-points the `dreame-valetudo-rc` formula at the same stable tarball (fall-through); a
    prerelease tag writes only the `dreame-valetudo-rc` formula.
 3. **GitHub `release-macos.yml`** (mirrored tag, GitHub's macOS runners; the one job that needs a
-   Mac): a 2-leg macOS 15 matrix builds and tests the **signed + notarized `.pkg` for arm64 AND
-   x86_64**. A second matrix installs those same artifacts on macOS 26, then `publish` appends both
+   Mac): the macOS 15 matrix builds and tests the **signed + notarized `.pkg` for arm64**.
+   A second matrix installs that same artifact on macOS 26, then `publish` appends it
    to the **GitHub** and **public-Forgejo** releases.
-4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg`s on the public
+4. **Forgejo `publish.yml` `reconcile` job**: waits for the current tag's `.pkg` on the public
    Forgejo release, then walks **every** tag, hashes each recognized copy, and fills a **missing**
    copy only when the other two have identical content. A copy that is present but *dissents* is
    reported for review, never overwritten — a published asset is immutable. Without a two-registry
@@ -80,7 +80,7 @@ resolving with no surviving-rc to keep. The prune is gated on the stable being p
 is warn-only, so it can never make a valid stable disappear; reconcile still walks every *surviving*
 tag.
 
-Before merge, GitHub's native arm64 and Intel runners execute the Python, Ruff, mypy, ShellCheck,
+Before merge, GitHub's native Apple Silicon runners execute the Python, Ruff, mypy, ShellCheck,
 research self-test, and integration suites for every mirrored branch commit. Forgejo's `macos` job
 polls that public workflow by the exact commit SHA, so its required checks remain the single merge
 gate without granting pull-request code a cross-forge write token. Package installation and signing
@@ -135,7 +135,7 @@ from one).
    builds; the Apple identity lives here on the same principle.
 
 If the macOS secrets are missing, the Linux assets and tap still publish, but the overall publish
-workflow fails its qualification gate until both signed `.pkg`s are present. If `GPG_SIGNING_KEY`
+workflow fails its qualification gate until the signed arm64 `.pkg` is present. If `GPG_SIGNING_KEY`
 is missing on GitHub, `build-linux-arch.sh` fails closed rather than shipping unsigned arm64
 packages, and the release carries no arm64 Linux assets at all.
 
@@ -197,9 +197,8 @@ packages, and the release carries no arm64 Linux assets at all.
   `.deb` ships a udev rule (installed via the postinstall) for sudo-less USB.
   `DREAME_FASTBOOT=system` is a documented manual override, never automatic.
 - **macOS 15 is the package floor; macOS 26 is the current qualification host.** Both run on native
-  arm64 and Intel workers. Build on the floor, then test that exact signed artifact on current so a
-  newer SDK cannot silently become the minimum. Intel/x86_64 runners are on GitHub's sunset path
-  (~2027); if that leg disappears, fall back to brew/source for Intel.
+  Apple Silicon workers. Build on the floor, then test that exact signed artifact on current so a
+  newer SDK cannot silently become the minimum.
 - **The `.rpm` shares the `.deb`'s bundle + udev postinstall**, built from the same buildx binaries
   with a second `nfpm -p rpm` (config in `packaging/nfpm.yaml`; `overrides.rpm.depends`). Its runtime
   deps are SONAME/file requires (`libusb-1.0.so.0()(64bit)`, `/usr/bin/ssh`, …) rather than distro

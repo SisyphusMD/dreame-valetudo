@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Intel Macs are no longer supported: no Intel `.pkg` from this release on. v0.2.1 was the last
+  stable release with one.
+
 **The release where a lost SSH key stopped meaning a reflash.** `rekey` gets you back into an
 already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 
@@ -23,7 +26,6 @@ already-rooted robot, and `restore` returns a fastboot robot to stock firmware.
 
 ### Changed
 
-- Homebrew bottles are no longer built for Intel Macs, because Homebrew stopped building Intel bottles itself. On an Intel Mac, install the `.pkg`, or `brew install` builds from source.
 - All persistent files now live under `~/dreame-valetudo/`. Existing layouts migrate automatically.
 - Recon records the model, and rooting refuses to flash unless it matches.
 - A robot whose recon ran under 0.2.x carries no model record. Run `recon --force` before rooting it.

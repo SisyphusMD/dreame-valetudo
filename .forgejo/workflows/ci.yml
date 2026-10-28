@@ -374,7 +374,7 @@ jobs:
     # By the time the Linux suites finish, the mirrored macOS workflow normally has too. This keeps
     # the shared public GitHub API budget and the self-hosted runner slot out of a needless poll.
     needs: [shellcheck, python, python-floor, build, integration]
-    # GitHub's mirror runs the same commit on native arm64 and Intel hosts. Waiting by exact head
+    # GitHub's mirror runs the same commit on native Apple Silicon hosts. Waiting by exact head
     # SHA prevents a newer green branch run from qualifying an older pull request revision.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
