@@ -85,7 +85,7 @@ jobs:
           # change. Renovate bumps these via the `# renovate:` custom manager — surfaced as a
           # green-gated PR, not a surprise on main.
           # renovate: datasource=pypi depName=ruff
-          RUFF="0.17.1"
+          RUFF="0.17.3"
           # renovate: datasource=pypi depName=mypy
           MYPY="2.4.1"
           # renovate: datasource=pypi depName=pytest
@@ -166,7 +166,7 @@ jobs:
       - name: install and test the claimed source floor
         run: |
           # renovate: datasource=pypi depName=ruff
-          RUFF="0.17.1"
+          RUFF="0.17.3"
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.2.0"
           # renovate: datasource=pypi depName=pyyaml
