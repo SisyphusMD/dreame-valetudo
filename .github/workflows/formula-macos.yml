@@ -110,6 +110,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14.8"
+      - name: Unlink the python.org Python from the brew prefix
+        # setup-python installs the python.org framework, which links python3, pip3, idle3
+        # and friends into /usr/local/bin, Homebrew's own prefix on Intel. A python@ that
+        # brew has to link there then fails `brew link`, and every dependency it builds
+        # afterwards dies on `No module named pip.__main__`. Only the symlinks go: the
+        # interpreter setup-python put on PATH lives in the toolcache. The installer writes
+        # relative targets, hence the leading wildcard.
+        run: find "$(brew --prefix)/bin" -maxdepth 1 -type l -lname '*/Library/Frameworks/Python.framework/*' -print -delete
       - name: Install the rendered formula and run it
         # The runner is disposable, which is the condition test-homebrew-formula.sh
         # asks for. It builds its own tarball from this checkout, so no sdist has to
