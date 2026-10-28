@@ -77,6 +77,10 @@ mkdir -p "$test_home/dreame-valetudo/backups"
 printf 'keep\n' > "$test_home/dreame-valetudo/backups/uninstall-must-preserve"
 # GitHub's macOS runners pre-tap aws/tap; Homebrew 6.0+ warns on it as untrusted, so drop it first.
 brew untap aws/tap 2>/dev/null || true
+# HOMEBREW_NO_AUTO_UPDATE keeps brew from refreshing mid-test, so refresh once here instead. A
+# runner image's formula metadata is as old as the image, and a dependency added to homebrew-core
+# since then reads as "No available formula".
+sh "$repo/packaging/retry.sh" 5 brew update --quiet
 brew tap-new --no-git "$tap"
 tap_created=true
 tap_dir=$(brew --repository "$tap")
