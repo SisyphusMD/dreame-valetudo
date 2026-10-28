@@ -272,7 +272,7 @@
       "minimumReleaseAge": "3 days"
     },
     {
-      "description": "release-macos.yml's `python-version` is not a test runner: PyInstaller freezes that exact interpreter into the shipped .pkg, so it has to move with BUNDLE_PYTHON_VERSION and the checksum a human reviews alongside it. The annotation hands the line to the cpython tag dep; disabling the built-in manager here leaves that dep as its only owner rather than an automerging second one that could ship a different Python than the Linux bundles carry.",
+      "description": "release-macos.yml's `python-version` is not a test runner: PyInstaller freezes that exact interpreter into the shipped .pkg, so it has to move with BUNDLE_PYTHON_VERSION and the checksum refresh-pins.sh regenerates alongside it. The annotation hands the line to the cpython tag dep; disabling the built-in manager here leaves that dep as its only owner rather than an automerging second one that could ship a different Python than the Linux bundles carry.",
       "matchManagers": [
         "github-actions"
       ],
