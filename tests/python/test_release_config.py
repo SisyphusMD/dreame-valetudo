@@ -560,7 +560,8 @@ def test_homebrew_templates_build_from_the_pypi_sdist() -> None:
         assert "refresh-pins.sh" in formula
 
     # No Renovate manager reads a .rb, so the formula's interpreter can only stay correct by being
-    # rewritten from the pin. Assert they actually agree rather than that a note asks someone to.
+    # rewritten from the pin. Assert they actually agree rather than that a note asks someone to,
+    # and that no other interpreter literal is left behind for the rewrite to miss.
     series = ".".join(
         re.search(  # type: ignore[union-attr]
             r'^BUNDLE_PYTHON_VERSION = "([^"]+)"',
@@ -570,6 +571,9 @@ def test_homebrew_templates_build_from_the_pypi_sdist() -> None:
     for name in ("dreame-valetudo.rb", "dreame-valetudo-rc.rb"):
         formula = (_ROOT / "packaging" / "homebrew" / name).read_text()
         assert f'depends_on "python@{series}"' in formula, name
+        # Any other interpreter literal (the venv path) is one the rewrite would have to miss.
+        stray = set(re.findall(r"python@?(3\.\d+)", formula)) - {series}
+        assert not stray, f"{name} names Python {sorted(stray)}, not the bundle's {series}"
 
 
 def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:

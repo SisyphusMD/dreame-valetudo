@@ -78,12 +78,13 @@ rewrite "s|^(BUNDLE_PYTHON_SHA256 = \")[0-9a-f]{64}(\")|\\1${PY_FRESH}\\2|"
 PY_SERIES="$(echo "$PY_VERSION" | cut -d. -f1,2)"
 for formula in "$BREW_FORMULAE"/*.rb; do
   [ -f "$formula" ] || continue
-  if ! grep -q "depends_on \"python@${PY_SERIES}\"" "$formula"; then
-    tmp="$(mktemp)"
-    sed -E "s|(depends_on \"python@)[0-9]+\.[0-9]+(\")|\\1${PY_SERIES}\\2|" "$formula" >"$tmp"
-    mv "$tmp" "$formula"
-    note "$(basename "$formula") -> python@${PY_SERIES}"
-  fi
+  # Every interpreter literal, not just depends_on: a venv path left on the old minor names a
+  # Python the formula no longer installs.
+  tmp="$(mktemp)"
+  sed -E "s/(python@?)3\.[0-9]+/\\1${PY_SERIES}/g" "$formula" >"$tmp"
+  if cmp -s "$formula" "$tmp"; then rm "$tmp"; continue; fi
+  mv "$tmp" "$formula"
+  note "$(basename "$formula") -> python@${PY_SERIES}"
 done
 
 # --- pyusb: vendored into the Homebrew virtualenv so USB needs no network -------------------------
