@@ -25,7 +25,7 @@ REPLACE_BOTTLE_BLOCK
 
   # matches the interpreter the .pkg/.deb bundles freeze. No Renovate manager covers this formula,
   # so packaging/refresh-pins.sh rewrites it from BUNDLE_PYTHON_VERSION as a postUpgradeTask.
-  depends_on "python@3.14"
+  depends_on "python@3.15"
   depends_on "libusb"       # the fastboot-over-libusb client + sunxi-fel load it at runtime
   depends_on "dtc"          # libfdt (sunxi-fel is built from source on first run)
   depends_on "zlib"         # sunxi-fel's fel.c needs zlib.h (system on macOS, explicit for Linux)
@@ -59,7 +59,7 @@ REPLACE_BOTTLE_BLOCK
     # NOT virtualenv_install_with_resources: that pip-installs every resource, and sunxi-tools is
     # a C program. pyusb still rides along in the venv so the fastboot client works with no
     # network; the package itself stays stdlib-only.
-    venv = virtualenv_create(libexec/"venv", "python3.14")
+    venv = virtualenv_create(libexec/"venv", "python3.15")
     venv.pip_install resources.reject { |r| r.name == "sunxi-tools" }
     venv.pip_install buildpath
 
