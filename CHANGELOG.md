@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The `.deb` and `.rpm` ship a man page (`man dreame-valetudo`), with the licence and README under
+  `/usr/share/doc/dreame-valetudo`.
+
 - `dreame-valetudo uninstall` exits non-zero when a removal fails, and repeats any steps left to do
   by hand at the end. As root it no longer needs `sudo`, which containers and minimal servers
   often lack.

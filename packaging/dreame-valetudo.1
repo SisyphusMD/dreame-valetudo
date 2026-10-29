@@ -1,0 +1,184 @@
+.\" Man page for dreame-valetudo. Debian policy expects one for anything in
+.\" /usr/bin, and lintian flags its absence. The sibling whiskerless project
+.\" ships one on the same terms.
+.\"
+.\" A repo invariant (tests/python/test_release_config.py) asserts every
+.\" command the CLI dispatches appears here, so the two cannot drift silently.
+.TH DREAME-VALETUDO 1 "2026-10-28" "dreame-valetudo" "User Commands"
+.SH NAME
+dreame-valetudo \- root a Dreame robot vacuum and install Valetudo on it
+.SH SYNOPSIS
+.B dreame-valetudo
+.RI [ command ]
+.RI [ args ]
+.SH DESCRIPTION
+.B dreame-valetudo
+is an idempotent runbook for rooting a supported Dreame, Mova or Xiaomi robot
+vacuum over USB and replacing its cloud with Valetudo. Run with no command, it
+asks for the model and the robot, then drives every phase in order, resuming
+wherever it left off.
+.PP
+Phases that write to the robot are marked DESTRUCTIVE below.
+.B recon
+can capture a disaster\-recovery copy of the robot's flash into its working
+directory, and
+.B root
+warns and asks before flashing without one. The robot's factory data goes into
+the backups directory, which no command deletes.
+.PP
+.B dreame-valetudo help
+lists the supported models.
+.SH ROOTING COMMANDS
+.TP
+.B auto
+Drive the whole chain explicitly. Identical to running with no command.
+.TP
+.B doctor
+Set up and verify the toolchain this machine needs.
+.TP
+.B fetch
+Download the stage1 package and the Valetudo binary, verified.
+.TP
+.B recon
+Phase 1, NON\-DESTRUCTIVE: validate the USB connection and record the robot's
+configuration.
+.TP
+.B image
+Open the firmware builder and unpack the built image when it arrives.
+.TP
+.B root
+Phase 2, DESTRUCTIVE: flash the rooted image, checking every step.
+.TP
+.B valetudo
+Phase 3: explain how the Valetudo binary is pushed onto the robot.
+.TP
+.BR push " [\fIkey\fR]"
+Phase 3: do it. Back up over SSH, push the binary and reboot.
+.TP
+.B ui
+On the robot's access point: wait for Valetudo, then open its web UI.
+.SH AFTER ROOTING
+.TP
+.B rekey
+Authorize your SSH key on an already\-rooted robot, over USB.
+.TP
+.BR backup " [\fIkey\fR]"
+Capture or refresh the factory data without changing the robot.
+.TP
+.BR update-valetudo " [\fIkey\fR]"
+Verify and atomically update Valetudo on an adopted robot.
+.TP
+.B restore
+DESTRUCTIVE: return this robot to its captured stock firmware.
+.TP
+.B diagnose
+On the robot's access point: check why the UI is not up.
+.TP
+.B fix-impl
+Pin the Valetudo implementation for the robot's model.
+.TP
+.B fix-did
+Repair a negative factory deviceId.
+.TP
+.B fix-key
+Restore the miio key some units keep only in secure storage.
+.TP
+.B fix-wifi
+Help with a Wi\-Fi drop\-out after rooting.
+.SH MANAGING ROBOTS
+.TP
+.B status
+What is done and what is left, for every robot.
+.TP
+.B model
+Correct the saved model before the robot is rooted.
+.TP
+.BI rename " old new"
+Rename a robot. Its configuration identity is unchanged.
+.TP
+.BI forget " name"
+Remove a robot's working directory, including its recon recovery dumps. Its
+factory backups are kept.
+.TP
+.BR clean " [\fB\-\-all\fR]"
+Delete the download cache; with
+.BR \-\-all ,
+staged firmware too. Recovery material is always kept.
+.TP
+.B migrate
+Run the one\-time workspace migration now, rather than on the next start.
+.SH TOOLS
+.TP
+.B sshkey
+Show, or generate, the SSH public key the firmware builder asks for.
+.TP
+.B verify-form
+Check this model's live firmware\-builder form against its recorded golden.
+.TP
+.B verify-forms
+Check every fastboot model's live form. For CI and maintenance.
+.TP
+.BR bench " ..."
+Run and record a hardware qualification campaign.
+.TP
+.B install-udev
+Linux only, once, needs sudo: grant USB access without sudo.
+.TP
+.B uninstall
+Find every copy of this tool and remove the ones you pick. The workspace and
+its backups are never touched.
+.TP
+.B version
+Print the version. Also
+.B \-V
+and
+.BR \-\-version .
+.TP
+.B help
+Print the usage, or with a command, that command's line. Also
+.B \-h
+and
+.BR \-\-help .
+.SH FILES
+.TP
+.I ~/dreame-valetudo/work/
+Per\-robot working state, including recon's disaster\-recovery flash dumps, the
+download cache and staged firmware.
+.TP
+.I ~/dreame-valetudo/backups/
+Each robot's factory data, kept when a robot is forgotten and when this tool is
+uninstalled. Delete it only when you no longer need to restore any robot.
+.SH ENVIRONMENT
+.TP
+.B DREAME_MODEL
+The model key, skipping the picker.
+.TP
+.B DREAME_ROBOT
+The robot to act on, skipping the picker.
+.TP
+.B DREAME_WORK
+A different working directory.
+.TP
+.B DREAME_BACKUPS
+A different backups directory.
+.TP
+.B DREAME_SSHKEY
+The SSH key to authorize on the robot.
+.PP
+The usage text lists the remaining overrides.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, including a deliberate abort at a confirmation.
+.TP
+.B 1
+An error.
+.TP
+.B 2
+Refused by a safety gate.
+.SH SEE ALSO
+Full documentation and the supported\-model notes:
+.UR https://github.com/SisyphusMD/dreame-valetudo
+.UE
+.SH AUTHOR
+Cody Bryant <SisyphusMD@users.noreply.github.com>

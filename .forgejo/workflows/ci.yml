@@ -241,6 +241,9 @@ jobs:
           # each with a copy of its target, so the package would no longer be what was built.
           cp -a out/dreame-valetudo out/dreame-fastboot dist/
           cp out/sunxi-fel ./sunxi-fel
+          # nfpm.yaml ships the man page gzipped, and build-linux-arch.sh generates it just before
+          # packaging, so it is not in the tree. -n keeps the gzip header free of a timestamp.
+          gzip -9 -n -c packaging/dreame-valetudo.1 > packaging/dreame-valetudo.1.gz
           # Build two ordered RC package revisions so the distro smoke tests exercise an actual
           # package-manager upgrade, not merely a reinstall. docker create+cp is required because
           # the DinD daemon cannot bind-mount the job workspace.

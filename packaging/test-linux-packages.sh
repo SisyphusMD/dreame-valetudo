@@ -10,7 +10,7 @@ fail() {
 
 installed_smoke() {
   local manager=$1 old_package=$2 new_package=${3:-}
-  local old_version new_version installed runtime fastboot_out fastboot_rc upgrade=true
+  local old_version new_version installed owned runtime fastboot_out fastboot_rc upgrade=true
 
   if [ -z "$new_package" ]; then
     new_package=$old_package
@@ -93,6 +93,17 @@ installed_smoke() {
   test -d /usr/lib/dreame-valetudo/app/_internal/libexec/dustbuilder-forms
   test -f /usr/lib/dreame-valetudo/app/_internal/dreame_valetudo/CHANGELOG.md
   command -v tmux >/dev/null
+  # Asked of the package database, not the disk: the Debian and Ubuntu container images tell dpkg
+  # to skip /usr/share/man and /usr/share/doc, so a test -f there fails for a reason that has
+  # nothing to do with the package.
+  case "$manager" in
+    apt) owned=$(dpkg-query -L dreame-valetudo) ;;
+    *) owned=$(rpm -ql dreame-valetudo) ;;
+  esac
+  for path in /usr/share/man/man1/dreame-valetudo.1.gz \
+              /usr/share/doc/dreame-valetudo/LICENSE; do
+    grep -Fxq "$path" <<<"$owned" || fail "the package does not own $path"
+  done
 
   runtime=$(dreame-valetudo version)
   [[ "$runtime" =~ ^[[:space:]]*dreame-valetudo\ [0-9] ]] \
@@ -126,7 +137,9 @@ installed_smoke() {
   for path in /usr/bin/dreame-valetudo \
               /usr/lib/dreame-valetudo/dreame-fastboot \
               /usr/lib/dreame-valetudo/sunxi-fel \
-              /usr/lib/udev/rules.d/99-dreame-valetudo.rules; do
+              /usr/lib/udev/rules.d/99-dreame-valetudo.rules \
+              /usr/share/man/man1/dreame-valetudo.1.gz \
+              /usr/share/doc/dreame-valetudo/LICENSE; do
     { [ ! -e "$path" ] && [ ! -L "$path" ]; } || fail "uninstall left $path behind"
   done
   # The trees are the bulk of the install. Removing only the launchers above would satisfy every

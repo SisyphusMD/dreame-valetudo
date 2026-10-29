@@ -42,6 +42,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Generated from packaging/dreame-valetudo.1 at build time, never committed —
+# a checked-in copy drifts the first time the page is edited.
+packaging/dreame-valetudo.1.gz
+
 # Packaging build outputs (PyInstaller, pkgbuild, deb, rpm).
 build/
 /out/

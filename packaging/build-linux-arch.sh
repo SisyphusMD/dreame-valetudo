@@ -47,6 +47,9 @@ VERSION="${tag#v}"
 PKGVER="${VERSION/-rc./~rc.}"
 GLIBC_FLOOR="$(cat packaging/glibc-floor.txt)"
 export VERSION GLIBC_FLOOR
+# nfpm.yaml ships the man page gzipped. -n so the gzip header carries no timestamp: the package
+# stays byte-reproducible.
+gzip -9 -n -c packaging/dreame-valetudo.1 > packaging/dreame-valetudo.1.gz
 
 # Package signing, FAIL-CLOSED. An unsigned package installs perfectly well, so nothing downstream
 # would notice — but the apt/dnf repository serves these to subscribers whose dnf is configured with

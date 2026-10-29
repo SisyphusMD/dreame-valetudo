@@ -63,6 +63,22 @@ contents:
       mode: 0755
   - src: ./packaging/udev/99-dreame-valetudo.rules   # USB access without sudo
     dst: /usr/lib/udev/rules.d/99-dreame-valetudo.rules
+  # Debian policy expects a man page for anything in /usr/bin, and lintian flags its absence.
+  # Shipped PRE-COMPRESSED: dpkg does not gzip man pages (debhelper does, and nfpm is not
+  # debhelper), so an uncompressed page trades one lintian warning for another. The sibling
+  # whiskerless package ships its page, licence and README the same way.
+  - src: ./packaging/dreame-valetudo.1.gz
+    dst: /usr/share/man/man1/dreame-valetudo.1.gz
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/doc/dreame-valetudo/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/dreame-valetudo/README.md
+    file_info:
+      mode: 0644
 
 scripts:
   postinstall: ./packaging/deb-postinstall.sh   # reload udev so the rules apply immediately (deb + rpm)

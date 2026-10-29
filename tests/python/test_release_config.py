@@ -15,6 +15,8 @@ from typing import Any
 
 import yaml
 
+from dreame_valetudo.cli import _KNOWN_COMMANDS
+
 _ROOT = Path(__file__).resolve().parents[2]
 _PUBLISH = _ROOT / ".forgejo" / "workflows" / "publish.yml"
 _CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
@@ -3088,3 +3090,33 @@ def test_the_formula_smoke_refreshes_brew_before_installing() -> None:
     install = script.find("brew install")
     assert update != -1, "test-homebrew-formula.sh never refreshes brew"
     assert update < install, "brew update must run before brew install"
+
+
+def test_the_man_page_documents_every_command() -> None:
+    """A man page is only worth shipping if it is true. Adding a command and forgetting the page
+    is invisible in review, and lintian checks that the page exists, never that it is complete.
+    The sibling whiskerless pins its page against its argparse tree the same way."""
+    page = (_ROOT / "packaging" / "dreame-valetudo.1").read_text(encoding="utf-8")
+    # Only .TP entries count. A bare `.B` mention elsewhere is a cross-reference, and matching on
+    # those would let a command's actual entry be deleted with the test still passing.
+    entries = set()
+    lines = page.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == ".TP" and index + 1 < len(lines):
+            following = lines[index + 1]
+            if following.startswith((".B ", ".BR ", ".BI ")):
+                entries.add(following.split()[1].strip('"'))
+    commands = {name for name in _KNOWN_COMMANDS if not name.startswith("-")}
+    missing = sorted(commands - entries)
+    assert not missing, f"no .TP entry in dreame-valetudo.1 for: {missing}"
+
+
+def test_the_man_page_is_installed_by_the_packages() -> None:
+    recipe = yaml.safe_load((_ROOT / "packaging" / "nfpm.yaml").read_text(encoding="utf-8"))
+    destinations = {entry["dst"] for entry in recipe["contents"]}
+    # Compressed: dpkg does not gzip man pages and nfpm is not debhelper.
+    assert "/usr/share/man/man1/dreame-valetudo.1.gz" in destinations
+    for source in (_CI, _BUILD_ARCH):
+        assert "gzip -9 -n -c packaging/dreame-valetudo.1 > packaging/dreame-valetudo.1.gz" in (
+            source.read_text()
+        ), source.name
