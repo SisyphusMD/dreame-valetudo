@@ -209,6 +209,31 @@ packages, and the release carries no arm64 Linux assets at all.
   current Debian and Ubuntu LTS plus Debian 12 and Ubuntu 22.04 compatibility floors. Physical USB
   access and the udev rule still require a real host.
 
+## Transient runner failures
+
+GitHub's hosted runners sometimes fail before any of our steps run — observed 2026-08-11 in the
+sibling project, a `Set up job` phase that could not parse `actions/checkout`'s own manifest on the
+macos-26 beta image, while the same pinned SHA loaded fine on three other runners in the same matrix.
+
+`retry-infra-failures.yml` handles those without a human, and deliberately handles nothing else. The
+discriminator is the vendored `packaging/triage-infra-failure.py`, shared with whiskerless:
+
+- It re-runs **only** when every failed step is a phase the runner owns before ours begin
+  (`Set up job` / `Set up runner`). A failing test always fails one of our named steps, so it can
+  never be laundered into a green build here. `Complete job` is excluded on purpose: it fails after
+  artifacts are uploaded, and artifacts are immutable within a run, so a retry could not succeed.
+- The two exceptions are steps of ours that the runner's *network* failed, each matched exactly:
+  a resolver failure naming a host CI is known to reach, in the failed step's closing lines; and an
+  **edge ban**. Hosted runners borrow recycled cloud addresses, and one the cluster's CrowdSec
+  banned gets HTTP 403 from Forgejo for everything (observed, dreame-valetudo v0.3.0-rc.48). Every
+  job that reaches Forgejo therefore runs `packaging/forgejo-preflight.sh` first, as its own
+  `Check this runner can reach Forgejo` step: an anonymous read Forgejo itself never refuses. Only
+  that step failing with that script's marker is retried; a 403 later in the job may be a revoked
+  token and stays red. A repo invariant keeps every Forgejo-reaching job covered.
+- It retries **once** (`run_attempt == 1`). A fault that recurs is not transient and stays red.
+- Every invocation is the flake record: how often this workflow appears in the Actions tab is the
+  number to watch. A cluster means a runner image regressed, not that we got unlucky.
+
 ## Secrets
 
 Derived from the workflows, not maintained by hand — if this list and
