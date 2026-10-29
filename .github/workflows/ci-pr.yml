@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"   # exact pin (repo convention); Renovate bumps the patch
+          python-version: "3.15.2"   # exact pin (repo convention); Renovate bumps the patch
       - name: lint + typecheck + test
         run: |
           set -euo pipefail
@@ -83,7 +83,7 @@ jobs:
         with:
           # The oldest interpreter pyproject advertises — the one a user on a long-term distro
           # actually gets, and the one nothing else here exercises.
-          python-version: "3.15.1"
+          python-version: "3.15.2"
       - name: install and test the claimed source floor
         run: |
           set -euo pipefail
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
       - name: Shellcheck
         # The release path is shell scripts that only run during a release, so a mistake in one
         # surfaces while cutting it rather than in review.
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
       - name: install the session wrapper's own dependency
         run: |
           set -euo pipefail
