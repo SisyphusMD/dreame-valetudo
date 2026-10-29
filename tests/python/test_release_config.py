@@ -283,6 +283,8 @@ def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() ->
     assert "runs-on: ${{ matrix.os }}" in release
     assert "needs: [build, current]" in release
     assert release.count("bash packaging/test-macos-package.sh") == 2
+    # Gatekeeper's verdict, as in the sibling: `installer` does not enforce notarization.
+    assert "spctl -a -vvv -t install" in (_ROOT / "packaging" / "test-macos-package.sh").read_text()
     assert release.index("- os: macos-15") < release.index("  current:")
     assert release.index("- os: macos-26", release.index("  current:")) > release.index("  current:")
 

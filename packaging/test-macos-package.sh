@@ -22,6 +22,12 @@ trap cleanup EXIT
 
 mkdir -p "$test_home/dreame-valetudo/backups"
 printf 'keep\n' > "$test_home/dreame-valetudo/backups/uninstall-must-preserve"
+# Gatekeeper's own verdict first: `installer` does not enforce notarization, so a successful
+# install proves nothing about whether a user could run it.
+spctl -a -vvv -t install "$pkg" 2>&1 | tee /tmp/spctl.txt
+grep -qi accepted /tmp/spctl.txt
+grep -qi notarized /tmp/spctl.txt \
+  || { echo "::error::pkg is signed but NOT notarized" >&2; exit 1; }
 pkgutil --check-signature "$pkg"
 xcrun stapler validate "$pkg"
 sudo installer -pkg "$pkg" -target /
