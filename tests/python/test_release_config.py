@@ -1323,6 +1323,32 @@ def test_the_install_matrix_verdict_is_known_to_the_triage_as_derivative() -> No
     assert names and set(names) <= _load_triage().DERIVATIVE_STEPS
 
 
+def test_a_pkg_role_for_an_arch_no_longer_built_is_retired() -> None:
+    """Dropping Intel removed the x86_64 leg from the .pkg build but left its role demanded, and the
+    first release after it waited out the install matrix's whole deadline for a .pkg nothing would
+    build. A role for an arch the build no longer has belongs in _RETIRED_ASSET_ROLES, and a retired
+    role for an arch it does build would let a missing .pkg through unnoticed."""
+    roles = (_ROOT / "packaging" / "asset-roles.sh").read_text(encoding="utf-8")
+
+    def table(name: str) -> list[str]:
+        found = re.search(rf"^{name}=\((.*?)\)$", roles, re.M | re.S)
+        assert found, f"asset-roles.sh no longer declares {name}"
+        return re.findall(r"^\s*'([^']+)'", found.group(1), re.M)
+
+    required, retired = table("_ASSET_ROLES"), table("_RETIRED_ASSET_ROLES")
+    assert set(retired) <= set(required), f"retired roles that are not roles: {set(retired) - set(required)}"
+    assert not set(retired) & set(table("_OPTIONAL_ASSET_ROLES")), "a role cannot be optional and retired"
+    workflow = yaml.safe_load((_ROOT / ".github" / "workflows" / "release-macos.yml").read_text(encoding="utf-8"))
+    built = {leg["arch"] for leg in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]}
+    assert built, "the .pkg build has no arches"
+    wrong = []
+    for role in required:
+        arch = re.search(r"macos-(\w+)\.pkg$", role)
+        if arch and (arch.group(1) in built) == (role in retired):
+            wrong.append(role)
+    assert wrong == [], f".pkg roles whose retirement disagrees with the arches built {sorted(built)}: {wrong}"
+
+
 def test_the_infra_triage_is_the_shared_one() -> None:
     """The discriminator is subtle enough that two copies would drift into two policies — and the
     dangerous direction of drift is the generous one, which launders flaky tests into green builds

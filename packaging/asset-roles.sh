@@ -15,7 +15,7 @@ _ASSET_ROLES=(
   'dreame-valetudo*macos-arm64.pkg'
   # Intel Macs are no longer built for, but stable releases that shipped an Intel .pkg are never
   # pruned, and this role is what lets reconcile repair a missing copy of one. Newer tags log a
-  # warn-only "no asset matches" for it.
+  # warn-only "no asset matches" for it, and _RETIRED_ASSET_ROLES keeps the wait from demanding it.
   'dreame-valetudo*macos-x86_64.pkg'
   'dreame-valetudo-*-linux-amd64.tar.gz'
   'dreame-valetudo-*-linux-arm64.tar.gz'
@@ -45,6 +45,13 @@ _OPTIONAL_ASSET_ROLES=(
 # What a release cut before the optional roles carries in their place, which the wait then demands
 # instead. None here: releases before the per-architecture checksums carried no checksum file at all.
 _OPTIONAL_ASSET_PREDECESSORS=()
+
+# Roles no release cut today carries, kept above only so reconcile can heal the old releases that do.
+# wait-for-release.sh never demands one: listed as an ordinary role, the first release after Intel
+# was dropped waited out the install matrix's whole deadline for a .pkg nothing builds.
+_RETIRED_ASSET_ROLES=(
+  'dreame-valetudo*macos-x86_64.pkg'
+)
 
 # Homebrew bottles are NOT reconciled, and that is deliberate rather than an oversight. Note the
 # narrow claim: not reconciled, which is not the same as not mirrored. The NAS carries a complete
