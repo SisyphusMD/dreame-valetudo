@@ -149,14 +149,18 @@ dreame-valetudo
 **Or subscribe to the dnf repository:**
 
 ```bash
+# Fedora (dnf5)
+sudo dnf config-manager addrepo \
+  --from-repofile=https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd.repo
+
+# RHEL, Rocky (dnf4)
 sudo dnf config-manager --add-repo \
   https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/raw/branch/main/packaging/sisyphusmd.repo
 
 sudo dnf install dreame-valetudo
 ```
 
-(`sisyphusmd-testing.repo` in place of `sisyphusmd.repo` tracks release candidates. On dnf4,
-`--add-repo` is the same flag; on dnf5 it is `dnf config-manager addrepo --from-repofile=<url>`.)
+(`sisyphusmd-testing.repo` in place of `sisyphusmd.repo` tracks release candidates.)
 
 That file pins the **SisyphusMD** signing key, `CCE50015D058E9BF`, and dnf verifies every package
 against it on every install. Do **not** substitute the `.repo` file Forgejo generates at
