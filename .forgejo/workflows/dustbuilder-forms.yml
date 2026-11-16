@@ -35,7 +35,9 @@ concurrency:
 jobs:
   verify:
     # Never execute fork-supplied Python on the self-hosted runner.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # flow == 0 also turns away AGit PRs (pushed to refs/for/<branch>): they report this repo as
+    # their head, and a maintainer reopening one runs this branch's workflows with secrets.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
