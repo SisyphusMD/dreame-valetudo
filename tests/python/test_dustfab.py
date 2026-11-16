@@ -251,7 +251,7 @@ def test_committed_goldens_match_their_own_snapshot_shape(make_ctx: CtxFactory) 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(D, "_verify_page", fake_verify)
         mp.setattr(D, "_verify_stage1_package", lambda *_a: True)
-        assert verify_all_forms(ctx) is True
+        assert verify_all_forms(ctx) == "match"
     assert len(pages) == 2 * len(_FASTBOOT) + len(BRAND_LISTINGS)
     assert "https://fab.valetudo.cloud/build/mova/r2491/check" in pages
     assert "https://fab.valetudo.cloud/build/xiaomi" in pages
@@ -287,7 +287,7 @@ def test_all_page_verification_accumulates_every_failure(
     monkeypatch.setattr(D, "_verify_page", fail_some)
     monkeypatch.setattr(D, "_verify_stage1_package", lambda *_a: True)
 
-    assert verify_all_forms(ctx) is False
+    assert verify_all_forms(ctx) == "changed"
     assert len(urls) == 2 * len(_FASTBOOT) + len(BRAND_LISTINGS)
     assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]
 
@@ -377,6 +377,66 @@ def test_all_page_verification_fails_on_a_moved_stage1_pin(
     monkeypatch.setattr(D, "_verify_page", lambda *_a, **_k: True)
     monkeypatch.setattr(D, "_verify_stage1_package", stage1)
 
-    assert verify_all_forms(ctx) is False
+    assert verify_all_forms(ctx) == "changed"
     assert sampled == [spec.dust_code for spec in D._stage1_samples()]
+    assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("curl_exit", [6, 7, 28, 35])
+def test_a_host_that_never_answered_is_unknown_rather_than_changed(
+    make_ctx: CtxFactory, curl_exit: int,
+) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=lambda argv: Result(argv, curl_exit, "", "x"))
+
+    assert D._verify_model_form(ctx, ctx.model_spec) is None
+    assert verify_form(ctx) is False
+    assert "did not answer" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("curl_exit, body", [(22, ""), (0, "  ")])
+def test_an_error_page_or_empty_answer_still_fails_rather_than_reading_as_unreachable(
+    make_ctx: CtxFactory, curl_exit: int, body: str,
+) -> None:
+    """A model page Dustfab removed answers 404 (curl -f exits 22)."""
+    ctx = make_ctx(model="x40-ultra", responder=lambda argv: Result(argv, curl_exit, body, ""))
+
+    assert D._verify_model_form(ctx, ctx.model_spec) is False
+
+
+def test_one_answered_attempt_among_refused_ones_is_not_unreachable(make_ctx: CtxFactory) -> None:
+    exits = iter([7, 22, 7])
+    ctx = make_ctx(model="x40-ultra", responder=lambda argv: Result(argv, next(exits), "", ""))
+
+    assert D._verify_model_form(ctx, ctx.model_spec) is False
+
+
+def test_an_unreachable_stage1_package_is_unknown(make_ctx: CtxFactory, tmp_path: Path) -> None:
+    ctx = make_ctx(model="x40-ultra", responder=lambda argv: Result(argv, 7, "", "refused"))
+
+    assert D._verify_stage1_package(ctx, ctx.model_spec, tmp_path) is None
+
+
+@pytest.mark.parametrize("page, package, expected", [
+    (None, True, "unreachable"),
+    (True, None, "unreachable"),
+    (False, None, "changed"),
+    (None, False, "changed"),
+])
+def test_all_page_verification_reports_unreachable_only_when_nothing_differed(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+    page: bool | None, package: bool | None, expected: str,
+) -> None:
+    ctx = make_ctx()
+    urls: list[str] = []
+
+    def one_odd_page(_ctx, *, label, url, golden_name, snapshot):
+        urls.append(url)
+        return page if len(urls) == 1 else True
+
+    monkeypatch.setattr(D, "_verify_page", one_odd_page)
+    monkeypatch.setattr(D, "_verify_stage1_package", lambda *_a: package)
+
+    assert verify_all_forms(ctx) == expected
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert ("got no answer" in text) is (expected == "unreachable")
     assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]

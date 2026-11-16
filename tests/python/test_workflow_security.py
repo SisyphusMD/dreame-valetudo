@@ -555,6 +555,15 @@ def test_both_release_workflows_ship_the_dustfab_date_their_gate_verified() -> N
         assert any(stamp in line for line in tag_lines if "git add" in line or line == stamp)
 
 
+def test_the_weekly_dustfab_check_warns_only_when_dustfab_is_unreachable() -> None:
+    jobs = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text())["jobs"]
+    lines = _run_lines(jobs["verify"])
+    assert "python -m dreame_valetudo verify-forms" in lines
+    assert any(line.startswith("3) echo \"::warning::") for line in lines)
+    assert '*) exit "$rc" ;;' in lines  # a changed page (1) or a crash still fails the job
+    assert "0) ;;" in lines
+
+
 def test_the_weekly_dustfab_check_only_reports() -> None:
     workflow = (_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text()
     assert "git push" not in workflow and "secrets." not in workflow

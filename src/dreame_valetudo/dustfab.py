@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Literal
 
 from .constants import STAGE1_SHA256
 from .context import Context
@@ -257,19 +258,41 @@ def listing_snapshot(html: str) -> str:
     return "".join(f"{href}\n" for href in pages)
 
 
-def _fetch(ctx: Context, label: str, url: str, *, out: Path | None = None) -> str | None:
-    """The page body, or with ``out`` the sha256 of the file saved there; None after 3 failed tries."""
+# curl exits meaning the host never answered: DNS (6), connection refused (7), timeout (28), TLS
+# handshake (35). An HTTP error or an empty body is an answer, so it still fails the check: a page
+# Dustfab removed must not pass as Dustfab being down.
+_UNREACHED_CURL_EXITS = frozenset({6, 7, 28, 35})
+
+# What `verify-forms` concluded. "unreachable" is kept apart from "changed": Dustfab being offline
+# says nothing about its pages, and must not read as a page change.
+FormsResult = Literal["match", "changed", "unreachable"]
+
+
+def _fetch(
+    ctx: Context, label: str, url: str, *, out: Path | None = None,
+) -> str | Literal[False] | None:
+    """The page body, or with ``out`` the sha256 of the file saved there.
+
+    After three failed tries: False if Dustfab answered with an error or nothing, None if it never
+    answered at all.
+    """
     argv = (["curl", "-fsSL", "-m", "20", url] if out is None
             else ["curl", "-fsSL", "-m", "60", "-o", str(out), url])
+    answered = False
     for attempt in range(3):
         result = ctx.runner.run(argv, check=False)
         if result.ok and out is None and result.stdout.strip():
             return result.stdout
         if result.ok and out is not None and out.is_file() and out.stat().st_size:
             return sha256_of(out)
+        if result.returncode not in _UNREACHED_CURL_EXITS:
+            answered = True
         if attempt < 2:
             ctx.sleep(2)
-    ctx.console.err(f"{label}: couldn't fetch {url} after 3 tries")
+    if answered:
+        ctx.console.err(f"{label}: couldn't fetch {url} after 3 tries")
+        return False
+    ctx.console.err(f"{label}: {url} did not answer after 3 tries")
     return None
 
 
@@ -295,44 +318,50 @@ def _matches_golden(
 
 def _verify_page(
     ctx: Context, *, label: str, url: str, golden_name: str, snapshot: Callable[[str], str],
-) -> bool:
+) -> bool | None:
+    """True: matches its golden. False: differs, no golden, or an error page. None: no answer."""
     html = _fetch(ctx, label, url)
-    if html is None:
-        return False
+    if html is None or html is False:
+        return html
     return _matches_golden(
         ctx, label=label, url=url, golden_name=golden_name, actual=snapshot(html),
     )
 
 
-def _verify_model_form(ctx: Context, model_spec: ModelSpec, *, url: str | None = None) -> bool:
+def _verify_model_form(
+    ctx: Context, model_spec: ModelSpec, *, url: str | None = None,
+) -> bool | None:
     page = url or model_spec.fab_page
-    if not _verify_page(
+    verdict = _verify_page(
         ctx, label=model_spec.model, url=page,
         golden_name=f"{model_spec.dust_code}.txt", snapshot=form_snapshot,
-    ):
-        return False
+    )
+    if verdict is not True:
+        return verdict
     ctx.console.info(
         f"{model_spec.model}: matches ({form_guide(model_spec.dust_code).firmware_label})"
     )
     return True
 
 
-def _verify_check_page(ctx: Context, model_spec: ModelSpec) -> bool:
-    if not _verify_page(
+def _verify_check_page(ctx: Context, model_spec: ModelSpec) -> bool | None:
+    verdict = _verify_page(
         ctx, label=f"{model_spec.model} check", url=model_spec.fab_check_page,
         golden_name=f"{model_spec.dust_code}-check.txt", snapshot=checker_snapshot,
-    ):
-        return False
+    )
+    if verdict is not True:
+        return verdict
     ctx.console.info(f"{model_spec.model} check page: matches")
     return True
 
 
-def _verify_listing(ctx: Context, brand: str) -> bool:
-    if not _verify_page(
+def _verify_listing(ctx: Context, brand: str) -> bool | None:
+    verdict = _verify_page(
         ctx, label=f"{brand} listing", url=f"https://{DUSTFAB_HOST}/build/{brand}",
         golden_name=f"listing-{brand}.txt", snapshot=listing_snapshot,
-    ):
-        return False
+    )
+    if verdict is not True:
+        return verdict
     ctx.console.info(f"{brand} listing: matches")
     return True
 
@@ -357,12 +386,12 @@ def _stage1_samples() -> list[ModelSpec]:
     return samples
 
 
-def _verify_stage1_package(ctx: Context, model_spec: ModelSpec, scratch: Path) -> bool:
+def _verify_stage1_package(ctx: Context, model_spec: ModelSpec, scratch: Path) -> bool | None:
     label = f"{model_spec.model} stage1 package"
     url = model_spec.stage1_url
     got = _fetch(ctx, label, url, out=scratch / f"{model_spec.dust_code}.tar.gz")
-    if got is None:
-        return False
+    if got is None or got is False:
+        return got
     pin = STAGE1_SHA256[model_spec.dust_code]
     if got != pin:
         ctx.console.err(f"{label}: Dustfab changed it: {url} is {got}, pinned {pin}")
@@ -373,38 +402,40 @@ def _verify_stage1_package(ctx: Context, model_spec: ModelSpec, scratch: Path) -
 
 def verify_form(ctx: Context) -> bool:
     """Check the selected model's live page; never called by the rooting flow."""
-    return _verify_model_form(ctx, ctx.model_spec, url=ctx.fab_page)
+    return _verify_model_form(ctx, ctx.model_spec, url=ctx.fab_page) is True
 
 
-def verify_all_forms(ctx: Context) -> bool:
+def verify_all_forms(ctx: Context) -> FormsResult:
     """Check every live build page, check page and brand listing, and the stage1 pins, without
     touching a robot.
 
-    Dustfab rate-limits by address, so fetches run one at a time with a pause between.
+    "changed" if anything fetched differs from what is committed, even when other fetches got no
+    answer; "unreachable" only when nothing differed and at least one fetch got no answer. Dustfab
+    rate-limits by address, so fetches run one at a time with a pause between.
     """
-    ok = True
-    checked = 0
+    pages: list[bool | None] = []
     for key in SUPPORTED_MODELS:
         model_spec = load_model_spec(key)
         if model_spec.method != "fastboot":
             continue
         for verify in (_verify_model_form, _verify_check_page):
-            checked += 1
-            if not verify(ctx, model_spec):
-                ok = False
+            pages.append(verify(ctx, model_spec))
             ctx.sleep(1)
     for brand in BRAND_LISTINGS:
-        checked += 1
-        if not _verify_listing(ctx, brand):
-            ok = False
+        pages.append(_verify_listing(ctx, brand))
         ctx.sleep(1)
-    samples = _stage1_samples()
+    packages: list[bool | None] = []
     with tempfile.TemporaryDirectory(prefix="dreame-valetudo-stage1-") as scratch:
-        for model_spec in samples:
-            if not _verify_stage1_package(ctx, model_spec, Path(scratch)):
-                ok = False
+        for model_spec in _stage1_samples():
+            packages.append(_verify_stage1_package(ctx, model_spec, Path(scratch)))
             ctx.sleep(1)
-    if ok:
-        ctx.console.say(f"All {checked} Dustfab pages match their committed goldens, and all "
-                        f"{len(samples)} sampled stage1 packages match their pins.")
-    return ok
+    results = pages + packages
+    if False in results:
+        return "changed"
+    if None in results:
+        ctx.console.err(f"{results.count(None)} of {len(results)} Dustfab fetches got no answer; "
+                        "nothing that was fetched differed.")
+        return "unreachable"
+    ctx.console.say(f"All {len(pages)} Dustfab pages match their committed goldens, and all "
+                    f"{len(packages)} sampled stage1 packages match their pins.")
+    return "match"

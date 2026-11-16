@@ -5,7 +5,8 @@ The fastboot implementation follows the official
 model's entry on the
 [Supported Robots page](https://valetudo.cloud/pages/general/supported-robots/). The weekly
 `Dustfab forms` workflow checks a fresh checkout of `Hypfer/Valetudo`; the local rooting flow
-never depends on that network check.
+never depends on that network check. When Dustfab itself cannot be reached, that workflow warns
+instead of failing; a page or stage-one package that changed still fails it.
 
 ## Per-model contract
 

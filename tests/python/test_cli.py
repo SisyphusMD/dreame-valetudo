@@ -645,7 +645,7 @@ def test_verify_all_forms_runs_without_selecting_or_creating_a_robot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     called: list[bool] = []
-    monkeypatch.setattr(cli, "verify_all_forms", lambda _ctx: called.append(True) or True)
+    monkeypatch.setattr(cli, "verify_all_forms", lambda _ctx: called.append(True) or "match")
     con = ScriptedConsole()
 
     assert main(
@@ -655,6 +655,18 @@ def test_verify_all_forms_runs_without_selecting_or_creating_a_robot(
     assert called == [True]
     assert not (tmp_path / "robots").exists()
     assert not _has(con, "Which Dreame robot")
+
+
+@pytest.mark.parametrize("result, code", [("match", 0), ("changed", 1), ("unreachable", 3)])
+def test_verify_forms_exit_code_separates_an_unreachable_dustfab_from_a_changed_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: str, code: int,
+) -> None:
+    monkeypatch.setattr(cli, "verify_all_forms", lambda _ctx: result)
+
+    assert main(
+        ["verify-forms"], env={"DREAME_WORK": str(tmp_path)},
+        console=ScriptedConsole(), runner=RecordingRunner(),
+    ) == code
 
 
 def test_main_uart_walkthrough_has_model_specific_tips(tmp_path: Path) -> None:

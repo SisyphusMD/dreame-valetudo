@@ -661,7 +661,9 @@ def _dispatch(cmd: str, rest: Sequence[str], ctx: Context) -> int:
     if cmd == "install-udev":
         return install_udev(ctx)
     if cmd == "verify-forms":
-        return 0 if verify_all_forms(ctx) else 1
+        # 3, not 1, when Dustfab could not be reached: CI reports that as the service being down
+        # rather than as a page change.
+        return {"match": 0, "changed": 1, "unreachable": 3}[verify_all_forms(ctx)]
     if cmd == "status":
         status(ctx)
         return 0

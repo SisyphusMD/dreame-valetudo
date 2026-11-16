@@ -58,8 +58,20 @@ jobs:
       # gates already install it before their own version checks, for the same reason.
       - name: Install the package so its module is importable
         run: python -m pip install --quiet -e .
+      # Dustfab being offline is reported, not failed: it says nothing about its pages, and failing
+      # on it turns every pull request that touches this workflow red for as long as the site is
+      # down. A page or stage1 package that changed still fails.
       - name: compare every live Dustfab page with its golden
-        run: python -m dreame_valetudo verify-forms
+        run: |
+          set +e
+          python -m dreame_valetudo verify-forms
+          rc=$?
+          set -e
+          case "$rc" in
+            0) ;;
+            3) echo "::warning::Dustfab could not be reached, so its pages were not all checked" ;;
+            *) exit "$rc" ;;
+          esac
       - name: compare model and rooting contracts with official Valetudo
         run: |
           git clone --depth=1 https://github.com/Hypfer/Valetudo.git /tmp/upstream-valetudo
