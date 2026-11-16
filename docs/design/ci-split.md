@@ -68,8 +68,10 @@ Each of these is in the test's exception list, with the same reason recorded the
   and the formula smoke on macOS too (`macos.yml`); those two copies go once both
   agree.
 - **arm64 anything** — `release-linux-arm64.yml`, and the `linux-arm64` leg of
-  `install-matrix.yml`. No arm64 hardware here, and the alternative is the
-  emulation described above.
+  `install-matrix.yml`. There was no arm64 hardware here, and the alternative
+  was the emulation described above. There is now: Forgejo builds and
+  install-tests the same tags natively too (`release-arm64.yml`,
+  `install-matrix-arm64.yml`), and these copies go once both agree.
 - **`ci-pr.yml`** — pull requests are on GitHub by project policy, so Forgejo
   never sees the event.
 - **`retry-infra-failures.yml`** — it re-runs GitHub workflow runs through the
