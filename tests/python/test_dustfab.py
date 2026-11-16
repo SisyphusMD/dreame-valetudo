@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 from conftest import CtxFactory
 
 from dreame_valetudo import dustfab as D
+from dreame_valetudo.constants import STAGE1_SHA256
 from dreame_valetudo.dustfab import (
     BRAND_LISTINGS,
     FORM_GUIDES,
@@ -248,12 +250,14 @@ def test_committed_goldens_match_their_own_snapshot_shape(make_ctx: CtxFactory) 
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(D, "_verify_page", fake_verify)
+        mp.setattr(D, "_verify_stage1_package", lambda *_a: True)
         assert verify_all_forms(ctx) is True
     assert len(pages) == 2 * len(_FASTBOOT) + len(BRAND_LISTINGS)
     assert "https://fab.valetudo.cloud/build/mova/r2491/check" in pages
     assert "https://fab.valetudo.cloud/build/xiaomi" in pages
     text = ctx.console.text()  # type: ignore[attr-defined]
     assert f"All {len(pages)} Dustfab pages match" in text
+    assert f"all {len(set(STAGE1_SHA256.values()))} sampled stage1 packages match" in text
     assert "check page: matches" in text and "xiaomi listing: matches" in text
 
 
@@ -264,8 +268,10 @@ def test_all_page_verification_paces_its_fetches(
     pauses: list[float] = []
     ctx.sleep = pauses.append
     monkeypatch.setattr(D, "_verify_page", lambda *_a, **_k: True)
+    monkeypatch.setattr(D, "_verify_stage1_package", lambda *_a: True)
     verify_all_forms(ctx)
-    assert pauses == [1] * (2 * len(_FASTBOOT) + len(BRAND_LISTINGS))
+    pins = len(set(STAGE1_SHA256.values()))
+    assert pauses == [1] * (2 * len(_FASTBOOT) + len(BRAND_LISTINGS) + pins)
 
 
 def test_all_page_verification_accumulates_every_failure(
@@ -279,6 +285,7 @@ def test_all_page_verification_accumulates_every_failure(
         return not url.endswith(("/r2416", "/check", "/xiaomi"))
 
     monkeypatch.setattr(D, "_verify_page", fail_some)
+    monkeypatch.setattr(D, "_verify_stage1_package", lambda *_a: True)
 
     assert verify_all_forms(ctx) is False
     assert len(urls) == 2 * len(_FASTBOOT) + len(BRAND_LISTINGS)
@@ -296,3 +303,80 @@ def test_snapshot_closes_a_self_closing_element_rather_than_nesting_the_rest_ins
     # An unclosed <svg> would hide every following text node, so the label would vanish.
     assert selfclosed == plain
     assert "label=Create diff" in selfclosed
+
+
+def test_stage1_samples_take_one_model_per_pin_and_cover_every_pin() -> None:
+    samples = D._stage1_samples()
+    pins = [STAGE1_SHA256[spec.dust_code] for spec in samples]
+    assert len(pins) == len(set(pins))
+    assert set(pins) == set(STAGE1_SHA256.values())
+    assert all(spec.method == "fastboot" for spec in samples)
+
+
+def _package_responder(body: bytes, *, failures: int = 0):
+    calls: list[tuple[str, ...]] = []
+
+    def responder(argv: tuple[str, ...]) -> Result:
+        calls.append(argv)
+        if len(calls) <= failures:
+            return Result(argv, 22, "", "temporary")
+        Path(argv[argv.index("-o") + 1]).write_bytes(body)
+        return Result(argv, 0, "", "")
+
+    return responder, calls
+
+
+def test_stage1_package_check_passes_only_on_the_pinned_digest(
+    make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responder, calls = _package_responder(b"package", failures=1)
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+    monkeypatch.setitem(STAGE1_SHA256, "r2416", hashlib.sha256(b"package").hexdigest())
+
+    assert D._verify_stage1_package(ctx, ctx.model_spec, tmp_path) is True
+    assert len(calls) == 2  # retried the failed attempt
+    assert calls[-1] == ("curl", "-fsSL", "-m", "60", "-o", str(tmp_path / "r2416.tar.gz"),
+                         "https://fab.valetudo.cloud/robot/dreame/r2416/fel/recon")
+    assert "stage1 package: matches its pin" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_stage1_package_check_reports_a_rebuilt_package(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    responder, _calls = _package_responder(b"rebuilt")
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+
+    assert D._verify_stage1_package(ctx, ctx.model_spec, tmp_path) is False
+    text = ctx.console.text()  # type: ignore[attr-defined]
+    assert "Dustfab changed it" in text
+    assert hashlib.sha256(b"rebuilt").hexdigest() in text and STAGE1_SHA256["r2416"] in text
+
+
+def test_stage1_package_check_fails_after_three_empty_downloads(
+    make_ctx: CtxFactory, tmp_path: Path,
+) -> None:
+    responder, calls = _package_responder(b"")
+    ctx = make_ctx(model="x40-ultra", responder=responder)
+
+    assert D._verify_stage1_package(ctx, ctx.model_spec, tmp_path) is False
+    assert len(calls) == 3
+    assert "couldn't fetch" in ctx.console.text()  # type: ignore[attr-defined]
+
+
+def test_all_page_verification_fails_on_a_moved_stage1_pin(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = make_ctx()
+    sampled: list[str] = []
+
+    def stage1(_ctx, model_spec, scratch):
+        sampled.append(model_spec.dust_code)
+        assert scratch.is_dir()
+        return model_spec.dust_code != "r2104"
+
+    monkeypatch.setattr(D, "_verify_page", lambda *_a, **_k: True)
+    monkeypatch.setattr(D, "_verify_stage1_package", stage1)
+
+    assert verify_all_forms(ctx) is False
+    assert sampled == [spec.dust_code for spec in D._stage1_samples()]
+    assert not any(kind == "say" for kind, _message in ctx.console.lines)  # type: ignore[attr-defined]

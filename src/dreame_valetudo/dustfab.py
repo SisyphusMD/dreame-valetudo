@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import difflib
 import re
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
+from .constants import STAGE1_SHA256
 from .context import Context
 from .models import DUSTFAB_HOST, SUPPORTED_MODELS, ModelSpec, load_model_spec
+from .util import sha256_of
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,11 +257,16 @@ def listing_snapshot(html: str) -> str:
     return "".join(f"{href}\n" for href in pages)
 
 
-def _fetch(ctx: Context, label: str, url: str) -> str | None:
+def _fetch(ctx: Context, label: str, url: str, *, out: Path | None = None) -> str | None:
+    """The page body, or with ``out`` the sha256 of the file saved there; None after 3 failed tries."""
+    argv = (["curl", "-fsSL", "-m", "20", url] if out is None
+            else ["curl", "-fsSL", "-m", "60", "-o", str(out), url])
     for attempt in range(3):
-        result = ctx.runner.run(["curl", "-fsSL", "-m", "20", url], check=False)
-        if result.ok and result.stdout.strip():
+        result = ctx.runner.run(argv, check=False)
+        if result.ok and out is None and result.stdout.strip():
             return result.stdout
+        if result.ok and out is not None and out.is_file() and out.stat().st_size:
+            return sha256_of(out)
         if attempt < 2:
             ctx.sleep(2)
     ctx.console.err(f"{label}: couldn't fetch {url} after 3 tries")
@@ -329,15 +337,50 @@ def _verify_listing(ctx: Context, brand: str) -> bool:
     return True
 
 
+def _stage1_samples() -> list[ModelSpec]:
+    """One fastboot model per distinct stage1 pin, in picker order.
+
+    Dustfab rate-limits recon downloads per address (20 an hour when this was written), so not every
+    model's package is fetched each run. The payload is shared, so a rebuild of it moves every pin
+    and is caught here; a new FSBL for one unsampled model is not, and fetch still refuses that
+    package on its checksum.
+    """
+    pins: set[str] = set()
+    samples: list[ModelSpec] = []
+    for key in SUPPORTED_MODELS:
+        model_spec = load_model_spec(key)
+        pin = STAGE1_SHA256.get(model_spec.dust_code)
+        if model_spec.method != "fastboot" or pin is None or pin in pins:
+            continue
+        pins.add(pin)
+        samples.append(model_spec)
+    return samples
+
+
+def _verify_stage1_package(ctx: Context, model_spec: ModelSpec, scratch: Path) -> bool:
+    label = f"{model_spec.model} stage1 package"
+    url = model_spec.stage1_url
+    got = _fetch(ctx, label, url, out=scratch / f"{model_spec.dust_code}.tar.gz")
+    if got is None:
+        return False
+    pin = STAGE1_SHA256[model_spec.dust_code]
+    if got != pin:
+        ctx.console.err(f"{label}: Dustfab changed it: {url} is {got}, pinned {pin}")
+        return False
+    ctx.console.info(f"{label}: matches its pin")
+    return True
+
+
 def verify_form(ctx: Context) -> bool:
     """Check the selected model's live page; never called by the rooting flow."""
     return _verify_model_form(ctx, ctx.model_spec, url=ctx.fab_page)
 
 
 def verify_all_forms(ctx: Context) -> bool:
-    """Check every live build page, check page and brand listing without touching a robot.
+    """Check every live build page, check page and brand listing, and the stage1 pins, without
+    touching a robot.
 
-    Dustfab rate-limits by address, so pages are fetched one at a time with a pause between.
+    Dustfab rate-limits by address, so fetches run one at a time with a pause between.
     """
     ok = True
     checked = 0
@@ -355,6 +398,13 @@ def verify_all_forms(ctx: Context) -> bool:
         if not _verify_listing(ctx, brand):
             ok = False
         ctx.sleep(1)
+    samples = _stage1_samples()
+    with tempfile.TemporaryDirectory(prefix="dreame-valetudo-stage1-") as scratch:
+        for model_spec in samples:
+            if not _verify_stage1_package(ctx, model_spec, Path(scratch)):
+                ok = False
+            ctx.sleep(1)
     if ok:
-        ctx.console.say(f"All {checked} Dustfab pages match their committed goldens.")
+        ctx.console.say(f"All {checked} Dustfab pages match their committed goldens, and all "
+                        f"{len(samples)} sampled stage1 packages match their pins.")
     return ok

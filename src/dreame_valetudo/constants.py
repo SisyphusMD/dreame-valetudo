@@ -20,14 +20,16 @@ VALETUDO_SHA256 = {
 
 # The stage1 FEL package runs on the SoC before rooting starts, so it is pinned + verified before
 # extraction. Dustfab serves one per model (by dust code). Each holds the same payload.bin
-# (80fe99fd…, the 2026.10.00 "Dustfab edition"), an fsbl.bin Dustfab picks for the model, and a
-# valetudo-helper-felroot-amd64 this tool does not use. The FSBLs: the DDR4 models get the old
-# shared tarball's fsbl_ddr4.bin (12ba0bfe…), the D10s models its fsbl_ddr3.bin (25afb268…), and
-# the W10 Pro a 39040-byte one of its own (5780e43f…) that the old tarball never carried. The
-# archives are built reproducibly (zero tar and gzip mtimes), so the outer digest is stable across
-# fetches. Re-pin by hand if Dustfab changes them (no datasource to track).
-_STAGE1_DDR4 = "a30bb18f34e13d7657dc8f51f5055ed065d5a9cccb58b7151757d6cbcbfaa8c0"
-_STAGE1_D10S = "e075287b3e8bd1453494cb67f4f84194b7edcefaa90c291d6b1dfc5c3bee3c24"
+# (22f42f7c…, the 2026.10.00 "Dustfab edition" U-Boot built 2026-10-27), an fsbl.bin Dustfab picks
+# for the model, and a valetudo-helper-felroot-amd64 this tool does not use. The FSBLs: the DDR4
+# models get the old shared tarball's fsbl_ddr4.bin (12ba0bfe…), the D10s models its fsbl_ddr3.bin
+# (25afb268…), and the W10 Pro a 39040-byte one of its own (5780e43f…) that the old tarball never
+# carried. The archives are built reproducibly (zero tar and gzip mtimes), so the outer digest is
+# stable across fetches until Dustfab rebuilds one. There is no datasource to track: the weekly
+# `verify-forms` run fetches one package per pin below and fails when its digest moves, and the
+# re-pin is by hand.
+_STAGE1_DDR4 = "48f835fa115b4a735929c331841bfeb4c18f02e8f870646ddabe746a5ab0aed6"
+_STAGE1_D10S = "f406f9287e5ca184cb69a70ed6748a45bcc03fa21fcefaa9d57f8cabb0dd673b"
 STAGE1_SHA256 = {
     "r2416": _STAGE1_DDR4,
     "r2465": _STAGE1_DDR4,
@@ -41,7 +43,7 @@ STAGE1_SHA256 = {
     "r2491": _STAGE1_DDR4,
     "r2250": _STAGE1_D10S,
     "r2240": _STAGE1_D10S,
-    "r2104": "540721a8825c46c4d908f721b7f06aeaaf5fd28f79531a9f724cadab82ff90bc",
+    "r2104": "e48115442283a841c8fb0eb38f69c467a685d4b7153b9e611a89f07df8f4da83",
 }
 
 # The fixed transport keystream is recovered from the robot's sealed flash dumps rather than
