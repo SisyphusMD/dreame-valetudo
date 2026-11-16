@@ -1053,7 +1053,7 @@ def prepare_stock_restore_kit(ctx: Context, *, chunk_bytes: int = RECOVERY_DUMP_
 
 @records_step("restoring stock firmware")
 def restore(ctx: Context, *, force: bool = False) -> None:
-    """Restore the normal DustBuilder-rooting path to the robot's captured stock firmware."""
+    """Restore the normal Dustfab-rooting path to the robot's captured stock firmware."""
     robot = ctx.need_robot()
     if robot.state_has("flash-attempt") and not force:
         safety_stop("SAFETY STOP: a prior rooting attempt did not record completion. The robot may contain "
@@ -1093,7 +1093,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
     ctx.console.phase("Restore the captured stock firmware — DESTRUCTIVE")
     ctx.console.warn("This removes the rooted firmware and Valetudo. It restores private/misc, "
                      "both boot/rootfs slots, and toc1 from this robot's pre-root capture.")
-    ctx.console.info("toc0 is verified but deliberately NOT rewritten: normal DustBuilder rooting "
+    ctx.console.info("toc0 is verified but deliberately NOT rewritten: normal Dustfab rooting "
                      "never changes it. This command is not for the experimental self-root/toc0 path.")
     ctx.console.warn("The recon backup is a boot-critical prefix, not the whole 3.9 GB disk, so "
                      "UDISK (/data) is not replayed byte-for-byte. Factory-reset the robot after "
@@ -1132,7 +1132,7 @@ def restore(ctx: Context, *, force: bool = False) -> None:
         die("The stock restore kit changed while hardware was being prepared. Refusing every write; "
             "preserve the kit for inspection and start again with verified artifacts.")
 
-    # Mirrors the dustbuilder fastboot `oem dust` unlock: the write-enable token is the config's
+    # Mirrors the rooting payload's fastboot `oem dust` unlock: the write-enable token is the config's
     # 8-hex prefix XORed with the shared constant, not an independent secret.
     token = f"{int(config[:8], 16) ^ _DUST_XOR:08x}"
     marker_error: OSError | None = None

@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from dreame_valetudo.constants import VALETUDO_SHA256, VALETUDO_VERSION_DEFAULT
+from dreame_valetudo.constants import STAGE1_SHA256, VALETUDO_SHA256, VALETUDO_VERSION_DEFAULT
+from dreame_valetudo.models import SUPPORTED_MODELS, load_model_spec
 
 _CONSTANTS = Path(__file__).resolve().parents[2] / "src" / "dreame_valetudo" / "constants.py"
 _ANNOTATED_DIGEST = re.compile(
@@ -47,3 +48,10 @@ def test_the_digest_annotations_are_actually_present_to_be_checked() -> None:
     # Guards the guard: if the annotation format changes, the regex above silently matches nothing
     # and the staleness check passes vacuously for every possible input.
     assert len(_annotated_digests()) == 3
+
+
+def test_every_fel_model_and_only_a_fel_model_has_a_stage1_pin() -> None:
+    specs = [load_model_spec(key) for key in SUPPORTED_MODELS]
+    fel = {spec.dust_code for spec in specs if spec.method == "fastboot"}
+    assert set(STAGE1_SHA256) == fel
+    assert all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in STAGE1_SHA256.values())

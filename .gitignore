@@ -26,6 +26,8 @@ check.txt
 dreame_samples.zip
 dreame_recovery_backup.zip
 *_fel_ng*.zip
+*.vacuum.*_fel*.tar.gz
+*.vacuum.*_fel*.tgz
 recovery-provenance.json
 .recovery-capture-refresh
 .dreame-valetudo-image.json

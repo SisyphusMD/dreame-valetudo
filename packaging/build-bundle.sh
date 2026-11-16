@@ -53,7 +53,7 @@ pyinstaller "${mode_args[@]}" --clean --noconfirm \
   --specpath "$(mktemp -d)" \
   --paths "$ROOT/src" \
   --add-data "$ROOT/libexec/fastboot-libusb.py:libexec" \
-  --add-data "$ROOT/libexec/dustbuilder-forms:libexec/dustbuilder-forms" \
+  --add-data "$ROOT/libexec/dustfab-forms:libexec/dustfab-forms" \
   --add-data "$ROOT/CHANGELOG.md:dreame_valetudo" \
   "$ROOT/packaging/pyinstaller-entry.py"
 

@@ -18,9 +18,33 @@ VALETUDO_SHA256 = {
     "armv7-lowmem": "d959043560db41f173abfd70efab4ab1f401c19e732f37918440b1feaa4de855",  # 2026.10.0
 }
 
-# The stage1 FEL tarball runs on the SoC before rooting starts, so it is pinned + verified before
-# extraction. Re-pin by hand if the upstream MR813 tarball changes (no datasource to track).
-STAGE1_SHA256 = "d53292fa35a4241aa6ce3ed6f391f0ab53a248c10cd28fbb8e00e6c0e56f1934"
+# The stage1 FEL package runs on the SoC before rooting starts, so it is pinned + verified before
+# extraction. Dustfab serves one per model (by dust code). Each holds the same payload.bin
+# (22f42f7c…, the 2026.10.00 "Dustfab edition" U-Boot built 2026-10-27), an fsbl.bin Dustfab picks
+# for the model, and a valetudo-helper-felroot-amd64 this tool does not use. The FSBLs: the DDR4
+# models get the old shared tarball's fsbl_ddr4.bin (12ba0bfe…), the D10s models its fsbl_ddr3.bin
+# (25afb268…), and the W10 Pro a 39040-byte one of its own (5780e43f…) that the old tarball never
+# carried. The archives are built reproducibly (zero tar and gzip mtimes), so the outer digest is
+# stable across fetches until Dustfab rebuilds one. There is no datasource to track: the weekly
+# `verify-forms` run fetches one package per pin below and fails when its digest moves, and the
+# re-pin is by hand.
+_STAGE1_DDR4 = "48f835fa115b4a735929c331841bfeb4c18f02e8f870646ddabe746a5ab0aed6"
+_STAGE1_D10S = "f406f9287e5ca184cb69a70ed6748a45bcc03fa21fcefaa9d57f8cabb0dd673b"
+STAGE1_SHA256 = {
+    "r2416": _STAGE1_DDR4,
+    "r2465": _STAGE1_DDR4,
+    "r9316": _STAGE1_DDR4,
+    "r2492": _STAGE1_DDR4,
+    "r2394": _STAGE1_DDR4,
+    "r2228": _STAGE1_DDR4,
+    "r2338": _STAGE1_DDR4,
+    "r2338h": _STAGE1_DDR4,
+    "r2385": _STAGE1_DDR4,
+    "r2491": _STAGE1_DDR4,
+    "r2250": _STAGE1_D10S,
+    "r2240": _STAGE1_D10S,
+    "r2104": "e48115442283a841c8fb0eb38f69c467a685d4b7153b9e611a89f07df8f4da83",
+}
 
 # The fixed transport keystream is recovered from the robot's sealed flash dumps rather than
 # shipped, but its known digest distinguishes the real key from a plausible constant-XOR offset.
@@ -65,9 +89,12 @@ TMUX_SHA256 = "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e"
 # is_dreame_ap guard before any AP-side command).
 ROBOT_AP_IP = "192.168.5.1"
 
-# The six files a built dustbuilder FEL image must contain to flash (image stages them, root
+# The six files a built FEL image must contain to flash (image stages them, root
 # checks + flashes them). Single-sourced so the two phases can't drift.
 FEL_IMAGE_FILES = ("fsbl.bin", "payload.bin", "toc1.img", "boot.img", "rootfs.img", "check.txt")
+# Valetudo's guide flashes a build's dtbo.img to dtbo1 and dtbo2 on the newer robots that have it.
+# root() does not do that yet, so a build carrying one is refused rather than flashed without it.
+FEL_IMAGE_UNSUPPORTED = ("dtbo.img",)
 STAGED_IMAGE_MANIFEST = ".dreame-valetudo-image.json"
 
 # Every SSH to the robot skips host-key recording/checking: the AP reuses ROBOT_AP_IP and its host

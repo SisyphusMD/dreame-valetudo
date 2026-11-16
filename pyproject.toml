@@ -37,7 +37,7 @@ packages = ["src/dreame_valetudo"]
 # PyInstaller bundle resolves them via resolve_libexec.
 [tool.hatch.build.targets.wheel.force-include]
 "libexec/fastboot-libusb.py" = "dreame_valetudo/libexec/fastboot-libusb.py"
-"libexec/dustbuilder-forms" = "dreame_valetudo/libexec/dustbuilder-forms"
+"libexec/dustfab-forms" = "dreame_valetudo/libexec/dustfab-forms"
 # Ship the changelog inside the package so the installed tool can show "what's new" on upgrade.
 "CHANGELOG.md" = "dreame_valetudo/CHANGELOG.md"
 
