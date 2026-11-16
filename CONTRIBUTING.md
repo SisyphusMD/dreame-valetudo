@@ -138,16 +138,17 @@ The reasoning, written down so it is not re-argued:
 
 ## Where issues and pull requests go
 
-**GitHub.** Open them at [SisyphusMD/dreame-valetudo](https://github.com/SisyphusMD/dreame-valetudo).
+**Forgejo.** Open them at [SisyphusMD/dreame-valetudo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues). You can sign in there with
+your GitHub account; there is no separate sign-up. The [GitHub repository](https://github.com/SisyphusMD/dreame-valetudo) is a
+read-only mirror and does not take issues or pull requests.
 
-Forgejo (`forgejo.bryantserver.com/SisyphusMD/dreame-valetudo`) is the source of truth and runs the full CI
-suite on every push to `main`, but it is not where contributions arrive — outside contributors have
-no account there, and its runner holds this project's release credentials. Every job in
-`.forgejo/workflows/ci.yml` therefore carries a fork-trust gate and deliberately **skips** a pull
-request from a fork rather than running untrusted code beside those secrets.
+To send a change, fork the repository on Forgejo and open a pull request against `main`.
 
-So a fork PR is tested on **GitHub-hosted runners**, which hold none of our secrets, by
-`.github/workflows/ci-pr.yml`. You get lint, strict type-checking, the full test suite against both the current interpreter and the 3.11 floor, both coverage gates, shellcheck, documentation links, the vendored-standard check, and the release-script integration suite.
+CI runs on this project's own runners, which also build and sign its releases, so it never runs
+code from a fork by itself. A maintainer reads the change, then opens it again as a pull request
+from a branch here, and that runs the whole suite: lint, strict type-checking, the full test suite against both the current
+interpreter and the 3.11 floor, both coverage gates, shellcheck, documentation links, the
+vendored-standard check, and the release-script integration suite.
 
 **What that does not cover**, so you are not surprised by a later failure:
 

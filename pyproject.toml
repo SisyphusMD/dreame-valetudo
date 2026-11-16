@@ -21,7 +21,7 @@ dependencies = []
 Homepage = "https://github.com/SisyphusMD/dreame-valetudo"
 Documentation = "https://github.com/SisyphusMD/dreame-valetudo/tree/main/docs"
 Source = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
-Issues = "https://github.com/SisyphusMD/dreame-valetudo/issues"
+Issues = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues"
 
 [project.scripts]
 dreame-valetudo = "dreame_valetudo.cli:main"
