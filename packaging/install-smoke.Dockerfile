@@ -177,7 +177,7 @@ FROM scratch AS deb-file-ubuntu-floor-result
 COPY --from=deb-file-ubuntu-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
-FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS ubuntu-base
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS ubuntu-base
 COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
