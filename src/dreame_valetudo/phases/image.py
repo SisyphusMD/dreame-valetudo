@@ -1,69 +1,55 @@
-"""Phase: image — build the rooted FEL image on the dustbuilder, then stage the built zip.
+"""Phase: image — build the rooted FEL image on Dustfab, then stage the built package.
 
-The web form can't be pre-filled (file upload + POST), so the phase prints exactly what to enter,
-watches for the built zip, and unpacks it, binding the picked zip to THIS exact model code so a look-alike
+The web form can't be pre-filled (captcha + POST), so the phase prints exactly what to enter,
+watches for the downloaded build, and unpacks it, binding the picked build to THIS exact model code so a look-alike
 build (r2338 vs r2338h) can't be staged.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from ..console import abort, die
-from ..constants import FEL_IMAGE_FILES, STAGED_IMAGE_MANIFEST
+from ..constants import FEL_IMAGE_FILES, FEL_IMAGE_UNSUPPORTED, STAGED_IMAGE_MANIFEST
 from ..context import Context
-from ..dustbuilder import (
-    CONFIG_CHECKER_URL,
-    checker_model_choice,
-    form_guide,
-    forms_verified_on,
-)
+from ..dustfab import form_guide, forms_verified_on
 from ..platform_env import open_url
 from ..session import records_step
 from ..ssh import choose_sshkey, stage_pub_for_upload
 from ..util import sha256_of, zip_matches_model
 from ..workspace import RECOVERY_BACKUP_ZIP, Robot, rename_no_replace
-from .recon import read_identity_from_robot
 
 
 def _print_checklist(ctx: Context, cfg: str, pubkey: Path) -> None:
     say, info, warn = ctx.console.say, ctx.console.info, ctx.console.warn
     guide = form_guide(ctx.model_spec.dust_code)
-    say("Build the rooted image on the dustbuilder — fill the web form TOP-TO-BOTTOM as below")
+    say("Build the rooted image on Dustfab — fill the web form TOP-TO-BOTTOM as below")
     verified = forms_verified_on(ctx.libexec)
-    warn(f"DustBuilder form instructions last verified: {verified}. The site can change "
+    warn(f"Dustfab form instructions last verified: {verified}. The site can change "
          "independently; compare the labels on the page carefully before submitting.")
-    info("   Your Voucher ......... leave as 'roborock' (the default)")
-    info("   Your Email ........... your email — the build link is emailed here")
-    info("   Your SSH-Public key .. SELECT this upload radio (neither key option is pre-selected)")
-    info(f"                          then Choose File -> {pubkey}")
-    info("                          (a copy in a normal folder — browser dialogs hide ~/.ssh; "
-         "upload it, do NOT 'generate a keypair')")
-    info("   Device serial number . the REAL serial from UNDER THE DUSTBIN, ALL-CAPS.")
+    info(f"   Base firmware ........ SELECT '{guide.firmware_label}'")
+    info("   Serial number ........ the REAL serial from UNDER THE DUSTBIN.")
     warn("     Do NOT fake it or substitute an app/API serial — a wrong serial can BRICK the "
          "unit. If that sticker is damaged or unreadable, do NOT substitute a serial from the "
          "Mi Home / Xiaomi Home app or any API — a replacement-mainboard robot has a serial that "
          "no longer matches its silicon, and a look-alike serial has permanently bricked units "
-         "(secure-boot signature rejection). Stop and ask in the dontvacuum / Valetudo community "
-         "first.")
-    info(f"   Config value ......... {cfg}")
+         "(secure-boot signature rejection). Stop and ask in the Valetudo community first.")
+    info("   Output format ........ SELECT 'FEL package' (NOT the default 'Installer package')")
+    info(f"   Config value ......... {cfg}  (the field appears once FEL package is selected)")
     info("   Create diff .......... leave UNCHECKED")
-    if guide.prepackage_valetudo:
-        info("   Prepackage Valetudo .. leave UNCHECKED (this tool installs it in Phase 3)")
-    info("   Patch DNS ............ leave CHECKED (the default; required for Valetudo)")
-    info("   Preinstall tools ..... leave CHECKED (the default; nano/curl/wget/htop/hexdump)")
-    info("   Build type ........... SELECT 'Create FEL image (for initial rooting via USB)'")
-    info("                          NOT the default 'Build for manual installation'")
-    info(f"   Firmware version ..... SELECT '{guide.firmware_label}'")
-    info("   I am human ........... complete the hCaptcha check")
-    info("   Confirm + Affidavit .. TICK BOTH boxes, then click 'Create Job'.")
+    info(f"   authorized_keys ...... 'Load from file' -> {pubkey}")
+    info("                          (a copy in a normal folder — browser dialogs hide ~/.ssh; "
+         "do NOT use 'Generate new keypair')")
+    info("   Hostkey seed ......... leave EMPTY")
+    info("   Human verification ... tick 'I am human' and complete the check")
+    info("   Then click 'Queue build'. Dustfab opens a job page: leave it open until the build "
+         "finishes, then download the FEL package from it.")
 
 
-def _open_dustbuilder(ctx: Context) -> None:
+def _open_dustfab(ctx: Context) -> None:
     robot = ctx.need_robot()
     cfg = ctx.robot_config()
     if not cfg:
@@ -83,9 +69,9 @@ def _open_dustbuilder(ctx: Context) -> None:
     if shutil.which("pbcopy") and ctx.runner.run(["pbcopy"], stdin=cfg, check=False).ok:
         ctx.console.info("The config value is on your clipboard — just paste it into the Config "
                          "field.")
-    ctx.console.warn("If the builder rejects your config with 'Error: unknown config value', this "
-                     "robot isn't auto-recognized yet — recoverable; the check-in right after this "
-                     "step prints the exact support-upload form.")
+    ctx.console.warn("If Dustfab rejects the config value, this robot isn't recognized yet. That "
+                     "is recoverable: the check-in right after this step prints what its check "
+                     "page needs.")
     ctx.console.warn("Either way, do NOT fake the serial or patch the installer to force a build — "
                      "that BRICKS the robot.")
 
@@ -93,100 +79,56 @@ def _open_dustbuilder(ctx: Context) -> None:
     had_receipt = receipt.is_file()
     reopened = False
     if receipt.is_file():
-        ctx.console.info(f"You already opened the builder for this robot ({receipt.read_text().strip()}). "
+        ctx.console.info(f"You already opened Dustfab for this robot ({receipt.read_text().strip()}). "
                          f"If that tab is still open, finish it there; the page is: "
-                         f"{ctx.dustbuilder_page}")
-        if ctx.interactive and ctx.console.confirm("Reopen the dustbuilder page now?"):
-            reopened = open_url(ctx.runner, ctx.system, ctx.dustbuilder_page, env=ctx.env)
+                         f"{ctx.fab_page}")
+        if ctx.interactive and ctx.console.confirm("Reopen the Dustfab page now?"):
+            reopened = open_url(ctx.runner, ctx.system, ctx.fab_page, env=ctx.env)
             if not reopened:
-                ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
+                ctx.console.info(f"Open this yourself: {ctx.fab_page}")
     else:
         # Fail closed: declining (or a non-tty EOF) STOPS here rather than silently watching
         # ~/Downloads for a build the user never started.
-        if not ctx.console.confirm("Open the dustbuilder in your browser now?"):
+        if not ctx.console.confirm("Open Dustfab in your browser now?"):
             abort("No problem — re-run 'dreame-valetudo' for this robot when ready.")
-        if not open_url(ctx.runner, ctx.system, ctx.dustbuilder_page, env=ctx.env):
-            ctx.console.info(f"Open this yourself: {ctx.dustbuilder_page}")
-    # The receipt is the floor that decides whether a downloaded zip belongs to this build, so it
+        if not open_url(ctx.runner, ctx.system, ctx.fab_page, env=ctx.env):
+            ctx.console.info(f"Open this yourself: {ctx.fab_page}")
+    # The receipt is the floor that decides whether a downloaded file belongs to this build, so it
     # moves forward whenever a build is (re)ordered — but NOT on a plain re-run, which would
-    # strand the zip the user downloaded between runs after a Ctrl+C.
+    # strand the build the user downloaded between runs after a Ctrl+C.
     if reopened or not had_receipt:
         robot.recon_dir.mkdir(parents=True, exist_ok=True)
         receipt.write_text(ctx.now() + "\n")
-    ctx.console.info(f"Page: {ctx.dustbuilder_page}")
-
-
-_RESCUE_VARS = (("Device serial number", "serialno"),
-                ("toc0hash value", "toc0hash"),
-                ("toc1hash value", "toc1hash"))
-_PDF_DIAGNOSTIC_VARS = (("dustversion", "dustversion"),
-                        ("ramsize", "ramsize"),
-                        ("toc1version", "toc1version"))
+    ctx.console.info(f"Page: {ctx.fab_page}")
 
 
 def _config_rejected_help(ctx: Context) -> None:
-    """Everything the dustbuilder's manual checker (check.builder.dontvacuum.me) needs when the
-    build is rejected with 'unknown config value': the get_staged image to upload plus the exact
-    getvar values. If an older recon didn't record serialno/toc0hash/toc1hash, the TOOL offers to
-    read them off the robot itself — the user never runs fastboot by hand."""
+    """What Dustfab's per-model check page needs when it does not recognize the config value: the
+    config value and the samples zip recon already saved. Uploading it opens a check job there."""
     robot = ctx.need_robot()
-    ident = robot.identity()
-
-    # Fill any gap by reading it off the robot ourselves, not by handing the user a command.
-    missing = [var for _label, var in _RESCUE_VARS if not ident.get(var)]
-    if missing and ctx.interactive:
-        ctx.console.warn(f"This robot's recon didn't record: {', '.join(missing)}. The tool reads "
-                         "these off the robot for you — you never run fastboot yourself.")
-        if ctx.console.confirm("Reconnect the robot and put it in FEL mode so I can read them now?"):
-            ident = {**ident, **read_identity_from_robot(ctx)}
-
     cfg = ctx.robot_config()
     zip_path = robot.recon_dir / RECOVERY_BACKUP_ZIP
-    ctx.console.action("Config not recognized — fill the support checker exactly as below")
-    ctx.console.warn(f"Support-form instructions last verified: {forms_verified_on(ctx.libexec)}. "
+    ctx.console.action("Config not recognized — fill Dustfab's check page exactly as below")
+    ctx.console.warn(f"Check-page instructions last verified: {forms_verified_on(ctx.libexec)}. "
                      "The site can change independently; compare its labels carefully.")
-    ctx.console.info("The builder can't auto-detect this robot yet ('unknown config value'). "
-                     "Upload the recovery sample so support can add it. Do NOT fake the serial or "
-                     "patch the installer.")
-    ctx.console.info(f"   {'Page':<22} {CONFIG_CHECKER_URL}")
+    ctx.console.info("Dustfab doesn't recognize this robot's config value yet. Uploading the "
+                     "recovery samples starts an investigation. Do NOT fake the serial or patch "
+                     "the installer.")
+    ctx.console.info(f"   {'Page':<22} {ctx.model_spec.fab_check_page}")
+    ctx.console.info(f"   {'Config value':<22} {cfg or '(re-run recon to capture)'}")
     if zip_path.is_file():
         size = zip_path.stat().st_size / (1 << 20)
-        ctx.console.info(f"   {'Choose File':<22} {zip_path}  ({size:.1f} MiB)")
-        ctx.console.warn("This recovery ZIP is a raw copy of the robot's flash. The site warns it "
-                         "can contain sensitive data, including Wi-Fi SSIDs/passwords and camera "
-                         "frames; it also includes the userdata partition and miio device key. "
-                         "Upload it only intentionally.")
+        ctx.console.info(f"   {'Sample zip':<22} Select zip -> {zip_path}  ({size:.1f} MiB)")
+        ctx.console.warn("This zip holds raw slices of the robot's flash. The site warns it can "
+                         "contain sensitive data, including Wi-Fi SSIDs/passwords and camera "
+                         "frames. Upload it only intentionally.")
     else:
-        ctx.console.warn(f"get_staged image MISSING at {zip_path} — re-run 'dreame-valetudo recon "
+        ctx.console.warn(f"Samples zip MISSING at {zip_path} — re-run 'dreame-valetudo recon "
                          "--force' (keep the recovery backup on) to build it, then come back.")
-    choice = checker_model_choice(ctx.model_spec.dust_code)
-    if choice is None:
-        ctx.console.warn(f"   {'Model radio':<22} no '{ctx.model_spec.dust_code.upper()}' choice "
-                         f"exists on the current form. Email check@dontvacuum.me with model "
-                         f"{ctx.model_spec.dust_code} before choosing a different revision.")
-    else:
-        ctx.console.info(f"   {'Model radio':<22} SELECT '{choice}'")
-    ctx.console.info(f"   {'Config value':<22} {cfg or '(re-run recon to capture)'}")
-    for label, var in _RESCUE_VARS:
-        val = ident.get(var)
-        if var == "serialno" and val and "not supported" in val.lower():
-            shown = "use the physical serial under the dustbin (fastboot cannot read it)"
-        else:
-            shown = val or "(not recorded — re-run recon and the tool will read it off the robot)"
-        ctx.console.info(f"   {label:<22} {shown}")
-    extras = [(label, ident.get(var)) for label, var in _PDF_DIAGNOSTIC_VARS if ident.get(var)]
-    if extras:
-        ctx.console.info("   Saved diagnostics      the linked Dreame PDF also requests these "
-                         "for debugging (the current web form has no fields for them):")
-        for label, value in extras:
-            ctx.console.info(f"   {label:<22} {value}")
-    ctx.console.info(f"   {'Submit':<22} click 'Upload File' (maximum shown by the page: 1536 MiB)")
-    ctx.console.info("Processing can take up to 24 hours. Then retry the original DustBuilder "
-                     "form with the same config value.")
-    ctx.console.info("If it is still rejected, email check@dontvacuum.me with subject 'config'. "
-                     f"Include model {ctx.model_spec.dust_code}, the config value above, and the last "
-                     "6 digits of the physical under-dustbin serial. Then re-run "
-                     "'dreame-valetudo' once the FEL build is accepted.")
+    ctx.console.info(f"   {'Human verification':<22} tick 'I am human' and complete the check")
+    ctx.console.info(f"   {'Submit':<22} click 'Upload' and follow the check job it opens")
+    ctx.console.info("Once the check job says the config is supported, re-run 'dreame-valetudo' "
+                     "for this robot and build the FEL package again.")
 
 
 def _when(ts: float) -> str:
@@ -194,7 +136,7 @@ def _when(ts: float) -> str:
 
 
 def _submitted_at(robot: Robot) -> float:
-    """When this robot's build was ordered — the floor a candidate zip's download time must clear.
+    """When this robot's build was ordered — the floor a candidate build's download time must clear.
 
     0.0 when there is no receipt, which keeps every candidate eligible rather than blocking.
     """
@@ -202,25 +144,45 @@ def _submitted_at(robot: Robot) -> float:
     return receipt.stat().st_mtime if receipt.is_file() else 0.0
 
 
-def _matching_zips(ctx: Context, robot: Robot) -> list[Path]:
+# Dustfab delivers a gzipped tarball (`dreame.vacuum.r2228_3407_fel.tar.gz`); a browser that
+# unpacks "safe" downloads may leave the plain `.tar`. The `_fel_ng` zip is what DustBuilder used to
+# send, still accepted for a build downloaded before it shut down.
+_BUILD_SUFFIXES = (".tar.gz", ".tgz", ".tar")
+# Names a browser gives a download still in progress, beside or instead of the final name.
+_PARTIAL_SUFFIXES = (".part", ".crdownload", ".download")
+
+
+def _is_build_name(name: str) -> bool:
+    if "_fel_ng" in name and name.endswith(".zip"):
+        return True
+    return "_fel" in name and name.endswith(_BUILD_SUFFIXES)
+
+
+def _download_in_progress(path: Path) -> bool:
+    return any(path.with_name(path.name + suffix).exists() for suffix in _PARTIAL_SUFFIXES)
+
+
+def _matching_builds(ctx: Context, robot: Robot) -> list[Path]:
     """Downloaded builds for this exact model code, newest first.
 
-    Globs `*_fel_ng*.zip`, not `*_fel_ng.zip`: a browser de-duplicates a repeat download to
-    `..._fel_ng (1).zip`, and the tighter pattern cannot see that file at all — so the previous
-    robot's stale zip stays the only match while this robot's real build sits beside it unseen.
+    Matched on the name's shape rather than one exact name: a browser de-duplicates a repeat
+    download to `..._fel (1).tar.gz`, and a tighter pattern cannot see that file at all — so the
+    previous robot's stale build stays the only match while this robot's real one sits beside it.
     """
     out: list[Path] = []
     for d in (ctx.home / "Downloads", robot.fw_dir):
         if d.is_dir():
-            out += [c for c in d.glob("*_fel_ng*.zip")
-                    if zip_matches_model(c, ctx.model_spec.model_code)]
+            out += [c for c in d.iterdir()
+                    if c.is_file() and not c.is_symlink() and _is_build_name(c.name)
+                    and zip_matches_model(c, ctx.model_spec.model_code)
+                    and not _download_in_progress(c)]
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str) -> str | None:
-    """The sibling robot that already staged this same zip, if any.
+    """The sibling robot that already staged this same build, if any.
 
-    A dustbuilder build belongs to ONE robot, so a zip consumed elsewhere is by definition not
+    A Dustfab build belongs to ONE robot, so a build consumed elsewhere is by definition not
     this robot's — matched on digest as well as name, since a re-download is renamed but identical.
     """
     for d in sorted(ctx.ws.robots_dir.glob("*")):
@@ -232,14 +194,83 @@ def _staged_by_another_robot(ctx: Context, robot: Robot, name: str, digest: str)
     return None
 
 
-def _watch_for_zip(ctx: Context, floor: float, tries: int = 720) -> str | None:
+def _watch_for_build(ctx: Context, floor: float, tries: int = 720) -> str | None:
     robot = ctx.need_robot()
     for _ in range(tries):
-        for c in _matching_zips(ctx, robot):
+        for c in _matching_builds(ctx, robot):
             if c.stat().st_mtime >= floor:
                 return str(c)
         ctx.sleep(5)
     return None
+
+
+def _download_settled(ctx: Context, path: Path, tries: int = 720) -> bool:
+    """Whether the file's size held still across one poll with no partial download beside it.
+
+    A browser can write the final name before the last byte lands, and a truncated tarball would
+    fail, or worse, half-extract. Applied to every candidate, however it was picked.
+    """
+    previous: int | None = None
+    for _ in range(tries):
+        size = path.stat().st_size if path.is_file() and not _download_in_progress(path) else None
+        if size and size == previous:
+            return True
+        previous = size
+        ctx.sleep(5)
+    return False
+
+
+def _archive_members(ctx: Context, archive: str) -> list[str]:
+    argv = (["unzip", "-Z1", archive] if archive.endswith(".zip")
+            else ["tar", "-tf", archive])
+    listing = ctx.runner.run(argv, check=False)
+    if not listing.ok:
+        die(f"Couldn't read {Path(archive).name}.")
+    return [line for line in listing.stdout.splitlines() if line.strip()]
+
+
+def _unpack_build(ctx: Context, archive: str, staging: Path) -> None:
+    """Unpack a build into `staging`, keeping only the files a flash uses, at its top level.
+
+    A Dustfab tarball nests everything under one directory beside the helper binary this tool does
+    not use; an old DustBuilder zip was flat. Both go through the same refusal of anything that is
+    not a plain file, so a link in the archive can never stand in for an image the root flashes.
+    """
+    # Checked in the listing, before extraction: both extractors silently let a later member of the
+    # same name overwrite an earlier one, so on disk two candidates would look like one.
+    wanted = set(FEL_IMAGE_FILES) | set(FEL_IMAGE_UNSUPPORTED)
+    names = [Path(member.rstrip("/")).name for member in _archive_members(ctx, archive)]
+    for name in sorted(wanted):
+        if names.count(name) > 1:
+            die(f"The build holds {names.count(name)} copies of {name}; refusing to guess which one "
+                "to flash.")
+    unpacked = staging / ".unpacked"
+    unpacked.mkdir()
+    if archive.endswith(".zip"):
+        argv = ["unzip", "-o", "-j", archive, "-d", str(unpacked)]
+    else:
+        # tar auto-detects gzip on both GNU and BSD tar, and both refuse absolute and `..` members.
+        argv = ["tar", "-xf", archive, "-C", str(unpacked)]
+    if not ctx.runner.run(argv, check=False).ok:
+        die(f"Couldn't unpack {Path(archive).name}.")
+    found: dict[str, list[Path]] = {}
+    for p in sorted(unpacked.rglob("*")):
+        if p.name in wanted:
+            found.setdefault(p.name, []).append(p)
+    unsupported = [name for name in FEL_IMAGE_UNSUPPORTED if name in found]
+    if unsupported:
+        die(f"This build contains {', '.join(unsupported)}, which this tool does not flash yet. "
+            "Rooting without it would leave the robot half-flashed, so nothing was staged.")
+    for name in FEL_IMAGE_FILES:
+        copies = found.get(name, [])
+        if len(copies) > 1:
+            die(f"The build holds {len(copies)} copies of {name}; refusing to guess which one to "
+                "flash.")
+        if copies:
+            if copies[0].is_symlink() or not copies[0].is_file():
+                die(f"{name} in the build is not a plain file; refusing to stage it.")
+            copies[0].rename(staging / name)
+    shutil.rmtree(unpacked)
 
 
 @records_step("building the rooted image")
@@ -268,79 +299,72 @@ def image(ctx: Context, *, force: bool = False) -> None:
         robot.remember_image()
         robot.state_clear("image")
 
-    unsup = ctx.runner.run(
-        ["curl", "-fsSL", "-m", "10", "https://builder.dontvacuum.me/unsupported.txt"], check=False
-    )
-    if unsup.ok and re.search(
-        rf"\b({ctx.model_spec.model_code}|{ctx.model_spec.dust_code})\b", unsup.stdout, re.IGNORECASE
-    ):
-        ctx.console.warn(f"{ctx.model_spec.model_code}/{ctx.model_spec.dust_code} appears on the "
-                         "dustbuilder's unsupported list — the build may be rejected.")
+    _open_dustfab(ctx)
 
-    _open_dustbuilder(ctx)
-
-    # Check in: a rejected config never produces a zip, so watching would just time out for an
-    # hour. Ask first; on 'no', print the check.builder rescue block and stop cleanly.
-    if not ctx.console.confirm("Did the dustbuilder accept your config and start the build?"):
+    # Check in: a rejected config never produces a build, so watching would just time out for an
+    # hour. Ask first; on 'no', print the check-page block and stop cleanly.
+    if not ctx.console.confirm("Did Dustfab queue the build (you see its job page)?"):
         _config_rejected_help(ctx)
         abort("Config not recognized yet — follow the steps above, then re-run 'dreame-valetudo' "
               "for this robot once you have a working FEL image.")
 
-    # A zip downloaded BEFORE this robot's build was ordered is almost always the previous robot's
+    # A build downloaded BEFORE this robot's build was ordered is almost always the previous robot's
     # build: same model code, same filename, still sitting in ~/Downloads. This robot's own build
     # does not exist yet, so the watcher would return that stale file on its first pass, instantly
     # and deterministically. Never stage one silently — name it and its age, and ask.
     floor = _submitted_at(robot)
-    zip_path = next((str(c) for c in _matching_zips(ctx, robot) if c.stat().st_mtime >= floor), None)
-    if not zip_path:
-        for c in _matching_zips(ctx, robot):
+    build_path = next((str(c) for c in _matching_builds(ctx, robot) if c.stat().st_mtime >= floor), None)
+    if not build_path:
+        for c in _matching_builds(ctx, robot):
             if ctx.console.confirm(
                 f"{c.name} was downloaded {_when(c.stat().st_mtime)}, before this robot's build was "
                 f"ordered ({_when(floor)}) — it may belong to another robot. Stage it anyway?"
             ):
-                zip_path = str(c)
+                build_path = str(c)
                 break
 
-    if not zip_path:
-        ctx.console.say("Watching ~/Downloads and the robot's fw dir for the built zip...")
-        with ctx.console.progress("Waiting for the built zip to land (builds take ~5-60 min; "
+    if not build_path:
+        ctx.console.say("Watching ~/Downloads and the robot's fw dir for the downloaded build...")
+        with ctx.console.progress("Waiting for the build to land (builds take ~5-60 min; "
                                   "Ctrl+C is safe — re-run once it downloads)") as p:
-            zip_path = _watch_for_zip(ctx, floor)
-            if not zip_path:
+            build_path = _watch_for_build(ctx, floor)
+            if not build_path:
                 p.close(done=False)
-    if not zip_path:
-        die("No zip found — re-run once the built zip is downloaded.")
+    if not build_path:
+        die("No build found — re-run once the FEL package is downloaded from the Dustfab job page.")
+    if not _download_settled(ctx, Path(build_path)):
+        die(f"{Path(build_path).name} is still downloading — re-run once it has finished.")
 
-    digest = sha256_of(zip_path)
-    used_by = _staged_by_another_robot(ctx, robot, Path(zip_path).name, digest)
+    digest = sha256_of(build_path)
+    used_by = _staged_by_another_robot(ctx, robot, Path(build_path).name, digest)
     if used_by and not ctx.console.confirm(
-        f"This zip is already staged for '{used_by}'. A dustbuilder build belongs to ONE robot and "
+        f"This build is already staged for '{used_by}'. A Dustfab build belongs to ONE robot and "
         "flashing another robot's build can brick this one. Stage it here anyway?"
     ):
         die("Refused — re-run once this robot's own build has downloaded.")
 
-    ctx.console.say(f"Found: {zip_path} (downloaded "
-                    f"{_when(Path(zip_path).stat().st_mtime)}) — unpacking into {robot.fw_dir}")
-    # Extract into a fresh sibling and swap, rather than over fw_dir. `unzip -o -j` leaves any
-    # file the new zip lacks untouched, and a member that fails CRC is written before unzip reports
-    # the failure — either way fw_dir becomes a MIXTURE of two builds that every later is_file()
-    # check happily accepts, and root() would flash one build's toc1 beside another's kernel.
+    ctx.console.say(f"Found: {build_path} (downloaded "
+                    f"{_when(Path(build_path).stat().st_mtime)}) — unpacking into {robot.fw_dir}")
+    # Extract into a fresh sibling and swap, rather than over fw_dir. Unpacking over it leaves any
+    # file the new build lacks untouched, and a member that fails its check is written before the
+    # extractor reports the failure — either way fw_dir becomes a MIXTURE of two builds that every
+    # later is_file() check happily accepts, and root() would flash one build's toc1 beside another's
+    # kernel.
     staging = robot.work / "fw.new"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
-    if not ctx.runner.run(["unzip", "-o", "-j", zip_path, "-d", str(staging)], check=False).ok:
-        die("unzip failed")
+    _unpack_build(ctx, build_path, staging)
     missing = [f for f in FEL_IMAGE_FILES if not (staging / f).is_file()]
     if missing:
-        die(f"The zip didn't contain the expected files (missing: {', '.join(missing)}) — wrong "
-            "build type? Rebuild as 'FEL image'.")
-    zp = Path(zip_path)
-    if zp.parent == robot.fw_dir:  # a zip staged from the robot's own fw dir must survive the swap
+        die(f"The build didn't contain the expected files (missing: {', '.join(missing)}) — wrong "
+            "output format? Rebuild it as 'FEL package'.")
+    zp = Path(build_path)
+    if zp.parent == robot.fw_dir:  # a build staged from the robot's own fw dir must survive the swap
         zp.rename(staging / zp.name)
-        zip_path = str(robot.fw_dir / zp.name)
+        build_path = str(robot.fw_dir / zp.name)
     # Supersede the previous build; never delete it first. An rmtree-then-rename leaves an instant
     # where fw_dir is gone with nothing in its place, so a crash there would strand recovery on the
-    # downloaded zip still existing. Set the old build aside, move the staged one into the freed
+    # downloaded build still existing. Set the old build aside, move the staged one into the freed
     # slot, then drop the old copy — a complete build survives an interruption at any point.
     superseded = robot.work / "fw.superseded"
     shutil.rmtree(superseded, ignore_errors=True)
@@ -357,6 +381,6 @@ def image(ctx: Context, *, force: bool = False) -> None:
     )
     # Full path + digest, not just the basename: identical filenames across robots are the norm,
     # so the basename alone cannot tell one build from another after the fact.
-    robot.state_set("image", f"model={ctx.model_spec.key} from {zip_path} sha256={digest}")
+    robot.state_set("image", f"model={ctx.model_spec.key} from {build_path} sha256={digest}")
     robot.remember_image()
     ctx.console.say("Image staged. Next: root (DESTRUCTIVE)")

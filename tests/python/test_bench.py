@@ -1352,7 +1352,7 @@ def test_first_provisioning_failure_does_not_poison_hardware_fingerprint(
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     ctx.payload_bin.write_bytes(b"verified-payload")
     ctx.fsbl_bin.write_bytes(b"verified-fsbl")
-    (ctx.ws.dist / ".stage1-sha256").write_text(STAGE1_SHA256 + "\n")
+    (ctx.ws.dist / ".stage1-sha256").write_text(STAGE1_SHA256[ctx.model_spec.dust_code] + "\n")
 
     def complete(inner: object, **_kwargs: object) -> None:
         robot = inner.need_robot()  # type: ignore[attr-defined]
@@ -1377,7 +1377,7 @@ def test_hardware_stack_is_not_ready_until_fastboot_client_is_usable(
     ctx.ws.dist.mkdir(parents=True, exist_ok=True)
     ctx.payload_bin.write_bytes(b"verified-payload")
     ctx.fsbl_bin.write_bytes(b"verified-fsbl")
-    (ctx.ws.dist / ".stage1-sha256").write_text(STAGE1_SHA256 + "\n")
+    (ctx.ws.dist / ".stage1-sha256").write_text(STAGE1_SHA256[ctx.model_spec.dust_code] + "\n")
 
     assert not B._hardware_stack_ready(ctx)
 

@@ -178,7 +178,7 @@ and the presence of expected state/backup evidence.
 ### Research reference baseline
 
 Before using a physical reference robot for any experiment that could change toc0, a hardware boot
-partition, or another area outside the supported DustBuilder flow, preserve the fullest readable
+partition, or another area outside the supported rooting flow, preserve the fullest readable
 baseline first. This is deliberately larger than the normal user's stock-restore kit:
 
 - the complete `/dev/mmcblk0` user area, not only recon's three-slice boot-critical prefix;
@@ -193,7 +193,7 @@ everything readable without claiming that every observation can be written back.
 
 Capture broadly, restore narrowly. A future experiment must add and validate only the restore steps
 for the exact regions it changes. It must also refuse to begin until its required pre-change images
-exist and verify. The supported `restore` command remains narrower on purpose: normal DustBuilder
+exist and verify. The supported `restore` command remains narrower on purpose: normal Dustfab
 rooting does not change toc0 or the hardware boot areas, so rewriting them would add risk without
 improving that rollback.
 

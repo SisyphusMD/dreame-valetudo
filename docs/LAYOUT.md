@@ -37,7 +37,7 @@ disk is refused rather than reverse-migrated.
 │   └── robots/<robot>/
 │       ├── state/                  model, display name, and completed-phase markers
 │       ├── recon/                  identity, recovery captures, and source-hash provenance
-│       └── fw/                     staged DustBuilder image for this robot
+│       └── fw/                     staged Dustfab FEL image for this robot
 └── backups/
     ├── dreame-<model>-<config>-<timestamp>/
     │   ├── manifest.json           provenance, robot identity, creation time, and contents

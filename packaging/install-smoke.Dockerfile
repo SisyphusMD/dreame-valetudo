@@ -202,7 +202,7 @@ COPY --from=deb-file-ubuntu /passed /passed
 # Deliberately two rungs and not three: with the floor below and Fedora above, a middle release is
 # interpolation rather than evidence, since a package that installs on both neighbours installs here.
 # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
-FROM rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 AS rpm-base
+FROM rockylinux/rockylinux:10@sha256:d24beedc58f79b9e0e9289fedaa4fcbcbe692b1438883a86f177fd7c51053ca8 AS rpm-base
 COPY packaging/retry.sh /retry
 # --allowerasing: the base image ships curl-minimal, which PROVIDES curl and therefore conflicts
 # with it. Without this dnf refuses the transaction rather than swapping the two.

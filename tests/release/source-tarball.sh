@@ -28,7 +28,7 @@ test -s "$tarball"
 listing="$tmp/listing"
 tar -tzf "$tarball" > "$listing"
 grep -qx "dreame-valetudo-$version/pyproject.toml" "$listing"
-grep -qx "dreame-valetudo-$version/libexec/dustbuilder-forms/verified-on.txt" "$listing"
+grep -qx "dreame-valetudo-$version/libexec/dustfab-forms/verified-on.txt" "$listing"
 if grep -Eq '(^|/)(\.git|tests|__pycache__)(/|$)|\.pyc$' "$listing"; then
   echo "source tarball contains development or bytecode residue" >&2
   exit 1

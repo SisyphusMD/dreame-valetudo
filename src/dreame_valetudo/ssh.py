@@ -436,7 +436,7 @@ def remember_sshkey(ctx: Context, key: Path) -> None:
 
 
 def choose_sshkey(ctx: Context, *, remember: bool = True, ignore_recorded: bool = False) -> Path:
-    """Pick the SSH key that reaches the robot: its PUBLIC half is uploaded to the dustbuilder build
+    """Pick the SSH key that reaches the robot: its PUBLIC half is uploaded to the Dustfab build
     (-> the robot's authorized_keys) and its PRIVATE half is what 'push' logs in with. Interactive
     the first time; the choice is remembered (a workspace pointer) so every later phase agrees.
     Non-interactive runs get a dedicated key so nothing hangs and nothing personal is shared.
@@ -488,7 +488,7 @@ def choose_sshkey(ctx: Context, *, remember: bool = True, ignore_recorded: bool 
 
     c = ctx.console
     c.say("Which SSH key should reach the robot?")
-    c.info("Its PUBLIC half is uploaded to the dustbuilder + goes into the robot's authorized_keys;")
+    c.info("Its PUBLIC half is uploaded to Dustfab + goes into the robot's authorized_keys;")
     c.info("the PRIVATE half stays on this machine and is what 'push' uses to log in later.")
     existing = discover_keys(ctx.home)
     options: list[tuple[str, str, Path]] = [(f"use {k}", "use", k) for k in existing]
@@ -542,7 +542,7 @@ def choose_sshkey(ctx: Context, *, remember: bool = True, ignore_recorded: bool 
 
 
 def stage_pub_for_upload(runner: Runner, ws_base: Path, key: Path) -> Path:
-    """Browser file-pickers hide dot-dirs, so a key in ~/.ssh is hard to select for the dustbuilder
+    """Browser file-pickers hide dot-dirs, so a key in ~/.ssh is hard to select for the Dustfab
     upload. Copy the .pub to a plainly-named, non-hidden path under the work dir and return it.
 
     Revalidated here because this copy is what the operator uploads to the image builder: staging a

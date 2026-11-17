@@ -8,7 +8,7 @@
 # floor: that is enforced statically during the build, and the full upgrade ladder across the family
 # runs in the pre-merge distro matrix.
 # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
-FROM rockylinux/rockylinux:10@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834 AS smoke
+FROM rockylinux/rockylinux:10@sha256:d24beedc58f79b9e0e9289fedaa4fcbcbe692b1438883a86f177fd7c51053ca8 AS smoke
 
 COPY package-smoke.rpm /tmp/package-smoke.rpm
 COPY packaging/test-linux-packages.sh /tmp/test-linux-packages.sh

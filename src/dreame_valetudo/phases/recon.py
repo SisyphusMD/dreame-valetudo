@@ -12,7 +12,7 @@ import re
 import shutil
 from pathlib import Path
 
-from ..console import Die, die, safety_stop, warn_if_low_disk
+from ..console import die, safety_stop, warn_if_low_disk
 from ..constants import ADOPTED_ROOT, RECOVERY_DUMP_NAMES
 from ..context import Context
 from ..fel import print_fel_entry, wait_for_fel
@@ -35,8 +35,8 @@ from ..workspace import (
 from .doctor import _sunxi_ready, check_fastboot_client, doctor
 from .fetch import fetch_stage1, stage1_ready
 
-# The extra fastboot identity vars the dustbuilder's manual checker (check.builder.dontvacuum.me)
-# asks for, beyond config. The tool always reads these itself — the user never runs fastboot.
+# Fastboot identity vars beyond config, kept with the robot's records for diagnosis. The tool always
+# reads these itself — the user never runs fastboot.
 _IDENTITY_VARS = (
     "serialno", "dustversion", "ramsize", "toc0hash", "toc1hash", "toc1version", "product",
     "model", "variant", "hw-revision", "version-bootloader",
@@ -48,7 +48,7 @@ def _print_intro(ctx: Context) -> None:
         ctx.console.phase("Reconnaissance — reads only, writes NOTHING to the robot",
                           index=1, total=3)
         ctx.console.info("Validates the whole USB path with zero brick risk and records the "
-                         "'config' value that identifies the robot + drives the dustbuilder.")
+                         "'config' value that identifies the robot + drives the Dustfab build.")
         ctx.console.action("BEFORE you start: if this is a STOCK robot that was ever set up in "
                            "the Mi Home / Dreame Home app, factory-reset it first "
                            "(Settings -> Reset).")
@@ -117,37 +117,6 @@ def _verify_reported_model(ctx: Context, captured: dict[str, str]) -> None:
         safety_stop(f"SAFETY STOP: the chosen model is {ctx.model_spec.model}, but the bootloader reports "
             f"{reported.model}. Choose {reported.model} to fix the mismatch.")
     ctx.console.info(f"Bootloader model verified: {ctx.model_spec.model}.")
-
-
-def read_identity_from_robot(ctx: Context) -> dict[str, str]:
-    """Bring the robot up in FEL->fastboot (the non-destructive recon path) solely to read the
-    dustbuilder-checker identity vars and record them — for when an older recon didn't capture them.
-    The TOOL drives every fastboot step; the user only does the FEL button sequence. Returns the
-    captured {var: value} (possibly partial), or {} if the robot never came up in fastboot."""
-    robot = ctx.need_robot()
-    try:
-        if not _sunxi_ready(ctx):
-            doctor(ctx)
-        if not stage1_ready(ctx):
-            fetch_stage1(ctx)
-        check_fastboot_client(ctx)
-        print_fel_entry(ctx.console, ctx.host)
-        if not wait_for_fel(ctx):
-            ctx.console.warn("No FEL device detected — skipping the read. Re-run with the robot "
-                             "connected to try again.")
-            return {}
-        ctx.fel.fel_boot_fastboot(
-            ctx.ws.dist, ctx.fsbl_name, "payload.bin",
-            ctx.model_spec.fsbl_addr, ctx.model_spec.payload_addr,
-        )
-    except Die as exc:  # this is an auxiliary read, not the flash — never abort the caller over it
-        ctx.console.warn(f"Couldn't bring the robot up in fastboot to read the values ({exc}).")
-        return {}
-    captured = capture_identity(ctx, robot)
-    if captured:
-        ctx.console.info(f"Read {len(captured)} value(s) off the robot: {', '.join(captured)}.")
-    ctx.console.action("Power the robot OFF again (hold power ~15s), then unplug the USB cable.")
-    return captured
 
 
 def _robot_with_config(ws: Workspace, cfg: str) -> Robot | None:
@@ -319,9 +288,8 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     # later place that identifies this run. This is also after every adoption branch above.
     ctx.bind_robot()
 
-    # Also capture the extra fastboot identity vars the dustbuilder's manual checker
-    # (check.builder.dontvacuum.me) asks for, so 'image' can hand them over verbatim if this
-    # robot's config isn't auto-recognized. The robot is already in fastboot here.
+    # Also capture the extra fastboot identity vars for the robot's records. The robot is already
+    # in fastboot here.
     capture_identity(ctx, robot)
     # The reported-model gate above must pass before the config and model become durable inputs to
     # image/root. A rejected recon intentionally leaves only an empty, untrusted robot directory.
@@ -454,7 +422,7 @@ def recon(ctx: Context, *, force: bool = False, recovery_backup: bool = True,
     ctx.console.say("Phase 1 done.")
     ctx.console.action("Power the robot OFF now (hold power ~15s until it shuts down), then unplug "
                        "the USB cable.")
-    ctx.console.info("Next: image  (opens the dustbuilder and waits for your built .zip)")
+    ctx.console.info("Next: image  (opens Dustfab and waits for your downloaded build)")
 
 
 def _pull_recovery_backup(ctx: Context, robot: Robot) -> bool:
@@ -487,8 +455,8 @@ def _pull_recovery_backup_unprotected(ctx: Context, robot: Robot) -> bool:
             return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (upload to check.builder.dontvacuum.me "
-                     "if the builder rejects your config)")
+    ctx.console.info(f"Backup: {rd / RECOVERY_BACKUP_ZIP} (Dustfab's check page takes it as the "
+                     "samples zip if it rejects your config)")
     ctx.console.warn("That upload is a raw copy of the robot's flash, including its userdata "
                      "partition and miio device key. Share it only intentionally.")
     return True
@@ -499,13 +467,14 @@ def _capture_recovery_into(ctx: Context, staging: Path) -> bool:
     try:
         total_dumps = len(dumps)
         for index, dump in enumerate(dumps, 1):
+            # The Dustfab payload samples a slice only after its stage is selected, the first
+            # included (Valetudo's guide: `oem stage0` before the first sample).
+            ctx.fastboot.fbt("oem", f"stage{index - 1}")
             suffix = ", over USB" if index == 1 else ""
             with ctx.console.progress(
                 f"Pulling {dump.name} ({index} of {total_dumps}{suffix})"
             ):
                 ctx.fastboot.fbt("get_staged", str(dump))
-            if index < total_dumps:
-                ctx.fastboot.fbt("oem", f"stage{index}")
     # Any failure pulling a dump means the capture is incomplete, and the caller's only sane
     # response is the same whichever way it failed: report it and let recon fall back.
     except Exception:  # noqa: BLE001

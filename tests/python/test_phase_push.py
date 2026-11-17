@@ -1384,7 +1384,7 @@ def test_heat_model_prints_the_official_mcu_resync_guidance(make_ctx: CtxFactory
     assert push(ctx) is True
     output = ctx.console.text()  # type: ignore[attr-defined]
     assert "won't DOCK" in output
-    assert "manual installation" in output
+    assert "'Installer package' on Dustfab" in output
     assert "resync the MCU" in output
 
 

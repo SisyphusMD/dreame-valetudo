@@ -335,14 +335,15 @@ pass "a failing wrapped run returns its own status and shows its error"
 W_INT="$RUNDIR/work-interrupt"
 mkdir -p "$W_INT/cache/dist"
 : > "$W_INT/cache/dist/payload.bin"
-: > "$W_INT/cache/dist/fsbl_ddr4.bin"
+: > "$W_INT/cache/dist/fsbl.bin"
 # The payloads alone do not satisfy stage1_ready(): it also wants the stamp naming the archive they
-# came from, and without it recon falls through to downloading stage 1 from builder.dontvacuum.me.
-# That put a third party on the path of this test, so an outage there failed the run for a reason
-# having nothing to do with the commit. Read the pin from the source rather than copying it, or the
-# two drift and the fetch quietly comes back.
-sed -n 's/^STAGE1_SHA256 = "\(.*\)"/\1/p' src/dreame_valetudo/constants.py \
-  > "$W_INT/cache/dist/.stage1-sha256"
+# came from, and without it recon falls through to downloading stage 1 from Dustfab. That put a
+# third party on the path of this test, so an outage there failed the run for a reason having
+# nothing to do with the commit. Read the x40-ultra (r2416) pin from the source rather than copying
+# it, or the two drift and the fetch quietly comes back.
+python3 -I -c 'import runpy, sys; print(runpy.run_path(sys.argv[1])["STAGE1_SHA256"]["r2416"])' \
+  src/dreame_valetudo/constants.py > "$W_INT/cache/dist/.stage1-sha256" \
+  || fail "could not read the r2416 STAGE1_SHA256 pin from constants.py"
 [ -s "$W_INT/cache/dist/.stage1-sha256" ] || fail "could not read STAGE1_SHA256 from constants.py"
 INT_USB="$RUNDIR/pyusb-stub"
 mkdir -p "$INT_USB/usb"

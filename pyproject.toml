@@ -37,7 +37,7 @@ packages = ["src/dreame_valetudo"]
 # PyInstaller bundle resolves them via resolve_libexec.
 [tool.hatch.build.targets.wheel.force-include]
 "libexec/fastboot-libusb.py" = "dreame_valetudo/libexec/fastboot-libusb.py"
-"libexec/dustbuilder-forms" = "dreame_valetudo/libexec/dustbuilder-forms"
+"libexec/dustfab-forms" = "dreame_valetudo/libexec/dustfab-forms"
 # Ship the changelog inside the package so the installed tool can show "what's new" on upgrade.
 "CHANGELOG.md" = "dreame_valetudo/CHANGELOG.md"
 
@@ -80,7 +80,7 @@ ignore = [
 allowed-confusables = ["–", "×"]  # EN DASH in prose/ranges, MULTIPLICATION SIGN in ratios
 
 [tool.ruff.lint.per-file-ignores]
-# Vendored from project-standard. Shared files carry no project-specific noqa codes (a code the
+# Vendored from project-rules. Shared files carry no project-specific noqa codes (a code the
 # sibling does not enable would fail RUF100 there), so the exemption lives with the rule set that
 # needs it. The lazy PyInstaller import is deliberate: it is a release-build dependency only.
 "packaging/check-glibc-floor.py" = ["PLC0415"]
