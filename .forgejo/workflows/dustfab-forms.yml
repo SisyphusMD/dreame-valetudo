@@ -75,6 +75,24 @@ jobs:
             *) exit "$rc" ;;
           esac
       - name: compare model and rooting contracts with official Valetudo
+        # The default branch on purpose: this check exists to notice upstream drift. Only the paths
+        # the verifier reads, so a slow link costs little; bounded and retried, so one network blip
+        # does not turn the run red, but still failed after the last try, since a contract check
+        # that quietly skips is worse than a red run.
         run: |
-          git clone --depth=1 https://github.com/Hypfer/Valetudo.git /tmp/upstream-valetudo
+          set -euo pipefail
+          dest=/tmp/upstream-valetudo
+          for attempt in 1 2 3; do
+            rm -rf "$dest"
+            if timeout 300 git clone --quiet --depth=1 --filter=blob:none --sparse \
+                https://github.com/Hypfer/Valetudo.git "$dest" \
+              && timeout 300 git -C "$dest" sparse-checkout set backend/lib/robots/dreame docs/pages; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::could not fetch Hypfer/Valetudo after 3 tries" >&2
+              exit 1
+            fi
+            sleep $(( attempt * 30 ))
+          done
           python -m libexec.verify_valetudo_contract /tmp/upstream-valetudo

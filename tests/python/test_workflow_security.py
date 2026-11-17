@@ -574,6 +574,53 @@ def test_the_weekly_dustfab_check_only_reports() -> None:
     assert "pyproject.toml" not in workflow  # a dependency bump never reaches Dustfab
 
 
+def _run_the_valetudo_fetch(tmp_path: Path, clone_failures: int) -> tuple[int, list[str]]:
+    """Run the workflow's own contract step with git, timeout, sleep and python stubbed out."""
+    steps = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text())[
+        "jobs"
+    ]["verify"]["steps"]
+    (step,) = [s for s in steps if "official Valetudo" in str(s.get("name", ""))]
+    dest = tmp_path / "upstream"
+    script = str(step["run"]).replace("/tmp/upstream-valetudo", str(dest))
+    bin_dir, log = tmp_path / "bin", tmp_path / "calls"
+    bin_dir.mkdir()
+    stubs = {
+        "timeout": 'shift; exec "$@"',
+        "sleep": 'echo "sleep $*" >> "$LOG"',
+        "python": 'echo "python $*" >> "$LOG"',
+        "git": (
+            'echo "git $1" >> "$LOG"\n'
+            'if [ "$1" = clone ]; then\n'
+            '  n=$(grep -c "^git clone" "$LOG")\n'
+            '  [ "$n" -gt "$FAILS" ] || exit 128\n'
+            '  mkdir -p "${!#}"\n'
+            "fi"
+        ),
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(f"#!/bin/bash\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "LOG": str(log), "FAILS": str(clone_failures)}
+    result = subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+    return result.returncode, log.read_text().splitlines() if log.exists() else []
+
+
+def test_the_valetudo_fetch_retries_a_transient_failure(tmp_path: Path) -> None:
+    rc, calls = _run_the_valetudo_fetch(tmp_path, clone_failures=2)
+    assert rc == 0
+    assert [c for c in calls if c.startswith("git clone")] == ["git clone"] * 3
+    assert calls[-1].startswith("python -m libexec.verify_valetudo_contract ")
+
+
+def test_the_valetudo_fetch_fails_the_job_after_three_tries(tmp_path: Path) -> None:
+    rc, calls = _run_the_valetudo_fetch(tmp_path, clone_failures=3)
+    assert rc == 1
+    assert [c for c in calls if c.startswith("git clone")] == ["git clone"] * 3
+    assert not any(c.startswith("python") for c in calls)
+
+
 def test_the_forms_stamp_script_writes_only_a_well_formed_date(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "packaging").mkdir(parents=True)
