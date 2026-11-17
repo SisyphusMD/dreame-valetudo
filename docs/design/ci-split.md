@@ -1,14 +1,15 @@
 # Which forge runs what
 
-**Architecture decides the forge, and nothing is emulated.** Everything that can
-run natively on our own hardware runs on Forgejo; macOS and arm64 run on GitHub,
-because that is where the native machines are.
+**Architecture picks the runner, and nothing is emulated.** Every job belongs on
+Forgejo, on a runner that is natively the architecture it tests: `ubuntu-latest`
+for Linux amd64, `ubuntu-26.04-arm` for Linux arm64, and `macos-15-vm` /
+`macos-27-vm` for the macOS floor and current macOS. A job still on GitHub is one
+that has not moved yet.
 
-That is the rule, and it is enforced by
 `tests/python/test_release_config.py::test_github_only_runs_what_only_github_can_run`
-rather than by memory — a job added to `.github/workflows/` on a runner that is
-neither macOS nor arm64 fails the suite unless it is listed as an exception with
-its reason.
+holds what is left on GitHub to that rule: a job in `.github/workflows/` on a
+runner that is neither macOS nor arm64 fails the suite unless it is listed as an
+exception with its reason.
 
 Forgejo (`forgejo.bryantserver.com`) is the primary repo and its runners are ours.
 GitHub is a read-only mirror. Its runners were used because Apple notarizes only
@@ -22,9 +23,9 @@ months and would have sent anyone reading it to the wrong forge:
 
 | | Forgejo | GitHub |
 |---|---|---|
-| Linux x86_64 | **yes**, natively (Talos nodes) | yes |
-| Linux arm64 | **no** — all seven nodes are amd64 | **yes**, natively (`ubuntu-24.04-arm`) |
-| macOS | none | yes |
+| Linux x86_64 | **yes**, natively (`ubuntu-latest`) | yes |
+| Linux arm64 | **yes**, natively (`ubuntu-26.04-arm`) | yes (`ubuntu-24.04-arm`) |
+| macOS | **yes**: macOS 15 and the newest macOS (`macos-15-vm`, `macos-27-vm`) | yes |
 
 ## Why no emulation
 
@@ -83,11 +84,9 @@ Each of these is in the test's exception list, with the same reason recorded the
 
 ## Adding a job
 
-Ask what hardware it needs. Native amd64 Linux goes in `.forgejo/workflows/`.
-macOS or arm64 goes in `.github/workflows/`. Anything else that genuinely cannot
-run on Forgejo goes there too, with an entry in the invariant test's exception
-list and the reason — the reason is the point, and an entry without one is the
-failure this rule exists to prevent.
+Ask what hardware it needs, then put it in `.forgejo/workflows/` on that runner.
+Nothing new goes in `.github/workflows/`; the jobs there are release jobs that
+have not moved yet.
 
 GitHub-only jobs carry `if: ${{ github.server_url == 'https://github.com' }}`.
 Keep it. This instance records no runs at all for `.github/workflows/` — every run
@@ -97,22 +96,21 @@ whose actions Forgejo could not resolve.
 
 ## How the gate finds a matrix run
 
-`check-rc-install-matrix.sh` requires BOTH halves to be green before a candidate
-can be promoted, and each forge records "which tag did this test" differently:
+`check-rc-install-matrix.sh` reads Forgejo only: every workflow named in
+`INSTALL_MATRIX_WORKFLOWS` (default `install-matrix.yml`) must be green for the
+candidate. A shadow matrix, which swallows its own failures, is never listed, and
+an invariant test holds that line.
 
-- **GitHub** — a tag push sets `head_branch`; a re-dispatch (from main, on purpose,
-  so a fix to the scripts is what re-runs) records the tag in the **run-name**.
-  Hence `run-name: Install matrix (macOS + Linux arm64) …`.
-- **Forgejo** — a tag push sets `prettyref`. Forgejo **ignores `run-name`**: a
-  dispatched run's title is just the workflow `name:`, and a tag push's is the
-  commit message, so neither says which tag was tested. It does evaluate **job**
-  names, so the tag lives in the `wait` job's name and the gate reads
-  `runs/{id}/jobs` to recognise a re-dispatch.
+- A tag push sets `prettyref`, so a run for the tag is recognised by its ref.
+- Forgejo **ignores `run-name`**. A dispatched run's title is just the workflow
+  `name:`, and a tag push's is the commit message, so neither says which tag was
+  tested. It does evaluate **job** names, so the tag lives in the `wait` job's name
+  and the gate reads `runs/{id}/jobs` to recognise a re-dispatch (which runs from
+  main, on purpose, so a fix to the scripts is what re-runs).
 
-Both matrices are called `install-matrix.yml` and Forgejo reports the bare
-filename as `workflow_id`, so the two lookups would collide if either forge listed
-the other's runs. Neither does: each API returns only its own instance's runs, and
-this instance records none for `.github/workflows/` at all.
+While the macOS and arm64 install legs still run in GitHub's `install-matrix.yml`,
+this gate cannot see them. So `release.yml` refuses a stable cut for as long as that
+file exists, and the refusal clears once it is gone.
 
 ## The two halves
 
