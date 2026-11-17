@@ -1,53 +1,78 @@
 name: Release (macOS pkg)
 
-# The one job that needs a Mac, so it lives on the GitHub mirror (free hosted macOS runners).
-# It builds a SELF-CONTAINED, signed + notarized .pkg for Apple Silicon that
+# Builds a SELF-CONTAINED, signed + notarized .pkg for Apple Silicon that
 # bundles a prebuilt sunxi-fel, a PyInstaller'd fastboot client, and libusb,
 # so an Apple Silicon Mac user double-clicks and gets a working `dreame-valetudo` with
-# nothing else to install. The publish job appends the .pkg to the GitHub + public-Forgejo
-# releases (the only two it can reach); publish.yml's nas-pkg job bridges them to the NAS.
+# nothing else to install. It is built on the macOS 15 VM (the floor), installed and exercised
+# there and on the newest-macOS VM, and the publish job appends it to all three releases.
+#
+# Its own workflow rather than a job in publish.yml, so reconcile's wait for the .pkg is the only
+# coupling, and so the frozen interpreter below keeps a file of its own for Renovate to treat
+# differently (see .renovaterc.json).
 #
 # NOTE: the native-library bundling + codesign is the one piece that can't be dry-run off-CI.
-# The package is installed and exercised on native Apple Silicon floor and current GitHub runners.
 on:
   push:
     # Stable and prerelease (v1.2.3-rc.N) tags both build the signed .pkg; the publish step marks
     # prereleases via the release helper.
     tags: ["v*.*.*", "v*.*.*-*"]
 
-permissions:
-  contents: read
+  # A repair path for a .pkg leg that failed on a published tag: Forgejo has no rerun endpoint.
+  # The tag is an input, and every checkout below resolves it only under refs/tags/, so a dispatch
+  # can rebuild an existing tag with the Apple identity in scope and never a branch's scripts.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build the .pkg for, e.g. v1.2.3-rc.4"
+        required: true
+        type: string
+
+# The tag reaches every `run:` as an environment value, never as `${{ }}` inside a script.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+# Keyed per tag, so a dispatched rebuild of one tag never displaces another tag's publish.
+concurrency:
+  group: release-macos-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build and test signed pkg (${{ matrix.arch }}, macOS 15 floor)
-    # Forgejo Actions also reads .github/workflows but has no macOS runner — only run on GitHub.
-    if: ${{ github.server_url == 'https://github.com' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - runner: macos-15-vm
             arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      # Retried in-step: Forgejo has no rerun endpoint, and a transient versions-manifest fetch
+      # failure would otherwise cost the whole candidate.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup_python_1
+        continue-on-error: true
+        with:
+          # renovate: datasource=github-tags depName=python/cpython versioning=pep440
+          python-version: "3.15.2"   # exact interpreter frozen into the bundle
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.setup_python_1.outcome != 'success'
         with:
           # renovate: datasource=github-tags depName=python/cpython versioning=pep440
           python-version: "3.15.2"   # exact interpreter frozen into the bundle
 
       - name: Install, test, and uninstall the Homebrew release formula
-        run: bash packaging/test-homebrew-formula.sh "$GITHUB_REF_NAME"
+        run: bash packaging/test-homebrew-formula.sh "$TAG"
 
       - name: Build sunxi-fel + the PyInstaller fastboot client
         env:
           MACOSX_DEPLOYMENT_TARGET: "15.0"
         run: |
           set -euo pipefail
-          # The runner image ships aws/tap, which Homebrew's tap-trust check flags on every brew
-          # call; only homebrew-core formulae are installed, so drop the stray tap instead.
-          brew untap aws/tap 2>/dev/null || true
           brew install libusb dtc pkg-config libevent
           read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
           # sunxi-fel builds native to the runner from the package's single source-of-truth pin.
@@ -104,6 +129,14 @@ jobs:
             fi
           done
 
+      # The same tag grammar every other release step enforces, before anything reads the identity.
+      - name: Validate the tag before the signing identity comes into scope
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . packaging/release-common.sh
+          rel_validate_tag "$TAG"
+
       - name: Import signing certificates
         env:
           APP_CERT_P12: ${{ secrets.MACOS_APP_CERT_P12 }}
@@ -112,9 +145,14 @@ jobs:
         run: |
           set -euo pipefail
           trap 'rm -f app.p12 installer.p12' EXIT
-          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          # Outside the workspace and removed by the last step: the signing identities must not
+          # outlive this job on the VM.
+          KEYCHAIN="${RUNNER_TEMP:-/tmp}/build.keychain"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           security create-keychain -p "" "$KEYCHAIN"
-          security default-keychain -s "$KEYCHAIN"
+          # Every job starts with no default keychain and an empty search list, so both are set here.
+          security list-keychains -d user -s "$KEYCHAIN"
+          security default-keychain -d user -s "$KEYCHAIN"
           security unlock-keychain -p "" "$KEYCHAIN"
           echo "$APP_CERT_P12" | base64 -d > app.p12
           echo "$INSTALLER_CERT_P12" | base64 -d > installer.p12
@@ -132,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           trap 'rm -f notary.p8' EXIT
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           # Versioned, like every other asset and like whiskerless's: two .pkg downloads in
           # ~/Downloads that cannot be told apart is a real cost, and the second overwrites
           # the first. reconcile matches by role, so older releases keep their old names.
@@ -163,36 +201,43 @@ jobs:
           bash packaging/retry.sh 5 xcrun notarytool submit "$PKG" \
             --key notary.p8 --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
           bash packaging/retry.sh 5 xcrun stapler staple "$PKG"
-          # Later steps in this job need the exact name; GitHub expressions cannot strip the `v`.
+          # Later steps in this job need the exact name; expressions cannot strip the `v`.
           echo "PKG=$PKG" >> "$GITHUB_ENV"
 
       - name: Install, exercise, and uninstall the signed package
         run: >-
           bash packaging/test-macos-package.sh
           "${{ env.PKG }}"
-          "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
+          "${{ matrix.arch }}" "${TAG#v}"
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
         with:
           name: pkg-${{ matrix.arch }}
           path: ${{ env.PKG }}
 
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
+
   current:
-    name: Test floor-built pkg (${{ matrix.arch }}, macOS 26 current)
-    if: ${{ github.server_url == 'https://github.com' }}
+    name: Test floor-built pkg (${{ matrix.arch }}, newest macOS)
     needs: build
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-26
+          - runner: macos-27-vm
             arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: actions/download-artifact@a9bc5e6ef2cb54c177f32aa5726adaa15e7e2d59 # v3.1.0
         with:
           name: pkg-${{ matrix.arch }}
           path: .
@@ -205,27 +250,41 @@ jobs:
           pkgs=(*-macos-${{ matrix.arch }}.pkg)
           [ "${#pkgs[@]}" -eq 1 ] || { echo "::error::expected 1 pkg, found ${#pkgs[@]}"; exit 1; }
           bash packaging/test-macos-package.sh \
-            "${pkgs[0]}" "${{ matrix.arch }}" "${GITHUB_REF_NAME#v}"
+            "${pkgs[0]}" "${{ matrix.arch }}" "${TAG#v}"
 
   publish:
-    name: Append the signed .pkg to the GitHub + Forgejo releases
-    if: ${{ github.server_url == 'https://github.com' }}
+    name: Append the signed .pkg to the three releases
     needs: [build, current]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/download-artifact@a9bc5e6ef2cb54c177f32aa5726adaa15e7e2d59 # v3.1.0
+        with:
+          name: pkg-arm64
           path: pkgs
-          merge-multiple: true
-      - name: Append the .pkg to the GitHub + public-Forgejo releases
+      - name: Append the .pkg to the three releases
+        env:
+          GH_TOKEN: ${{ secrets.GH_REPO_WRITE_PAT }}
+          CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}
+          NAS_TOKEN: ${{ secrets.NAS_FORGEJO_REPO_WRITE_PAT }}
         run: |
-          set -euo pipefail
-          bash packaging/changelog-section.sh "${GITHUB_REF_NAME#v}" > notes.md
+          set -uo pipefail
+          bash packaging/changelog-section.sh "${TAG#v}" > notes.md
           chmod +x packaging/github-release.sh packaging/forgejo-release.sh
-          packaging/github-release.sh "${{ secrets.GITHUB_TOKEN }}" \
-            "$GITHUB_REF_NAME" notes.md pkgs/*.pkg
+          # Every destination is attempted whatever the others did, then failures are re-raised,
+          # the shape every publishing job here uses (#76). The NAS is written directly: this
+          # runner reaches it, so nothing has to bridge the .pkg there afterwards.
+          failed=""
           packaging/forgejo-release.sh forgejo.bryantserver.com \
-            "${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}" "$GITHUB_REF_NAME" notes.md pkgs/*.pkg
+            "$CLUSTER_TOKEN" "$TAG" notes.md pkgs/*.pkg || failed="$failed forgejo.bryantserver.com"
+          packaging/github-release.sh "$GH_TOKEN" \
+            "$TAG" notes.md pkgs/*.pkg || failed="$failed github.com"
+          packaging/forgejo-release.sh forgejo.lan.bryantserver.com \
+            "$NAS_TOKEN" "$TAG" notes.md pkgs/*.pkg || failed="$failed forgejo.lan.bryantserver.com"
+          if [ -n "$failed" ]; then
+            echo "::error::.pkg publishing failed for:$failed"
+            exit 1
+          fi
