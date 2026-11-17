@@ -2661,7 +2661,7 @@ def test_no_real_robot_serial_is_committed() -> None:
     robot's own transcript keys
     outside Python. A value reaching the tree through a generic helper — a prompt fixture, an
     `Answer(...)`, a `default=` — is not covered, and cannot be without naming every such
-    helper. Best-effort by construction; see project-standard/VARIANCE.md.
+    helper. Best-effort by construction; see project-rules/VARIANCE.md.
     """
     listed = subprocess.run(
         ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=True
@@ -2870,7 +2870,7 @@ def test_the_renderer_refuses_a_template_it_cannot_fully_render(tmp_path: Path) 
 
 def _checksum_markers() -> set[str]:
     # Read out of the templates, never assumed: the two projects spell this marker differently on
-    # purpose (project-standard VARIANCE.md, "The formula's checksum marker"), and a hardcoded
+    # purpose (project-rules VARIANCE.md, "The formula's checksum marker"), and a hardcoded
     # spelling would make this a silent no-op for whichever project does not use it.
     found = {
         match
@@ -3012,7 +3012,7 @@ def test_the_wait_is_one_definition_used_by_both_matrices() -> None:
     before failing a release that was fine. Two COPIES of this would drift, and
     the drift shows up as one forge passing a half-published release.
 
-    The script is vendored from project-standard, so everything project-specific
+    The script is vendored from project-rules, so everything project-specific
     comes from project.env and asset-roles.sh; this pins that both callers use it
     the same way and that the derivation lands on formulae this repository ships."""
     for path in (_INSTALL_MATRIX_GH, _INSTALL_MATRIX):

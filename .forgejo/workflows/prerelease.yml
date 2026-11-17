@@ -167,7 +167,8 @@ jobs:
           python -m dreame_valetudo version | grep -q "dreame-valetudo ${VERSION}"
           python -m dreame_valetudo help | grep -q "Supported models"
           # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
-          # CONVENTIONS 6c: a gate that only really runs in ci.yml does not constrain a release.
+          # project-rules conventions/shell-and-workflows.md, section 4: a gate that only really runs
+          # in ci.yml does not constrain a release.
           python3 -m pip install --upgrade build
           for t in tests/release/*.sh; do bash "$t"; done
 
