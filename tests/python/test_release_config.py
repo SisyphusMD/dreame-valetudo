@@ -2979,3 +2979,13 @@ def test_the_man_page_is_installed_by_the_packages() -> None:
         assert "gzip -9 -n -c packaging/dreame-valetudo.1 > packaging/dreame-valetudo.1.gz" in (
             source.read_text()
         ), source.name
+
+
+def test_signing_sets_its_keychain_in_every_job() -> None:
+    """A macOS job starts with no default keychain and an empty search list. Without both set,
+    codesign cannot find the identity by name and the release dies at its first signature."""
+    text = _MACOS.read_text(encoding="utf-8")
+    assert 'security list-keychains -d user -s "$KEYCHAIN"' in text
+    assert 'security default-keychain -d user -s "$KEYCHAIN"' in text
+    assert 'security delete-keychain "$KEYCHAIN"' in text, "the identities outlive the job"
+
