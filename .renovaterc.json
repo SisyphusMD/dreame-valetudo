@@ -38,7 +38,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, workflow shell blocks, and packaging/release-pins.env (pypi / github-releases / github-tags). The pins file is listed because two forges build this release \u2014 amd64 on Forgejo, arm64 on GitHub \u2014 and one file is what keeps their pins equal; a pattern covering only the workflows would silently stop bumping PyInstaller.",
+      "description": "Version pins annotated with a `# renovate:` comment in the Python constants, the legacy script, workflow shell blocks, and packaging/release-pins.env (pypi / github-releases / github-tags). The pins file is listed because two workflows build this release \u2014 amd64 in publish.yml, arm64 in release-arm64.yml \u2014 and one file is what keeps their pins equal; a pattern covering only the workflows would silently stop bumping PyInstaller.",
       "managerFilePatterns": [
         "/^dreame-valetudo$/",
         "/src/dreame_valetudo/constants\\.py$/",
@@ -280,7 +280,7 @@
         "python"
       ],
       "matchFileNames": [
-        ".github/workflows/release-macos.yml"
+        ".forgejo/workflows/release-macos.yml"
       ],
       "enabled": false
     },

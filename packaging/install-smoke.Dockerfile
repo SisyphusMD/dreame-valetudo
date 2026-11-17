@@ -8,7 +8,7 @@
 # established here.
 #
 # Built for the architecture the runner already is, never emulated: the amd64 legs run on Forgejo
-# and the arm64 legs on GitHub's native arm runner, and install-matrix-arch.sh refuses to run when
+# and the arm64 legs on the native arm64 runner, and install-matrix-arch.sh refuses to run when
 # host and target disagree.
 #
 # Each channel ends by touching /passed and exporting it through a `scratch` stage, so the workflow

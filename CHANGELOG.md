@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The macOS package is now tested on macOS 15 and macOS 27 before each release (previously
+  macOS 15 and 26).
+
 - The `.deb` and `.rpm` ship a man page (`man dreame-valetudo`), with the licence and README under
   `/usr/share/doc/dreame-valetudo`.
 
