@@ -59,7 +59,9 @@ jobs:
 
   python:
     # trusted-ref gate (see header): don't run PR-supplied pytest on the self-hosted runner
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # flow == 0 also turns away AGit PRs (pushed to refs/for/<branch>): they report this repo as
+    # their head, and a maintainer reopening one runs this branch's workflows with secrets.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,7 +140,7 @@ jobs:
   python-floor:
     # The package metadata promises source compatibility with Python 3.11. Running only the frozen
     # release interpreter would let a newer stdlib API silently raise that floor.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,7 +191,7 @@ jobs:
     # sunxi + pyusb come from the Python constants; pyinstaller + nfpm are pinned here and kept in
     # lockstep with the release workflows by Renovate (same depName, one grouped PR).
     # trusted-ref gate (see header): don't build+run PR-supplied code on the self-hosted runner
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -337,7 +339,7 @@ jobs:
   integration:
     needs: [shellcheck]
     # trusted-ref gate (see header): don't bash-run PR-supplied scripts on the self-hosted runner
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
