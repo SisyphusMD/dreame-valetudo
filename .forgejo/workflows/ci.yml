@@ -7,11 +7,13 @@ name: CI
 #
 # The runner is self-hosted with network reach into the home cluster, so the code-executing jobs
 # (python runs the PR's conftest/tests, build builds+runs the PR tree, integration bash-runs the
-# PR's scripts) run only for trusted refs — pushes and same-repo PRs. A fork pull_request carries
-# attacker-controlled code, so those jobs are skipped for it; forks get shellcheck only (it reads
-# the scripts, never executes them). Fork PRs get full validation once a maintainer pushes the
-# branch here or the PR comes from this repo. (Gating in-file is the only lever available; routing
-# forks to a separate ephemeral non-cluster runner can't be expressed from this workflow alone.)
+# PR's scripts) run only for trusted refs — pushes and PRs from a branch here. A pull request from
+# a fork, or an AGit one (pushed to refs/for/<branch>, which reports this repo as its head and so
+# needs the flow == 0 clause as well as the head-repository one), carries code nobody here has
+# read, so those jobs are skipped for it; it gets shellcheck only (it reads the scripts, never
+# executes them). It gets full validation once a maintainer pushes the change to a branch here.
+# (Gating in-file is the only lever available; routing such PRs to a separate ephemeral
+# non-cluster runner can't be expressed from this workflow alone.)
 on:
   pull_request:
   push:

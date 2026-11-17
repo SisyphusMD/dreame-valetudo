@@ -156,18 +156,18 @@ A GitHub sign-in has no Forgejo password, so push over HTTPS with an access toke
 Forgejo settings. Push again with the same topic to update the pull request.
 
 CI runs on this project's own runners, which are also trusted with its release credentials, so it
-does not run on a pull request sent this way. A maintainer reads the change, then opens it again as
-a pull request from a branch here, and that runs the whole suite: lint, strict type-checking, the full
-test suite against both the current interpreter and the 3.11 floor, both coverage gates,
-shellcheck, documentation links, the vendored-standard check, the release-script integration
-suite, and the same tests plus the Homebrew formula on macOS 15 and on the newest macOS.
+does not run on a pull request sent this way, or on one from a fork: only shellcheck does, since it
+reads the scripts without running them. A maintainer reads the change, then pushes it to a branch
+here and opens it again as a pull request from that branch, and that runs the whole suite: lint,
+strict type-checking, the full test suite against both the current interpreter and the 3.11 floor,
+both coverage gates, shellcheck, documentation links, the vendored-standard check, the
+release-script integration suite, the `.deb`/`.rpm` build from `deb.Dockerfile`, and the same tests
+plus the Homebrew formula on macOS 15 and on the newest macOS. Until then nothing builds your
+change, so build a stage you touched under `packaging/` locally before opening the PR:
+`docker build -f packaging/deb.Dockerfile --target export .`
 
 **What that does not cover**, so you are not surprised by a later failure:
 
-- **The `.deb`/`.rpm` build.** `deb.Dockerfile` is only executed by the `build` job on
-  Forgejo, so a change under `packaging/` can pass every check here and still break the
-  release. Build the affected stage locally once before opening the PR:
-  `docker build -f packaging/deb.Dockerfile --target export .`
 - **The macOS `.pkg`.** The signed, notarized `.pkg` is built only at release time. The macOS
   jobs on every push test the code and the Homebrew formula, not the package.
 - **Hardware.** Nothing in CI touches a robot. Phases are proven by transcript equivalence:
