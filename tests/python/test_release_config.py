@@ -2557,17 +2557,13 @@ def test_every_bottle_wait_agrees_with_the_matrix() -> None:
 
 
 # --- which forge runs what ----------------------------------------------------------
-#
-# Every job runs on this project's own runners. GitHub is a mirror that receives the release, and
-# a workflow file left under .github/workflows would run on GitHub-hosted runners again. Mirrors
-# whiskerless's test_repo_invariants, because a guard one sibling has and the other lacks is how
-# they drift.
+# GitHub runs only mirror lockdown. Build and release jobs run on Forgejo.
 
 
-def test_no_workflow_runs_on_github() -> None:
+def test_only_mirror_lockdown_runs_on_github() -> None:
     workflows = _ROOT / ".github" / "workflows"
     found = sorted(p.name for p in [*workflows.glob("*.yml"), *workflows.glob("*.yaml")])
-    assert found == [], f"GitHub workflows are back: {found}; they belong in .forgejo/workflows"
+    assert found == ["mirror-lockdown.yml"], f"Unexpected GitHub mirror workflows: {found}"
 
 
 # --- both Homebrew formulae, one install ---------------------------------------------
