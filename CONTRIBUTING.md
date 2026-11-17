@@ -138,16 +138,29 @@ The reasoning, written down so it is not re-argued:
 
 ## Where issues and pull requests go
 
-**GitHub.** Open them at [SisyphusMD/dreame-valetudo](https://github.com/SisyphusMD/dreame-valetudo).
+**Forgejo.** Open them at [SisyphusMD/dreame-valetudo](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues). You can sign in there with
+your GitHub account; there is no separate sign-up. The [GitHub repository](https://github.com/SisyphusMD/dreame-valetudo) is a
+read-only mirror and does not take issues or pull requests.
 
-Forgejo (`forgejo.bryantserver.com/SisyphusMD/dreame-valetudo`) is the source of truth and runs the full CI
-suite on every push to `main`, but it is not where contributions arrive — outside contributors have
-no account there, and its runner holds this project's release credentials. Every job in
-`.forgejo/workflows/ci.yml` therefore carries a fork-trust gate and deliberately **skips** a pull
-request from a fork rather than running untrusted code beside those secrets.
+A new account waits for a maintainer to activate it. Once it is active you can open issues, and
+send a pull request with [AGit](https://forgejo.org/docs/latest/user/git-cli/agit-support/): new
+accounts cannot create repositories, so there is no fork. Clone from Forgejo (the GitHub mirror
+cannot take the push), commit on a branch, and push it as a pull request against `main`:
 
-So a fork PR is tested on **GitHub-hosted runners**, which hold none of our secrets, by
-`.github/workflows/ci-pr.yml`. You get lint, strict type-checking, the full test suite against both the current interpreter and the 3.11 floor, both coverage gates, shellcheck, documentation links, the vendored-standard check, and the release-script integration suite.
+```sh
+git clone https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo.git
+git push origin HEAD:refs/for/main -o topic=<short-name>
+```
+
+A GitHub sign-in has no Forgejo password, so push over HTTPS with an access token from your
+Forgejo settings. Push again with the same topic to update the pull request.
+
+CI runs on this project's own runners, which are also trusted with its release credentials, so it
+does not run on a pull request sent this way. A maintainer reads the change, then opens it again as
+a pull request from a branch here, and that runs the whole suite: lint, strict type-checking, the full
+test suite against both the current interpreter and the 3.11 floor, both coverage gates,
+shellcheck, documentation links, the vendored-standard check, the release-script integration
+suite, and the same tests plus the Homebrew formula on macOS 15 and on the newest macOS.
 
 **What that does not cover**, so you are not surprised by a later failure:
 
@@ -155,9 +168,8 @@ So a fork PR is tested on **GitHub-hosted runners**, which hold none of our secr
   Forgejo, so a change under `packaging/` can pass every check here and still break the
   release. Build the affected stage locally once before opening the PR:
   `docker build -f packaging/deb.Dockerfile --target export .`
-- **macOS.** The signed `.pkg` is built and notarized on GitHub's macOS runners at release
-  time, and the `macos` CI job only asserts that native macOS CI ran for the mirrored
-  commit — a claim about the mirror, not about your PR.
+- **The macOS `.pkg`.** The signed, notarized `.pkg` is built only at release time. The macOS
+  jobs on every push test the code and the Homebrew formula, not the package.
 - **Hardware.** Nothing in CI touches a robot. Phases are proven by transcript equivalence:
   the exact argv sequence a phase issues, asserted against scripted output. A change to a
   flashing path needs a bench run, which the maintainer does.

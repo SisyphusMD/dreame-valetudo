@@ -1272,7 +1272,7 @@ def _run(
         if log is not None:
             con.info(f"A scrubbed log of this run was saved to {log.path}")
             con.info("You can share it to report the problem: "
-                     "https://github.com/SisyphusMD/dreame-valetudo/issues")
+                     "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues")
             log.finish(2)
         return 2, log.path if log else None
     # Expected failures still surface cleanly even when they occur after an earlier phase wrote
@@ -1282,7 +1282,7 @@ def _run(
         if log is not None:
             con.info(f"A scrubbed log of this run was saved to {log.path}")
             con.info("You can share it to report the problem: "
-                     "https://github.com/SisyphusMD/dreame-valetudo/issues")
+                     "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues")
             log.finish(1)
         return 1, log.path if log else None
     except KeyboardInterrupt:

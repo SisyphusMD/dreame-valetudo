@@ -43,7 +43,7 @@ jobs:
 
       - name: Refuse a Renovate branch
         # A Renovate branch may skip the macOS workflows (packaging/macos-scope.sh) and still
-        # conclude green, so mirror-gate would read a Mac that never ran as a pass for this commit.
+        # conclude green, so macos-gate would read a Mac that never ran as a pass for this commit.
         run: |
           case "$GITHUB_REF_NAME" in
             renovate/*)
@@ -181,38 +181,33 @@ jobs:
           test -z "$(git diff --cached --name-only)"
           test -z "$(git ls-files --others --exclude-standard)"
 
-  mirror-gate:
-    name: Qualify the mirror's macOS checks on the source commit (no write credential)
+  macos-gate:
+    name: Qualify the macOS run on the source commit (no write credential)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Require the mirror's macOS CI to be green on the source commit
-        # This forge has no macOS runner, so nothing here can run the suite on a Mac. ci.yml waits
-        # for the mirror's verdict per pull request, which leaves main reachable by anything that
-        # did not go through one — a direct push, an infra failure someone retried, a run that went
-        # red after merge. Cutting from main is exactly when that matters.
+      - name: Require the macOS run to be green on the source commit
+        # The release jobs never run the suite or the Homebrew formula on a Mac, and a formula
+        # break that only a Mac sees once shipped in a whole release candidate. macos.yml runs both
+        # on macOS 15 and the newest macOS for every pushed commit; this makes the release wait for
+        # that verdict instead of assuming one. Required checks keep it off main's merges, but main
+        # is reachable by anything that skipped a pull request, and cutting is when that matters.
         #
         # The SOURCE commit, not the tagged one: the tag job stamps version strings and commits, so
         # the tagged tree is a child of this SHA and no branch workflow ever evaluates it.
-        env:
-          # Optional and read-only. Unauthenticated GitHub allows 60 requests an hour PER IP,
-          # shared with everything else egressing from this network. A token needs NO scopes for a
-          # public repo and lifts the limit to 5,000/hour. Absent, this still works, just slowly.
-          # The job holds no WRITE credential either way, which is the property that matters.
-          MIRROR_CI_TOKEN: ${{ secrets.GH_REPO_READ_PAT }}
-        # Both, not just one: the formula check proves the macOS install and the CI matrix
-        # proves the library's own tests run on a Mac, and gating on either alone lets a release
-        # be cut from a commit the other found red. Named by file: a display name is prose, and a
-        # reworded one would match no runs and read as "not delivered yet".
-        run: |
-          bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/formula-macos.yml
-          bash packaging/check-mirror-ci.sh "${{ github.sha }}" .github/workflows/ci-macos.yml
+        #
+        # check-forgejo-ci.sh passes only a run whose every job succeeded: a run whose macOS jobs
+        # were scoped out (a Renovate branch) also concludes "success", and tested nothing.
+        #
+        # Unauthenticated: the project is public and Forgejo serves run status to anyone, so the
+        # gate holds no credential at all.
+        run: bash packaging/check-forgejo-ci.sh "${{ github.sha }}" macos.yml
 
   tag:
     name: Authorize and push prerelease tag
-    needs: [gate, mirror-gate]
+    needs: [gate, macos-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Fresh checkout with no persisted credential
