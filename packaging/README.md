@@ -82,11 +82,12 @@ resolving with no surviving-rc to keep. The prune is gated on the stable being p
 is warn-only, so it can never make a valid stable disappear; reconcile still walks every *surviving*
 tag.
 
-Before merge, GitHub's native Apple Silicon runners execute the Python, Ruff, mypy, ShellCheck,
-research self-test, and integration suites for every mirrored branch commit. Forgejo's `macos` job
-polls that public workflow by the exact commit SHA, so its required checks remain the single merge
-gate without granting pull-request code a cross-forge write token. Package installation and signing
-remain separate tag-time qualification because they require a release artifact and signing secrets.
+Before merge, `macos.yml` runs the Python, Ruff, mypy, ShellCheck, research self-test and
+integration suites, plus the Homebrew formula smoke, on macOS 15 and the newest macOS for every
+pushed branch commit, each in its own VM. Both jobs are required checks on `main`, and the release
+workflows' `macos-gate` refuses a commit whose run is not fully green. Package installation and
+signing remain separate tag-time qualification because they require a release artifact and signing
+secrets.
 
 ## Dev / prerelease builds
 
@@ -202,28 +203,10 @@ is missing, `build-linux-arch.sh` fails closed rather than shipping unsigned pac
 
 ## Transient runner failures
 
-GitHub's hosted runners sometimes fail before any of our steps run — observed 2026-08-11 in the
-sibling project, a `Set up job` phase that could not parse `actions/checkout`'s own manifest on the
-macos-26 beta image, while the same pinned SHA loaded fine on three other runners in the same matrix.
-
-`retry-infra-failures.yml` handles those without a human, and deliberately handles nothing else. The
-discriminator is the vendored `packaging/triage-infra-failure.py`, shared with whiskerless:
-
-- It re-runs **only** when every failed step is a phase the runner owns before ours begin
-  (`Set up job` / `Set up runner`). A failing test always fails one of our named steps, so it can
-  never be laundered into a green build here. `Complete job` is excluded on purpose: it fails after
-  artifacts are uploaded, and artifacts are immutable within a run, so a retry could not succeed.
-- The two exceptions are steps of ours that the runner's *network* failed, each matched exactly:
-  a resolver failure naming a host CI is known to reach, in the failed step's closing lines; and an
-  **edge ban**. Hosted runners borrow recycled cloud addresses, and one the cluster's CrowdSec
-  banned gets HTTP 403 from Forgejo for everything (observed, dreame-valetudo v0.3.0-rc.48). Every
-  job that reaches Forgejo therefore runs `packaging/forgejo-preflight.sh` first, as its own
-  `Check this runner can reach Forgejo` step: an anonymous read Forgejo itself never refuses. Only
-  that step failing with that script's marker is retried; a 403 later in the job may be a revoked
-  token and stays red. A repo invariant keeps every Forgejo-reaching job covered.
-- It retries **once** (`run_attempt == 1`). A fault that recurs is not transient and stays red.
-- Every invocation is the flake record: how often this workflow appears in the Actions tab is the
-  number to watch. A cluster means a runner image regressed, not that we got unlucky.
+Nothing retries an infra failure automatically. A job that dies before any of our steps run (a
+runner fault, not a test) is rerun by hand from the Actions tab; one that recurs is not transient and
+gets fixed at the runner. The GitHub-side retry workflow and its edge-ban preflight went with the
+GitHub-hosted runners they existed for.
 
 ## Secrets
 
@@ -241,7 +224,7 @@ right. Structure mirrors whiskerless's equivalent section so the two are readabl
 | `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-rules's VARIANCE.md. |
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the tap jobs can push the rendered formulas. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
 | `GH_REPO_WRITE_PAT` | `publish`, `release-arm64`, `release-macos`, `bottles`, `prune-rcs` | GitHub PAT, Contents: read & write: creates the GitHub release and appends every asset to it. Same PAT used as the GitHub push-mirror password. |
-| `GH_REPO_READ_PAT` | `ci`, `prerelease`, `release`, `publish`, `install-matrix` | **Required.** GitHub PAT with **no scopes** — read-only public data. Used by the mirror gate, the republish guard, the tag's mirror confirmation and the install-matrix wait, all of which refuse to call GitHub unauthenticated: 60 requests/hour per IP is shared with everything else leaving this network, so an optional token answers 403 instead of answering. Held at the SisyphusMD org level, shared with the sibling. |
+| `GH_REPO_READ_PAT` | `prerelease`, `release`, `publish`, `install-matrix` | **Required.** GitHub PAT with **no scopes** — read-only public data. Used by the republish guard, the tag's mirror confirmation and the install-matrix wait, all of which refuse to call GitHub unauthenticated: 60 requests/hour per IP is shared with everything else leaving this network, so an optional token answers 403 instead of answering. Held at the SisyphusMD org level, shared with the sibling. |
 
 ### Apple signing (org-scoped on Forgejo, read only by `release-macos.yml`)
 

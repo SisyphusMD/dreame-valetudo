@@ -77,7 +77,7 @@ glance). It is **scrubbed** before anything is written — the home path, the ro
 value, device
 IDs, SSH public keys, and emails are redacted, and the SSH private key and the miio key never reach
 it — so it's safe to attach when you
-[open an issue](https://github.com/SisyphusMD/dreame-valetudo/issues). On any error the tool prints
+[open an issue](https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues). On any error the tool prints
 the exact log path. Turn it off with `DREAME_NO_LOG=1`.
 
 ## macOS toolchain
