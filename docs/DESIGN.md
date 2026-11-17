@@ -7,13 +7,13 @@ over libusb. Back to the [README](../README.md).
 ## What's automated (and what isn't)
 
 **Automated:** all downloads, device detection (it *polls* for the FEL device, no keypress),
-unpacking the dustbuilder zip from `~/Downloads`, the OKAY-checked flash, the Phase 3 transfer, and a
+unpacking the Dustfab build from `~/Downloads`, the OKAY-checked flash, the Phase 3 transfer, and a
 **negative-deviceId repair** baked into `push` (before the reboot it detects a signed-overflowed
 factory `did` and rewrites it positive so Valetudo comes up on first boot; a no-op on units that don't
 need it). See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the post-root fixes.
 
-**Still needs you** (physically can't be automated): the FEL button/PCB sequence, the dustbuilder web
-build + email, and the go/no-go confirm before flashing.
+**Still needs you** (physically can't be automated): the FEL button/PCB sequence, the Dustfab web
+build + download, and the go/no-go confirm before flashing.
 
 **Phase 3 note:** there's no macOS build of `valetudo-helper-httpbridge`, so `push` uses an SSH pipe
 to the robot's dropbear: one command does backup + copy + reboot, no bridge.
@@ -22,8 +22,8 @@ to the robot's dropbear: one command does backup + copy + reboot, no bridge.
 
 At image-build time the tool asks which SSH key should reach the robot: pick an existing one or
 have it generate a **dedicated** key (recommended — nothing personal is uploaded to the
-third-party builder). Its **public** half is what you upload to the dustbuilder's "Your SSH-Public
-key" field, so it lands in the robot's `authorized_keys` **the first time the robot is rooted**; a
+third-party builder). Its **public** half is what you give Dustfab's "authorized_keys"
+field, so it lands in the robot's `authorized_keys` **the first time the robot is rooted**; a
 copy is staged to a plain,
 **non-hidden** path because browser file dialogs hide `~/.ssh`. The **private** half never leaves
 your machine and is what `push` logs in with; the choice is remembered (override with

@@ -158,7 +158,7 @@ packages, and the release carries no arm64 Linux assets at all.
   the standalone channel is a tarball of this tree with a launcher beside it, which is a shipped
   artifact shape with its own smoke test; changing it to match the sibling would be uniformity, not
   convergence. The sibling keeps onefile for the same kind of reason — one downloadable file suits a
-  tool run once from a laptop. See project-standard/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
+  tool run once from a laptop. See project-rules/VARIANCE.md. Each Linux bundle installs as its own tree (`/usr/lib/dreame-valetudo/app`
   and `.../fastboot`) reached through a symlink to its launcher, because `find_helper` wants a
   runnable FILE at `/usr/lib/dreame-valetudo/dreame-fastboot` and the bootloader resolves symlinks
   before looking for its contents directory. `packaging/check-package-parity.py` compares each
@@ -244,10 +244,10 @@ right. Structure mirrors whiskerless's equivalent section so the two are readabl
 
 | Secret | Used by | What it is |
 |---|---|---|
-| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs`, `dustbuilder-forms` | Repo-write PAT on the cluster instance: pushes the release commit and tag, creates releases, prunes superseded candidates. |
+| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs` | Repo-write PAT on the cluster instance: pushes the release commit and tag, creates releases, prunes superseded candidates. |
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish` | Separate PAT scoped to `SisyphusMD/homebrew-tap`. Deliberately not the repo PAT: the tap is a different blast radius. |
 | `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
-| `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-standard's VARIANCE.md. |
+| `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-rules's VARIANCE.md. |
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the tap jobs can push the rendered formulas. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
 | `GH_REPO_WRITE_PAT` | GitHub PAT, Contents: read & write **and Actions: read & write** (Forgejo creates the GitHub release with it, and dispatches the macOS/arm64 install matrix with it — dispatch is an Actions permission, not a Contents one, and without it the dispatch 403s while the release itself still publishes). Same PAT used as the GitHub push-mirror password, so grant the extra permission by editing the token rather than regenerating it. |
 | `GH_REPO_READ_PAT` | `ci`, `prerelease`, `release`, `publish`, `install-matrix` | **Required.** GitHub PAT with **no scopes** — read-only public data. Used by the mirror gate, the republish guard, the tag's mirror confirmation and the install-matrix wait, all of which refuse to call GitHub unauthenticated: 60 requests/hour per IP is shared with everything else leaving this network, so an optional token answers 403 instead of answering. Held at the SisyphusMD org level, shared with the sibling. |
@@ -276,7 +276,7 @@ downloads remain, for machines that would rather not add a repository.
 
 | Piece | State |
 |---|---|
-| `publish-registry.sh` | Vendored from project-standard. Called by `publish.yml` after the packages are built and smoke-tested. |
+| `publish-registry.sh` | Vendored from project-rules. Called by `publish.yml` after the packages are built and smoke-tested. |
 | `sisyphusmd.repo`, `sisyphusmd-testing.repo` | Shipped, and pointing at a key that exists (`CCE50015D058E9BF`). |
 | `sisyphusmd-signing-key.asc` | The public half, vendored so both projects trust the same namespace key. |
 | Qualification | The install matrix installs from both repositories every release — `apt-repo` and `dnf-repo` channels, on both architectures. |

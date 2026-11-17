@@ -75,7 +75,7 @@ and a `ScriptedConsole` with canned answers.
 ## Adding a supported model
 
 A fastboot Dreame is a `ModelSpec` row in `models.py` plus a golden update. `models.py` is the single typed
-source of truth, taken verbatim from Valetudo's source and the dustbuilder, and pinned byte-for-byte
+source of truth, taken verbatim from Valetudo's source and Dustfab, and pinned byte-for-byte
 by TSV goldens in `tests/python/golden/`. `SUPPORTED_MODELS` order is the picker's numbering, so it
 is pinned too.
 
@@ -88,7 +88,7 @@ Google's `fastboot` cannot enumerate the Dreame gadget on Apple Silicon.
 ## Shared conventions
 
 Code style, comment policy, test layers, shell and workflow rules live in
-[`SisyphusMD/project-standard`](https://github.com/SisyphusMD/project-standard). Files vendored from
+[`SisyphusMD/project-rules`](https://forgejo.bryantserver.com/SisyphusMD/project-rules). Files vendored from
 it are listed in `STANDARD.lock` and checked by `packaging/check-standard-sync.py` — **improve them
 there and re-vendor, never by editing the copy here.**
 

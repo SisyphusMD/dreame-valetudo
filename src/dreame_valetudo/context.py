@@ -2,7 +2,7 @@
 
 Bundles the injected seams (runner, console) with the workspace, the selected model_spec, and the
 current robot, and lazily resolves the fastboot transport + FEL helper. Derived per-model_spec values
-(the Valetudo binary path/URL, dustbuilder page, stage1 filenames) live here so the phases read
+(the Valetudo binary path/URL, Dustfab page, stage1 filenames) live here so the phases read
 them off it.
 """
 
@@ -176,16 +176,18 @@ class Context:
         )
 
     @property
-    def dustbuilder_page(self) -> str:
-        return self.env.get("DUSTBUILDER_PAGE") or self.model_spec.dustbuilder_page
+    def fab_page(self) -> str:
+        # DUSTBUILDER_PAGE is the pre-Dustfab name, still honoured for one release.
+        return (self.env.get("DUSTFAB_PAGE") or self.env.get("DUSTBUILDER_PAGE")
+                or self.model_spec.fab_page)
 
     @property
     def stage1_tgz(self) -> Path:
-        return self.ws.dist / "dust-fel-mr813.tar.gz"
+        return self.ws.dist / f"dust-fel-recon-{self.model_spec.dust_code}.tar.gz"
 
     @property
     def fsbl_name(self) -> str:
-        return f"fsbl_{self.model_spec.dram}.bin"
+        return "fsbl.bin"
 
     @property
     def payload_bin(self) -> Path:

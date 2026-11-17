@@ -17,7 +17,7 @@ electrical behavior, login, or secure-boot installation; those need the Z10 Pro.
 
 0.4 will automate the documented procedure and adoption of already-rooted UART robots. It will not
 invent stock restore for this family, derive a missing dustbin serial, bypass secure boot outside
-the DustBuilder installer, or guess a USB disk. Windows support should remain possible in the
+the Dustfab installer, or guess a USB disk. Windows support should remain possible in the
 transport design, but it is not a 0.4 release requirement.
 
 ## Safety tiers
@@ -70,8 +70,8 @@ multiple shells; they do not send speculative input.
    `/etc/OTA_Key_pub.pem`, and `/etc/publickey.pem`. Transfer it to a private, generation-staged host
    directory, reject missing/empty members, hash it, write a manifest, and publish atomically. U4 is
    impossible without a verified generation.
-6. **Build and bind.** Guide the model-specific DustBuilder manual form with both **Prepackage
-   Valetudo** and **Patch DNS** selected. Inspect the returned archive, bind its model/class and hash
+6. **Build and bind.** Guide the model-specific Dustfab Installer package form with both **Disable
+   Cloud** and **Valetudo** checked. Inspect the returned archive, bind its model/class and hash
    to the live identity, and refuse a mismatch or ambiguous package.
 7. **Transfer.** Run a built-in, tokenized HTTP bridge bound only to the robot-facing
    `192.168.5.x` interface. Accept the backup upload with a size limit and atomic rename; serve only
@@ -81,7 +81,7 @@ multiple shells; they do not send speculative input.
    sent before the installer. Require a fresh explicit dock confirmation, then run the exact
    model-bound `install.sh` once. A disconnect after launch records an uncertain attempt and resumes
    observation, never installation.
-9. **Verify.** Require the post-reboot DustBuilder MOTD, the expected Valetudo process/binary class,
+9. **Verify.** Require the post-reboot Dustfab MOTD, the expected Valetudo process/binary class,
    and reachable Web UI. Only then mark rooted. Offer current Valetudo maintenance on every later
    connection, whether the robot was rooted by this tool or adopted.
 
@@ -114,7 +114,7 @@ destination.
 
 - Password vectors: ordinary uppercase serial, Xiaomi slash prefix, whitespace rejection, damaged
   or missing serial, and secret redaction.
-- Every UART profile: baud, architecture, secure-boot branch, DustBuilder page, Valetudo class, and
+- Every UART profile: baud, architecture, secure-boot branch, Dustfab page, Valetudo class, and
   model-specific tip.
 - PTY serial peer: byte-at-a-time and split banners, CR/LF variants, boot noise, invalid UTF-8,
   interleaved kernel logs, wrong prompt, duplicate shell, delayed password prompt, rejected login,
