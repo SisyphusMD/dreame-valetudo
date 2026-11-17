@@ -11,7 +11,7 @@
 # https://web.archive.org/web/20260218013252/https://builder.dontvacuum.me/nextgen/dreame_gen3.pdf
 # and stays out of this list: the Wayback Machine rate-limits, and a check that fails on someone
 # else's throttling gets ignored the one time it is right. Dustfab itself stays out too, because
-# ci-pr.yml runs this on GitHub's runners and Dustfab says it may block datacenter addresses.
+# it says it may block datacenter addresses, and CI runs this from one.
 #
 # NOT a link checker for every URL in the repo: badges, release-download links and issue links come
 # and go, and failing CI on someone else's outage buys nothing. packaging/check-doc-links.py covers
