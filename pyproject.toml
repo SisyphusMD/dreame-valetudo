@@ -54,7 +54,8 @@ src = ["src", "tests", "libexec"]
 force-exclude = true
 # Reproduction scratch for the self-root write-up, not shipped code: held to compileall in CI
 # rather than to the shipped rule set.
-extend-exclude = ["docs/research/tools"]
+# The canonical gate scripts follow project-rules' Ruff configuration.
+extend-exclude = ["docs/research/tools", ".forgejo/scripts"]
 
 [tool.ruff.lint]
 select = [

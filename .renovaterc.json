@@ -9,6 +9,7 @@
   "platformAutomerge": false,
   "separateMinorPatch": true,
   "fetchChangeLogs": "pr",
+  "prFooter": "Refs #294: standing issue for dependency updates.\n\nNo tests: dependency pins and their generated files are checked by the existing build and test jobs.",
   "postUpgradeTasks": {
     "commands": [
       "bash packaging/refresh-pins.sh"
@@ -77,7 +78,7 @@
     },
     {
       "customType": "regex",
-      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/release-pins.env (the manylinux builders, nfpm and the smoke base, shared by both forges' build jobs), and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image ci.yml pins. The vendored shellcheck-all.sh is deliberately NOT here: bumping a locked file in place fails this repo's own drift check, so that pin is owned by the standard and arrives as a re-vendor.",
+      "description": "Docker images pinned tag@digest inside a workflow `docker run` shell block, or in the files that carry such a pin outside a workflow: packaging/release-pins.env (the manylinux builders, nfpm and the smoke base, shared by both forges' build jobs), and the two install/package smoke Dockerfiles, whose base images have to move with the qualification image tests.yml pins. The vendored shellcheck-all.sh is deliberately NOT here: bumping a locked file in place fails this repo's own drift check, so that pin is owned by the standard and arrives as a re-vendor.",
       "managerFilePatterns": [
         "/(\\.github|\\.forgejo)/workflows/.+\\.ya?ml$/",
         "/^packaging/release-pins\\.env$/",
@@ -89,6 +90,15 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "The standard gate workflows are copied from SisyphusMD/project-rules, where Renovate updates their pins.",
+      "matchFileNames": [
+        ".forgejo/workflows/ci.yml",
+        ".forgejo/workflows/ai-review.yml",
+        ".forgejo/workflows/issue-archive.yml"
+      ],
+      "enabled": false
+    },
     {
       "description": "These legs are compatibility FLOORS, not current-release aliases: the whole point is that a package which installs on the current release can still fail on the oldest one this project claims. Unclamped, Renovate bumps the tag and each floor quietly becomes a second current test \u2014 green, and proving nothing it was written to prove. Digests still refresh, so the images stay patched.",
       "matchDepNames": [
@@ -164,7 +174,7 @@
         "python"
       ],
       "matchFileNames": [
-        ".forgejo/workflows/ci.yml"
+        ".forgejo/workflows/tests.yml"
       ],
       "matchCurrentValue": "/^3\\.11\\.0$/",
       "allowedVersions": "/^3\\.11\\.0$/"
