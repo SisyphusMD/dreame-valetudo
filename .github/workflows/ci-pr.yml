@@ -66,8 +66,8 @@ jobs:
           set -euo pipefail
           pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
           coverage report --include='*/run.py' --fail-under=100
-      - name: Shared packaging helpers match project-standard
-        # Change a shared helper in project-standard and re-vendor both projects; editing the copy
+      - name: Shared packaging helpers match project-rules
+        # Change a shared helper in project-rules and re-vendor both projects; editing the copy
         # here is how these two drifted apart in the first place.
         run: python3 packaging/check-standard-sync.py
       - name: .gitignore contains the shared base
