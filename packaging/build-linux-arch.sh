@@ -127,7 +127,7 @@ bash packaging/build-linux-tarball.sh \
 
 # Install and execute the exact release package before any asset is published — on real hardware of
 # this architecture, which is the point of the split. The full distro upgrade matrix runs pre-merge
-# in ci.yml.
+# in tests.yml.
 # Both formats, because nfpm builds them in separate passes that can fail independently: an .rpm
 # whose only evidence was the .deb beside it is published on the strength of a different artifact.
 smoke_pkg() { # smoke_pkg <deb|rpm> <package>

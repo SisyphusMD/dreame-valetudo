@@ -1,0 +1,378 @@
+name: CI
+
+# Lint + tests on every PR and push to main: pinned shellcheck +
+# Python floor/current jobs + a build job + integration scripts, with integration gated
+# behind lint. Make this a required check on main so releases (cut from main by release.yml) only
+# ever ship a green tree.
+#
+# The runner is self-hosted with network reach into the home cluster, so the code-executing jobs
+# (python runs the PR's conftest/tests, build builds+runs the PR tree, integration bash-runs the
+# PR's scripts) run only for trusted refs — pushes and PRs from a branch here. A pull request from
+# a fork, or an AGit one (pushed to refs/for/<branch>, which reports this repo as its head and so
+# needs the flow == 0 clause as well as the head-repository one), carries code nobody here has
+# read, so those jobs are skipped for it; it gets shellcheck only (it reads the scripts, never
+# executes them). It gets full validation once a maintainer pushes the change to a branch here.
+# (Gating in-file is the only lever available; routing such PRs to a separate ephemeral
+# non-cluster runner can't be expressed from this workflow alone.)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Forgejo has no rerun API, so a fault outside this repository - a runner losing the network,
+  # a hosted action failing to fetch its own manifest - leaves main red with no way back except
+  # an unrelated commit, which is a lie in the history about what changed and why.
+  workflow_dispatch:
+
+concurrency:
+  # Per ref, and superseding: a second push to the same branch makes the first run's answer
+  # irrelevant, and letting it finish only competes for runners with the run that matters.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: |
+          # Kept inline rather than calling packaging/shellcheck-all.sh: unlike the release/prerelease
+          # gates (workflow_dispatch-only, never fork-triggered), this job runs on every pull_request
+          # including forks, and actions/checkout puts the FORK's copy of that file in the workspace.
+          # This is the one command in this job not gated to trusted refs (see the file header) — it
+          # must stay text this repo's own workflow defines, never something read back off a fork's
+          # checkout and executed directly.
+          # DEFAULT severity, not --severity=warning. SC1091 (a sourced file shellcheck cannot
+          # follow) is info-level, and the vendored release helpers source project.env and
+          # release-common.sh — annotating those is how a reader knows the source is deliberate.
+          # The sibling runs at the same level; a looser one here would go green on a defect
+          # that reddens the other repo.
+          # renovate: datasource=docker depName=koalaman/shellcheck
+          SHELLCHECK="koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d"
+          cid=$(docker create -w /work "$SHELLCHECK" \
+            $(git ls-files '*.sh' | tr '\n' ' '))
+          # Every tracked *.sh, not three globbed directories: a shell script added
+          # anywhere else used to go unchecked because nobody widened the list.
+          docker cp . "$cid":/work
+          check_rc=0
+          docker start -a "$cid" || check_rc=$?
+          docker rm "$cid" >/dev/null
+          exit "$check_rc"
+
+  python:
+    # trusted-ref gate (see header): don't run PR-supplied pytest on the self-hosted runner
+    # flow == 0 also turns away AGit PRs (pushed to refs/for/<branch>): they report this repo as
+    # their head, and a maintainer reopening one runs this branch's workflows with secrets.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup_python_1
+        continue-on-error: true
+        with:
+          python-version: "3.15.2"   # exact pin (repo convention); Renovate bumps the patch
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.setup_python_1.outcome != 'success'
+        with:
+          python-version: "3.15.2"   # exact pin (repo convention); Renovate bumps the patch
+      - name: lint + typecheck + test
+        run: |
+          # Pin the dev toolchain (kept in lockstep with uv.lock): CI ran these unpinned, so an
+          # upstream release (e.g. a ruff that enforces a new lint) could redden main with no code
+          # change. Renovate bumps these via the `# renovate:` custom manager — surfaced as a
+          # green-gated PR, not a surprise on main.
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.17.5"
+          # renovate: datasource=pypi depName=mypy
+          MYPY="2.4.1"
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.2.0"
+          # renovate: datasource=pypi depName=pytest-cov
+          PYTEST_COV="7.1.0"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
+          python -m pip install --upgrade pip
+          # `-e .` is not optional under the src/ layout: the package is no longer
+          # importable from the working directory, which is the whole point — a module
+          # missing from the built wheel can no longer pass the tests from the checkout.
+          pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
+          # Every tracked *.py rather than a hand-maintained list: a new shipped file used to
+          # escape lint simply because nobody remembered to add it here. docs/research/tools is
+          # excluded deliberately, in pyproject.toml rather than here — it is reproduction scratch
+          # for the self-root write-up, held to compileall below rather than to the shipped code's
+          # rule set — so every workflow, and the sibling's, can spell this line identically.
+          ruff check $(git ls-files '*.py' | tr '\n' ' ')
+          mypy
+          python -m compileall -q docs/research/tools packaging/stamp-version.py packaging/build-source-tar.py packaging/check-doc-links.py packaging/check-release-boundary.py
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+
+      - name: Coverage does not regress
+        # A measured non-regression floor, not an aspirational number: the suite measures above 99%,
+        # rounded down to 99 so ordinary reporting precision cannot make the gate unstable.
+        # `run.py` (the Runner seam every external command funnels through) is held at 100
+        # separately, because averaging it into the total would hide a regression there.
+        run: |
+          pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
+          # The Runner seam every external command funnels through, held at 100 separately so a
+          # regression there cannot hide inside the repository average.
+          coverage report --include='*/run.py' --fail-under=100
+
+      - name: Shared packaging helpers match project-rules
+        # Change a shared helper in project-rules and re-vendor both projects; editing the copy
+        # here is how these two drifted apart in the first place.
+        run: python3 packaging/check-standard-sync.py
+
+      - name: Cited external sources still resolve
+        # The profile table came verbatim from Valetudo's supported-robots page and the procedure
+        # from its Dreame install guide. A rotted URL leaves those claims with no way back to their
+        # evidence. The script says why the retired gen3 brief is no longer listed.
+        run: bash packaging/check-external-links.sh
+
+      - name: .gitignore contains the shared base
+        run: python3 packaging/check-gitignore-base.py .
+
+  python-floor:
+    # The package metadata promises source compatibility with Python 3.11. Running only the frozen
+    # release interpreter would let a newer stdlib API silently raise that floor.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup_python_2
+        continue-on-error: true
+        with:
+          # This is the literal language floor, not a current-3.11 pin. Renovate's built-in
+          # github-actions manager sees it as dependency `python`; .renovaterc.json freezes this
+          # one occurrence while the separate current-runtime pins continue to advance.
+          python-version: "3.11.0"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.setup_python_2.outcome != 'success'
+        with:
+          # This is the literal language floor, not a current-3.11 pin. Renovate's built-in
+          # github-actions manager sees it as dependency `python`; .renovaterc.json freezes this
+          # one occurrence while the separate current-runtime pins continue to advance.
+          python-version: "3.11.0"
+      - name: install and test the claimed source floor
+        run: |
+          # renovate: datasource=pypi depName=ruff
+          RUFF="0.17.5"
+          # renovate: datasource=pypi depName=pytest
+          PYTEST="9.2.0"
+          # renovate: datasource=pypi depName=pyyaml
+          PYYAML="6.0.3"
+          python -m pip install --upgrade pip
+          pip install "ruff==$RUFF" "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
+          python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
+            packaging/stamp-version.py \
+            packaging/build-source-tar.py \
+            packaging/check-doc-links.py \
+            packaging/check-release-boundary.py
+          python docs/research/tools/compute_dust_token.py --selftest
+          pytest -q tests/python
+
+  build:
+    # Compile-check the release-time build path on every push, so Renovate can automerge dep bumps
+    # safely: a break here fails the PR before it can merge. Exercises the SAME buildx + deb.Dockerfile
+    # + nfpm path publish.yml uses (amd64 only — native + fast; the arm64 leg's emulation is exercised
+    # at release time). Covers sunxi-fel, the PyInstaller bundle (pyusb + pyinstaller), and the .deb.
+    # sunxi + pyusb come from the Python constants; pyinstaller + nfpm are pinned here and kept in
+    # lockstep with the release workflows by Renovate (same depName, one grouped PR).
+    # trusted-ref gate (see header): don't build+run PR-supplied code on the self-hosted runner
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No QEMU: this job builds `--platform linux/amd64` on an amd64 runner. The setup was
+      # vestigial even before arm64 moved to a native runner.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # BuildKit has its own registry client and does not inherit dockerd's Zot mirror.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/docker.io"]
+            [registry."ghcr.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/ghcr.io"]
+            [registry."quay.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/quay.io"]
+            [registry."registry.k8s.io"]
+              mirrors = ["image-mirror.lan.bryantserver.com/registry.k8s.io"]
+            [registry."public.ecr.aws"]
+              mirrors = ["image-mirror.lan.bryantserver.com/public.ecr.aws"]
+      - name: build the bundle via buildx (deb.Dockerfile) + package the .deb + .rpm (release-time deps)
+        run: |
+          set -euo pipefail
+          read_pin() { python3 -c "import re; print(re.search(r'$1 = \"([^\"]+)\"', open('src/dreame_valetudo/constants.py').read()).group(1))"; }
+          SREF="$(read_pin SUNXI_TOOLS_REF)"; PYUSB="$(read_pin PYUSB_VERSION)"
+          echo "using sunxi $SREF, pyusb $PYUSB"
+          # The same build-time pins the release path uses, from the same file. This job exists to
+          # compile-check the release-time dependencies, so it has to be checking the versions a
+          # release would actually build with — a second inline copy here would drift and the drift
+          # would be invisible until a tag.
+          # shellcheck source=/dev/null
+          . packaging/release-pins.env
+          PYTHON_VERSION="$(read_pin BUNDLE_PYTHON_VERSION)"
+          PYTHON_SHA256="$(read_pin BUNDLE_PYTHON_SHA256)"
+          PYTHON_BUILD_IMAGE="$MANYLINUX"
+          export GLIBC_FLOOR
+          GLIBC_FLOOR=$(cat packaging/glibc-floor.txt)
+          docker buildx build --platform linux/amd64 \
+            --build-arg PYTHON_BUILD_IMAGE="$PYTHON_BUILD_IMAGE" \
+            --build-arg PYTHON_VERSION="$PYTHON_VERSION" \
+            --build-arg PYTHON_SHA256="$PYTHON_SHA256" \
+            --build-arg SREF="$SREF" --build-arg PYUSB="$PYUSB" --build-arg PYINSTALLER="$PYINSTALLER" \
+            --build-arg PIP_INDEX_URL=https://artifacts.lan.bryantserver.com/pypi.org/simple/ \
+            --build-arg DNF_MIRROR=https://artifacts.lan.bryantserver.com \
+            -f packaging/deb.Dockerfile --target export --output type=local,dest=out .
+          chmod +x out/dreame-valetudo/dreame-valetudo out/dreame-fastboot/dreame-fastboot out/sunxi-fel
+          ./out/dreame-valetudo/dreame-valetudo version        # the frozen launcher runs
+          rm -rf dist && mkdir dist
+          # -a, not -r: a bundle may contain symlinks, and a plain recursive copy would replace
+          # each with a copy of its target, so the package would no longer be what was built.
+          cp -a out/dreame-valetudo out/dreame-fastboot dist/
+          cp out/sunxi-fel ./sunxi-fel
+          # nfpm.yaml ships the man page gzipped, and build-linux-arch.sh generates it just before
+          # packaging, so it is not in the tree. -n keeps the gzip header free of a timestamp.
+          gzip -9 -n -c packaging/dreame-valetudo.1 > packaging/dreame-valetudo.1.gz
+          # Build two ordered RC package revisions so the distro smoke tests exercise an actual
+          # package-manager upgrade, not merely a reinstall. docker create+cp is required because
+          # the DinD daemon cannot bind-mount the job workspace.
+          # rc.0 is the pre-onedir fixture the transition case upgrades FROM (see nfpm-legacy-layout.yaml).
+          CID=$(docker create -e DEB_ARCH=amd64 -e GLIBC_FLOOR -w /w --entrypoint /bin/sh "$NFPM" -c '
+            set -e
+            VERSION=0.0.0-rc.1 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci-old.deb
+            VERSION=0.0.0-rc.2 nfpm package -p deb -f packaging/nfpm.yaml -t /w/ci.deb
+            VERSION=0.0.0-rc.1 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci-old.rpm
+            VERSION=0.0.0-rc.2 nfpm package -p rpm -f packaging/nfpm.yaml -t /w/ci.rpm
+            VERSION=0.0.0-rc.0 nfpm package -p deb -f packaging/nfpm-legacy-layout.yaml -t /w/ci-legacy.deb
+            VERSION=0.0.0-rc.0 nfpm package -p rpm -f packaging/nfpm-legacy-layout.yaml -t /w/ci-legacy.rpm
+          ')
+          docker cp . "$CID":/w
+          docker start -a "$CID"
+          for artifact in ci-old.deb ci.deb ci-old.rpm ci.rpm ci-legacy.deb ci-legacy.rpm; do
+            docker cp "$CID":"/w/$artifact" "./$artifact"
+          done
+          docker rm "$CID" >/dev/null
+          docker image rm "$NFPM" >/dev/null 2>&1 || true
+          deb_contents="$(dpkg-deb -c ci.deb)"
+          for required in \
+            ./usr/bin/dreame-valetudo \
+            ./usr/lib/dreame-valetudo/dreame-fastboot \
+            ./usr/lib/dreame-valetudo/sunxi-fel \
+            ./usr/lib/dreame-valetudo/app/dreame-valetudo \
+            ./usr/lib/dreame-valetudo/fastboot/dreame-fastboot; do
+            grep -Fq "$required" <<<"$deb_contents"
+          done
+          # The two entry points are symlinks into the bundles; a packager that turned either into
+          # a copy would leave it running without the contents directory beside it.
+          for link in \
+            './usr/bin/dreame-valetudo -> /usr/lib/dreame-valetudo/app/dreame-valetudo' \
+            './usr/lib/dreame-valetudo/dreame-fastboot -> /usr/lib/dreame-valetudo/fastboot/dreame-fastboot'; do
+            grep -Fq "$link" <<<"$deb_contents"
+          done
+          # nfpm assembles the package outside the build image, so this is the only step that
+          # compares what installs against what was frozen — entry types and all.
+          rm -rf deb-extract && mkdir deb-extract
+          dpkg-deb -x ci.deb deb-extract
+          python3 packaging/check-package-parity.py \
+            out/dreame-valetudo deb-extract/usr/lib/dreame-valetudo/app
+          python3 packaging/check-package-parity.py \
+            out/dreame-fastboot deb-extract/usr/lib/dreame-valetudo/fastboot
+          set +e
+          fastboot_out="$(./out/dreame-fastboot/dreame-fastboot devices 2>&1)"
+          fastboot_rc=$?
+          set -e
+          if (( fastboot_rc > 1 )) \
+              || { (( fastboot_rc == 1 )) && [[ -n "$fastboot_out" ]]; } \
+              || grep -Eqi 'Traceback|NoBackendError|no libusb backend|library not loaded' <<<"$fastboot_out"; then
+            echo "fastboot client smoke failed (rc=$fastboot_rc): $fastboot_out"
+            exit 1
+          fi
+          # Keep the self-hosted runner below its storage ceiling before pulling the distro matrix.
+          # The exported binaries are already outside BuildKit, so its compile cache is disposable.
+          docker buildx prune --all --force
+          # renovate: datasource=docker depName=debian-12-compat packageName=debian
+          DEBIAN_FLOOR_IMAGE="debian:12-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+          # renovate: datasource=docker depName=debian-13-current packageName=debian
+          DEBIAN_CURRENT_IMAGE="debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2"
+          # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
+          UBUNTU_FLOOR_IMAGE="ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde"
+          # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
+          UBUNTU_CURRENT_IMAGE="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
+          # renovate: datasource=docker depName=fedora-43-compat packageName=fedora
+          FEDORA_FLOOR_IMAGE="fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5"
+          # renovate: datasource=docker depName=fedora-44-current packageName=fedora
+          FEDORA_CURRENT_IMAGE="fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e"
+          # renovate: datasource=docker depName=rocky-8-compat packageName=rockylinux/rockylinux
+          RHEL_FLOOR_IMAGE="rockylinux/rockylinux:8@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6"
+          # renovate: datasource=docker depName=rocky-10-current packageName=rockylinux/rockylinux
+          RHEL_CURRENT_IMAGE="rockylinux/rockylinux:10@sha256:d24beedc58f79b9e0e9289fedaa4fcbcbe692b1438883a86f177fd7c51053ca8"
+          # renovate: datasource=docker depName=opensuse-leap-16-current packageName=opensuse/leap
+          OPENSUSE_IMAGE="opensuse/leap:16.0@sha256:a4115e2f5aea9712a7c73974fd94000a034fc3051ef29b5f7722fbf04070dd9d"
+          export DEBIAN_FLOOR_IMAGE DEBIAN_CURRENT_IMAGE
+          export UBUNTU_FLOOR_IMAGE UBUNTU_CURRENT_IMAGE
+          export FEDORA_FLOOR_IMAGE FEDORA_CURRENT_IMAGE
+          export RHEL_FLOOR_IMAGE RHEL_CURRENT_IMAGE OPENSUSE_IMAGE
+          bash packaging/test-linux-packages.sh ci-old.deb ci.deb ci-old.rpm ci.rpm \
+            ci-legacy.deb ci-legacy.rpm
+          VERSION=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
+          rm -rf homebrew-smoke-result
+          docker buildx build --platform linux/amd64 --build-arg TEST_TAG="v$VERSION" \
+            --build-arg BREW_MIRROR="https://image-mirror.lan.bryantserver.com" \
+            -f packaging/homebrew-smoke.Dockerfile --target result \
+            --output type=local,dest=homebrew-smoke-result .
+          test -f homebrew-smoke-result/homebrew-smoke-passed
+          echo "build OK: bundles + package matrix + Linuxbrew formula install/test/uninstall"
+
+  integration:
+    needs: [shellcheck]
+    # trusted-ref gate (see header): don't bash-run PR-supplied scripts on the self-hosted runner
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.flow == 0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Retried in-step, the shape publish.yml and tap-bottles.yml already use: a transient
+        # versions-manifest fetch failure has taken every job of a run down together before now, and
+        # Forgejo exposes no rerun endpoint, so recovery has to happen inside the job. The guard is
+        # `!= 'success'`, not `== 'failure'`: if a runner ever leaves `outcome` unset, an equality
+        # test would silently skip the retry AND `continue-on-error` would have swallowed the first
+        # failure, letting later steps run against whatever interpreter happened to be present.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup_python_3
+        continue-on-error: true
+        with:
+          python-version: "3.15.2"   # exact pin (repo convention); Renovate bumps the patch
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.setup_python_3.outcome != 'success'
+        with:
+          python-version: "3.15.2"   # exact pin (repo convention); Renovate bumps the patch
+      - name: install the session wrapper's own dependency
+        run: |
+          # Without a real tmux the session suite SKIPS, and a skip in CI reads exactly like a
+          # pass — which is how this feature stayed broken through 473 green tests. Install it so
+          # the suite actually runs, and install the tool so argv[0] is a real executable (tmux
+          # has to exec it; `python -m` gives a non-executable __main__.py).
+          sudo sed -i 's#http://archive.ubuntu.com#http://artifacts.lan.bryantserver.com/archive.ubuntu.com#; s#http://security.ubuntu.com#http://artifacts.lan.bryantserver.com/security.ubuntu.com#' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: run integration scripts (externals PATH-stubbed; no hardware)
+        run: |
+          # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
+          # That file runs offline by contract, so it never installs this itself.
+          python3 -m pip install --upgrade build
+          for t in tests/release/*.sh; do echo "== $t =="; bash "$t"; done

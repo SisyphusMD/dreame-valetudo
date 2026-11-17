@@ -1,0 +1,15 @@
+# Checksums and synthetic test values present before the Secrets check was adopted.
+11d378f1ddef8f05ca5bf248bbd938e867a38037:tests/python/test_phase_push.py:generic-api-key:902
+13fa899bbb5522c9c9041d762a9595853b28fafb:dreame_valetudo/constants.py:generic-api-key:16
+13fa899bbb5522c9c9041d762a9595853b28fafb:tests/python/test_dust_decrypt.py:generic-api-key:47
+2307767f36374696a1db6c310178320ed5fc1f25:tests/python/test_phase_fixes.py:generic-api-key:261
+2e9ae26f283f080b631a84b81622c14c993818b0:STANDARD.lock:generic-api-key:23
+31c26e2375986641d1276d95d7caba66fff39082:tests/python/test_phase_push.py:generic-api-key:1738
+7fee837336175c85fd2b97279c817c24445094a1:tests/python/test_log.py:generic-api-key:57
+7fee837336175c85fd2b97279c817c24445094a1:tests/python/test_phase_fixes.py:generic-api-key:248
+9bd75ccd029bce75f26f0e5a4fc6445078f89eb0:docs/research/artifacts/derived/selfsigned_toc0.img.provenance.json:generic-api-key:34
+d45caa00ed1143125747f752466162d94bf7fac8:tests/python/test_bench.py:generic-api-key:1351
+d56821153531ecb422eb3b336a5f67a50cb9ae90:tests/python/test_phase_fixes.py:generic-api-key:233
+d8514669fcc6cd6a01931aba9dcddbc693e4dab4:tests/python/test_phase_fixes.py:generic-api-key:91
+d8514669fcc6cd6a01931aba9dcddbc693e4dab4:tests/python/test_phase_push.py:generic-api-key:111
+d8514669fcc6cd6a01931aba9dcddbc693e4dab4:tests/python/test_util.py:generic-api-key:36

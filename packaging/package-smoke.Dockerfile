@@ -1,4 +1,4 @@
-# This must stay the same image ci.yml qualifies the .deb against; the annotation makes it one
+# This must stay the same image tests.yml qualifies the .deb against; the annotation makes it one
 # Renovate dependency with that pin instead of a second one that drifts on its own schedule.
 # renovate: datasource=docker depName=ubuntu-26.04-current packageName=ubuntu
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS smoke

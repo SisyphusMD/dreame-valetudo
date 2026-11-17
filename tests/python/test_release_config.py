@@ -18,7 +18,7 @@ from dreame_valetudo.cli import _KNOWN_COMMANDS
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PUBLISH = _ROOT / ".forgejo" / "workflows" / "publish.yml"
-_CI = _ROOT / ".forgejo" / "workflows" / "ci.yml"
+_CI = _ROOT / ".forgejo" / "workflows" / "tests.yml"
 # Architecture decides the forge, so the build and install-test logic lives in scripts BOTH
 # forges call rather than inline in either workflow. Assertions about what a release actually
 # does belong against these.
@@ -193,7 +193,7 @@ def test_pyinstaller_floats_again_on_both_forgejo_workflows() -> None:
     for rule in config["packageRules"]:
         assert "pyinstaller" not in rule.get("matchDepNames", [])
     pins = {}
-    # The Linux pin lives in release-pins.env, which BOTH forges' build jobs source — ci.yml too, so
+    # The Linux pin lives in release-pins.env, which BOTH forges' build jobs source — tests.yml too, so
     # what CI compile-checks is what a release builds with. macOS keeps its own inline copy because
     # its build never touches that file.
     for source in (_PINS, _MACOS):
@@ -254,7 +254,7 @@ def test_native_macos_suites_run_on_our_own_macs_for_every_pushed_commit() -> No
     assert not swallowed, f"macos.yml swallows failures in {swallowed}"
     # The old cross-forge wait is gone: nothing in CI may poll GitHub for a macOS verdict.
     ci = yaml.safe_load(_CI.read_text())
-    assert "macos" not in ci["jobs"], "ci.yml still carries the job that waited on GitHub's Mac"
+    assert "macos" not in ci["jobs"], "tests.yml still carries the job that waited on GitHub's Mac"
     assert "check-mirror-ci" not in _CI.read_text()
     assert "ruff check $(git ls-files '*.py' | tr '\\n' ' ')" in macos
     assert "mypy" in macos
@@ -298,7 +298,7 @@ def test_claimed_python_floor_is_installed_and_fully_tested() -> None:
         for rule in config["packageRules"]
         if rule.get("matchManagers") == ["github-actions"]
         and rule.get("matchDepNames") == ["python"]
-        and rule.get("matchFileNames") == [".forgejo/workflows/ci.yml"]
+        and rule.get("matchFileNames") == [".forgejo/workflows/tests.yml"]
     ]
     assert len(floor_rules) == 1
     assert floor_rules[0]["matchCurrentValue"] == r"/^3\.11\.0$/"
@@ -565,7 +565,7 @@ def test_ci_and_both_release_gates_use_one_pinned_toolchain() -> None:
         for name in ("RUFF", "MYPY", "PYTEST"):
             assert f'{name}="{pins[name]}"' in text, workflow
 
-    # ci.yml's shellcheck job runs on every pull_request, including forks, and is deliberately the
+    # tests.yml's shellcheck job runs on every pull_request, including forks, and is deliberately the
     # one command in that job not gated to trusted refs — so its wrapper stays inline text this
     # repo's own workflow defines, rather than a script read back off a fork's checkout and executed
     # directly. Only the workflow_dispatch-only release/prerelease gates, never fork-triggered,
@@ -614,7 +614,7 @@ def test_both_release_gates_install_the_real_tmux_integration_dependencies() -> 
         text = workflow.read_text()
         gate = text[text.index("      - name: Test gate") :]
         assert "apt-get install -y -qq tmux" in gate
-        # pytest-cov is in this list because the release path gates coverage too, not only ci.yml:
+        # pytest-cov is in this list because the release path gates coverage too, not only tests.yml:
         # CI runs on a branch and a release is cut from a tag, so a gate that lives only in CI does
         # not constrain what a release may ship.
         assert (
@@ -892,7 +892,7 @@ def test_every_shipped_python_file_is_linted() -> None:
     lint = "ruff check $(git ls-files '*.py' | tr '\\n' ' ')"
     required = {
         _ROOT / ".forgejo" / "workflows" / name
-        for name in ("ci.yml", "release.yml", "prerelease.yml")
+        for name in ("tests.yml", "release.yml", "prerelease.yml")
     }
     workflows = sorted(
         [*(_ROOT / ".forgejo" / "workflows").glob("*.yml"), *(_ROOT / ".github" / "workflows").glob("*.yml")]
@@ -906,8 +906,10 @@ def test_every_shipped_python_file_is_linted() -> None:
         ]
         if lines:
             linting.add(workflow)
+        canonical_ci = _ROOT / ".forgejo" / "workflows" / "ci.yml"
+        expected = "/tmp/lint/bin/ruff check ." if workflow == canonical_ci else lint
         for line in lines:
-            assert line == lint, f"{workflow.name} lints an enumerated or filtered set: {line}"
+            assert line == expected, f"{workflow.name} lints an enumerated or filtered set: {line}"
     assert required <= linting, (
         f"no longer runs ruff: {sorted(p.name for p in required - linting)}"
     )
@@ -934,7 +936,7 @@ def test_every_shipped_python_file_is_linted() -> None:
 
 
 def test_every_release_path_gates_coverage_not_just_ci() -> None:
-    """ci.yml runs on a branch; a release is cut from a tag. A non-regression gate that lives only
+    """tests.yml runs on a branch; a release is cut from a tag. A non-regression gate that lives only
     in CI does not constrain what a release is allowed to ship, which is how a coverage regression
     could have shipped from this repository while every branch build stayed green."""
     for workflow in (_CI, _RELEASE, _PRERELEASE):
@@ -1456,7 +1458,7 @@ def test_every_inline_shellcheck_pin_matches_the_vendored_script() -> None:
     assert found, "packaging/shellcheck-all.sh no longer pins SHELLCHECK"
     pin = found.group(1)
 
-    for relative in (".forgejo/workflows/ci.yml",):
+    for relative in (".forgejo/workflows/tests.yml",):
         text = (_ROOT / relative).read_text(encoding="utf-8")
         assert f'SHELLCHECK="{pin}"' in text, (
             f"{relative} pins a different shellcheck image than the vendored script; the pin is "
@@ -1583,11 +1585,11 @@ def test_ci_can_be_redispatched_without_an_unrelated_commit() -> None:
     hosted action failing to fetch its own manifest - leaves main red and the only way back is an
     unrelated commit, which is a lie in the history about what changed and why.
     """
-    document = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "ci.yml").read_text())
+    document = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "tests.yml").read_text())
     # PyYAML resolves a bare `on:` to the boolean True under YAML 1.1.
     triggers = document.get("on") or document.get(True) or {}
     assert "workflow_dispatch" in triggers, (
-        f"ci.yml cannot be redispatched, so an infrastructure fault strands main: {sorted(triggers)}"
+        f"tests.yml cannot be redispatched, so an infrastructure fault strands main: {sorted(triggers)}"
     )
 
 
@@ -1605,8 +1607,8 @@ def test_ci_supersedes_itself_and_publishing_never_does() -> None:
         assert isinstance(value, dict), f"{name} declares no workflow-level concurrency: {value!r}"
         return value
 
-    ci = concurrency("ci.yml")
-    assert "github.ref" in str(ci["group"]), f"ci.yml does not group per ref: {ci['group']}"
+    ci = concurrency("tests.yml")
+    assert "github.ref" in str(ci["group"]), f"tests.yml does not group per ref: {ci['group']}"
     assert ci.get("cancel-in-progress") is True, "a superseded CI run should not keep a runner"
 
     publish = concurrency("publish.yml")

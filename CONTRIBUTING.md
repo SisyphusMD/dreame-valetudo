@@ -87,10 +87,13 @@ Google's `fastboot` cannot enumerate the Dreame gadget on Apple Silicon.
 
 ## Shared conventions
 
-Code style, comment policy, test layers, shell and workflow rules live in
-[`SisyphusMD/project-rules`](https://forgejo.bryantserver.com/SisyphusMD/project-rules). Files vendored from
-it are listed in `STANDARD.lock` and checked by `packaging/check-standard-sync.py` — **improve them
-there and re-vendor, never by editing the copy here.**
+Read the [SisyphusMD project rules](https://forgejo.bryantserver.com/SisyphusMD/project-rules/src/branch/main/RULES.md)
+before contributing. Every pull request closes an issue. Rule 9 excludes AI attribution,
+including a `Co-Authored-By` trailer for an assistant. Report vulnerabilities privately as
+described in [SECURITY.md](SECURITY.md).
+
+Files vendored from project-rules are listed in `STANDARD.lock` and checked by
+`packaging/check-standard-sync.py`. Change those files in project-rules and re-vendor them here.
 
 ## Releases
 
@@ -155,10 +158,9 @@ git push origin HEAD:refs/for/main -o topic=<short-name>
 A GitHub sign-in has no Forgejo password, so push over HTTPS with an access token from your
 Forgejo settings. Push again with the same topic to update the pull request.
 
-CI runs on this project's own runners, which are also trusted with its release credentials, so it
-does not run on a pull request sent this way, or on one from a fork: only shellcheck does, since it
-reads the scripts without running them. A maintainer reads the change, then pushes it to a branch
-here and opens it again as a pull request from that branch, and that runs the whole suite: lint,
+AGit and fork pull requests receive shellcheck and the standard gates. The repository test jobs
+execute code only after a maintainer reviews the change and opens a pull request from a branch
+here. That runs lint,
 strict type-checking, the full test suite against both the current interpreter and the 3.11 floor,
 both coverage gates, shellcheck, documentation links, the vendored-standard check, the
 release-script integration suite, the `.deb`/`.rpm` build from `deb.Dockerfile`, and the same tests
@@ -175,6 +177,28 @@ change, so build a stage you touched under `packaging/` locally before opening t
   flashing path needs a bench run, which the maintainer does.
 
 The sibling project works the same way, for the same reasons — see its `CONTRIBUTING.md`.
+
+## Required checks
+
+The standard gate contexts are `CI / Issue link (pull_request_target)`,
+`CI / Tests with code (pull_request_target)`, `CI / Diff size (pull_request_target)`,
+`CI / Lint (pull_request_target)`, `CI / Secrets (pull_request_target)` and `AI review`.
+Each needs a passing and a failing run on a real pull request before it is added to protection.
+
+The repository workflow in `.forgejo/workflows/tests.yml` publishes the existing
+`CI / shellcheck (pull_request)`, `CI / python (pull_request)`,
+`CI / python-floor (pull_request)`, `CI / build (pull_request)` and
+`CI / integration (pull_request)` contexts. The Python suite requires 99% branch coverage
+overall and 100% on the safety-critical command runner, `src/dreame_valetudo/run.py`.
+
+The macOS workflow publishes `macOS / macOS floor (macos-15-vm) (push)` and
+`macOS / macOS current (macos-27-vm) (push)`.
+
+## Break-glass
+
+Rule 20 governs urgent merges during a runner or review-model outage. With Forgejo available,
+the maintainer can remove the unavailable required context for that merge, restore it immediately
+afterward, and record the exception on the issue.
 
 ## What this project promises not to break
 

@@ -157,7 +157,7 @@ jobs:
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           ruff check $(git ls-files '*.py' | tr '\n' ' ')
           mypy
-          # Gated HERE too, not only in CI: ci.yml runs on a branch, and a release is cut from a
+          # Gated HERE too, not only in CI: tests.yml runs on a branch, and a release is cut from a
           # tag. Without this the release path was the one way a coverage regression could ship.
           pytest -q tests/python --cov --cov-report=term-missing --cov-fail-under=99
           # The Runner seam every external command funnels through, held at 100 separately so a
@@ -168,7 +168,7 @@ jobs:
           python -m dreame_valetudo help | grep -q "Supported models"
           # `build`, so release-scripts.sh exercises the tap section instead of skipping it.
           # project-rules conventions/shell-and-workflows.md, section 4: a gate that only really runs
-          # in ci.yml does not constrain a release.
+          # in tests.yml does not constrain a release.
           python3 -m pip install --upgrade build
           for t in tests/release/*.sh; do bash "$t"; done
 
