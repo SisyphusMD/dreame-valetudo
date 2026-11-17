@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import re
 import shutil
@@ -29,8 +28,8 @@ _PINS = _ROOT / "packaging" / "release-pins.env"
 _RELEASE = _ROOT / ".forgejo" / "workflows" / "release.yml"
 _PRERELEASE = _ROOT / ".forgejo" / "workflows" / "prerelease.yml"
 _MACOS = _ROOT / ".github" / "workflows" / "release-macos.yml"
-_MACOS_CI = _ROOT / ".github" / "workflows" / "ci-macos.yml"
-_MACOS_WAIT = _ROOT / "packaging" / "check-mirror-ci.sh"
+_MACOS_CI = _ROOT / ".forgejo" / "workflows" / "macos.yml"
+_MACOS_WAIT = _ROOT / "packaging" / "check-forgejo-ci.sh"
 # No datasource tracks these, so nothing bumps them and nothing has to refresh them: the stage1
 # tarball has no upstream release feed, and the Dust keystream is a constant of the format.
 _STATIC_DIGESTS = ("STAGE1_SHA256", "DUST_KEYSTREAM_SHA256")
@@ -226,54 +225,35 @@ def test_forgejo_buildkit_uses_the_nas_pull_through_cache() -> None:
     assert "docker image prune --all" not in _CI.read_text()
 
 
-def test_forgejo_requires_native_macos_suites_for_the_exact_mirrored_commit() -> None:
-    forgejo = _job(_CI.read_text(), "macos")
-    macos = _MACOS_CI.read_text()
+def test_native_macos_suites_run_on_our_own_macs_for_every_pushed_commit() -> None:
+    """macos.yml is the macOS gate: required checks on main, and what macos-gate reads at a cut.
 
-    assert "needs: [shellcheck, python, python-floor, build, integration]" in forgejo
-    assert "packaging/check-mirror-ci.sh" in forgejo
-    assert ".github/workflows/ci-macos.yml" in forgejo
-    assert 'github.event.pull_request.head.repo.full_name == github.repository' in forgejo
-    assert 'os.environ["GITHUB_EVENT_PATH"]' in forgejo
-    # Or the repository token sits in git config while a script from a PR-controlled ref
-    # runs beside it. The release mirror gate withholds it for the same reason.
-    assert "persist-credentials: false" in forgejo, (
-        "the gate's checkout leaves the repository token in git config"
-    )
-    assert '["pull_request"]["head"]["sha"]' in forgejo
-    # WRITE is the property, not "no secrets": reading public run conclusions needs a scopeless
-    # token, and going without one shares a 60-request hour with everything else leaving this
-    # network - including the sibling's copy of this gate - which turns a fine commit into a
-    # timeout. What must never appear here is anything that could write.
-    # Case-insensitive: secret expressions are not required to be shouted, and a
-    # `secrets.write_pat` that this missed would be a silently unguarded credential.
-    for secret in re.findall(r"secrets\.([A-Za-z_0-9]+)", forgejo):
-        assert secret.upper() == "GH_REPO_READ_PAT", (
-            f"the macos gate takes {secret}; it runs on every push and needs only to READ "
-            "public run conclusions"
-        )
-    assert "MIRROR_CI_TOKEN" in forgejo, "the gate does not hand the mirror poll a read token"
-    # It must not run for a TAG. A prerelease stamps a commit that is pushed only as a tag, and the
-    # mirrored workflow runs on branch pushes, so no run can ever exist for that sha - the gate
-    # would poll to its timeout and fail every prerelease. Either this repository's CI does not
-    # trigger on tags at all, or the gate excludes them.
-    document = yaml.safe_load(_CI.read_text())
+    It runs on push to every branch and never on pull_request: a same-repository branch already
+    runs on push, and an outside pull request's code must not run on these machines. Nothing in it
+    may be swallowed, or a red Mac would read as a green required check.
+    """
+    macos = _MACOS_CI.read_text()
+    document = yaml.safe_load(macos)
     triggers = document.get("on") or document.get(True) or {}
-    # A push filter that names only branches skips tags, and one that names tags runs for them;
-    # one that names neither (a bare `push:`) runs for both, so it counts as tagged too.
-    if isinstance(triggers, dict):
-        push = triggers.get("push", False)
-    else:  # `on: push` or `on: [push, ...]`, both unfiltered
-        push = None if "push" in triggers else False
-    filters = set(push or {}) & {"branches", "branches-ignore", "tags", "tags-ignore"}
-    tagged = push is not False and (not filters or bool(filters & {"tags", "tags-ignore"}))
-    if tagged:
-        assert "refs/tags/" in str(document["jobs"]["macos"].get("if", "")), (
-            "CI runs on tags and the macOS gate does not exclude them, so every prerelease will "
-            "wait for a mirrored run that cannot exist and fail"
-        )
-    assert "macos-15\n" in macos
-    assert "macos-26\n" in macos
+    assert triggers["push"] == {"branches": ["**"]}, triggers
+    assert "pull_request" not in triggers and "pull_request_target" not in triggers, (
+        "macos.yml would run an outside pull request's code on our Macs"
+    )
+    job = document["jobs"]["macos"]
+    assert [leg["runner"] for leg in job["strategy"]["matrix"]["include"]] == [
+        "macos-15-vm", "macos-27-vm",
+    ]
+    assert job["runs-on"] == "${{ matrix.runner }}"
+    swallowed = [
+        step.get("name") or step.get("id") or step.get("uses")
+        for step in job["steps"]
+        if step.get("continue-on-error") and step.get("id") != "setup_python_1"
+    ]
+    assert not swallowed, f"macos.yml swallows failures in {swallowed}"
+    # The old cross-forge wait is gone: nothing in CI may poll GitHub for a macOS verdict.
+    ci = yaml.safe_load(_CI.read_text())
+    assert "macos" not in ci["jobs"], "ci.yml still carries the job that waited on GitHub's Mac"
+    assert "check-mirror-ci" not in _CI.read_text()
     assert "ruff check $(git ls-files '*.py' | tr '\\n' ' ')" in macos
     assert "mypy" in macos
     assert "pytest -q tests/python" in macos
@@ -519,25 +499,20 @@ def test_the_package_smoke_base_is_one_pin_with_the_qualification_image() -> Non
     assert covered, "install-smoke.Dockerfile's annotated pins need a manager that reads them"
 
 
-def test_native_macos_status_poll_stays_within_the_shared_public_api_budget() -> None:
-    bridge = _MACOS_WAIT.read_text()
+def test_the_macos_release_gate_reads_a_fully_green_run_for_the_exact_commit() -> None:
+    gate = _MACOS_WAIT.read_text()
 
-    # The poll is authenticated, so the ceiling is 5,000 requests an hour rather than the 60 an
-    # unauthenticated caller gets from a public egress IP two Forgejo runners share. A 2400s
-    # deadline polled every 30s is 80 requests per gate, under 2% of that quota.
-    assert 'MIRROR_CI_TIMEOUT:-2400' in bridge
-    assert 'MIRROR_CI_INTERVAL:-30' in bridge
-    # And the token is REQUIRED. An optional one does not fail when the budget is gone: it answers
-    # 403, which this gate reads as "could not ask" and waits out, turning somebody else's traffic
-    # into a timed-out release.
-    assert 'MIRROR_CI_TOKEN:?' in bridge
-    # A throttled response is a statement about the quota, not about the commit. Failing the gate
-    # on one would turn somebody else's traffic into a red release.
-    assert '403|429)' in bridge
-    # Match the workflow FILE, and let a success outrank a cancelled sibling.
-    assert '.split("@", 1)[0] == workflow' in bridge
-    assert 'r.get("conclusion") == "success"' in bridge
-
+    # A 2400s deadline polled every 30s: long enough for a Renovate burst queued on one VM.
+    assert "FORGEJO_CI_TIMEOUT:-2400" in gate
+    assert "FORGEJO_CI_INTERVAL:-30" in gate
+    # A refused read is not something waiting fixes, so it fails at once.
+    assert "401|403)" in gate
+    # Match the workflow FILE and the exact commit, never trusting the server's filter alone.
+    assert 'r.get("workflow_id") == workflow' in gate
+    assert 'r.get("commit_sha") == sha' in gate
+    # A run whose macOS jobs were scoped out also concludes "success"; only a run whose every job
+    # succeeded is a pass.
+    assert 'all(j.get("status") == "success" for j in jobs)' in gate
 
 def test_homebrew_templates_build_from_the_pypi_sdist() -> None:
     """Same source as the sibling project's formula, which is what let `update-tap.sh` become one
@@ -916,7 +891,7 @@ def test_every_shipped_python_file_is_linted() -> None:
     required = {
         _ROOT / ".forgejo" / "workflows" / name
         for name in ("ci.yml", "release.yml", "prerelease.yml")
-    } | {_ROOT / ".github" / "workflows" / "ci-pr.yml"}
+    }
     workflows = sorted(
         [*(_ROOT / ".forgejo" / "workflows").glob("*.yml"), *(_ROOT / ".github" / "workflows").glob("*.yml")]
     )
@@ -1248,83 +1223,6 @@ def test_the_caveats_no_longer_promise_a_first_run_source_build() -> None:
         assert "builds sunxi-fel from source" not in formula, name
 
 
-def test_the_infra_retry_watches_every_github_workflow() -> None:
-    """A runner fault is not selective about which workflow it lands on, so a partial watch list is
-    just an undetected flake somewhere else. The sibling project's list had drifted to three of
-    seven, missing its two longest-running workflows — the same test lives in both repos."""
-    # Read with a regex rather than a YAML parser: this project has no runtime dependencies and
-    # its dev set is pinned deliberately, so a parser is not worth adding for one list of strings.
-    retry = _ROOT / ".github" / "workflows" / "retry-infra-failures.yml"
-    block = re.search(r"^    workflows:\n((?:\s*- .+\n)+)", retry.read_text(), re.M)
-    assert block, "the retry workflow has no `workflows:` watch list"
-    watched = set(re.findall(r'- "([^"]+)"', block.group(1)))
-    present = {}
-    for path in sorted((_ROOT / ".github" / "workflows").glob("*.yml")):
-        found = re.search(r"^name:\s*(.+)$", path.read_text(), re.M)
-        if found:
-            present[found.group(1).strip()] = path.name
-    # Itself excluded: a retry workflow retrying its own runner failure would recurse.
-    unwatched = {n: f for n, f in present.items() if n not in watched and f != retry.name}
-    assert unwatched == {}, f"GitHub workflows with no infra-retry cover: {unwatched}"
-    assert watched <= set(present), f"watches workflows that do not exist: {watched - set(present)}"
-
-
-#: What makes a GitHub job reach Forgejo: the host, the `FORGE` variable the install matrix sets, or
-#: a vendored script that cannot run without it.
-_REACHES_FORGEJO = re.compile(
-    r"forgejo\.bryantserver\.com|\$\{?FORGE\b|(?:build-bottles|forgejo-release|wait-for-release"
-    r"|check-rc-install-matrix|fetch-release-assets|update-tap)\.sh"
-)
-
-
-def _load_triage() -> Any:
-    spec = importlib.util.spec_from_file_location("triage", _ROOT / "packaging" / "triage-infra-failure.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_every_github_job_that_reaches_forgejo_probes_it_first() -> None:
-    """Hosted runners borrow recycled addresses, and one CrowdSec has banned gets HTTP 403 from
-    Forgejo for everything. The infra retry accepts that only from the preflight step, by name, so
-    a job that reaches Forgejo without it turns a ban back into a red build nobody can rerun
-    automatically, and a renamed step silently disables the rule for every job at once."""
-    triage = _load_triage()
-    missing, covered = [], 0
-    for path in sorted((_ROOT / ".github" / "workflows").glob("*.y*ml")):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        wide = bool(_REACHES_FORGEJO.search(yaml.safe_dump(workflow.get("env") or {})))
-        for name, job in (workflow.get("jobs") or {}).items():
-            steps = job.get("steps") or []
-            reaches = _REACHES_FORGEJO.search(yaml.safe_dump(job))
-            # A workflow-wide FORGE only counts for jobs that run our code; a pure verdict job that
-            # checks out nothing cannot reach Forgejo through it.
-            uses_code = any(str(st.get("uses", "")).startswith("actions/checkout@") for st in steps)
-            if not (reaches or (wide and uses_code)):
-                continue
-            covered += 1
-            first = str(steps[0].get("uses", "")) if steps else ""
-            probe = steps[1] if len(steps) > 1 else {}
-            # A whole line, so a form that swallows its failure (`... || true`) cannot pass.
-            runs_probe = any(line.strip() == "sh packaging/forgejo-preflight.sh"
-                             for line in probe.get("run", "").splitlines())
-            if (not first.startswith("actions/checkout@")
-                    or probe.get("name") != triage.PREFLIGHT_STEP or not runs_probe):
-                missing.append(f"{path.name}:{name}")
-    assert missing == [], f"jobs that reach Forgejo without checkout then the preflight: {missing}"
-    # The bottle build and publish, the install matrix's three, and both release uploads.
-    assert covered == 7
-
-
-def test_the_install_matrix_verdict_is_known_to_the_triage_as_derivative() -> None:
-    """The summary runs `always()` and fails whenever a leg did, so a banned leg also turns it red.
-    The triage exempts it by step name; renamed, it would veto every install-matrix retry again."""
-    workflow = yaml.safe_load((_ROOT / ".github" / "workflows" / "install-matrix.yml").read_text(encoding="utf-8"))
-    names = [st.get("name") for st in workflow["jobs"]["summary"]["steps"]]
-    assert names and set(names) <= _load_triage().DERIVATIVE_STEPS
-
-
 def test_a_pkg_role_for_an_arch_no_longer_built_is_retired() -> None:
     """Dropping Intel removed the x86_64 leg from the .pkg build but left its role demanded, and the
     first release after it waited out the install matrix's whole deadline for a .pkg nothing would
@@ -1349,30 +1247,6 @@ def test_a_pkg_role_for_an_arch_no_longer_built_is_retired() -> None:
         if arch and (arch.group(1) in built) == (role in retired):
             wrong.append(role)
     assert wrong == [], f".pkg roles whose retirement disagrees with the arches built {sorted(built)}: {wrong}"
-
-
-def test_the_infra_triage_is_the_shared_one() -> None:
-    """The discriminator is subtle enough that two copies would drift into two policies — and the
-    dangerous direction of drift is the generous one, which launders flaky tests into green builds
-    with nobody noticing because the build is green."""
-    retry = (_ROOT / ".github" / "workflows" / "retry-infra-failures.yml").read_text()
-    assert "packaging/triage-infra-failure.py" in retry
-    assert (_ROOT / "packaging" / "triage-infra-failure.py").exists()
-    # The attempt-specific endpoint: plain /jobs returns the LATEST attempt, so after a retry it
-    # reports the retry's green jobs and the triage sees nothing to explain.
-    assert "attempts/$ATTEMPT/jobs" in retry
-    # One log per failed job, fetched with escapes allowed: build logs carry ANSI colour and
-    # `gh api` refuses to write such a body without the flag. Losing it would not fail the
-    # workflow — every log fetch would fail, every failure would count as ours, and the
-    # resolver-failure retry class would silently stop existing.
-    assert "--allow-escape-sequences" in retry
-    assert "/logs" in retry
-    assert "triage-infra-failure.py jobs.json logs annotations" in retry
-    # A job GitHub never found a runner for ends `cancelled`, with the reason only in its
-    # annotations. Without both the trigger and the fetch, every such cancel stays red until a
-    # person reruns it, which is how one release sat for an hour on a job that never started.
-    assert "conclusion == 'cancelled'" in retry
-    assert "check-runs/$job/annotations" in retry
 
 
 # --- the install matrix ---------------------------------------------------------------
@@ -1478,7 +1352,7 @@ def test_every_job_that_runs_the_suite_installs_the_yaml_parser() -> None:
                 continue
             checked += 1
             assert "pyyaml==" in runs, f"{workflow.name}:{name} runs the suite without pyyaml"
-    assert checked >= 6, f"only found {checked} jobs running the suite"
+    assert checked >= 5, f"only found {checked} jobs running the suite"
 
 
 def test_the_pinned_standard_version_matches_what_is_actually_vendored() -> None:
@@ -1569,12 +1443,12 @@ def test_renovate_never_edits_a_vendored_file() -> None:
 
 
 def test_every_inline_shellcheck_pin_matches_the_vendored_script() -> None:
-    """Three copies of one pin, and they have to move together.
+    """Two copies of one pin, and they have to move together.
 
-    `packaging/shellcheck-all.sh` is vendored, and two workflows deliberately do NOT call it: those
-    jobs run on untrusted refs, where `actions/checkout` puts a FORK's copy of the script in the
+    `packaging/shellcheck-all.sh` is vendored, and CI's shellcheck job deliberately does NOT call it:
+    that job runs on untrusted refs, where `actions/checkout` puts a FORK's copy of the script in the
     workspace, so the command has to be text this repo defines. The cost of that safety is a second
-    and third copy of the image pin. Re-vendoring moves only the script, so nothing but this compares
+    copy of the image pin. Re-vendoring moves only the script, so nothing but this compares
     them — and a fork PR would then qualify against a different shellcheck than every other gate.
     """
     script = (_ROOT / "packaging" / "shellcheck-all.sh").read_text(encoding="utf-8")
@@ -1582,7 +1456,7 @@ def test_every_inline_shellcheck_pin_matches_the_vendored_script() -> None:
     assert found, "packaging/shellcheck-all.sh no longer pins SHELLCHECK"
     pin = found.group(1)
 
-    for relative in (".forgejo/workflows/ci.yml", ".github/workflows/ci-pr.yml"):
+    for relative in (".forgejo/workflows/ci.yml",):
         text = (_ROOT / relative).read_text(encoding="utf-8")
         assert f'SHELLCHECK="{pin}"' in text, (
             f"{relative} pins a different shellcheck image than the vendored script; the pin is "
@@ -1848,30 +1722,21 @@ def test_homebrew_bottles_come_from_the_mirror_where_it_is_reachable() -> None:
 
 
 def test_the_formula_is_built_on_every_macos_lane_the_library_is() -> None:
-    """A formula proven on current arm64 only leaves the two axes that differ to a tag.
+    """A formula proven on current macOS only leaves the floor to a tag.
 
     This formula compiles C on the installing machine - `sunxi-tools` built with `make sunxi-fel`
     against libfdt and zlib - so a break can be specific to the macOS floor. The bottle
     build covers those lanes but runs at tag time, and a tag is immutable by the time it reports.
-    Whatever set `ci-macos.yml` holds the library to, the formula is held to as well.
+    So the formula smoke is a step of the one macOS job, on every leg the library is tested on.
     """
-    def lanes(name: str) -> set[str]:
-        document = yaml.safe_load((_ROOT / ".github" / "workflows" / name).read_text())
-        # The macOS job, not the first one: both workflows open with a `scope` job on
-        # ubuntu-latest, and comparing that against itself proves nothing.
-        includes = [
-            ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
-            for job in document["jobs"].values()
-        ]
-        return {entry["os"] for include in includes for entry in include}
-
-    library, formula = lanes("ci-macos.yml"), lanes("formula-macos.yml")
-    assert formula == library, (
-        f"the formula is built on {sorted(formula)} while the library is tested on "
-        f"{sorted(library)} on Apple Silicon; the difference is where a break reaches a "
-        f"tag unseen"
+    document = yaml.safe_load(_MACOS_CI.read_text())
+    job = document["jobs"]["macos"]
+    legs = [leg["runner"] for leg in job["strategy"]["matrix"]["include"]]
+    assert len(legs) >= 2, f"the macOS job covers only {legs}"
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert any("packaging/test-homebrew-formula.sh" in run for run in runs), (
+        "the macOS job no longer builds the formula, so a floor-only formula break reaches a tag"
     )
-
 
 def test_the_bottle_wait_outlasts_a_slow_publish() -> None:
     """`build-bottles.sh` waits for publish.yml's first tap pass, and the budget is the whole
@@ -2717,10 +2582,6 @@ def test_every_bottle_wait_agrees_with_the_matrix() -> None:
 #
 # An exception is fine. An exception nobody wrote a reason for is not.
 GITHUB_ONLY: dict[tuple[str, str], str] = {
-    ("ci-pr.yml", "*"):
-        "pull requests are on GitHub by project policy, so Forgejo never sees the event",
-    ("retry-infra-failures.yml", "*"):
-        "it re-runs GitHub workflow runs through the GitHub API — nothing to do elsewhere",
     ("bottles.yml", "*"):
         "two of the three tags need macOS or native arm64 anyway; x86_64_linux is built "
         "beside them because the append job uploads every leg's bottle and manifest from "
@@ -2733,12 +2594,6 @@ GITHUB_ONLY: dict[tuple[str, str], str] = {
         "sequences the macOS and native-arm64 legs that must run on this forge",
     ("install-matrix.yml", "summary"):
         "reports the macOS and native-arm64 legs that must run on this forge",
-    ("ci-macos.yml", "scope"):
-        "decides whether this run's own macOS job may be skipped; a job's `needs` cannot "
-        "reach across forges, so the decision has to run where the job it gates does",
-    ("formula-macos.yml", "scope"):
-        "decides whether this run's own macOS job may be skipped; a job's `needs` cannot "
-        "reach across forges, so the decision has to run where the job it gates does",
 }
 
 
@@ -2964,47 +2819,49 @@ def test_the_candidate_gate_checks_out_the_tags_it_reasons_about() -> None:
     assert checkout["with"]["fetch-depth"] == 0, "candidate-gate would run on a tagless checkout"
 
 
-def test_both_install_matrices_record_which_tag_they_tested() -> None:
-    """Each forge keeps it in a different place, and the gate reads both.
+def test_every_install_matrix_records_which_tag_it_tested() -> None:
+    """The gate has to recognise a run for the candidate, and Forgejo keeps that in one place.
 
-    A tag PUSH is self-describing (head_branch on GitHub, prettyref on Forgejo). A
-    re-dispatch is not: it runs from main on purpose, so a fix to these scripts is
-    what re-runs rather than the copies frozen at the tag. GitHub records the
-    subject in the run-name; Forgejo IGNORES run-name entirely — a dispatched run's
-    title is just the workflow name — so there it has to live in a job name, which
-    Forgejo does evaluate. Lose either and a re-dispatched green matrix becomes
-    unfindable, and the gate blocks a release that is fine."""
+    A tag PUSH is self-describing (its prettyref is the tag). A re-dispatch is not: it runs from
+    main on purpose, so a fix to these scripts is what re-runs rather than the copies frozen at the
+    tag. Forgejo IGNORES run-name entirely — a dispatched run's title is just the workflow name —
+    so the tag has to live in a job name, which Forgejo does evaluate. Lose it and a re-dispatched
+    green matrix becomes unfindable, and the gate blocks a release that is fine."""
     gate = _RC_GATE.read_text(encoding="utf-8")
-
-    github = yaml.safe_load(_INSTALL_MATRIX_GH.read_text(encoding="utf-8"))
-    run_name = github.get("run-name", "")
-    assert run_name.startswith("Install matrix (macOS + Linux arm64)"), run_name
-    assert "inputs.tag" in run_name and "github.ref_name" in run_name, run_name
-    assert "Install matrix (macOS + Linux arm64) $TAG" in gate, (
-        "the gate stopped matching the GitHub run-name"
-    )
-
-    linux = yaml.safe_load(_INSTALL_MATRIX.read_text(encoding="utf-8"))
-    assert "run-name" not in linux, "Forgejo ignores run-name; it would be a decoy here"
-    wait_name = linux["jobs"]["wait"]["name"]
-    assert "inputs.tag" in wait_name and "github.ref_name" in wait_name, wait_name
     assert "/jobs" in gate and "contains($t)" in gate, (
         "the gate stopped reading job names, which is the only place Forgejo keeps the tag"
     )
+    matrices = sorted((_ROOT / ".forgejo" / "workflows").glob("install-matrix*.yml"))
+    assert matrices, "no install matrix workflows found"
+    for path in matrices:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert "run-name" not in document, f"{path.name}: Forgejo ignores run-name; it would be a decoy"
+        wait_name = document["jobs"]["wait"]["name"]
+        assert "inputs.tag" in wait_name and "github.ref_name" in wait_name, f"{path.name}: {wait_name}"
 
-
-def test_a_stable_cut_requires_both_halves_of_the_install_matrix() -> None:
-    """Linux amd64 runs on Forgejo, macOS and Linux arm64 on GitHub, so a gate that
-    asked only one forge would qualify a candidate on half a matrix — the same
-    fail-open as not asking at all."""
+def test_a_stable_cut_requires_every_install_matrix_workflow() -> None:
+    """The install matrix is more than one Forgejo workflow, and a gate that asked about only one
+    would qualify a candidate on part of a matrix — the same fail-open as not asking at all."""
     gate = _RC_GATE.read_text(encoding="utf-8")
-    assert "api.github.com" in gate, "the gate stopped asking GitHub about the macOS + arm64 half"
-    assert "forgejo.bryantserver.com" in gate, "the gate stopped asking Forgejo about the amd64 half"
-    # Scoped server-side on both forges. Unscoped, each asks for a page of every
-    # run there has ever been and stops containing the one it wants.
-    assert "actions/workflows/install-matrix.yml/runs" in gate, "the GitHub query lost its scope"
-    assert "workflow_id=install-matrix.yml" in gate, "the Forgejo query lost its scope"
-
+    assert "api.github.com" not in gate, "the gate still asks GitHub, which runs no matrix now"
+    # Scoped server-side. Unscoped, it asks for a page of every run there has ever been and stops
+    # containing the one it wants.
+    assert "actions/runs?workflow_id=$workflow" in gate, "the Forgejo query lost its scope"
+    env = (_ROOT / "packaging" / "project.env").read_text(encoding="utf-8")
+    listed = re.search(r'^INSTALL_MATRIX_WORKFLOWS="([^"]+)"', env, re.M)
+    workflows = set(listed.group(1).split() if listed else ["install-matrix.yml"])
+    # A shadow matrix swallows its own failures, so its run is green whatever it found: gating on
+    # one would promote a broken candidate. Every matrix that can fail must be gated on.
+    matrices = {
+        path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
+        for path in (_ROOT / ".forgejo" / "workflows").glob("install-matrix*.yml")
+    }
+    shadows = {name for name, doc in matrices.items() if "shadow" in str(doc.get("name", "")).lower()}
+    assert workflows <= set(matrices), f"the gate names matrices that do not exist: {workflows - set(matrices)}"
+    assert not workflows & shadows, f"the gate trusts a shadow matrix that cannot fail: {workflows & shadows}"
+    assert workflows == set(matrices) - shadows, (
+        f"the gate requires {sorted(workflows)} but the gating matrices are {sorted(set(matrices) - shadows)}"
+    )
 
 def test_the_wait_is_one_definition_used_by_both_matrices() -> None:
     """A stable release carries both formulae's bottles. Pooling them makes the
