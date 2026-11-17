@@ -153,6 +153,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # NO QEMU. This runner is amd64 and builds only amd64; arm64 is built on a native arm64
       # runner (release-arm64.yml). buildx is still used because its
@@ -272,6 +274,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Collect BOTH architectures, then publish
         # A repository is not a release page: whatever lands there is what `apt install` hands
         # people immediately, with no way to tell the set is short. publish-registry.sh refuses a
@@ -314,6 +318,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # update-tap.sh needs a build frontend, and pip cannot install one into a system
       # interpreter that marks itself externally managed. The sibling's tap job sets up its own
       # Python for the same reason.
@@ -388,6 +394,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Retried in-step: a transient versions-manifest fetch failure took all five CI
       # jobs down together on 2026-08-17, and Forgejo exposes no rerun endpoint, so
       # recovery has to happen inside the job. The guard is `!= 'success'`, not
@@ -530,6 +538,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # all tags needed for the reconcile loop
+          persist-credentials: false
       - name: Require the current release's .pkg and arm64 set, then reconcile every tag
         # A remote filename or byte count is not evidence that an artifact is intact. This downloads
         # each recognised asset, accepts bytes only when at least two registries agree on the
@@ -636,6 +645,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Sweep every rc a fully fanned-out stable now supersedes
         env:
           CLUSTER_TOKEN: ${{ secrets.CLUSTER_FORGEJO_REPO_WRITE_PAT }}

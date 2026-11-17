@@ -400,8 +400,8 @@ def test_the_manual_prune_dispatch_cannot_delete_by_accident_or_report_a_failure
     assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", str(checkout["uses"])), (
         f"the checkout is not actions/checkout pinned to a full commit: {checkout['uses']!r}"
     )
-    assert checkout["with"] == {"ref": "main"}, (
-        f"the checkout takes inputs beyond a main pin: {checkout['with']!r}"
+    assert checkout["with"] == {"ref": "main", "persist-credentials": False}, (
+        f"the checkout takes inputs beyond a main pin and no persisted token: {checkout['with']!r}"
     )
 
     inputs = triggers["workflow_dispatch"]["inputs"]
@@ -572,6 +572,53 @@ def test_the_weekly_dustfab_check_only_reports() -> None:
     workflow = (_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text()
     assert "git push" not in workflow and "secrets." not in workflow
     assert "pyproject.toml" not in workflow  # a dependency bump never reaches Dustfab
+
+
+def _run_the_valetudo_fetch(tmp_path: Path, clone_failures: int) -> tuple[int, list[str]]:
+    """Run the workflow's own contract step with git, timeout, sleep and python stubbed out."""
+    steps = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "dustfab-forms.yml").read_text())[
+        "jobs"
+    ]["verify"]["steps"]
+    (step,) = [s for s in steps if "official Valetudo" in str(s.get("name", ""))]
+    dest = tmp_path / "upstream"
+    script = str(step["run"]).replace("/tmp/upstream-valetudo", str(dest))
+    bin_dir, log = tmp_path / "bin", tmp_path / "calls"
+    bin_dir.mkdir()
+    stubs = {
+        "timeout": 'shift; exec "$@"',
+        "sleep": 'echo "sleep $*" >> "$LOG"',
+        "python": 'echo "python $*" >> "$LOG"',
+        "git": (
+            'echo "git $1" >> "$LOG"\n'
+            'if [ "$1" = clone ]; then\n'
+            '  n=$(grep -c "^git clone" "$LOG")\n'
+            '  [ "$n" -gt "$FAILS" ] || exit 128\n'
+            '  mkdir -p "${!#}"\n'
+            "fi"
+        ),
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(f"#!/bin/bash\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "LOG": str(log), "FAILS": str(clone_failures)}
+    result = subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+    return result.returncode, log.read_text().splitlines() if log.exists() else []
+
+
+def test_the_valetudo_fetch_retries_a_transient_failure(tmp_path: Path) -> None:
+    rc, calls = _run_the_valetudo_fetch(tmp_path, clone_failures=2)
+    assert rc == 0
+    assert [c for c in calls if c.startswith("git clone")] == ["git clone"] * 3
+    assert calls[-1].startswith("python -m libexec.verify_valetudo_contract ")
+
+
+def test_the_valetudo_fetch_fails_the_job_after_three_tries(tmp_path: Path) -> None:
+    rc, calls = _run_the_valetudo_fetch(tmp_path, clone_failures=3)
+    assert rc == 1
+    assert [c for c in calls if c.startswith("git clone")] == ["git clone"] * 3
+    assert not any(c.startswith("python") for c in calls)
 
 
 def test_the_forms_stamp_script_writes_only_a_well_formed_date(tmp_path: Path) -> None:
@@ -1084,6 +1131,21 @@ def test_trust_gates_also_exclude_agit_pull_requests() -> None:
     )
     stale = sorted(f"{w}:{j}" for w, j in _UNGATED_ON_PULL_REQUESTS if (w, j) not in present)
     assert not stale, f"_UNGATED_ON_PULL_REQUESTS excuses jobs that no longer exist: {stale}"
+
+
+def test_publish_checkouts_leave_no_credential_behind() -> None:
+    # A persisted checkout credential sits in the workspace's git config for every later step,
+    # third-party build and upload actions included. No job here pushes this repository: the tap
+    # jobs push another one with their own explicit header, which a persisted one never reaches.
+    loose = []
+    for name in ("publish.yml", "prune-rcs.yml"):
+        document = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / name).read_text())
+        for job, spec in document["jobs"].items():
+            for step in spec.get("steps") or []:
+                is_checkout = str(step.get("uses", "")).startswith("actions/checkout@")
+                if is_checkout and (step.get("with") or {}).get("persist-credentials") is not False:
+                    loose.append(f"{name}:{job}")
+    assert not loose, f"checkouts that persist the job token: {loose}"
 
 
 def test_artifact_actions_are_the_forgejo_forks() -> None:
