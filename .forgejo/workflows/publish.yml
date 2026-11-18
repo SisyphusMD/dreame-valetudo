@@ -299,7 +299,7 @@ jobs:
             "${{ secrets.CLUSTER_FORGEJO_REGISTRY_PUSH_PAT }}" "$GITHUB_REF_NAME" \
             ./dreame-valetudo_*.deb ./dreame-valetudo-*.rpm
 
-  homebrew-tap:
+  render-homebrew-tap:
     name: Update the Homebrew tap formula (stable or -rc per tag)
     # The formula's url and checksum come from the PyPI sdist, so this cannot run before the
     # upload. Declared rather than polled: both jobs are on this forge.
@@ -307,12 +307,6 @@ jobs:
     # outlived the move to the PyPI sdist. Nothing rendered in this pass reads a release asset — the
     # bottle root_url is written in pass 2 — so the edge only held the whole bottle chain behind the
     # Linux build, which is most of this workflow's critical path.
-    # Shared with homebrew-bottles and tap-bottles.yml: three jobs write this one repository, and
-    # two of them cloning the same tip means the loser pushes a non-fast-forward and the tap keeps
-    # whichever block lost the race.
-    concurrency:
-      group: tap-write
-      cancel-in-progress: false
     needs: [guard, pypi]
     if: ${{ !cancelled() && needs.guard.result == 'success' }}
     runs-on: ubuntu-latest
@@ -336,54 +330,42 @@ jobs:
         if: steps.setup_python_tap.outcome != 'success'
         with:
           python-version: "3.15.2"
-      - name: Fill the formula + push to the Forgejo tap (mirror carries it to GitHub + NAS)
+      - name: Render the formula update without a write credential
         env:
-          TOKEN: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # The tap is Forgejo-primary: write the formula here, and the tap's own sync_on_commit
-          # push-mirror fans this commit out to GitHub (where `brew` fetches it) + NAS. A stable tag
-          # writes BOTH Formula/dreame-valetudo.rb and the rc formula re-pointed at the same stable
-          # tarball (fall-through, so the rc channel keeps resolving once its rc releases are pruned);
-          # a prerelease tag writes only Formula/dreame-valetudo-rc.rb, so the stable formula never
-          # points at a candidate build.
-          AUTH="http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
-          git -c "$AUTH" clone "${GITHUB_SERVER_URL}/SisyphusMD/homebrew-tap.git" tap
-          # update-tap.sh builds the sdist locally to derive the checksum, so the build
-          # frontend has to be here. The PyPI job installs it too, but jobs do not share
-          # an environment — and the failure is `No module named build`, mid-release.
+          tap="$RUNNER_TEMP/tap-source"
+          artifact="$GITHUB_WORKSPACE/tap-artifact/Formula"
+          git clone --branch main "https://forgejo.bryantserver.com/SisyphusMD/homebrew-tap.git" "$tap"
           python -m pip install --upgrade pip build
-          chmod +x packaging/update-tap.sh
-          bash packaging/update-tap.sh "$GITHUB_REF_NAME" tap
-          cd tap
-          git config user.name "forgejo-actions[bot]"
-          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add Formula/
-          git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v}" || { echo "no change to publish"; exit 0; }
-          # Three jobs across BOTH sibling repositories write this one tap, and a concurrency
-          # group is scoped to a single repository - so `tap-write` cannot serialise the sibling,
-          # and its release landing between this clone and this push rejects it as non-fast-forward.
-          # Each project renders only its own formula file, so replaying this commit on the new tip
-          # is the correct resolution rather than a merge.
-          pushed=
-          for attempt in 1 2 3 4 5; do
-            if git -c "$AUTH" push; then pushed=1; break; fi
-            echo "::warning::tap moved under this push; replaying on the new tip (attempt ${attempt}/5)"
-            git -c "$AUTH" fetch origin main
-            git rebase origin/main || {
-              git rebase --abort || true
-              echo "::error::tap rebase conflicted; another writer touched the same formula"
-              exit 1
-            }
-            sleep $(( attempt * 5 ))
-          done
-          [ -n "$pushed" ] || { echo "::error::could not push the tap after 5 attempts"; exit 1; }
+          bash packaging/update-tap.sh "$TAG" "$tap"
+          mkdir -p "$artifact"
+          cp -- "$tap/Formula/dreame-valetudo-rc.rb" "$artifact/"
+          if [[ "$TAG" != *-rc.* ]]; then
+            cp -- "$tap/Formula/dreame-valetudo.rb" "$artifact/"
+          fi
 
-  homebrew-bottles:
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@cb8afe72b42edc798abfb8fcb556cf660d894245 # v5
+        with:
+          name: tap-formula
+          path: tap-artifact/Formula
+          if-no-files-found: error
+          overwrite: true
+
+  homebrew-tap:
+    needs: [guard, render-homebrew-tap]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.render-homebrew-tap.result == 'success' }}
+    uses: ./.forgejo/workflows/submit-tap-formula.yml
+    with:
+      tag: ${{ github.ref_name }}
+      phase: formula
+      artifact: tap-formula
+    secrets:
+      tap-token: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
+
+  render-homebrew-bottles:
     name: Add the bottle block to the tap (second pass)
-    concurrency:
-      group: tap-write
-      cancel-in-progress: false
     # The tap must already hold this version (the bottles were built by
     # installing it) and the release must exist (the bottles are its assets).
     needs: [guard, homebrew-tap, releases]
@@ -475,47 +457,43 @@ jobs:
           fi
           ls -l manifests/
           echo "every bottle the manifests name is present and matches its sha256"
-      - name: Re-render the formula with the bottle block and push
+      - name: Render the bottles update without a write credential
         env:
-          TOKEN: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          AUTH="http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
-          # Outside the checkout, for the same reason the first pass does it:
-          # update-tap.sh builds an sdist to compare against PyPI, and anything
-          # sitting beside the source is swept into it.
-          tap="$(mktemp -d)/tap"
-          git -c "$AUTH" clone "${GITHUB_SERVER_URL}/SisyphusMD/homebrew-tap.git" "$tap"
-          # update-tap.sh builds the sdist locally to derive the checksum, so the build
-          # frontend has to be here. The PyPI job installs it too, but jobs do not share
-          # an environment — and the failure is `No module named build`, mid-release.
+          tap="$RUNNER_TEMP/tap-source"
+          artifact="$GITHUB_WORKSPACE/tap-artifact/Formula"
+          git clone --branch main "https://forgejo.bryantserver.com/SisyphusMD/homebrew-tap.git" "$tap"
           python -m pip install --upgrade pip build
-          chmod +x packaging/update-tap.sh
-          bash packaging/update-tap.sh "$GITHUB_REF_NAME" "$tap" "$PWD/manifests"
-          cd "$tap"
-          git config user.name "forgejo-actions[bot]"
-          git config user.email "forgejo-actions[bot]@users.noreply.bryantserver.com"
-          git add Formula/
-          git commit -m "dreame-valetudo ${GITHUB_REF_NAME#v} bottles" || { echo "no change to publish"; exit 0; }
-          # Three jobs across BOTH sibling repositories write this one tap, and a concurrency
-          # group is scoped to a single repository - so `tap-write` cannot serialise the sibling,
-          # and its release landing between this clone and this push rejects it as non-fast-forward.
-          # Each project renders only its own formula file, so replaying this commit on the new tip
-          # is the correct resolution rather than a merge.
-          pushed=
-          for attempt in 1 2 3 4 5; do
-            if git -c "$AUTH" push; then pushed=1; break; fi
-            echo "::warning::tap moved under this push; replaying on the new tip (attempt ${attempt}/5)"
-            git -c "$AUTH" fetch origin main
-            git rebase origin/main || {
-              git rebase --abort || true
-              echo "::error::tap rebase conflicted; another writer touched the same formula"
-              exit 1
-            }
-            sleep $(( attempt * 5 ))
-          done
-          [ -n "$pushed" ] || { echo "::error::could not push the tap after 5 attempts"; exit 1; }
+          bash packaging/update-tap.sh "$TAG" "$tap" "$PWD/manifests"
+          mkdir -p "$artifact"
+          cp -- "$tap/Formula/dreame-valetudo-rc.rb" "$artifact/"
+          if [[ "$TAG" != *-rc.* ]]; then
+            cp -- "$tap/Formula/dreame-valetudo.rb" "$artifact/"
+          fi
+
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@cb8afe72b42edc798abfb8fcb556cf660d894245 # v5
+        with:
+          name: tap-bottles
+          path: tap-artifact/Formula
+          if-no-files-found: error
+          overwrite: true
+
+  homebrew-bottles:
+    needs: [guard, render-homebrew-bottles]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.render-homebrew-bottles.result == 'success' }}
+    concurrency:
+      group: tap-bottle-refresh-${{ github.ref_name }}
+      cancel-in-progress: false
+    uses: ./.forgejo/workflows/submit-tap-formula.yml
+    with:
+      tag: ${{ github.ref_name }}
+      phase: bottles
+      artifact: tap-bottles
+    secrets:
+      tap-token: ${{ secrets.CLUSTER_FORGEJO_TAP_WRITE_PAT }}
+
   reconcile:
     name: Reconcile releases across registries (heal history)
     # `always()`: this exists precisely for the case where publishing to one of the three

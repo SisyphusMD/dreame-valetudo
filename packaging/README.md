@@ -31,6 +31,20 @@ and 27 on Apple Silicon. Tag builds additionally execute both `.deb` architectur
 the `.pkg` is built and exercised on macOS 15, then installed and exercised again on macOS 27
 before the release asset is published.
 
+## Homebrew formula pull requests
+
+After PyPI publishes the source archive, the release workflow renders the formulae
+without a write credential. A separate job opens a reviewed PR on the primary tap
+and waits for the exact files on its main branch. Bottle builders wait for the
+matching source formula before allocating native build runners. After bottle
+manifests publish, the second tap PR adds the bottle checksums. Install and cleanup
+jobs keep waiting until those exact formula files are available.
+
+If tap review exceeds the wait budget, finish the PR and rerun the affected
+publisher jobs. If the separate Bottles workflow timed out waiting for the
+formula, dispatch it again with the same tag. Use Tap Bottles from main to
+repair the declarations after rebuilding bottles for an existing tag.
+
 ## How a release flows
 
 1. **Prepare and merge the release on Forgejo.** Run **Prepare Release** from `main`
@@ -109,8 +123,8 @@ from one).
 1. **Create the repos.** Primary: `forgejo.bryantserver.com/SisyphusMD/dreame-valetudo` (add the
    GitHub + NAS push-mirrors). GitHub mirror:
    `github.com/SisyphusMD/dreame-valetudo`. **Homebrew tap:** `SisyphusMD/homebrew-tap`, also
-   Forgejo-primary with GitHub + NAS push-mirrors — the `homebrew-tap` job writes the formula to the
-   Forgejo tap and the mirror carries it to GitHub, where `brew` fetches it.
+   Forgejo-primary with GitHub + NAS push-mirrors — the `homebrew-tap` job opens the source formula PR on
+   the Forgejo tap and the mirror carries it to GitHub, where `brew` fetches it.
 2. **Secrets.**
 
    On Forgejo (`…/SisyphusMD/dreame-valetudo` → Settings → Actions → Secrets):
@@ -123,7 +137,7 @@ from one).
 | `GPG_SIGNING_KEY` | `publish` | The namespace signing key's private half (`CCE50015D058E9BF`), shared with the sibling project because the registry groups packages by OWNER — a per-project key would buy no isolation. `publish` FAILS CLOSED without it rather than shipping unsigned packages. Org-scoped. |
 | `PYPI_API_TOKEN` | `publish` | Uploads the sdist and wheel. Project-scoped by PyPI, so the sibling's token cannot be reused. **Not yet set:** the `pypi` job skips with a warning until it exists, and the Homebrew formula keeps building from the release asset until the first upload succeeds. |
    | `GH_REPO_WRITE_PAT` | GitHub PAT, Contents: read & write (create the GitHub release). Same PAT as the GitHub push-mirror. |
-   | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `homebrew-tap` (the `homebrew-tap` job pushes the updated formula — the stable formula for a stable tag, the `dreame-valetudo-rc` formula for a prerelease tag). |
+   | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `homebrew-tap` (the `homebrew-tap` job submits the updated formula for review — the stable formula for a stable tag, the `dreame-valetudo-rc` formula for a prerelease tag). |
 
    Also org-scoped on Forgejo, for `release-macos.yml`: the macOS `.pkg` signing set (Apple Developer
    certs/keys): `MACOS_APP_CERT_P12`, `MACOS_INSTALLER_CERT_P12`, `MACOS_CERT_PASSWORD`,
@@ -225,7 +239,7 @@ right. Structure mirrors whiskerless's equivalent section so the two are readabl
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish` | Separate PAT scoped to `SisyphusMD/homebrew-tap`. Deliberately not the repo PAT: the tap is a different blast radius. |
 | `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
 | `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-rules's VARIANCE.md. |
-| `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the tap jobs can push the rendered formulas. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
+| `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish`, `tap-bottles` | Forgejo PAT with write access to `SisyphusMD/homebrew-tap`, so the submit jobs can open formula and bottle PRs. Held at the **org** level, not on this repo — the same credential the sibling uses for the same tap. A repo-level copy shadows the org one, which is a second place a tap-write credential lives for no benefit. |
 | `GH_REPO_WRITE_PAT` | `publish`, `release-arm64`, `release-macos`, `bottles`, `prune-rcs` | GitHub PAT, Contents: read & write: creates the GitHub release and appends every asset to it. Same PAT used as the GitHub push-mirror password. |
 | `GH_REPO_READ_PAT` | `prerelease`, `release`, `publish`, `install-matrix` | **Required.** GitHub PAT with **no scopes** — read-only public data. Used by the republish guard, the tag's mirror confirmation and the install-matrix wait, all of which refuse to call GitHub unauthenticated: 60 requests/hour per IP is shared with everything else leaving this network, so an optional token answers 403 instead of answering. Held at the SisyphusMD org level, shared with the sibling. |
 
