@@ -300,4 +300,12 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 294 | issue | open | [Dependency updates (Renovate)](items/0294-dependency-updates-renovate.md) |
 | 295 | issue | closed | [Bring this repo under the project rules](items/0295-bring-this-repo-under-the-project-rules.md) |
 | 296 | pull | closed | [Adopt the SisyphusMD project rules](items/0296-adopt-the-sisyphusmd-project-rules.md) |
-| 297 | issue | open | [Release through a merged pull request](items/0297-release-through-a-merged-pull-request.md) |
+| 297 | issue | closed | [Release through a merged pull request](items/0297-release-through-a-merged-pull-request.md) |
+| 298 | issue | closed | [Lock down the read-only GitHub mirror](items/0298-lock-down-the-read-only-github-mirror.md) |
+| 299 | pull | closed | [Close pull requests opened on the GitHub mirror](items/0299-close-pull-requests-opened-on-the-github-mirror.md) |
+| 300 | pull | closed | [chore(deps): update dependency sisyphusmd/project-rules to v0.3.1 - autoclosed](items/0300-chore-deps-update-dependency-sisyphusmd-project-rules-to-v0-.md) |
+| 301 | pull | closed | [Publish the verified release pull request](items/0301-publish-the-verified-release-pull-request.md) |
+| 302 | issue | closed | [Publish Homebrew Tap updates through pull requests](items/0302-publish-homebrew-tap-updates-through-pull-requests.md) |
+| 303 | pull | closed | [Publish Dreame Homebrew formulae and bottles through tap PRs](items/0303-publish-dreame-homebrew-formulae-and-bottles-through-tap-prs.md) |
+| 304 | issue | closed | [Prove the standard checks before protecting Dreame main](items/0304-prove-the-standard-checks-before-protecting-dreame-main.md) |
+| 305 | pull | closed | [WIP: Disposable draft to prove standard required checks](items/0305-wip-disposable-draft-to-prove-standard-required-checks.md) |
