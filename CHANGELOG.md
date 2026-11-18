@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Prepare stable releases through a pull request and publish the exact merged commit. (#297)
+
 - Forgejo pull requests get the standard project checks and a private vulnerability reporting
   address is listed in `SECURITY.md`.
 

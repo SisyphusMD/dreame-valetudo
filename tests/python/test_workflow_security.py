@@ -489,7 +489,7 @@ def test_every_release_gate_runs_the_release_script_suite() -> None:
 
 
 def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> None:
-    """The gate qualifies a release diff and the tag job reproduces it byte for byte.
+    """The gate qualifies a release diff and the prepare job reproduces it byte for byte.
 
     Two copies of the promotion logic satisfy that only while they stay identical, and an inline awk
     rule has no fail-closed check: if it matches nothing the CHANGELOG is published unpromoted, and
@@ -499,7 +499,7 @@ def test_both_release_jobs_promote_the_changelog_through_the_shared_script() -> 
     document = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / "release.yml").read_text())
     jobs = document["jobs"]
 
-    for name in ("gate", "tag"):
+    for name in ("gate", "prepare"):
         # Uncommented command lines, not a substring of the whole block: a path mentioned in a comment
         # or echoed rather than run would satisfy a substring search while promoting nothing.
         commands = [
@@ -537,7 +537,7 @@ def test_both_release_workflows_ship_the_dustfab_date_their_gate_verified() -> N
     stamp = "libexec/dustfab-forms/verified-on.txt"
     for workflow in ("release.yml", "prerelease.yml"):
         jobs = yaml.safe_load((_ROOT / ".forgejo" / "workflows" / workflow).read_text())["jobs"]
-        gate, tag = jobs["gate"], jobs["tag"]
+        gate, tag = jobs["gate"], jobs["prepare" if workflow == "release.yml" else "tag"]
         assert gate["outputs"]["forms_verified_on"] == "${{ steps.forms.outputs.verified_on }}"
 
         names = [step.get("id") or step.get("name") for step in gate["steps"]]
