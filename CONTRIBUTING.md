@@ -99,7 +99,7 @@ Files vendored from project-rules are listed in `STANDARD.lock` and checked by
 
 Never hand-edit a version. `.forgejo/workflows/release.yml` owns `pyproject.toml`,
 `src/dreame_valetudo/__init__.py`, `uv.lock` and the README's download links. Put user-visible changes
-under `## [Unreleased]` in `CHANGELOG.md` and the release workflow promotes them.
+under `## [Unreleased]` in `CHANGELOG.md`. See [the release procedure](packaging/README.md#how-a-release-flows).
 
 ## Hardware testing
 

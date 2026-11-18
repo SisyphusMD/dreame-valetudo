@@ -33,14 +33,17 @@ before the release asset is published.
 
 ## How a release flows
 
-1. **Cut it on Forgejo**: run the **Release** workflow (`.forgejo/workflows/release.yml`) from
-   the Forgejo UI and pick `patch` / `minor` / `major`. (First release on a fresh repo: dispatch
-   `minor` → `0.1.0`.) It promotes `## [Unreleased]` in the CHANGELOG — appending a `### Dependencies`
-   list of the Renovate `(chore|fix)(deps):` bumps since the previous release, **deduped to the
-   latest bump per dependency** (so an image bumped several times shows only its newest version) —
-   bumps the version in `pyproject.toml` + the package `__init__`, runs the lint/smoke gate, commits,
-   tags, and pushes. The push-mirror fans the commit + tag out to GitHub and the NAS Forgejo.
-   Every job below runs on our own runners; GitHub only receives the release.
+1. **Prepare and merge the release on Forgejo.** Run **Prepare Release** from `main`
+   with a release issue number and choose `patch` / `minor` / `major`. The workflow promotes
+   the changelog, checks the existing qualification gates, stamps the version files,
+   and opens a release PR. Merge it while it is up to date with `main` and all checks
+   are green. An update to the prepared head invalidates its qualification. If `main` moved, close the stale PR, retire its branch with approval,
+   and run Prepare Release again for the same issue. If it already merged, revert
+   the stale promotion through a PR before preparing again.
+
+   Run **Publish Release** from `main` with the merged PR number. The workflow tags
+   that exact commit and starts the existing artifact publishers.
+   The changelog lists dependency updates since the previous release, with the latest bump per dependency.
 2. **Forgejo `publish.yml`** (tag-triggered): builds **both `.deb`s** (buildx) and the **tarball**,
    **creates the release on all three** forges (Forgejo, NAS, GitHub) with the CHANGELOG section as
    the notes + those assets, and **updates the Homebrew tap** — a stable tag writes the stable formula
@@ -114,7 +117,7 @@ from one).
 
    | Secret | What it is |
    |---|---|
-   | `CLUSTER_FORGEJO_REPO_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `dreame-valetudo` (release commit/tag + create/append the Forgejo release). |
+   | `CLUSTER_FORGEJO_REPO_WRITE_PAT` | Forgejo PAT, `write:repository` scoped to `dreame-valetudo` (release branch and tag, and create/append the Forgejo release). |
    | `NAS_FORGEJO_REPO_WRITE_PAT` | PAT on the NAS Forgejo, repo write (the NAS release and every asset appended to it). |
 | `CLUSTER_FORGEJO_REGISTRY_PUSH_PAT` | `publish` | Package-registry write on the cluster instance. Separate from the repo PAT: the registry is a different blast radius, and it is the one credential that can overwrite what subscribers install. Org-scoped. |
 | `GPG_SIGNING_KEY` | `publish` | The namespace signing key's private half (`CCE50015D058E9BF`), shared with the sibling project because the registry groups packages by OWNER — a per-project key would buy no isolation. `publish` FAILS CLOSED without it rather than shipping unsigned packages. Org-scoped. |
@@ -218,7 +221,7 @@ right. Structure mirrors whiskerless's equivalent section so the two are readabl
 
 | Secret | Used by | What it is |
 |---|---|---|
-| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs` | Repo-write PAT on the cluster instance: pushes the release commit and tag, creates releases, prunes superseded candidates. |
+| `CLUSTER_FORGEJO_REPO_WRITE_PAT` | `release`, `prerelease`, `publish`, `prune-rcs` | Repo-write PAT on the cluster instance: opens the release PR, pushes the tag, creates releases, prunes superseded candidates. |
 | `CLUSTER_FORGEJO_TAP_WRITE_PAT` | `publish` | Separate PAT scoped to `SisyphusMD/homebrew-tap`. Deliberately not the repo PAT: the tap is a different blast radius. |
 | `NAS_FORGEJO_REPO_WRITE_PAT` | `publish`, `prune-rcs` | The same two operations against the NAS instance. |
 | `PYPI_API_TOKEN` | `publish` | PyPI API token (`pypi-…`), named `dreame-valetudo-forgejo-ci` and **scoped to this project**, not the account — the sibling's token cannot be reused and a broader one has no business on a self-hosted runner. PyPI accepts OIDC only from GitHub Actions, GitLab.com, Google Cloud and ActiveState, so a token is the only option that keeps publishing on Forgejo; see the rejection rationale in project-rules's VARIANCE.md. |
