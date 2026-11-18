@@ -12,9 +12,6 @@ on:
       artifact:
         type: string
         required: true
-    secrets:
-      tap-token:
-        required: true
 
 jobs:
   submit:

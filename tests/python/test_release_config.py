@@ -1167,7 +1167,9 @@ def test_tap_publisher_isolates_credentials_and_waits_for_landed_formulae() -> N
     assert bottles["build"]["needs"] == "wait-for-tap"
     helper = _PUBLISH.with_name("submit-tap-formula.yml").read_text()
     assert re.search(r"^          HELPER: [0-9a-f]{40}$", helper, re.MULTILINE)
+    assert set(yaml.safe_load(helper)[True]["workflow_call"]) == {"inputs"}
     assert "open-release-formula-pr.py" in helper
+    assert "secrets.tap-token" in helper
     assert 'git show "origin/main:Formula/' in helper
     assert "cmp -s" in helper
     assert "Tap PR files did not land" in helper
@@ -1176,6 +1178,7 @@ def test_tap_publisher_isolates_credentials_and_waits_for_landed_formulae() -> N
     assert "CLUSTER_FORGEJO_TAP_WRITE_PAT" not in str(repair["render"])
     assert repair["render"]["needs"] == "guard"
     assert repair["update-tap"]["needs"] == "render"
+    assert set(repair["update-tap"]["secrets"]) == {"tap-token"}
     assert repair["refresh-nas"]["needs"] == "update-tap"
 
 
