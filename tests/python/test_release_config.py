@@ -65,7 +65,7 @@ def test_publish_attempts_every_registry_and_always_runs_repair_jobs() -> None:
     # the distinction a future edit is most likely to flatten. Read from the parsed `if:`, because
     # both jobs explain their condition in a comment that would satisfy a text search on its own.
     jobs = yaml.safe_load(text)["jobs"]
-    for name, override in (("homebrew-tap", "!cancelled()"), ("reconcile", "always()")):
+    for name, override in (("render-homebrew-tap", "!cancelled()"), ("reconcile", "always()")):
         condition = str(jobs[name].get("if") or "")
         assert override in condition, name
         assert "needs.guard.result == 'success'" in condition, name
@@ -1149,17 +1149,38 @@ def test_the_tap_updater_refuses_a_bottle_pass_that_produced_no_block() -> None:
     # test_the_merge_demands_exactly_as_many_bottles_as_the_matrix_builds.
 
 
-def test_every_job_that_writes_the_tap_shares_one_concurrency_group() -> None:
-    """Two of them cloning the same tip means the loser pushes a non-fast-forward and the tap keeps
-    whichever formula lost the race."""
-    publish = _PUBLISH.read_text()
-    for job in ("homebrew-tap", "homebrew-bottles"):
-        assert "group: tap-write" in _job(publish, job), job
-    assert "group: tap-write" in (_ROOT / ".forgejo" / "workflows" / "tap-bottles.yml").read_text()
+def test_tap_publisher_isolates_credentials_and_waits_for_landed_formulae() -> None:
+    publish = yaml.safe_load(_PUBLISH.read_text())["jobs"]
+    for name in ("homebrew-tap", "homebrew-bottles"):
+        unprivileged = publish[f"render-{name}"]
+        submit = publish[name]
+        assert unprivileged["steps"][-1]["uses"].startswith("https://code.forgejo.org/forgejo/upload-artifact@")
+        assert "CLUSTER_FORGEJO_TAP_WRITE_PAT" not in str(unprivileged)
+        assert submit["needs"] == f"render-{name}"
+        assert submit["uses"] == "./.forgejo/workflows/submit-tap-formula.yml"
+        assert set(submit["secrets"]) == {"tap-token"}
+
+    assert "homebrew-tap" in publish["render-homebrew-bottles"]["needs"]
+    assert "homebrew-bottles" in publish["prune-rcs"]["needs"]
+    assert "homebrew-bottles" in publish["install-matrix"]["needs"]
+    bottles = yaml.safe_load(_PUBLISH.with_name("bottles.yml").read_text())["jobs"]
+    assert bottles["build"]["needs"] == "wait-for-tap"
+    helper = _PUBLISH.with_name("submit-tap-formula.yml").read_text()
+    assert re.search(r"^          HELPER: [0-9a-f]{40}$", helper, re.MULTILINE)
+    assert "open-release-formula-pr.py" in helper
+    assert 'git show "origin/main:Formula/' in helper
+    assert "cmp -s" in helper
+    assert "Tap PR files did not land" in helper
+
+    repair = yaml.safe_load(_PUBLISH.with_name("tap-bottles.yml").read_text())["jobs"]
+    assert "CLUSTER_FORGEJO_TAP_WRITE_PAT" not in str(repair["render"])
+    assert repair["render"]["needs"] == "guard"
+    assert repair["update-tap"]["needs"] == "render"
+    assert repair["refresh-nas"]["needs"] == "update-tap"
 
 
 def test_a_stable_tag_bottles_both_formulae() -> None:
-    bottles = _job(_PUBLISH.read_text(), "homebrew-bottles")
+    bottles = _job(_PUBLISH.read_text(), "render-homebrew-bottles")
     assert "*-rc.*) expected=3 ;;" in bottles
     assert "*)      expected=6 ;;" in bottles
 
@@ -2064,7 +2085,7 @@ def test_tap_pass_one_does_not_wait_on_the_release_build() -> None:
     weight, and the day it points at a release asset this assertion is the thing that says so.
     """
     publish = yaml.safe_load(_PUBLISH.read_text(encoding="utf-8"))
-    tap = publish["jobs"]["homebrew-tap"]
+    tap = publish["jobs"]["render-homebrew-tap"]
     needs = tap["needs"] if isinstance(tap["needs"], list) else [tap["needs"]]
 
     url = next(

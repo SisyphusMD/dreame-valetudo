@@ -164,9 +164,9 @@ render_formula() {
     block="$work/${formula}.block"
     python3 "$here/bottle-block.py" --formula "$formula" --version "$pypi_version" \
       --root-url "$root_url" --expect-tags 3 "$manifests"/*.json > "$block"
-    bash "$here/render-formula.sh" "$here/homebrew/${formula}.rb" "$pypi_version" "$sha" "$block" > "$out"
+    bash "$here/render-formula.sh" "$work/src/packaging/homebrew/${formula}.rb" "$pypi_version" "$sha" "$block" > "$out"
   else
-    bash "$here/render-formula.sh" "$here/homebrew/${formula}.rb" "$pypi_version" "$sha" > "$out"
+    bash "$here/render-formula.sh" "$work/src/packaging/homebrew/${formula}.rb" "$pypi_version" "$sha" > "$out"
   fi
   # Spelled as an explicit `if` rather than `A && B || C`: that reads as if-then-else
   # and is not (shellcheck SC2015), which is a bad shape for the check standing
