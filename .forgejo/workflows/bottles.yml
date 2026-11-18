@@ -55,7 +55,7 @@ jobs:
   wait-for-tap:
     name: Wait for the release formula before allocating build runners
     runs-on: ubuntu-latest
-    timeout-minutes: 125
+    timeout-minutes: 165
     steps:
       - name: Wait for the exact released version on primary tap main
         env:
@@ -72,7 +72,8 @@ jobs:
             files+=("$project.rb")
           fi
           url=https://forgejo.bryantserver.com/SisyphusMD/homebrew-tap/raw/branch/main/Formula
-          for attempt in {1..240}; do
+          deadline=$((SECONDS + 9600))
+          while (( SECONDS < deadline )); do
             landed=1
             for file in "${files[@]}"; do
               if ! formula=$(curl -fsS --max-time 15 "$url/$file") \

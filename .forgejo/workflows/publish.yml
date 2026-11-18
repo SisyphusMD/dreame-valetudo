@@ -354,7 +354,8 @@ jobs:
           overwrite: true
 
   homebrew-tap:
-    needs: render-homebrew-tap
+    needs: [guard, render-homebrew-tap]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.render-homebrew-tap.result == 'success' }}
     uses: ./.forgejo/workflows/submit-tap-formula.yml
     with:
       tag: ${{ github.ref_name }}
@@ -480,7 +481,8 @@ jobs:
           overwrite: true
 
   homebrew-bottles:
-    needs: render-homebrew-bottles
+    needs: [guard, render-homebrew-bottles]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.render-homebrew-bottles.result == 'success' }}
     concurrency:
       group: tap-bottle-refresh-${{ github.ref_name }}
       cancel-in-progress: false

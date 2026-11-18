@@ -26,7 +26,7 @@ jobs:
 
       - name: Read the verified tap helper
         env:
-          HELPER: cc335d7cb146fd1b32fea803d7a838a142443efa
+          HELPER: c8bb9a5b3a54c841375a5a3b619c98a377cb75be
         run: |
           set -euo pipefail
           tap="$RUNNER_TEMP/tap"
@@ -48,21 +48,31 @@ jobs:
           project="${GITHUB_REPOSITORY#*/}"
           result=$(python3 -I "$RUNNER_TEMP/tap-helpers/open-release-formula-pr.py" \
             "$project" "$TAG" "$PHASE" "$GITHUB_WORKSPACE/tap-artifact")
-          jq -r '"state=" + .state, "url=" + (.url // "")' <<< "$result" >> "$GITHUB_OUTPUT"
+          jq -er '
+            select(.state == "pending" or .state == "landed" or .state == "superseded")
+            | "state=" + .state, "url=" + (.url // ""), "paths=" + ((.paths // []) | join(" "))
+          ' <<< "$result" >> "$GITHUB_OUTPUT"
 
       - name: Wait for the exact formula files on primary main
         if: steps.pr.outputs.state == 'pending'
         env:
           PR_URL: ${{ steps.pr.outputs.url }}
+          PR_PATHS: ${{ steps.pr.outputs.paths }}
         run: |
           set -euo pipefail
           echo "Waiting for the tap pull request to land: $PR_URL"
           cd "$RUNNER_TEMP/tap"
+          read -r -a formulae <<< "$PR_PATHS"
+          if (( ${#formulae[@]} == 0 )); then
+            echo "::error::The tap submitter returned a pending PR without any changed formula paths."
+            exit 1
+          fi
           for attempt in {1..240}; do
             if git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main; then
               matches=1
-              for formula in "$GITHUB_WORKSPACE/tap-artifact/Formula/"*.rb; do
-                if ! git show "origin/main:Formula/${formula##*/}" | cmp -s - "$formula"; then
+              for formula in "${formulae[@]}"; do
+                [[ "$formula" =~ ^Formula/(dreame-valetudo|whiskerless)(-rc)?\.rb$ ]]
+                if ! git show "origin/main:$formula" | cmp -s - "$GITHUB_WORKSPACE/tap-artifact/$formula"; then
                   matches=0
                   break
                 fi

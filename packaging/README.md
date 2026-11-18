@@ -41,8 +41,9 @@ manifests publish, the second tap PR adds the bottle checksums. Install and clea
 jobs keep waiting until those exact formula files are available.
 
 If tap review exceeds the wait budget, finish the PR and rerun the affected
-publisher jobs. The manual tap-bottles workflow from main still repairs a
-bottle refresh for an existing tag.
+publisher jobs. If the separate Bottles workflow timed out waiting for the
+formula, dispatch it again with the same tag. Use Tap Bottles from main to
+repair the declarations after rebuilding bottles for an existing tag.
 
 ## How a release flows
 

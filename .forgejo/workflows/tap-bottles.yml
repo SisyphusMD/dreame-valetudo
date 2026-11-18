@@ -51,8 +51,8 @@ jobs:
           # CURRENT tooling, FULL history. Not `ref: $TAG`: this workflow is the documented repair
           # path for an older release, and checking that tag out would run ITS update-tap.sh —
           # which for anything already published takes two arguments, while this calls it with
-          # three and would exit on usage. The current helper archives `refs/tags/$TAG` itself, so
-          # all it needs from the checkout is that the tag ref is present.
+          # three and would exit on usage. Render with current trusted tooling and the tagged
+          # templates in a separate checkout.
           fetch-depth: 0
           persist-credentials: false
       # Retried in-step: a transient versions-manifest fetch failure took all five CI
@@ -76,10 +76,10 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) : ;;
-            *) echo "::error::not a release tag: $TAG"; exit 1 ;;
-          esac
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::not a release tag: $TAG"
+            exit 1
+          fi
           API=https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo
           case "$TAG" in
             *-rc.*) expected=3 ;;
@@ -122,7 +122,12 @@ jobs:
           artifact="$GITHUB_WORKSPACE/tap-artifact/Formula"
           git clone --branch main "https://forgejo.bryantserver.com/SisyphusMD/homebrew-tap.git" "$tap"
           python -m pip install --upgrade pip build
-          bash packaging/update-tap.sh "$TAG" "$tap" "$PWD/manifests"
+          release_checkout=$(mktemp -d "$RUNNER_TEMP/tap-release-source.XXXXXX")
+          git worktree add --detach "$release_checkout" "refs/tags/$TAG"
+          trap 'git worktree remove --force "$release_checkout"' EXIT
+          cp packaging/{update-tap.sh,render-formula.sh,bottle-block.py,release-common.sh,project.env} \
+            "$release_checkout/packaging/"
+          bash "$release_checkout/packaging/update-tap.sh" "$TAG" "$tap" "$PWD/manifests"
           mkdir -p "$artifact"
           cp -- "$tap/Formula/dreame-valetudo-rc.rb" "$artifact/"
           if [[ "$TAG" != *-rc.* ]]; then

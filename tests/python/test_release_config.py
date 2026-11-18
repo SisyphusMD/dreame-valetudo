@@ -1156,7 +1156,7 @@ def test_tap_publisher_isolates_credentials_and_waits_for_landed_formulae() -> N
         submit = publish[name]
         assert unprivileged["steps"][-1]["uses"].startswith("https://code.forgejo.org/forgejo/upload-artifact@")
         assert "CLUSTER_FORGEJO_TAP_WRITE_PAT" not in str(unprivileged)
-        assert submit["needs"] == f"render-{name}"
+        assert set(submit["needs"]) == {"guard", f"render-{name}"}
         assert submit["uses"] == "./.forgejo/workflows/submit-tap-formula.yml"
         assert set(submit["secrets"]) == {"tap-token"}
 
@@ -1170,7 +1170,7 @@ def test_tap_publisher_isolates_credentials_and_waits_for_landed_formulae() -> N
     assert set(yaml.safe_load(helper)[True]["workflow_call"]) == {"inputs"}
     assert "open-release-formula-pr.py" in helper
     assert "secrets.tap-token" in helper
-    assert 'git show "origin/main:Formula/' in helper
+    assert 'git show "origin/main:$formula"' in helper
     assert "cmp -s" in helper
     assert "Tap PR files did not land" in helper
 
