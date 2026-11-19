@@ -5943,5 +5943,30 @@
   "state": "closed",
   "title": "WIP: Disposable draft to prove standard required checks",
   "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "Use the primary for the first Homebrew tap, stable and candidate release lookups, package metadata and user instructions. Preserve the full GitHub mirror and bottle distribution.",
+  "closed_at": null,
+  "comments": [
+   {
+    "body": "The local patch uses Forgejo for the tap, stable and candidate update checks, help and package metadata. All 2,480 Python tests and the doc-link checks pass. The three v0.3.0-rc.52 bottles on the primary match the tap checksums. Stable v0.2.1 predates bottles. The public listener returns HTTP 500 for the tap, release API and bottle URLs. Landing waits for public downloads and tap access.",
+    "created_at": "2026-11-18T06:53:21-08:00",
+    "id": 37531,
+    "updated_at": "2026-11-18T06:53:21-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-18T06:33:50-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:blocked",
+   "type:chore"
+  ],
+  "milestone": null,
+  "number": 306,
+  "state": "open",
+  "title": "Default installs and CLI update checks to Forgejo",
+  "user": "cody"
  }
 ]

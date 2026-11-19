@@ -309,3 +309,4 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 303 | pull | closed | [Publish Dreame Homebrew formulae and bottles through tap PRs](items/0303-publish-dreame-homebrew-formulae-and-bottles-through-tap-prs.md) |
 | 304 | issue | closed | [Prove the standard checks before protecting Dreame main](items/0304-prove-the-standard-checks-before-protecting-dreame-main.md) |
 | 305 | pull | closed | [WIP: Disposable draft to prove standard required checks](items/0305-wip-disposable-draft-to-prove-standard-required-checks.md) |
+| 306 | issue | open | [Default installs and CLI update checks to Forgejo](items/0306-default-installs-and-cli-update-checks-to-forgejo.md) |
