@@ -158,7 +158,7 @@ FROM scratch AS deb-file-floor-result
 COPY --from=deb-file-floor /passed /passed
 
 # renovate: datasource=docker depName=ubuntu-22.04-compat packageName=ubuntu
-FROM ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde AS ubuntu-floor-base
+FROM ubuntu:22.04@sha256:252bffe20cd96f4eca79e59b95ac87d05021ab22fcf57f621f9e244645c4eac7 AS ubuntu-floor-base
 COPY packaging/retry.sh /retry
 RUN set -eux; echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/99retries; \
     /retry 5 apt-get update -qq >/dev/null; apt-get install -y -qq curl ca-certificates >/dev/null
