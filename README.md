@@ -310,3 +310,10 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 304 | issue | closed | [Prove the standard checks before protecting Dreame main](items/0304-prove-the-standard-checks-before-protecting-dreame-main.md) |
 | 305 | pull | closed | [WIP: Disposable draft to prove standard required checks](items/0305-wip-disposable-draft-to-prove-standard-required-checks.md) |
 | 306 | issue | open | [Default installs and CLI update checks to Forgejo](items/0306-default-installs-and-cli-update-checks-to-forgejo.md) |
+| 307 | pull | closed | [chore(deps): update dependency ruff to v0.17.6](items/0307-chore-deps-update-dependency-ruff-to-v0-17-6.md) |
+| 308 | issue | closed | [AI review: take the 40,000-token output cap and verdict-parse fix from project-rules](items/0308-ai-review-take-the-40-000-token-output-cap-and-verdict-parse.md) |
+| 309 | pull | closed | [AI review: 40,000-token output cap and verdict-parse fix](items/0309-ai-review-40-000-token-output-cap-and-verdict-parse-fix.md) |
+| 310 | issue | closed | [AI review: take the 40-minute deadline and 45-minute job limit from project-rules](items/0310-ai-review-take-the-40-minute-deadline-and-45-minute-job-limi.md) |
+| 311 | pull | closed | [AI review: 40-minute deadline inside a 45-minute job](items/0311-ai-review-40-minute-deadline-inside-a-45-minute-job.md) |
+| 312 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to 252bffe](items/0312-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
+| 313 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to f64b2ff](items/0313-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
