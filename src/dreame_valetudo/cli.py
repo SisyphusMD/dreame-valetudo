@@ -467,7 +467,7 @@ def uart(ctx: Context) -> None:
         c.info("P2148 has no reset button — hold the two buttons together: <1s = spawn the "
                "UART shell, >3s = Wi-Fi reset, >5s = full factory reset.", lead=True)
     c.detail("The 0.4 plan for safe serial automation, USB-stick preparation, adoption, and bench "
-             "qualification is at https://github.com/SisyphusMD/dreame-valetudo/blob/main/docs/"
+             "qualification is at https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/src/branch/main/docs/"
              "UART-0.4.md. Until that is hardware-validated, follow the steps above.", lead=True)
 
 

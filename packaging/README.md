@@ -124,7 +124,7 @@ from one).
    GitHub + NAS push-mirrors). GitHub mirror:
    `github.com/SisyphusMD/dreame-valetudo`. **Homebrew tap:** `SisyphusMD/homebrew-tap`, also
    Forgejo-primary with GitHub + NAS push-mirrors — the `homebrew-tap` job opens the source formula PR on
-   the Forgejo tap and the mirror carries it to GitHub, where `brew` fetches it.
+   the Forgejo tap. The documented Homebrew command fetches from Forgejo, and the tap also mirrors to GitHub.
 2. **Secrets.**
 
    On Forgejo (`…/SisyphusMD/dreame-valetudo` → Settings → Actions → Secrets):

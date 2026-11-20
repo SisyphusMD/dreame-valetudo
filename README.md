@@ -77,11 +77,15 @@ the **GitHub mirror** second.
 ### Homebrew (macOS and Linux, recommended)
 
 ```bash
-brew tap sisyphusmd/tap
+brew tap --custom-remote sisyphusmd/tap https://forgejo.bryantserver.com/SisyphusMD/homebrew-tap.git
 brew trust sisyphusmd/tap    # one-time; Homebrew 6+ won't load a third-party tap until trusted
 brew install sisyphusmd/tap/dreame-valetudo
 dreame-valetudo
 ```
+
+The stable v0.2.1 formula installs from source. To opt into the release candidate with prebuilt
+bottles, install `sisyphusmd/tap/dreame-valetudo-rc` instead.
+
 The same command works on any supported Mac or Linux architecture, and it is self-contained:
 `sunxi-fel` — the small helper used to talk to the robot in FEL mode — is built and bundled by the
 formula, so nothing is compiled the first time you run it. That matters because the flashing work
@@ -484,7 +488,7 @@ There is no config or secrets file; every knob is an optional environment variab
 | `DREAME_NO_UDEV_CHECK` | Set `1` to bypass the Linux udev-rule gate for Wi-Fi-only work |
 | `DREAME_FASTBOOT` | Set `system` to use Android's `fastboot` instead of the validated libusb client |
 
-Once per day, the tool asks GitHub's releases API whether a newer dreame-valetudo release exists.
+Once per day, the tool asks Forgejo's releases API whether a newer dreame-valetudo release exists.
 The request times out after three seconds, failures are ignored, and it never downloads or installs
 an update. Set `DREAME_NO_UPDATE_CHECK=1` to disable the request.
 

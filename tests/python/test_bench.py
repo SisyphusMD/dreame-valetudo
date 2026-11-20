@@ -1935,7 +1935,11 @@ def test_manual_scenario_error_points_installed_users_to_the_online_guide(
     make_ctx: CtxFactory,
 ) -> None:
     ctx = make_ctx()
-    with pytest.raises(Die, match=r"https://github\.com/.*/HARDWARE-TESTING\.md"):
+    guide = (
+        r"https://forgejo\.bryantserver\.com/SisyphusMD/dreame-valetudo/"
+        r"src/branch/main/docs/HARDWARE-TESTING\.md"
+    )
+    with pytest.raises(Die, match=guide):
         B.bench(
             ctx, ["run", "upgrade-resume", "--campaign", "rc"], auto_fn=_noop_auto,
         )

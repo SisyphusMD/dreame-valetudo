@@ -147,6 +147,6 @@ def show_whats_new(env: Mapping[str, str], console: Console) -> None:
                 if trimmed:
                     more.append(f"{trimmed} more line(s)")
                 console.detail(f"(+{' and '.join(more)} not shown — full history: "
-                               "https://github.com/SisyphusMD/dreame-valetudo/blob/main/"
+                               "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/src/branch/main/"
                                "CHANGELOG.md)")
     _write_last_version(env, __version__)

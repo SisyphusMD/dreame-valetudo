@@ -1,4 +1,4 @@
-"""Best-effort "you're out of date" nudge: compare the running version against the latest GitHub
+"""Best-effort "you're out of date" nudge: compare the running version against the latest Forgejo
 release and, if newer, point at the right upgrade command for how the tool was installed.
 
 Deliberately unobtrusive and safe:
@@ -26,12 +26,12 @@ from . import __version__
 from .context import Context
 from .migrate import base_dir
 
-_LATEST_URL = "https://api.github.com/repos/SisyphusMD/dreame-valetudo/releases/latest"
-#: Newest-first, prereleases INCLUDED. `/releases/latest` excludes them, so a machine on rc.20
+_LATEST_URL = "https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo/releases/latest"
+#: Includes prereleases. `/releases/latest` excludes them, so a machine on rc.20
 #: could never be told about rc.21 — the candidate channel was invisible to exactly the people
 #: testing it, right up until the stable release appeared.
 _RELEASES_URL = (
-    "https://api.github.com/repos/SisyphusMD/dreame-valetudo/releases?per_page=10"
+    "https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo/releases?limit=10"
 )
 
 
@@ -52,9 +52,9 @@ def _is_newer(latest: str, current: str) -> bool:
 def _parse_latest(text: str) -> str | None:
     """Pull the newest `tag_name` (e.g. `v0.2.0` -> `0.2.0`) out of either endpoint's JSON.
 
-    `/releases/latest` answers with one object, `/releases` with a list. The list is documented
-    newest-first, but the winner is chosen by comparison rather than by position, so a draft or a
-    re-tagged release cannot decide it. None on anything unexpected.
+    `/releases/latest` answers with one object, `/releases` with a list. The list's winner is chosen
+    by version comparison, skipping drafts, so its order cannot decide it. None on anything
+    unexpected.
     """
     with contextlib.suppress(ValueError, TypeError, AttributeError):
         payload = json.loads(text)
@@ -137,7 +137,7 @@ def _upgrade_hint(method: str, current: str = __version__, latest: str | None = 
         "rpm-zypper": "Update: download the new .rpm and run `sudo zypper install ./<file>.rpm`.",
         "rpm": "Update: download the new .rpm and run `sudo rpm -U ./<file>.rpm`.",
         "unknown": "Update via your install method — see "
-        "https://github.com/SisyphusMD/dreame-valetudo#upgrading",
+        "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo#upgrading",
     }[method]
 
 
@@ -187,7 +187,7 @@ def check_for_update(ctx: Context, *, today: str | None = None) -> None:
         # candidates, which that endpoint never returns.
         url = _RELEASES_URL if channel == "rc" else _LATEST_URL
         res = ctx.runner.run(
-            ["curl", "-fsSL", "-m", "3", "-H", "Accept: application/vnd.github+json", url],
+            ["curl", "-fsSL", "-m", "3", url],
             check=False,
         )
         fetched = _parse_latest(res.stdout) if res.ok else None
