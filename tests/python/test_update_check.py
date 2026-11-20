@@ -214,7 +214,9 @@ def test_a_candidate_install_asks_an_endpoint_that_returns_candidates(
 
     U.check_for_update(ctx, today="2026-01-01")
 
-    assert seen == [U._RELEASES_URL], f"asked the wrong endpoint: {seen}"
+    assert seen == [
+        "https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo/releases?limit=10"
+    ], "a candidate install asked the wrong endpoint"
     assert "0.3.0-rc.21" in ctx.console.text()  # type: ignore[attr-defined]
 
 
@@ -232,14 +234,16 @@ def test_a_stable_install_is_never_pointed_at_a_prerelease(
 
     U.check_for_update(ctx, today="2026-01-01")
 
-    assert seen == [U._LATEST_URL], f"a stable install enumerated prereleases: {seen}"
+    assert seen == [
+        "https://forgejo.bryantserver.com/api/v1/repos/SisyphusMD/dreame-valetudo/releases/latest"
+    ], "a stable install enumerated prereleases"
     assert ctx.console.lines == []  # type: ignore[attr-defined]
 
 
 def test_the_newest_candidate_wins_regardless_of_the_order_returned(
     make_ctx: CtxFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GitHub documents newest-first, but a draft or a re-tag must not decide the answer."""
+    """A draft or re-tag must not decide the answer."""
     monkeypatch.setattr(U, "__version__", "0.3.0-rc.1")
     responder, _ = _recording_responder(
         [

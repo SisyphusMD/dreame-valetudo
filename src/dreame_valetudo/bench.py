@@ -78,7 +78,7 @@ from .workspace import (
 SafetyClass = Literal["H0", "H1", "H2", "H3"]
 AutoFn = Callable[[Context, Sequence[str]], None]
 HARDWARE_GUIDE_URL = (
-    "https://github.com/SisyphusMD/dreame-valetudo/blob/main/docs/HARDWARE-TESTING.md"
+    "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/src/branch/main/docs/HARDWARE-TESTING.md"
 )
 
 

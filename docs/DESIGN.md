@@ -113,7 +113,7 @@ survives the FEL→fastboot re-enumeration. The timed `oem`+flash+reboot sequenc
 with interrupts masked and every operation gated on an `OKAY`; elapsed times in the run log show
 the margin against the roughly 180 seconds of usable FEL before the power MCU cycles the SoC rail.
 
-The only routine outbound request is a best-effort check of GitHub's releases API, at most once per
+The only routine outbound request is a best-effort check of Forgejo's releases API, at most once per
 day. It has a three-second timeout, never updates the tool, and is disabled with
 `DREAME_NO_UPDATE_CHECK=1`.
 

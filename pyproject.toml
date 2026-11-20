@@ -14,12 +14,9 @@ requires-python = ">=3.11"
 # the frozen dreame-fastboot binary). PYUSB_VERSION is pinned in constants.py (Renovate-tracked).
 dependencies = []
 
-# Source points at Forgejo because that is where the code actually lives and where releases are
-# cut; GitHub is a push-mirror. Homepage, docs and issues point at GitHub because that is where
-# users are. Same split as whiskerless.
 [project.urls]
-Homepage = "https://github.com/SisyphusMD/dreame-valetudo"
-Documentation = "https://github.com/SisyphusMD/dreame-valetudo/tree/main/docs"
+Homepage = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
+Documentation = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/src/branch/main/docs"
 Source = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo"
 Issues = "https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues"
 
