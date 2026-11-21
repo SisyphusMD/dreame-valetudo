@@ -152,7 +152,7 @@ jobs:
           sudo sed -i 's#http://archive.ubuntu.com#http://artifacts.lan.bryantserver.com/archive.ubuntu.com#; s#http://security.ubuntu.com#http://artifacts.lan.bryantserver.com/security.ubuntu.com#' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq && sudo apt-get install -y -qq tmux
           # renovate: datasource=pypi depName=pyyaml
-          PYYAML="6.0.3"
+          PYYAML="6.0.4"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "mypy==$MYPY" "pytest==$PYTEST" "pytest-cov==$PYTEST_COV" "pyyaml==$PYYAML" -e .
           ruff check $(git ls-files '*.py' | tr '\n' ' ')

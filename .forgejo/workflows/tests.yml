@@ -97,7 +97,7 @@ jobs:
           # renovate: datasource=pypi depName=pytest-cov
           PYTEST_COV="7.1.0"
           # renovate: datasource=pypi depName=pyyaml
-          PYYAML="6.0.3"
+          PYYAML="6.0.4"
           python -m pip install --upgrade pip
           # `-e .` is not optional under the src/ layout: the package is no longer
           # importable from the working directory, which is the whole point — a module
@@ -174,7 +174,7 @@ jobs:
           # renovate: datasource=pypi depName=pytest
           PYTEST="9.2.0"
           # renovate: datasource=pypi depName=pyyaml
-          PYYAML="6.0.3"
+          PYYAML="6.0.4"
           python -m pip install --upgrade pip
           pip install "ruff==$RUFF" "pytest==$PYTEST" "pyyaml==$PYYAML" -e .
           python -m compileall -q src/dreame_valetudo libexec docs/research/tools \
