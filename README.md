@@ -309,7 +309,7 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 303 | pull | closed | [Publish Dreame Homebrew formulae and bottles through tap PRs](items/0303-publish-dreame-homebrew-formulae-and-bottles-through-tap-prs.md) |
 | 304 | issue | closed | [Prove the standard checks before protecting Dreame main](items/0304-prove-the-standard-checks-before-protecting-dreame-main.md) |
 | 305 | pull | closed | [WIP: Disposable draft to prove standard required checks](items/0305-wip-disposable-draft-to-prove-standard-required-checks.md) |
-| 306 | issue | open | [Default installs and CLI update checks to Forgejo](items/0306-default-installs-and-cli-update-checks-to-forgejo.md) |
+| 306 | issue | closed | [Default installs and CLI update checks to Forgejo](items/0306-default-installs-and-cli-update-checks-to-forgejo.md) |
 | 307 | pull | closed | [chore(deps): update dependency ruff to v0.17.6](items/0307-chore-deps-update-dependency-ruff-to-v0-17-6.md) |
 | 308 | issue | closed | [AI review: take the 40,000-token output cap and verdict-parse fix from project-rules](items/0308-ai-review-take-the-40-000-token-output-cap-and-verdict-parse.md) |
 | 309 | pull | closed | [AI review: 40,000-token output cap and verdict-parse fix](items/0309-ai-review-40-000-token-output-cap-and-verdict-parse-fix.md) |
@@ -317,3 +317,6 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 311 | pull | closed | [AI review: 40-minute deadline inside a 45-minute job](items/0311-ai-review-40-minute-deadline-inside-a-45-minute-job.md) |
 | 312 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to 252bffe](items/0312-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
 | 313 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to f64b2ff](items/0313-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
+| 314 | pull | closed | [chore: default CLI update checks, the Homebrew tap and links to Forgejo](items/0314-chore-default-cli-update-checks-the-homebrew-tap-and-links-t.md) |
+| 315 | pull | closed | [chore(deps): update dependency pyyaml to v6.0.4](items/0315-chore-deps-update-dependency-pyyaml-to-v6-0-4.md) |
+| 316 | pull | open | [chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.21-1](items/0316-chore-deps-update-quay-io-pypa-manylinux-2-28-docker-tag-to-.md) |

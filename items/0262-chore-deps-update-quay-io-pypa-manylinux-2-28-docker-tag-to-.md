@@ -2,7 +2,7 @@
 
 - Kind: pull, state: closed, by renovate, created 2026-11-06T16:02:46-08:00
 - Labels: none; milestone: none
-- refs/pull/262/head -> main, merged: True
+- renovate/quay.io-pypa-manylinux_2_28-2026.11.x -> main, merged: True
 
 This PR contains the following updates:
 
