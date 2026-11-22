@@ -86,7 +86,7 @@ REPLACE_BOTTLE_BLOCK
         #{homepage}
 
       Just run `dreame-valetudo` (no arguments). sunxi-fel is already built and bundled, so the
-      only thing the first run fetches is the pinned Valetudo binary. It talks to the robot over
+      first run fetches only the pinned stage 1 boot package and Valetudo binary. It talks to the robot over
       the robot's own Wi-Fi AP, not your LAN.
 
       Your workspace lives under ~/dreame-valetudo/ (work/ + backups/). After `brew upgrade` the

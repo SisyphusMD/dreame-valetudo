@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from dreame_valetudo import __version__
 from dreame_valetudo.cli import _KNOWN_COMMANDS
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -849,6 +850,17 @@ def test_readme_source_install_names_every_host_runtime_dependency() -> None:
     source = _README.read_text().split("### From source", 1)[1].split("## What you need", 1)[0]
     for dependency in ("libusb", "curl", "tmux", "OpenSSH", "tar", "zip", "unzip"):
         assert dependency in source
+
+
+def test_readme_stable_outage_warning_names_the_current_stable() -> None:
+    """The release PR bumps __version__ but rewrites only download links, so a warning that the
+    stable release cannot root a robot would otherwise ride into the release that fixes it (#322)."""
+    warning = re.search(r"The stable v(\S+) release cannot root a robot", _README.read_text())
+    if warning:
+        assert warning.group(1) == __version__, (
+            f"README still warns that stable v{warning.group(1)} is broken, but this is "
+            f"v{__version__}: remove the warning once a stable release ships the fix"
+        )
 
 
 def test_readme_covers_rpm_candidate_switching_and_manual_removal() -> None:

@@ -6,6 +6,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The Homebrew caveats name both first-run downloads (the stage 1 boot package as well as Valetudo) (#322).
 - Bring the AI review copy up to project-rules 64b857c (connect retry, malformed-answer re-ask, pinned checkout) (#319).
 - Use Forgejo for CLI update checks and the Homebrew tap (#306).
 
