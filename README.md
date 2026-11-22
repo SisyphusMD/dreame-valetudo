@@ -69,6 +69,14 @@ on every Linux row. It does the same with the signed macOS package on Apple Sili
 
 ## Install
 
+> [!WARNING]
+> **The stable v0.2.1 release cannot root a robot right now.** Its first download comes from
+> `builder.dontvacuum.me`, which no longer accepts connections. The fix, which downloads from
+> Valetudo's Dustfab instead, is in the release candidate, and stable will follow once it has run on
+> a real robot. Until then, install the newest
+> [release candidate](#release-candidates-and-switching-back-to-stable) for your install method, or
+> run [from source](#from-source): the default branch already has the fix.
+
 **Homebrew** is the easiest option on macOS or Linux. On a Mac, you can also use the signed `.pkg` if
 you would rather download and double-click an installer. Once it is installed, run
 `dreame-valetudo` with no arguments. The download links below list **Forgejo (primary)** first and
