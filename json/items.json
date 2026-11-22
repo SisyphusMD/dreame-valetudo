@@ -6213,10 +6213,10 @@
   "closed_at": null,
   "comments": [
    {
-    "body": "<!-- ai-review -->\n**AI review** of `f465f5f93b`: This is a Renovate patch bump of the pinned manylinux_2_28 image tag and digest, scoped to the standing dependency-update issue. The change is small, matches the existing pin format, and is covered by the existing build/test jobs.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "body": "<!-- ai-review -->\n**AI review** of `391d0b2936`: Clean single-line dependency pin update for the manylinux Docker image, properly scoped to the standing Renovate issue #294, with the existing CI build and test jobs exercising the new toolchain. No issues found.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
     "created_at": "2026-11-20T23:03:46-08:00",
     "id": 41139,
-    "updated_at": "2026-11-20T23:03:46-08:00",
+    "updated_at": "2026-11-21T21:06:37-08:00",
     "user": "forgejo-actions"
    }
   ],
@@ -6232,5 +6232,109 @@
   "state": "open",
   "title": "chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.21-1",
   "user": "renovate"
+ },
+ {
+  "assignees": [],
+  "body": "Copy SisyphusMD/project-rules#116 (merged in project-rules #117): `ai-review.yml` here still starts a review on any signed-in account's PR comment, so an outside account can queue up to 45-minute runs on the Studio model. The canonical file now runs the comment path only for someone who can push or wrote the PR.\n\nPlan: replace `.forgejo/workflows/ai-review.yml` with the canonical file, unchanged (this copy matched the previous canonical exactly).\n\nRequested by Cody 2026-11-21 (\"yes to all\").",
+  "closed_at": "2026-11-21T12:15:48-08:00",
+  "comments": [
+   {
+    "body": "Status: merged in #318, verified on main (the canonical gate from SisyphusMD/project-rules#117). A PR comment now starts an AI review only for someone who can push here or wrote the PR. Nothing left on this issue; the AGit PR residual is tracked on SisyphusMD/project-rules#57.",
+    "created_at": "2026-11-21T12:18:29-08:00",
+    "id": 41796,
+    "updated_at": "2026-11-21T12:18:29-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-21T11:50:09-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:in-progress",
+   "type:bug"
+  ],
+  "milestone": null,
+  "number": 317,
+  "state": "closed",
+  "title": "AI review runs on any signed-in user's PR comment",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Closes #317\n\nCopies the canonical `ai-review.yml` from SisyphusMD/project-rules #117 unchanged. A PR comment now starts an AI review only when its author can push to this repo or wrote the PR; before, any signed-in account's comment queued a run of up to 45 minutes on the Studio model. `pull_request_target` runs are unchanged. The gate reads `github.event.repository.permissions.push`, which Forgejo fills with the commenter's own permission, checked against stored run payloads (bots with push still start reviews).\n\nThe test that rejects an outside commenter lives with the canonical file: project-rules `tests/test_ai_review_gate.py`.",
+  "closed_at": "2026-11-21T12:15:48-08:00",
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `cedacd89bf`: Minimal, correct security fix: gates the comment-triggered AI review path on push permission or PR authorship, matching the canonical file from project-rules. The test lives with the canonical source per the project's vendored-file pattern, and the diff is the smallest correct change for the linked issue.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-21T11:51:35-08:00",
+    "id": 41714,
+    "updated_at": "2026-11-21T11:51:35-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-21T11:50:11-08:00",
+  "head": "refs/pull/318/head",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": "1626dcc1f00bdee088a3bca537005c2f287e6e66",
+  "merged": true,
+  "milestone": null,
+  "number": 318,
+  "reviews": [],
+  "state": "closed",
+  "title": "fix(ai-review): start a review from a PR comment only for pushers and the PR author",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "Copy `.forgejo/scripts/ai-review.py` from canonical SisyphusMD/project-rules 64b857c, byte for byte (connect retry, malformed-answer re-ask, retry keeps first answer findings). In `.forgejo/workflows/ai-review.yml`, the actions/checkout step gets `ref: ${{ github.sha }}` and `persist-credentials: false`, and the review step env gets `BOT_LOGIN: forgejo-actions` (the #118 edits). No other files change apart from a CHANGELOG bullet where the repo keeps one.\n\nPart of SisyphusMD/project-rules#113",
+  "closed_at": "2026-11-21T20:21:38-08:00",
+  "comments": [
+   {
+    "body": "Done in PR #320, merged as af09cd9: ai-review.py and ai-review.yml are canonical 64b857c; CHANGELOG bullet added.",
+    "created_at": "2026-11-21T20:21:54-08:00",
+    "id": 42375,
+    "updated_at": "2026-11-21T20:21:54-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-21T19:25:57-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:in-progress",
+   "type:chore"
+  ],
+  "milestone": null,
+  "number": 319,
+  "state": "closed",
+  "title": "chore(ci): bring the AI review copy up to canonical project-rules 64b857c",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Closes #319\n\nCopies the canonical AI review script and the two #118 workflow edits from SisyphusMD/project-rules 64b857c (part of SisyphusMD/project-rules#113).",
+  "closed_at": "2026-11-21T20:21:38-08:00",
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `7b8b384c55`: Clean vendored copy of the canonical AI review script from project-rules 64b857c plus the two #118 workflow edits (pinned checkout ref, persist-credentials: false, BOT_LOGIN env). The diff matches the scope described in #319; the code is correct and the security hardening (running the script from the base branch, not the PR) is sound.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-21T20:12:05-08:00",
+    "id": 42344,
+    "updated_at": "2026-11-21T20:12:05-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-21T20:10:02-08:00",
+  "head": "refs/pull/320/head",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": "af09cd920639ecb0ec10d63134b7985413f8cbde",
+  "merged": true,
+  "milestone": null,
+  "number": 320,
+  "reviews": [],
+  "state": "closed",
+  "title": "chore(ci): copy the AI review from project-rules 64b857c",
+  "user": "cody"
  }
 ]
