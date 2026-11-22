@@ -6,6 +6,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Bring the AI review copy up to project-rules 64b857c (connect retry, malformed-answer re-ask, pinned checkout) (#319).
 - Use Forgejo for CLI update checks and the Homebrew tap (#306).
 
 - Send Homebrew formula and bottle updates through verified tap PRs. (#302)
