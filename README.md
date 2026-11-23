@@ -324,3 +324,7 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 318 | pull | closed | [fix(ai-review): start a review from a PR comment only for pushers and the PR author](items/0318-fix-ai-review-start-a-review-from-a-pr-comment-only-for-push.md) |
 | 319 | issue | closed | [chore(ci): bring the AI review copy up to canonical project-rules 64b857c](items/0319-chore-ci-bring-the-ai-review-copy-up-to-canonical-project-ru.md) |
 | 320 | pull | closed | [chore(ci): copy the AI review from project-rules 64b857c](items/0320-chore-ci-copy-the-ai-review-from-project-rules-64b857c.md) |
+| 321 | issue | open | [Stable v0.2.1 cannot root a robot: ship the Dustfab fix to a stable release](items/0321-stable-v0-2-1-cannot-root-a-robot-ship-the-dustfab-fix-to-a-.md) |
+| 322 | issue | closed | [README: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0322-readme-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-poin.md) |
+| 323 | pull | closed | [docs: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0323-docs-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-point-.md) |
+| 324 | issue | open | [File Stefan Gehr's L40 Ultra reports if he doesn't](items/0324-file-stefan-gehr-s-l40-ultra-reports-if-he-doesn-t.md) |

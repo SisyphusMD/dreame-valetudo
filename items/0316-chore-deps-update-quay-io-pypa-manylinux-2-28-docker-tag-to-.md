@@ -44,7 +44,7 @@ No tests: dependency pins and their generated files are checked by the existing 
 ## forgejo-actions, 2026-11-20T23:03:46-08:00
 
 <!-- ai-review -->
-**AI review** of `391d0b2936`: Clean single-line dependency pin update for the manylinux Docker image, properly scoped to the standing Renovate issue #294, with the existing CI build and test jobs exercising the new toolchain. No issues found.
+**AI review** of `31f086ce92`: Routine Renovate patch bump of the pinned manylinux image tag and digest, scoped to the standing dependency-update issue. The existing build and test jobs exercise the updated image, and the change is small and focused.
 
 No findings.
 

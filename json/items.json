@@ -6213,10 +6213,10 @@
   "closed_at": null,
   "comments": [
    {
-    "body": "<!-- ai-review -->\n**AI review** of `391d0b2936`: Clean single-line dependency pin update for the manylinux Docker image, properly scoped to the standing Renovate issue #294, with the existing CI build and test jobs exercising the new toolchain. No issues found.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "body": "<!-- ai-review -->\n**AI review** of `31f086ce92`: Routine Renovate patch bump of the pinned manylinux image tag and digest, scoped to the standing dependency-update issue. The existing build and test jobs exercise the updated image, and the change is small and focused.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
     "created_at": "2026-11-20T23:03:46-08:00",
     "id": 41139,
-    "updated_at": "2026-11-21T21:06:37-08:00",
+    "updated_at": "2026-11-22T11:03:44-08:00",
     "user": "forgejo-actions"
    }
   ],
@@ -6335,6 +6335,114 @@
   "reviews": [],
   "state": "closed",
   "title": "chore(ci): copy the AI review from project-rules 64b857c",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "The latest stable release is v0.2.1 (2026-07-24), and it is what the default install (Homebrew \\`dreame-valetudo\\`, \\`releases/latest\\`) gives a new user. It still fetches stage 1 from \\`builder.dontvacuum.me\\` (\\`STAGE1_URL\\` in \\`dreame_valetudo/profiles.py\\`), which refuses connections (re-checked 2026-11-22). So every fresh stable install dies at the first download, right after the robot is named.\n\n#277 fixed this on main (#278, 2026-11-16, Dustfab), and it ships in v0.3.0-rc.50 through rc.52, which are all prereleases.\n\nReported by an outside user on 2026-11-22: \"One of the first URLs it reaches out to is down and it's unable to complete the first steps after a name is configured.\"\n\nOptions:\n- cut a stable release from current main (the two-step release flow from #297);\n- or, until then, point the README and the stable install at the rc channel.\n\nNot proven off-hardware: a real robot FEL-booting the current Dustfab payload (see #277).",
+  "closed_at": null,
+  "comments": [
+   {
+    "body": "2026-11-22: replied to the reporter (Forgejo account mothent, now activated). I pointed them at the rc channel as a workaround (`brew install sisyphusmd/tap/dreame-valetudo-rc` or `pip install --pre`), told them Dustfab stage 1 is unproven on hardware, and asked for the log if it fails. Next: a stable release from main. If they send a run log, it is the first hardware evidence for #277.",
+    "created_at": "2026-11-22T10:11:02-08:00",
+    "id": 42981,
+    "updated_at": "2026-11-22T10:11:02-08:00",
+    "user": "cody"
+   },
+   {
+    "body": "Decision: Do not cut a stable release yet. Stable waits until the Dustfab stage 1 has run on a real robot (the reporter's run or Cody's own); until then the README sends new users to the release candidate. Why: A stable release now would ship a download path that has never been run on hardware. The rc channel exists for that proof.\n\nDecided by: Cody, 2026-11-22.",
+    "created_at": "2026-11-22T10:12:55-08:00",
+    "id": 42983,
+    "updated_at": "2026-11-22T10:12:55-08:00",
+    "user": "cody"
+   },
+   {
+    "body": "README warning is live (#322/#323). Still blocked on a hardware run of the Dustfab stage 1 (the reporter's or Cody's). Then cut the stable release, which removes the warning (the guard test enforces it).",
+    "created_at": "2026-11-22T10:35:20-08:00",
+    "id": 43037,
+    "updated_at": "2026-11-22T10:35:20-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-22T10:02:18-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:blocked",
+   "type:bug"
+  ],
+  "milestone": null,
+  "number": 321,
+  "state": "open",
+  "title": "Stable v0.2.1 cannot root a robot: ship the Dustfab fix to a stable release",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "Part of #321. Stable v0.2.1 fetches stage 1 from builder.dontvacuum.me, which refuses connections, so a fresh stable install fails at its first download. The fix (#277) has shipped only in the release candidates, and stable waits for a hardware run (decision on #321).\n\nUntil then, the README's Install section should open with a warning: stable cannot complete its first download, so use the release candidate. Give the rc path for each channel: the Homebrew `-rc` formula, apt `testing`, the `sisyphusmd-testing.repo` file for dnf, the prerelease page for the .pkg/.deb/.rpm, and `pip install --pre`.\n\nThe next stable release removes the note.",
+  "closed_at": "2026-11-22T10:34:55-08:00",
+  "comments": [
+   {
+    "body": "Done in #323 (011be92). The README Install section opens with a warning that links to Release candidates and to From source. A test fails once __version__ passes the version the warning names, so the release PR has to remove it. The Homebrew caveats now name the stage 1 download. Checks: ruff, mypy, 2481 Python tests, full CI incl. macOS VMs.",
+    "created_at": "2026-11-22T10:35:20-08:00",
+    "id": 43035,
+    "updated_at": "2026-11-22T10:35:20-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-22T10:12:55-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:in-progress",
+   "type:bug"
+  ],
+  "milestone": null,
+  "number": 322,
+  "state": "closed",
+  "title": "README: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Closes #322. Part of #321.\n\nStable v0.2.1 fetches stage 1 from builder.dontvacuum.me, which refuses connections, so a fresh stable install fails at its first download (an outside user hit this on 2026-11-22). The fix is in the rc line only, and stable waits for a hardware run (decision on #321).\n\n- README: a warning at the top of Install that links to the existing Release candidates section and to the source install. Main already has the fix.\n- A test fails once `__version__` moves past the version the warning names. The release PR bumps the version but rewrites only download links, so without the test the warning would ship in the release that fixes the bug.\n- Homebrew caveats (stable and rc): the first run fetches stage 1 as well as Valetudo, not only Valetudo.\n\nChecks: ruff, mypy, and the full Python suite (2481 passed). I confirmed the guard fails on a version bump.\n\nwhiskerless: not applicable. The outage is dreame-specific, and whiskerless's caveats name no download.",
+  "closed_at": "2026-11-22T10:34:55-08:00",
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `200149d961`: Clean, well-scoped documentation PR: adds a README warning about the stable v0..2.1 stage-1 download outage, a guard test that fails when the version bumps past the warned-about release, and a factual correction to the Homebrew caveats. All hunks map to #322; the test is the right kind of guard for a temporary warning.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-22T10:26:04-08:00",
+    "id": 43013,
+    "updated_at": "2026-11-22T10:26:04-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-22T10:24:10-08:00",
+  "head": "refs/pull/323/head",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": "011be92d2aa211cb1d8e582a1d3e905d84d91658",
+  "merged": true,
+  "milestone": null,
+  "number": 323,
+  "reviews": [],
+  "state": "closed",
+  "title": "docs: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "Trigger: Stefan Gehr (Forgejo BoostCookie, activated 2026-11-22) emailed Cody about restoring his L40 Ultra to stock with dreame-valetudo. On 2026-11-22 at 1:40 PM PT Cody asked him to open two issues here himself. If he has not by the evening of 2026-11-23 (PT), file them and close this one; if he has, link them and close this.\n\n1. On the L40 Ultra (still listed as untested), the FEL to fastboot handoff fails. His workaround: when the tool starts its 90-second wait, power the robot off, power it back into FEL, and run `./valetudo-helper-felroot-amd64 boot fsbl.bin payload.bin`; the tool then recognised everything and finished. Ask for the tool output if he still has it.\n2. Feature: an `import` command (e.g. `--dustxzip`, `--config`) for backups made with the old workflow. He restored one by hand: copied his dustx zip to `work/robots/<id>/recon/dreame_recovery_backup.zip`, wrote `config: <config>` to `recon/config.txt`, then ran `restore`, which decrypted and flashed.\n\nCody agreed this plan in chat on 2026-11-22.",
+  "closed_at": null,
+  "comments": [],
+  "created_at": "2026-11-22T17:22:48-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:blocked",
+   "type:chore"
+  ],
+  "milestone": null,
+  "number": 324,
+  "state": "open",
+  "title": "File Stefan Gehr's L40 Ultra reports if he doesn't",
   "user": "cody"
  }
 ]
