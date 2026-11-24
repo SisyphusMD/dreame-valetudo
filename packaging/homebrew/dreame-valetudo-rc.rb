@@ -47,7 +47,7 @@ REPLACE_BOTTLE_BLOCK
   # substitution and no second digest that could drift out of sync with it.
   resource "sunxi-tools" do
     url "https://github.com/linux-sunxi/sunxi-tools.git",
-        revision: "34dfa20f8284273085666436e4cac09af19646c8"
+        revision: "0237931bb3d66de17c441a3c94d0e4b39e1308d1"
   end
 
   resource "pyusb" do
