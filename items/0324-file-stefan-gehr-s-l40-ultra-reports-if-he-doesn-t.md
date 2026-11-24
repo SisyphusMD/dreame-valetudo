@@ -9,3 +9,8 @@ Trigger: Stefan Gehr (Forgejo BoostCookie, activated 2026-11-22) emailed Cody ab
 2. Feature: an `import` command (e.g. `--dustxzip`, `--config`) for backups made with the old workflow. He restored one by hand: copied his dustx zip to `work/robots/<id>/recon/dreame_recovery_backup.zip`, wrote `config: <config>` to `recon/config.txt`, then ran `restore`, which decrypted and flashed.
 
 Cody agreed this plan in chat on 2026-11-22.
+
+## BoostCookie, 2026-11-23T12:57:39-08:00
+
+https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues/325
+https://forgejo.bryantserver.com/SisyphusMD/dreame-valetudo/issues/326

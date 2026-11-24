@@ -328,3 +328,10 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 322 | issue | closed | [README: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0322-readme-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-poin.md) |
 | 323 | pull | closed | [docs: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0323-docs-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-point-.md) |
 | 324 | issue | open | [File Stefan Gehr's L40 Ultra reports if he doesn't](items/0324-file-stefan-gehr-s-l40-ultra-reports-if-he-doesn-t.md) |
+| 325 | issue | open | [Handoff from FEL to Fastboot does not work on the L40 Ultra](items/0325-handoff-from-fel-to-fastboot-does-not-work-on-the-l40-ultra.md) |
+| 326 | issue | open | [Import old backups](items/0326-import-old-backups.md) |
+| 327 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to b000e69](items/0327-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
+| 328 | issue | closed | [chore(ci): bring the AI review copy up to project-rules 72f8fcc](items/0328-chore-ci-bring-the-ai-review-copy-up-to-project-rules-72f8fc.md) |
+| 329 | pull | closed | [chore(ci): bring the AI review copy up to project-rules 72f8fcc](items/0329-chore-ci-bring-the-ai-review-copy-up-to-project-rules-72f8fc.md) |
+| 330 | pull | closed | [chore(deps): update debian-12-compat:12-slim docker digest to e67eeea](items/0330-chore-deps-update-debian-12-compat-12-slim-docker-digest-to-.md) |
+| 331 | pull | closed | [chore(deps): update debian-13-current:13-slim docker digest to 8aa5a7b](items/0331-chore-deps-update-debian-13-current-13-slim-docker-digest-to.md) |
