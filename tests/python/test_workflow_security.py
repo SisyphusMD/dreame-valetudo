@@ -1107,12 +1107,12 @@ _UNGATED_ON_PULL_REQUESTS: dict[tuple[str, str], str] = {
     ("tests.yml", "shellcheck"):
         "lints the pull request's shell scripts with a command this workflow defines inline; it "
         "reads the outsider's files and never executes them",
-    ("ci.yml", "issue-link"): "runs the base commit's issue-link script",
-    ("ci.yml", "tests-with-code"): "runs the base commit's script against the PR diff",
-    ("ci.yml", "diff-size"): "runs the base commit's script against the PR diff",
+    ("ci.yml", "issue-link"): "runs project-rules main's issue-link script",
+    ("ci.yml", "tests-with-code"): "runs project-rules main's script against the PR diff",
+    ("ci.yml", "diff-size"): "runs project-rules main's script against the PR diff",
     ("ci.yml", "lint"): "runs pinned linters and compiles Python without importing the PR code",
     ("ci.yml", "secrets"): "scans PR history with pinned gitleaks",
-    ("ai-review.yml", "review"): "runs the base workflow's review script on PR data",
+    ("ai-review.yml", "review"): "runs project-rules main's review script on PR data",
 }
 
 
