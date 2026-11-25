@@ -335,3 +335,6 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 329 | pull | closed | [chore(ci): bring the AI review copy up to project-rules 72f8fcc](items/0329-chore-ci-bring-the-ai-review-copy-up-to-project-rules-72f8fc.md) |
 | 330 | pull | closed | [chore(deps): update debian-12-compat:12-slim docker digest to e67eeea](items/0330-chore-deps-update-debian-12-compat-12-slim-docker-digest-to-.md) |
 | 331 | pull | closed | [chore(deps): update debian-13-current:13-slim docker digest to 8aa5a7b](items/0331-chore-deps-update-debian-13-current-13-slim-docker-digest-to.md) |
+| 332 | pull | closed | [chore(deps): update https://github.com/linux-sunxi/sunxi-tools digest to 0237931](items/0332-chore-deps-update-https-github-com-linux-sunxi-sunxi-tools-d.md) |
+| 333 | issue | closed | [Run the gate scripts and rules from project-rules main](items/0333-run-the-gate-scripts-and-rules-from-project-rules-main.md) |
+| 334 | pull | closed | [chore(gate): run the gate scripts and rules from project-rules main](items/0334-chore-gate-run-the-gate-scripts-and-rules-from-project-rules.md) |

@@ -354,7 +354,7 @@ The following updates have all been created. To force a retry/rebase of any, cli
 
 <details><summary>src/dreame_valetudo/constants.py (1)</summary>
 
- - `https://github.com/linux-sunxi/sunxi-tools master@34dfa20f8284273085666436e4cac09af19646c8`
+ - `https://github.com/linux-sunxi/sunxi-tools master@0237931bb3d66de17c441a3c94d0e4b39e1308d1`
 
 </details>
 
