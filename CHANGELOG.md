@@ -6,6 +6,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- CI and AI review call project-rules' shared workflows instead of carrying copies of the jobs (#335).
 - Run the gate scripts and the rules from project-rules main instead of this repo's copies (copies drift) (#333).
 - Bring the AI review copy up to project-rules 72f8fcc (an answer cut off while still reasoning is asked once more under the answer schema) (#328).
 - The Homebrew caveats name both first-run downloads (the stage 1 boot package as well as Valetudo) (#322).
