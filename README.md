@@ -338,3 +338,5 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 332 | pull | closed | [chore(deps): update https://github.com/linux-sunxi/sunxi-tools digest to 0237931](items/0332-chore-deps-update-https-github-com-linux-sunxi-sunxi-tools-d.md) |
 | 333 | issue | closed | [Run the gate scripts and rules from project-rules main](items/0333-run-the-gate-scripts-and-rules-from-project-rules-main.md) |
 | 334 | pull | closed | [chore(gate): run the gate scripts and rules from project-rules main](items/0334-chore-gate-run-the-gate-scripts-and-rules-from-project-rules.md) |
+| 335 | issue | closed | [Call the shared gate and AI review workflows instead of copying them](items/0335-call-the-shared-gate-and-ai-review-workflows-instead-of-copy.md) |
+| 336 | pull | closed | [chore(gate): call the shared gate and AI review workflows](items/0336-chore-gate-call-the-shared-gate-and-ai-review-workflows.md) |

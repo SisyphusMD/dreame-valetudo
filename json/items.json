@@ -6213,10 +6213,10 @@
   "closed_at": null,
   "comments": [
    {
-    "body": "<!-- ai-review -->\n**AI review** of `b9b2680bfa`: This is a Renovate dependency pin update for the manylinux release image, with the tag and digest changed together and no source or test changes. I do not see a blocking correctness, security, data-loss, or project-rule problem in the diff.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "body": "<!-- ai-review -->\n**AI review** of `ff2f47db8d`: This is a scoped Renovate dependency pin update for the manylinux build image, with the tag and digest changed together. Existing CI build and glibc-floor checks cover the change, and no blocking correctness, security, or test issues are apparent.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
     "created_at": "2026-11-20T23:03:46-08:00",
     "id": 41139,
-    "updated_at": "2026-11-24T20:12:24-08:00",
+    "updated_at": "2026-11-25T23:12:20-08:00",
     "user": "forgejo-actions"
    }
   ],
@@ -6701,6 +6701,58 @@
   "reviews": [],
   "state": "closed",
   "title": "chore(gate): run the gate scripts and rules from project-rules main",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "body": "Part of SisyphusMD/project-rules#78: this repo's ci.yml and ai-review.yml become small callers of project-rules main's gate.yml, gate-lint.yml and review.yml, proven in SisyphusMD/homebrew-tap#34, so the jobs stop being copies here. Check names stay the same.\n\nClaude has this.",
+  "closed_at": "2026-11-25T22:15:43-08:00",
+  "comments": [
+   {
+    "body": "Done in #336: ci.yml and ai-review.yml now call project-rules main's shared gate and review jobs, so only the small callers are copied here. Its workflow-security test now excuses the calling jobs instead of the copied ones. Check names are unchanged; the next PR here is the first to run on the callers. Nothing left on this issue.",
+    "created_at": "2026-11-25T22:20:06-08:00",
+    "id": 47942,
+    "updated_at": "2026-11-25T22:20:06-08:00",
+    "user": "cody"
+   }
+  ],
+  "created_at": "2026-11-25T21:28:44-08:00",
+  "kind": "issue",
+  "labels": [
+   "status:in-progress",
+   "type:chore"
+  ],
+  "milestone": null,
+  "number": 335,
+  "state": "closed",
+  "title": "Call the shared gate and AI review workflows instead of copying them",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Closes #335\n\n`ci.yml` and `ai-review.yml` carried copies of the gate and AI review jobs, and copies drift. They now call project-rules main's `gate.yml`, `gate-lint.yml` and `review.yml` (SisyphusMD/project-rules#78), as proven in SisyphusMD/homebrew-tap#34. They keep only the triggers, the concurrency groups and the one secret the jobs may see, `ISSUE_READ_TOKEN`. Check names stay the same; each calling job adds one check of its own (`CI / shared-gate` and so on), which nothing requires.\n\nThis PR is judged by the old copies, because `pull_request_target` runs main's files; the next PR here runs on the callers.\n\nNo tests: workflow wiring only, covered by project-rules' tests of the called files and the homebrew-tap proof run.",
+  "closed_at": "2026-11-25T22:15:43-08:00",
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `b51250d51c`: Clean refactoring that replaces inline gate/review job copies in ci.yml and ai-review.yml with `uses:` calls to project-rules' shared workflows, keeping triggers, concurrency, and secret scoping in the callers. The security test is updated to the new job names, the CHANGELOG records the change, and the diff is appropriately small for a wiring-only change.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-25T21:29:54-08:00",
+    "id": 47809,
+    "updated_at": "2026-11-25T21:56:48-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-25T21:28:46-08:00",
+  "head": "refs/pull/336/head",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": "ca6496aa4257a7651f797e08bc434f2fcfb60c6f",
+  "merged": true,
+  "milestone": null,
+  "number": 336,
+  "reviews": [],
+  "state": "closed",
+  "title": "chore(gate): call the shared gate and AI review workflows",
   "user": "cody"
  }
 ]
