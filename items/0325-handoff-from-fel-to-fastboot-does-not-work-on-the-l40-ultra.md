@@ -1,7 +1,7 @@
 # #325 Handoff from FEL to Fastboot does not work on the L40 Ultra
 
 - Kind: issue, state: open, by BoostCookie, created 2026-11-23T12:35:40-08:00
-- Labels: none; milestone: none
+- Labels: status:in-progress; milestone: none
 
 ### Version
 
@@ -125,3 +125,17 @@ where it says
 I ran
 `./valetudo-helper-felroot-amd64 boot fsbl.bin payload.bin`
 which was the old way of putting the robot into fastboot mode. After this `dreame-valetudo` should recognise the robot in fastboot mode and do its magic. The timer was saying 60 seconds, so 30 seconds would've still been left.
+
+## cody, 2026-11-26T20:41:22-08:00
+
+Claude (for Cody) has this one.
+
+Lead so far, not yet proven on a robot: the Dustfab helper and this tool send the same files to the same addresses in the same order (FSBL at 0x28000, a short wait, payload at 0x4a000000). The difference is that every `sunxi-fel` call first runs its secure-boot workaround for the A133 (`SECURE_BOOT_MONITOR_H6`): it patches the boot ROM's secure-monitor vector and switches FEL into secure state. The Dustfab helper never does that, and the payload Dustfab rebuilt on 2026-10-27 is the one that now fails after it. Next: confirm that this is the cause, then load the FSBL and payload without the workaround.
+
+## cody, 2026-11-26T21:30:11-08:00
+
+Status: fix up as draft PR #338, not yet proven on a robot.
+
+The FEL probe and the FSBL and payload load now go through the libusb client and send only the plain FEL requests the Dustfab helper sends, with no sunxi-fel secure-boot workaround. sunxi-fel remains only for `DREAME_FASTBOOT=system`.
+
+Next: one recon run on an X40 Ultra, which gets the same Dustfab FSBL and payload as the L40 Ultra. If it reaches fastboot, that proves both the cause and the fix. If not, the same session runs `sunxi-fel ver` followed by the Dustfab helper's `boot`, to test the cause directly.

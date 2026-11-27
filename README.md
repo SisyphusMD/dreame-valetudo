@@ -340,3 +340,5 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 334 | pull | closed | [chore(gate): run the gate scripts and rules from project-rules main](items/0334-chore-gate-run-the-gate-scripts-and-rules-from-project-rules.md) |
 | 335 | issue | closed | [Call the shared gate and AI review workflows instead of copying them](items/0335-call-the-shared-gate-and-ai-review-workflows-instead-of-copy.md) |
 | 336 | pull | closed | [chore(gate): call the shared gate and AI review workflows](items/0336-chore-gate-call-the-shared-gate-and-ai-review-workflows.md) |
+| 337 | pull | closed | [ci: map PROJECT_RULES_TOKEN into the shared jobs](items/0337-ci-map-project-rules-token-into-the-shared-jobs.md) |
+| 338 | pull | open | [WIP: fix(fel): load the FSBL and payload over libusb instead of sunxi-fel](items/0338-wip-fix-fel-load-the-fsbl-and-payload-over-libusb-instead-of.md) |

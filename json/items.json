@@ -6213,10 +6213,10 @@
   "closed_at": null,
   "comments": [
    {
-    "body": "<!-- ai-review -->\n**AI review** of `ff2f47db8d`: This is a scoped Renovate dependency pin update for the manylinux build image, with the tag and digest changed together. Existing CI build and glibc-floor checks cover the change, and no blocking correctness, security, or test issues are apparent.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "body": "<!-- ai-review -->\n**AI review** of `9d5d7d89d3`: The PR is a standard Renovate dependency update for the manylinux Docker image. It correctly references the standing issue for dependency updates and provides a valid justification for the lack of new tests.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
     "created_at": "2026-11-20T23:03:46-08:00",
     "id": 41139,
-    "updated_at": "2026-11-25T23:12:20-08:00",
+    "updated_at": "2026-11-26T22:13:11-08:00",
     "user": "forgejo-actions"
    }
   ],
@@ -6464,11 +6464,27 @@
     "id": 43632,
     "updated_at": "2026-11-23T12:45:34-08:00",
     "user": "BoostCookie"
+   },
+   {
+    "body": "Claude (for Cody) has this one.\n\nLead so far, not yet proven on a robot: the Dustfab helper and this tool send the same files to the same addresses in the same order (FSBL at 0x28000, a short wait, payload at 0x4a000000). The difference is that every `sunxi-fel` call first runs its secure-boot workaround for the A133 (`SECURE_BOOT_MONITOR_H6`): it patches the boot ROM's secure-monitor vector and switches FEL into secure state. The Dustfab helper never does that, and the payload Dustfab rebuilt on 2026-10-27 is the one that now fails after it. Next: confirm that this is the cause, then load the FSBL and payload without the workaround.",
+    "created_at": "2026-11-26T20:41:22-08:00",
+    "id": 49082,
+    "updated_at": "2026-11-26T20:41:22-08:00",
+    "user": "cody"
+   },
+   {
+    "body": "Status: fix up as draft PR #338, not yet proven on a robot.\n\nThe FEL probe and the FSBL and payload load now go through the libusb client and send only the plain FEL requests the Dustfab helper sends, with no sunxi-fel secure-boot workaround. sunxi-fel remains only for `DREAME_FASTBOOT=system`.\n\nNext: one recon run on an X40 Ultra, which gets the same Dustfab FSBL and payload as the L40 Ultra. If it reaches fastboot, that proves both the cause and the fix. If not, the same session runs `sunxi-fel ver` followed by the Dustfab helper's `boot`, to test the cause directly.",
+    "created_at": "2026-11-26T21:30:11-08:00",
+    "id": 49253,
+    "updated_at": "2026-11-26T21:30:11-08:00",
+    "user": "cody"
    }
   ],
   "created_at": "2026-11-23T12:35:40-08:00",
   "kind": "issue",
-  "labels": [],
+  "labels": [
+   "status:in-progress"
+  ],
   "milestone": null,
   "number": 325,
   "state": "open",
@@ -6753,6 +6769,60 @@
   "reviews": [],
   "state": "closed",
   "title": "chore(gate): call the shared gate and AI review workflows",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Refs SisyphusMD/project-rules#143\n\nTrigger: the shared Lint, Secrets and AI review jobs are about to read the owner's private `.project-rules` manifest with the owner's read-only Actions secret `PROJECT_RULES_TOKEN`, and a called workflow sees only the secrets its caller maps in. This maps it, as the canonical callers in SisyphusMD/project-rules do. Until SisyphusMD/project-rules#140 merges the jobs ignore it, so nothing changes yet.\n\nNo tests: caller wiring only; the next PR after SisyphusMD/project-rules#140 merges proves it, since its Lint, Secrets and AI review checks read the manifest with this token.\n",
+  "closed_at": "2026-11-26T21:40:30-08:00",
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `4a648cf233`: Clean, minimal PR that maps PROJECT_RULES_TOKEN into the shared-lint and shared-review called workflows exactly as project-rules#143 step 2 prescribes. No correctness, security, or rule issues found.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-26T21:15:23-08:00",
+    "id": 49183,
+    "updated_at": "2026-11-26T21:15:23-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-26T21:11:09-08:00",
+  "head": "refs/pull/337/head",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": "71358d3fc4f3545da9275d9c2f4f59a557d0c037",
+  "merged": true,
+  "milestone": null,
+  "number": 337,
+  "reviews": [],
+  "state": "closed",
+  "title": "ci: map PROJECT_RULES_TOKEN into the shared jobs",
+  "user": "cody"
+ },
+ {
+  "assignees": [],
+  "base": "main",
+  "body": "Closes #325\n\n## What and why\n\nOn the L40 Ultra (#325), the FSBL and payload load over FEL without error, but the robot never comes up in fastboot. Dustfab's `valetudo-helper-felroot boot` boots the same `fsbl.bin` and `payload.bin` fine. Disassembling that helper shows the same addresses (FSBL 0x28000, payload 0x4a000000), the same order, and a 3 s wait for DRAM training on MR813. The difference is in sunxi-fel: every invocation, including a bare `ver`, first runs its secure-boot workaround for the A133 (`SECURE_BOOT_MONITOR_H6`). That workaround patches the boot ROM's monitor vector at 0x300c8 and switches FEL into secure state. sunxi-fel only logs this step with `-v`, so the run log could not show it. The payload Dustfab rebuilt on 2026-10-27 is the one that now fails after it.\n\nThe change: `libexec/fastboot-libusb.py` gains `fel-ver` and `fel-boot`, which send only the plain FEL requests the Dustfab helper sends. The FEL probe (`poll_fel` and restore's automatic-fallback watch) and the load use them. sunxi-fel stays for `DREAME_FASTBOOT=system`, since Google's fastboot cannot speak FEL.\n\nReview fixes folded in: an older installed `dreame-fastboot` without FEL support, or two attached FEL devices, now stop the wait with a message instead of polling forever. A short USB write raises an error instead of leaving the host and the ROM waiting on each other. A restore that only has its boot left to observe still resumes under `DREAME_FASTBOOT=system` without a `fastboot` on PATH.\n\nNot yet proven on a robot. The plan is one recon run on an X40 Ultra, which gets the same Dustfab FSBL and payload as the L40 Ultra.\n\n## Sibling repo\n\n- [x] Not applicable, because: whiskerless has no FEL or USB boot path.\n\n## Checks\n\n- [x] Regression test that fails on the parent commit (`test_fel_boot_loads_through_the_libusb_client_not_sunxi_fel`, `test_fel_never_sends_the_sunxi_secure_boot_workaround`, and the system-fastboot resume test)\n- [x] `STANDARD.lock` still in sync (no vendored file edited in place)\n\npytest 2504 passed, coverage 99.05% (run.py 100%), ruff and mypy clean.\n",
+  "closed_at": null,
+  "comments": [
+   {
+    "body": "<!-- ai-review -->\n**AI review** of `c25f2c5efa`: Well-implemented FEL protocol replacement that correctly avoids sunxi-fel's secure-boot workaround by speaking the plain FEL wire format directly over libusb, matching Dustfab's helper. The wire framing, chunked writes, DRAM wait, error handling, system-fastboot escape hatch, and all new error paths (ambiguous devices, stale client, short writes) are covered by focused tests, and the docs/CHANGELOG are updated in the same PR.\n\nNo findings.\n\nDisagree? Reply on this PR with your reasoning; the reviewer re-reads every reply.\n<!-- ai-review-state W10= -->",
+    "created_at": "2026-11-26T21:38:44-08:00",
+    "id": 49293,
+    "updated_at": "2026-11-26T21:38:44-08:00",
+    "user": "forgejo-actions"
+   }
+  ],
+  "created_at": "2026-11-26T21:29:53-08:00",
+  "head": "fix/325-fel-boot-without-secure-wa",
+  "kind": "pull",
+  "labels": [],
+  "merge_commit_sha": null,
+  "merged": false,
+  "milestone": null,
+  "number": 338,
+  "reviews": [],
+  "state": "open",
+  "title": "WIP: fix(fel): load the FSBL and payload over libusb instead of sunxi-fel",
   "user": "cody"
  }
 ]
