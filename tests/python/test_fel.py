@@ -1,4 +1,4 @@
-"""FEL bring-up: the sunxi-fel load sequence, poll, and wait — all off-hardware."""
+"""FEL bring-up: the FEL load sequence, poll, and wait — all off-hardware."""
 
 from __future__ import annotations
 
@@ -28,19 +28,44 @@ def _fel(responder: object) -> tuple[Fel, RecordingRunner]:
     return Fel(rr, console, SUNXI, fb, sleep=lambda _s: None), rr
 
 
-def test_fel_boot_issues_the_load_sequence_in_order() -> None:
-    def responder(argv: tuple[str, ...]) -> Result:
-        # sunxi-fel and the fastboot 'wait' all succeed
-        return Result(argv, 0, "OKAY", "")
+def test_fel_boot_loads_through_the_libusb_client_not_sunxi_fel() -> None:
+    # sunxi-fel's secure-boot workaround runs on every call, and the Dustfab payload never reaches
+    # fastboot after it (#325), so the load and the probe both go through the libusb client.
+    fel, rr = _fel(lambda argv: Result(argv, 0, "OKAY", ""))
+    fel.fel_boot_fastboot(Path("/dist"), "fsbl.bin", "payload.bin", "0x28000", "0x4a000000")
+    assert fel.probe_argv() == [*FB, "fel-ver"]
+    assert rr.transcript() == [
+        "python3 /x/fastboot-libusb.py fel-boot 0x28000 /dist/fsbl.bin 0x4a000000 /dist/payload.bin 3",
+        "python3 /x/fastboot-libusb.py wait 90",
+    ]
 
-    fel, rr = _fel(responder)
-    fel.fel_boot_fastboot(Path("/dist"), "fsbl_ddr4.bin", "payload.bin", "0x28000", "0x4a000000")
+
+def test_system_fastboot_keeps_the_sunxi_fel_load_sequence() -> None:
+    # Google's fastboot cannot speak FEL, so the escape hatch still loads with sunxi-fel.
+    rr = RecordingRunner(lambda argv: Result(argv, 0, "OKAY", ""))
+    console = Console(color=False)
+    fb = Fastboot(rr, console, Transport("system", ("/usr/bin/fastboot",)))
+    fel = Fel(rr, console, SUNXI, fb, sleep=lambda _s: None)
+    fel.fel_boot_fastboot(Path("/dist"), "fsbl.bin", "payload.bin", "0x28000", "0x4a000000")
+    assert fel.probe_argv() == [str(SUNXI), "ver"]
     assert rr.transcript()[:4] == [
-        "sunxi-fel write 0x28000 /dist/fsbl_ddr4.bin",
+        "sunxi-fel write 0x28000 /dist/fsbl.bin",
         "sunxi-fel exe 0x28000",
         "sunxi-fel write 0x4a000000 /dist/payload.bin",
         "sunxi-fel exe 0x4a000000",
     ]
+
+
+def test_fel_boot_dies_with_the_clients_error_before_waiting() -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if "fel-boot" in argv:
+            return Result(argv, 1, "", "ERROR: bad USB response b'xxxx'")
+        return Result(argv, 0, "OKAY", "")
+
+    fel, rr = _fel(responder)
+    with pytest.raises(Die, match="bad USB response"):
+        fel.fel_boot_fastboot(Path("/dist"), "fsbl.bin", "payload.bin", "0x28000", "0x4a000000")
+    assert not any(call.endswith("wait 90") for call in rr.transcript())
 
 
 def test_fel_entry_connects_the_cable_before_the_button_sequence() -> None:
@@ -109,7 +134,10 @@ def test_fel_boot_dies_when_sunxi_write_fails() -> None:
             return Result(argv, 1, "", "libusb error")
         return Result(argv, 0, "OKAY", "")
 
-    fel, _ = _fel(responder)
+    rr = RecordingRunner(responder)
+    console = Console(color=False)
+    fb = Fastboot(rr, console, Transport("system", ("/usr/bin/fastboot",)))
+    fel = Fel(rr, console, SUNXI, fb, sleep=lambda _s: None)
     with pytest.raises(Die):
         fel.fel_boot_fastboot(Path("/dist"), "fsbl_ddr4.bin", "payload.bin", "0x28000", "0x4a000000")
 
@@ -327,3 +355,31 @@ def test_poll_fel_keeps_waiting_after_a_permission_failure(
     output = capsys.readouterr().out
     assert "USB permission error" in output
     assert "FEL up: ERROR" not in output
+
+
+def test_system_fastboot_fel_boot_dies_when_the_payload_never_enumerates() -> None:
+    def responder(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "devices":
+            return Result(argv, 0, "", "")
+        return Result(argv, 0, "OKAY", "")
+
+    rr = RecordingRunner(responder)
+    console = Console(color=False)
+    fb = Fastboot(rr, console, Transport("system", ("/usr/bin/fastboot",)))
+    fel = Fel(rr, console, SUNXI, fb, sleep=lambda _s: None)
+    with pytest.raises(Die, match="never appeared in fastboot"):
+        fel.fel_boot_fastboot(Path("/dist"), "fsbl.bin", "payload.bin", "0x28000", "0x4a000000")
+
+
+@pytest.mark.parametrize(
+    ("stderr", "message"),
+    [
+        ("unknown command: fel-ver", "predates FEL support"),
+        ("ERROR: 2 FEL devices found — disconnect every other Allwinner device", "2 FEL devices"),
+    ],
+)
+def test_poll_fel_stops_on_answers_that_waiting_cannot_change(stderr: str, message: str) -> None:
+    fel, rr = _fel(lambda argv: Result(argv, 1 if "fel-ver" in argv else 0, "", stderr))
+    with pytest.raises(Die, match=message):
+        fel.poll_fel()
+    assert rr.transcript() == ["python3 /x/fastboot-libusb.py fel-ver"]

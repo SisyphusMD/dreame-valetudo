@@ -1,9 +1,11 @@
 """FEL bring-up: load the payload over USB-FEL and wait for the fastboot gadget.
 
-This drives sunxi-fel (the Allwinner FEL host tool) to write + execute the FSBL and payload in
-RAM, then waits for the device to re-enumerate as fastboot. It is NON-destructive (a RAM load,
-nothing written to flash), and it is the exact machinery the destructive flash reuses. Timing
-(sleep) and the polling loops are injectable so the flow is testable off-hardware.
+The libusb client (libexec/fastboot-libusb.py) finds the FEL device and writes + executes the FSBL
+and payload in RAM, then this waits for the device to re-enumerate as fastboot. It is
+NON-destructive (a RAM load, nothing written to flash), and it is the exact machinery the
+destructive flash reuses. sunxi-fel is used only under DREAME_FASTBOOT=system, where Google's
+fastboot cannot speak FEL. Timing (sleep) and the polling loops are injectable so the flow is
+testable off-hardware.
 """
 
 from __future__ import annotations
@@ -28,6 +30,21 @@ if TYPE_CHECKING:
 _LOADER_FAILED = re.compile(
     r"dyld|library not loaded|image not found|error while loading shared libraries", re.IGNORECASE
 )
+
+_AMBIGUOUS_FEL = re.compile(r"\d+ FEL devices found")
+
+
+def fel_probe_argv(ctx: Context) -> list[str]:
+    """The FEL probe without resolving a fastboot client the system escape hatch never needs, so a
+    restore that only has its boot left to observe can still resume there."""
+    if ctx.env.get("DREAME_FASTBOOT") == "system":
+        return [str(ctx.sunxi_fel), "ver"]
+    return ctx.fel.probe_argv()
+
+
+# How long the FSBL needs to train DRAM before the payload can be written: the Dustfab helper's
+# value for MR813, the helper proven to boot the current payload.
+_DRAM_WAIT_SECONDS = 3
 
 
 def print_fel_entry(console: Console, host: str = "computer") -> None:
@@ -91,6 +108,19 @@ class Fel:
         self.fastboot = fastboot
         self.sleep = sleep
 
+    @property
+    def _native(self) -> bool:
+        # sunxi-fel runs its secure-boot workaround on every call, even a bare `ver`, and the
+        # Dustfab payload never reaches fastboot after it (#325), so only the system-fastboot
+        # escape hatch, whose client cannot speak FEL, still goes through sunxi-fel.
+        return self.fastboot.transport.mode != "system"
+
+    def probe_argv(self) -> list[str]:
+        """The read-only command that succeeds once a FEL device is attached."""
+        if self._native:
+            return [*self.fastboot.transport.cmd, "fel-ver"]
+        return [str(self.sunxi_fel), "ver"]
+
     def poll_fel(self) -> bool:
         """Wait until sunxi-fel sees the SoC or the run has been unwatched for its idle timeout."""
         describe_run(step="waiting for the robot to enter FEL mode")
@@ -103,7 +133,7 @@ class Fel:
             permission_warned = False
             with self.console.progress("Watching for the FEL device", timer=False) as p:
                 while True:
-                    res = self.runner.run([str(self.sunxi_fel), "ver"], check=False)
+                    res = self.runner.run(self.probe_argv(), check=False)
                     out = res.stdout + res.stderr
                 # A sunxi-fel that cannot load is not a robot that has not appeared yet. Its loader
                 # error says nothing about "not found", so it read as a live device: the tool
@@ -112,6 +142,14 @@ class Fel:
                     if _LOADER_FAILED.search(out):
                         die("sunxi-fel is present but cannot start — it is missing a library it was "
                             f"built against, so FEL cannot be reached:\n{out.strip()}")
+                    # A dreame-fastboot from an older install answers `devices` but not FEL, and
+                    # two FEL devices are a refusal, not an absent robot: waiting cannot fix
+                    # either, and the operator would watch a robot in FEL never be found.
+                    if self._native and "unknown command" in out:
+                        die(f"The fastboot client {self.fastboot.transport.cmd[-1]} predates FEL "
+                            "support. Update dreame-valetudo so it uses its own bundled client.")
+                    if _AMBIGUOUS_FEL.search(out):
+                        die(out.strip())
                     if (not permission_warned
                             and re.search(r"permission|access denied", out, re.IGNORECASE)):
                         self.console.warn("(sunxi-fel reported a USB permission error. On Linux "
@@ -179,6 +217,14 @@ class Fel:
             "cable."
         )
         self.console.say("Booting fastboot payload via FEL...")
+        if self._native:
+            res = self.fastboot.fbt("fel-boot", fsbl_addr, Path(directory) / fsbl, payload_addr,
+                                    Path(directory) / payload, _DRAM_WAIT_SECONDS, check=False)
+            if not res.ok:
+                die(f"FEL load failed: {(res.stderr or res.stdout).strip()}\n{recover}")
+            if not self.wait_fastboot():
+                die(f"Robot never appeared in fastboot. {recover}")
+            return
         self._sunxi(recover, "write", fsbl_addr, str(Path(directory) / fsbl))
         self._sunxi(recover, "exe", fsbl_addr)
         self.sleep(5)

@@ -82,18 +82,23 @@ the exact log path. Turn it off with `DREAME_NO_LOG=1`.
 
 ## macOS toolchain
 
-- **`sunxi-fel`**: talks to the Allwinner chip in FEL mode over USB; loads the payload that
-  boots the fastboot gadget. No Homebrew formula, so the tool builds it from source (build
-  dep **`dtc`** for `libfdt`, runtime dep `libusb`). Native arm64. Works reliably on macOS.
-- **`fastboot-libusb.py`**: a small fastboot client that speaks the protocol over **libusb**
-  (via `uv run --with pyusb`). See below for why this exists instead of Google's `fastboot`.
+- **`fastboot-libusb.py`**: a small client that speaks fastboot over **libusb** (via
+  `uv run --with pyusb`), and also detects the Allwinner chip in FEL mode and loads the FSBL and
+  payload that boot the fastboot gadget. See below for why this exists instead of Google's
+  `fastboot`. It sends only the plain FEL requests Dustfab's own helper sends: `sunxi-fel`
+  applies a secure-boot workaround on every call (it patches the boot ROM's monitor vector and
+  switches FEL into secure state), and the current Dustfab payload never reaches fastboot after
+  it (#325).
+- **`sunxi-fel`**: loads the payload only under `DREAME_FASTBOOT=system`, whose client cannot
+  speak FEL. No Homebrew formula, so the tool builds it from source (build dep **`dtc`** for
+  `libfdt`, runtime dep `libusb`). Native arm64.
 
 ## Why not Google's fastboot on Apple Silicon
 
 Google's `fastboot` (Homebrew `android-platform-tools`) uses an IOKit USB backend that fails
 to enumerate the Dreame U-Boot fastboot gadget on Apple Silicon / macOS
 (Google issuetracker 245622179), so this tool speaks fastboot over libusb instead, the same
-stack `sunxi-fel` already uses. The tool uses that **same libusb client on every OS**,
+stack the FEL side uses. The tool uses that **same libusb client on every OS**,
 macOS *and* Linux, rather than falling back to Google's `fastboot` anywhere: it's the one
 transport actually validated against this gadget, so every install path exercises the
 same tested code (`DREAME_FASTBOOT=system` is an explicit, never-automatic escape hatch for
@@ -101,7 +106,7 @@ the rare Linux box where you'd rather use the system `fastboot`).
 
 Measured on an M-series Mac / macOS 26:
 
-- FEL side (`sunxi-fel`, libusb): works every time.
+- FEL side (libusb): works every time.
 - After the payload boots, macOS **does** enumerate the gadget (`0x18d1:0xd001`, interface
   class `0xff` / subclass `0x42` / protocol `0x03`).
 - `fastboot devices` (native arm64, x86-under-Rosetta, and `sudo`) all show **nothing**.

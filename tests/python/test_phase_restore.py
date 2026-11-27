@@ -12,7 +12,7 @@ import zlib
 from pathlib import Path
 
 import pytest
-from conftest import FB, CtxFactory
+from conftest import FB, CtxFactory, fel_calls
 
 import dreame_valetudo.phases.restore as restore_mod
 from dreame_valetudo.console import Die, UserAbort
@@ -345,7 +345,7 @@ def _hardware_responder(config: str = _CONFIG, *, returns_to_fel: bool = False):
         if argv[-1] == "reboot":
             rebooted = True
             return Result(argv, 0, "OKAY\n", "")
-        if argv[-1] == "ver":
+        if argv[-1] == "fel-ver":
             if rebooted and not returns_to_fel:
                 return Result(argv, 1, "", "no FEL device")
             return Result(argv, 0, "AWUSBFEX soc=00001855\n", "")
@@ -1374,7 +1374,7 @@ def test_restore_uses_the_identity_bound_okay_gated_stock_order(make_ctx: CtxFac
 
     calls = [call[2:] for call in ctx.runner.calls if call[:2] == FB]  # type: ignore[attr-defined]
     flashes = [call[:2] for call in calls if call and call[0] == "flash"]
-    assert calls[:3] == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert calls[:5] == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert ("oem", "dust", "626153c7") in calls
     assert ("oem", "prep") not in calls
     assert flashes == [
@@ -1468,7 +1468,7 @@ def test_pending_boot_observation_resumes_without_reflashing(
     make_ctx: CtxFactory,
 ) -> None:
     def no_fel(argv: tuple[str, ...]) -> Result:
-        if argv[-1] == "ver":
+        if argv[-1] == "fel-ver":
             return Result(argv, 1, "", "no FEL device")
         return Result(argv, 0, "OKAY\n", "")
 
@@ -1491,7 +1491,34 @@ def test_pending_boot_observation_resumes_without_reflashing(
     assert not robot.state_has("restore-attempt")
     assert not robot.state_has("rooted")
     assert not robot.state_has("valetudo")
-    assert not any(call[:2] == FB for call in ctx.runner.calls)  # type: ignore[attr-defined]
+    # Only the read-only FEL probe may reach the client: nothing is loaded or flashed again.
+    assert {call[2:] for call in ctx.runner.calls if call[:2] == FB} <= {("fel-ver",)}  # type: ignore[attr-defined]
+
+
+def test_pending_boot_observation_under_system_fastboot_needs_no_fastboot_client(
+    make_ctx: CtxFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the boot is left to observe, which sunxi-fel can do alone: a `fastboot` that has since
+    # left PATH must not block the resume.
+    monkeypatch.setattr("dreame_valetudo.fastboot.shutil.which", lambda _name: None)
+
+    def no_fel(argv: tuple[str, ...]) -> Result:
+        if argv[-1] == "ver":
+            return Result(argv, 1, "", "no FEL device")
+        return Result(argv, 0, "OKAY\n", "")
+
+    ctx = make_ctx(robot_name="kitchen", responder=no_fel, confirms=[True],
+                   env={"DREAME_FASTBOOT": "system"})
+    _recovery_capture(ctx)
+    _stage1(ctx)
+    robot = ctx.need_robot()
+    robot.state_set("restore-attempt", f"{RESTORE_BOOT_PENDING} model=x40-ultra config={_CONFIG}")
+
+    restore(ctx)
+
+    assert robot.state_has("restored-stock")
+    assert any(call[0].endswith("sunxi-fel") and call[1:] == ("ver",)
+               for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_non_okay_restore_stops_and_leaves_the_attempt_marker(make_ctx: CtxFactory) -> None:
@@ -1542,7 +1569,7 @@ def test_restore_refuses_the_wrong_connected_robot_before_unlock_or_flash(
         restore(ctx)
 
     fastboot = [call[2:] for call in ctx.runner.calls if call[:2] == FB]  # type: ignore[attr-defined]
-    assert fastboot == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert fastboot == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert not any(call[0] in {"oem", "flash"} for call in fastboot)
     assert not ctx.need_robot().state_has("restore-attempt")
     assert "01234567" not in str(stopped.value)
@@ -1553,7 +1580,7 @@ def test_restore_rejects_failed_config_reply_even_when_error_contains_matching_i
     make_ctx: CtxFactory,
 ) -> None:
     def responder(argv: tuple[str, ...]) -> Result:
-        if argv[-1] == "ver":
+        if argv[-1] == "fel-ver":
             return Result(argv, 0, "AWUSBFEX soc=00001855\n", "")
         if argv[-2:] == ("getvar", "config"):
             return Result(argv, 1, f"FAIL {_CONFIG}\n", "")
@@ -1568,7 +1595,7 @@ def test_restore_rejects_failed_config_reply_even_when_error_contains_matching_i
         restore(ctx)
 
     fastboot = [call[2:] for call in ctx.runner.calls if call[:2] == FB]  # type: ignore[attr-defined]
-    assert fastboot == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert fastboot == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert not ctx.need_robot().state_has("restore-attempt")
 
 
@@ -1592,7 +1619,7 @@ def test_restore_rechecks_the_kit_after_hardware_preparation_before_any_write(
         restore(ctx)
 
     fastboot = [call[2:] for call in ctx.runner.calls if call[:2] == FB]  # type: ignore[attr-defined]
-    assert fastboot == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert fastboot == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert not ctx.need_robot().state_has("restore-attempt")
 
 

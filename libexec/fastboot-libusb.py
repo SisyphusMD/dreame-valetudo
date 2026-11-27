@@ -20,6 +20,11 @@ Commands (mirror Google fastboot):
     reboot                  reboot the device
     sparse-selftest <file> [maxdl]   verify sparse-split of <file> round-trips (no device)
 
+FEL commands (the Allwinner boot ROM's USB mode, before any fastboot gadget exists):
+    fel-ver                 print the FEL device's SoC version; non-zero if none is attached
+    fel-boot <fsbl-addr> <fsbl> <payload-addr> <payload> <dram-wait-seconds>
+                            write + run the FSBL, wait for DRAM training, write + run the payload
+
 Exit status is 0 only on OKAY; anything else is non-zero, so shell callers can gate on it.
 """
 
@@ -349,6 +354,141 @@ class Fastboot:
             self._read(timeout=5000)  # the device drops off the bus as it reboots
 
 
+# --- Allwinner FEL ------------------------------------------------------------------------
+# sunxi-fel applies its secure-boot workaround (patch the boot ROM's monitor vector, then switch
+# FEL into secure state) on every invocation against a secure-boot A133, and the Dustfab payload
+# never comes up as fastboot after it (SisyphusMD/dreame-valetudo#325). Dustfab's own
+# valetudo-helper-felroot sends only the plain FEL requests below, so this does the same and
+# nothing else: no workaround, no SRAM probing, no thunks.
+FEL_VID, FEL_PID = 0x1F3A, 0xEFE8
+FEL_TIMEOUT = 10000      # ms, sunxi-tools' USB timeout
+FEL_CHUNK = 1 << 16      # one FEL write request per 64 KiB, as the Dustfab helper does
+_AW_USB_READ, _AW_USB_WRITE = 0x11, 0x12
+_FEL_VERSION, _FEL_WRITE, _FEL_RUN = 0x001, 0x101, 0x102
+
+
+class FelError(RuntimeError):
+    pass
+
+
+def find_fel_device() -> Any:
+    """Return the sole attached FEL device, or None; refuse an ambiguous target."""
+    try:
+        devices = list(usb.core.find(find_all=True, idVendor=FEL_VID, idProduct=FEL_PID))
+    except usb.core.NoBackendError as exc:
+        raise FelError(
+            "no libusb backend available — install libusb (macOS: brew install libusb; "
+            "Debian: sudo apt install libusb-1.0-0)"
+        ) from exc
+    except OSError as exc:
+        raise FelError(f"libusb could not load: {exc}") from exc
+    if len(devices) > 1:
+        raise FelError(f"{len(devices)} FEL devices found — disconnect every other Allwinner "
+                       "device in FEL mode so the robot target is unambiguous")
+    return devices[0] if devices else None
+
+
+class Fel:
+    """The FEL protocol as sunxi-tools frames it: every FEL message rides in an AWUC-wrapped USB
+    write, each USB transfer is acknowledged by a 13-byte AWUS response, and each FEL request
+    ends with an 8-byte status read."""
+
+    def __init__(self, send: Callable[[bytes], None], recv: Callable[[int], bytes]) -> None:
+        self._send, self._recv = send, recv
+
+    @classmethod
+    def open(cls) -> Fel:
+        dev = find_fel_device()
+        if dev is None:
+            raise FelError("Allwinner USB FEL device not found")
+        try:
+            dev.get_active_configuration()
+        except usb.core.USBError:
+            dev.set_configuration()
+        intf = dev.get_active_configuration()[(0, 0)]
+        ep_out = usb.util.find_descriptor(intf, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+        ep_in = usb.util.find_descriptor(intf, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+        if ep_out is None or ep_in is None:
+            raise FelError("FEL interface has no bulk endpoint pair")
+        usb.util.claim_interface(dev, intf.bInterfaceNumber)
+
+        def recv(n: int) -> bytes:
+            got = b""
+            while len(got) < n:
+                got += bytes(ep_in.read(n - len(got), timeout=FEL_TIMEOUT))
+            return got
+
+        def send(data: bytes) -> None:
+            # The boot ROM waits for every byte it was promised, so a short write would leave it
+            # and the acknowledgement read waiting on each other.
+            sent = ep_out.write(data, timeout=FEL_TIMEOUT)
+            if sent != len(data):
+                raise FelError(f"short USB write: {sent} of {len(data)} bytes")
+
+        return cls(send, recv)
+
+    def _usb_request(self, kind: int, length: int) -> None:
+        self._send(struct.pack("<8sIIHI10s", b"AWUC", length, 0x0C000000, kind, length, b""))
+
+    def _usb_response(self) -> None:
+        resp = self._recv(13)
+        if resp[:4] != b"AWUS":
+            raise FelError(f"bad USB response {resp[:4]!r}")
+
+    def _usb_write(self, data: bytes) -> None:
+        self._usb_request(_AW_USB_WRITE, len(data))
+        self._send(data)
+        self._usb_response()
+
+    def _usb_read(self, length: int) -> bytes:
+        self._usb_request(_AW_USB_READ, length)
+        data = self._recv(length)
+        self._usb_response()
+        return data
+
+    def _fel_request(self, kind: int, addr: int = 0, length: int = 0) -> None:
+        self._usb_write(struct.pack("<IIII", kind, addr, length, 0))
+
+    def _fel_status(self) -> None:
+        self._usb_read(8)
+
+    def version(self) -> str:
+        self._fel_request(_FEL_VERSION)
+        raw = self._usb_read(32)
+        self._fel_status()
+        magic, soc, _unk, proto, _a, _b, scratch = struct.unpack("<8sIIHBBI", raw[:24])
+        if magic != b"AWUSBFEX":
+            raise FelError(f"not a FEL version reply: {magic!r}")
+        return f"AWUSBFEX soc={(soc >> 8) & 0xFFFF:08x} ver={proto:04x} scratchpad={scratch:08x}"
+
+    def write(self, addr: int, data: bytes) -> None:
+        for off in range(0, len(data), FEL_CHUNK):
+            chunk = data[off:off + FEL_CHUNK]
+            self._fel_request(_FEL_WRITE, addr + off, len(chunk))
+            self._usb_write(chunk)
+            self._fel_status()
+
+    def run(self, addr: int) -> None:
+        self._fel_request(_FEL_RUN, addr)
+        self._fel_status()
+
+
+def fel_boot(fel: Fel, fsbl_addr: int, fsbl: bytes, payload_addr: int, payload: bytes,
+             dram_wait: float, sleep: Callable[[float], None] = time.sleep) -> None:
+    for name, blob in (("FSBL", fsbl), ("payload", payload)):
+        if not blob:
+            raise FelError(f"refusing to load an empty {name}")
+    fel.write(fsbl_addr, fsbl)
+    fel.run(fsbl_addr)
+    sleep(dram_wait)  # the FSBL trains DRAM, then returns to the boot ROM's FEL loop
+    fel.write(payload_addr, payload)
+    fel.run(payload_addr)
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
@@ -368,6 +508,20 @@ def main(argv: list[str]) -> int:
               f"max-chunk={max(len(s) for s in subs)}  all<=maxdl={not oversize}  "
               f"round-trip={recon == data}  => {'OK' if ok else 'FAIL'}")
         return 0 if ok else 1
+
+    if cmd in ("fel-ver", "fel-boot"):
+        try:
+            if cmd == "fel-ver":
+                print(Fel.open().version())
+                return 0
+            fsbl_addr, fsbl, payload_addr, payload, dram_wait = rest[:5]
+            fel_boot(Fel.open(), int(fsbl_addr, 0), Path(fsbl).read_bytes(),
+                     int(payload_addr, 0), Path(payload).read_bytes(), float(dram_wait))
+            print("OKAY payload running")
+            return 0
+        except (FelError, ValueError, OSError, usb.core.NoBackendError, usb.core.USBError) as e:
+            print("ERROR: " + str(e), file=sys.stderr)
+            return 1
 
     try:
         if cmd == "wait":

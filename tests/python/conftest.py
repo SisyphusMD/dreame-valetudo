@@ -202,6 +202,16 @@ def dreame_ap_prefix(argv: tuple[str, ...], *, is_dreame: bool = True) -> Result
     return None
 
 
+def fel_calls(ctx: Context) -> list[tuple[str, ...]]:
+    """The fastboot-client calls of one FEL session: the probe, then the FSBL + payload load."""
+    spec = ctx.model_spec
+    return [
+        ("fel-ver",),
+        ("fel-boot", spec.fsbl_addr, str(ctx.ws.dist / ctx.fsbl_name), spec.payload_addr,
+         str(ctx.ws.dist / "payload.bin"), "3"),
+    ]
+
+
 def stage_dist(
     ctx: Context, *, payload: str = "p", fsbl: str = "f", stage1_sha256: str | None = None,
 ) -> None:

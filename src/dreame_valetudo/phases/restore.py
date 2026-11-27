@@ -22,7 +22,7 @@ from .. import manifest
 from ..console import abort, die, safety_stop, warn_if_low_disk
 from ..constants import RECOVERY_DUMP_BYTES, RECOVERY_DUMP_NAMES, RESTORE_BOOT_PENDING
 from ..context import Context
-from ..fel import print_fel_entry, wait_for_fel
+from ..fel import fel_probe_argv, print_fel_entry, wait_for_fel
 from ..hazards import model_hazard_check
 from ..migrate import decrypt_recovery_backup
 from ..recovery import (
@@ -812,7 +812,7 @@ def _watch_for_automatic_fel(ctx: Context) -> bool:
     ctx.console.say("Watching briefly for the boot ROM to fall back into FEL...")
     with ctx.console.progress("Checking for automatic FEL fallback"):
         for _ in range(_RESTORE_FEL_WATCH_SECONDS):
-            result = ctx.runner.run([str(ctx.sunxi_fel), "ver"], check=False)
+            result = ctx.runner.run(fel_probe_argv(ctx), check=False)
             if result.ok:
                 return True
             ctx.sleep(1)

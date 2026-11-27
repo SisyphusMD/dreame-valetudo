@@ -28,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import CFG, FB, CtxFactory, dreame_ap_prefix, stage_dist
+from conftest import CFG, FB, CtxFactory, dreame_ap_prefix, fel_calls, stage_dist
 
 from dreame_valetudo import dust_decrypt
 from dreame_valetudo import workspace as workspace_module
@@ -220,7 +220,7 @@ def test_nothing_flashes_before_identity_is_confirmed(
         rekey(ctx)
 
     fb = _fb(ctx)
-    assert fb == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert fb == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert not any(call[0] in ("flash", "oem") for call in fb)
 
 
@@ -237,7 +237,7 @@ def test_wrong_robot_config_stops_before_any_write(make_ctx: CtxFactory, tmp_pat
         rekey(ctx)
 
     fb = _fb(ctx)
-    assert fb == [("devices",), ("wait", "90"), ("getvar", "config")]
+    assert fb == [("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config")]
     assert not any(call[0] in ("flash", "oem") for call in fb)
 
 
@@ -261,11 +261,13 @@ def test_happy_path_transcript_replaces_by_default(make_ctx: CtxFactory, tmp_pat
     # second session because the robot is handled in between.
     assert _fb(ctx) == [
         ("devices",),
+        *fel_calls(ctx),
         ("wait", "90"),
         ("getvar", "config"),
         ("oem", "stage0"),
         ("get_staged", dump_path),
         ("reboot",),
+        *fel_calls(ctx),
         ("wait", "90"),
         ("getvar", "config"),
         ("oem", "dust", token),
@@ -330,7 +332,7 @@ def test_default_run_writes_nothing_when_the_robot_already_holds_only_this_key(
 
     fb = _fb(ctx)
     assert fb == [
-        ("devices",), ("wait", "90"), ("getvar", "config"), ("oem", "stage0"),
+        ("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config"), ("oem", "stage0"),
         ("get_staged", str(staging / f"{RECOVERY_DUMP_NAMES[0]}.bin")),
         # The read session is closed out rather than left running the RAM payload, which would
         # strand the robot in fastboot until it was power-cycled by hand.
@@ -381,7 +383,7 @@ def test_dry_run_writes_nothing_to_the_robot_but_stages_the_patched_image(
 
     fb = _fb(ctx)
     assert fb == [
-        ("devices",), ("wait", "90"), ("getvar", "config"), ("oem", "stage0"),
+        ("devices",), *fel_calls(ctx), ("wait", "90"), ("getvar", "config"), ("oem", "stage0"),
         ("get_staged", str(staging / f"{RECOVERY_DUMP_NAMES[0]}.bin")),
         # The read session is closed out rather than left running the RAM payload, which would
         # strand the robot in fastboot until it was power-cycled by hand.

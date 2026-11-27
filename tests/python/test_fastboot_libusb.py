@@ -682,3 +682,238 @@ def test_script_entry_point_exits_with_main_status(monkeypatch: pytest.MonkeyPat
     with pytest.raises(SystemExit) as exc:
         runpy.run_path(str(_LIBEXEC), run_name="__main__")
     assert exc.value.code == 2
+
+
+# --- FEL ------------------------------------------------------------------------------------
+# The framing below is pinned against Dustfab's valetudo-helper-felroot (the helper that boots the
+# current payload on hardware) and sunxi-tools: a 32-byte AWUC header carrying the USB direction
+# and length, a 13-byte AWUS acknowledgement after every transfer, a 16-byte FEL message, and an
+# 8-byte FEL status read that ends every request.
+
+_AWUS = b"AWUS" + bytes(9)
+
+
+class _FelWire:
+    def __init__(self, version: bytes = b"") -> None:
+        self.sent: list[bytes] = []
+        self._version = version
+
+    def send(self, data: bytes) -> None:
+        self.sent.append(bytes(data))
+
+    def recv(self, n: int) -> bytes:
+        if n == 32:
+            return self._version
+        return _AWUS if n == 13 else bytes(n)
+
+
+def _awuc(kind: int, length: int) -> bytes:
+    head = bytearray(32)
+    head[0:4] = b"AWUC"
+    head[8:12] = length.to_bytes(4, "little")
+    head[15] = 0x0C
+    head[16:18] = kind.to_bytes(2, "little")
+    head[18:22] = length.to_bytes(4, "little")
+    return bytes(head)
+
+
+def _fel_msg(kind: int, addr: int, length: int) -> list[bytes]:
+    msg = kind.to_bytes(4, "little") + addr.to_bytes(4, "little") + length.to_bytes(4, "little")
+    return [_awuc(0x12, 16), msg + bytes(4)]
+
+
+def _status() -> list[bytes]:
+    return [_awuc(0x11, 8)]
+
+
+def test_fel_boot_sends_exactly_the_dustfab_helpers_requests() -> None:
+    wire = _FelWire()
+    slept: list[float] = []
+    fsbl = bytes(range(256)) * 300  # 76800 bytes: two 64 KiB write requests
+    payload = b"payload!"
+    fbl.fel_boot(fbl.Fel(wire.send, wire.recv), 0x28000, fsbl, 0x4A000000, payload, 3,
+                 sleep=slept.append)
+
+    first, second = fsbl[:0x10000], fsbl[0x10000:]
+    expected = [
+        *_fel_msg(0x101, 0x28000, len(first)), _awuc(0x12, len(first)), first, *_status(),
+        *_fel_msg(0x101, 0x38000, len(second)), _awuc(0x12, len(second)), second, *_status(),
+        *_fel_msg(0x102, 0x28000, 0), *_status(),
+        *_fel_msg(0x101, 0x4A000000, len(payload)), _awuc(0x12, len(payload)), payload,
+        *_status(),
+        *_fel_msg(0x102, 0x4A000000, 0), *_status(),
+    ]
+    assert wire.sent == expected
+    assert slept == [3]
+
+
+def test_fel_never_sends_the_sunxi_secure_boot_workaround() -> None:
+    # sunxi-fel writes 'mov pc, lr' over the monitor vector at 0x300c8 and runs a thunk at the
+    # scratch address before anything else; none of that may appear on the wire.
+    wire = _FelWire()
+    fbl.fel_boot(fbl.Fel(wire.send, wire.recv), 0x28000, b"f", 0x4A000000, b"p", 0,
+                 sleep=lambda _s: None)
+    addrs = {int.from_bytes(m[4:8], "little") for m in wire.sent if len(m) == 16}
+    assert addrs == {0x28000, 0x4A000000}
+    assert (0xE1A0F00E).to_bytes(4, "little") not in b"".join(wire.sent)
+
+
+def test_fel_version_reads_the_soc_like_sunxi_fel() -> None:
+    reply = (b"AWUSBFEX" + (0x185500).to_bytes(4, "little") + (1).to_bytes(4, "little")
+             + (1).to_bytes(2, "little") + b"\x44\x08" + (0x42200).to_bytes(4, "little")
+             + bytes(8))
+    wire = _FelWire(version=reply)
+    assert fbl.Fel(wire.send, wire.recv).version() == (
+        "AWUSBFEX soc=00001855 ver=0001 scratchpad=00042200")
+    assert wire.sent == [*_fel_msg(0x001, 0, 0), _awuc(0x11, 32), *_status()]
+
+
+def test_fel_rejects_a_reply_that_is_not_an_acknowledgement() -> None:
+    fel = fbl.Fel(lambda _data: None, lambda n: b"XXXX" + bytes(n - 4))
+    with pytest.raises(fbl.FelError, match="bad USB response"):
+        fel.run(0x28000)
+
+
+def test_fel_boot_refuses_an_empty_image_before_touching_the_device() -> None:
+    wire = _FelWire()
+    with pytest.raises(fbl.FelError, match="empty payload"):
+        fbl.fel_boot(fbl.Fel(wire.send, wire.recv), 0x28000, b"f", 0x4A000000, b"", 3,
+                     sleep=lambda _s: None)
+    assert wire.sent == []
+
+
+def test_fel_ver_reports_a_missing_device_like_sunxi_fel(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kw: [])
+    assert fbl.main(["fel-ver"]) == 1
+    assert "Allwinner USB FEL device not found" in capsys.readouterr().err
+
+
+def test_fel_refuses_two_fel_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kw: [object(), object()])
+    with pytest.raises(fbl.FelError, match="2 FEL devices"):
+        fbl.find_fel_device()
+
+
+def test_fel_boot_with_missing_arguments_fails_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
+    assert fbl.main(["fel-boot", "0x28000"]) == 1
+    assert capsys.readouterr().err.startswith("ERROR: ")
+
+
+class _FelEndpoint(_FakeEndpoint):
+    def __init__(self, address: int, log: list[bytes]) -> None:
+        super().__init__(address)
+        self._log = log
+
+    short = False
+
+    def write(self, data: bytes, timeout: int) -> int:
+        assert timeout == fbl.FEL_TIMEOUT
+        self._log.append(bytes(data))
+        return len(data) - 1 if self.short else len(data)
+
+    def read(self, n: int, timeout: int) -> bytes:
+        # Deliver in two pieces to prove recv keeps reading until it has every byte.
+        assert timeout == fbl.FEL_TIMEOUT
+        reply = _AWUS if n == 13 else bytes(n)
+        return reply[: max(1, n // 2)] if n > 1 else reply
+
+
+class _FelInterface(_FakeInterface):
+    def __init__(self, log: list[bytes]) -> None:
+        self._eps = [_FelEndpoint(0x01, log), _FelEndpoint(0x82, log)]
+
+    def __iter__(self) -> Any:
+        return iter(self._eps)
+
+
+def test_fel_open_configures_claims_and_talks_over_the_bulk_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: list[bytes] = []
+    device = _SettlingDevice(failures=0)
+    device._config = _FakeConfig(_FelInterface(log))  # type: ignore[arg-type]
+    _install_usb_util(monkeypatch, device)
+    fel = fbl.Fel.open()
+    assert device.set_configuration_calls == 1 and device.claims == 1
+    fel.run(0x28000)
+    assert log == [*_fel_msg(0x102, 0x28000, 0), *_status()]
+
+
+def test_fel_open_refuses_an_interface_without_bulk_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = _SettlingDevice(failures=0)
+    _install_usb_util(monkeypatch, device)
+    monkeypatch.setattr(fbl.usb.util, "find_descriptor", lambda *_a, **_k: None, raising=False)
+    with pytest.raises(fbl.FelError, match="no bulk endpoint pair"):
+        fbl.Fel.open()
+
+
+def test_fel_open_without_a_device_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fbl.usb.core, "find", lambda **_kw: [])
+    with pytest.raises(fbl.FelError, match="FEL device not found"):
+        fbl.Fel.open()
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [("backend", "no libusb backend available"), ("loader", "libusb could not load")],
+)
+def test_fel_reports_a_missing_libusb_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], error: str, message: str,
+) -> None:
+    def fail(**_kwargs: object) -> object:
+        if error == "backend":
+            raise fbl.usb.core.NoBackendError("No backend available")
+        raise OSError("dlopen(libusb-1.0.dylib): image not found")
+
+    monkeypatch.setattr(fbl.usb.core, "find", fail)
+    assert fbl.main(["fel-ver"]) == 1
+    err = capsys.readouterr().err
+    assert message in err and "Traceback" not in err
+
+
+def test_fel_version_rejects_a_reply_that_is_not_a_fel_version() -> None:
+    wire = _FelWire(version=b"NOTFEL!!" + bytes(24))
+    with pytest.raises(fbl.FelError, match="not a FEL version reply"):
+        fbl.Fel(wire.send, wire.recv).version()
+
+
+def test_fel_boot_command_loads_both_files(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    wire = _FelWire()
+    monkeypatch.setattr(fbl.Fel, "open", classmethod(lambda cls: cls(wire.send, wire.recv)))
+    monkeypatch.setattr(fbl.time, "sleep", lambda _s: None)
+    (tmp_path / "fsbl.bin").write_bytes(b"fsbl")
+    (tmp_path / "payload.bin").write_bytes(b"payload")
+    argv = ["fel-boot", "0x28000", str(tmp_path / "fsbl.bin"), "0x4a000000",
+            str(tmp_path / "payload.bin"), "3"]
+    assert fbl.main(argv) == 0
+    assert capsys.readouterr().out.strip() == "OKAY payload running"
+    assert b"fsbl" in wire.sent and b"payload" in wire.sent
+
+
+def test_fel_ver_command_prints_the_version(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(fbl.Fel, "open", classmethod(lambda cls: cls(lambda _d: None, lambda n: b"")))
+    monkeypatch.setattr(fbl.Fel, "version", lambda self: "AWUSBFEX soc=00001855")
+    assert fbl.main(["fel-ver"]) == 0
+    assert capsys.readouterr().out.strip() == "AWUSBFEX soc=00001855"
+
+
+def test_fel_refuses_a_short_usb_write_instead_of_waiting_for_an_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: list[bytes] = []
+    interface = _FelInterface(log)
+    for ep in interface._eps:
+        ep.short = True
+    device = _SettlingDevice(failures=0)
+    device._config = _FakeConfig(interface)  # type: ignore[arg-type]
+    _install_usb_util(monkeypatch, device)
+    with pytest.raises(fbl.FelError, match="short USB write: 31 of 32 bytes"):
+        fbl.Fel.open().run(0x28000)
