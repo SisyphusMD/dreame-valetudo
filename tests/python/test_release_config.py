@@ -852,15 +852,33 @@ def test_readme_source_install_names_every_host_runtime_dependency() -> None:
         assert dependency in source
 
 
+def _stale_outage_warning(readme: str, version: str) -> str | None:
+    """The README's "stable vX cannot root a robot" warning when it has outlived its stable."""
+    # An rc is cut while the broken stable is still the stable, so the warning is still true there.
+    if "-" in version:
+        return None
+    warning = re.search(r"The stable v(\S+) release cannot root a robot", readme)
+    if warning and warning.group(1) != version:
+        return warning.group(1)
+    return None
+
+
 def test_readme_stable_outage_warning_names_the_current_stable() -> None:
     """The release PR bumps __version__ but rewrites only download links, so a warning that the
     stable release cannot root a robot would otherwise ride into the release that fixes it (#322)."""
-    warning = re.search(r"The stable v(\S+) release cannot root a robot", _README.read_text())
-    if warning:
-        assert warning.group(1) == __version__, (
-            f"README still warns that stable v{warning.group(1)} is broken, but this is "
-            f"v{__version__}: remove the warning once a stable release ships the fix"
-        )
+    stale = _stale_outage_warning(_README.read_text(), __version__)
+    assert stale is None, (
+        f"README still warns that stable v{stale} is broken, but this is v{__version__}: remove "
+        "the warning once a stable release ships the fix"
+    )
+
+
+def test_stale_outage_warning_fails_a_stable_cut_but_not_an_rc() -> None:
+    readme = "> **The stable v0.2.1 release cannot root a robot right now.**"
+    assert _stale_outage_warning(readme, "0.2.1") is None
+    assert _stale_outage_warning(readme, "0.3.0") == "0.2.1"
+    assert _stale_outage_warning(readme, "0.3.0-rc.53") is None
+    assert _stale_outage_warning("no warning", "0.3.0") is None
 
 
 def test_readme_covers_rpm_candidate_switching_and_manual_removal() -> None:
