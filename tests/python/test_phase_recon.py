@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import CFG, FB, CtxFactory, config_responder, stage_dist
+from conftest import CFG, FB, CtxFactory, config_responder, fel_calls, stage_dist
 from libexec.verify_valetudo_contract import DDR3_MODEL_KEYS
 
 from dreame_valetudo import console
@@ -152,17 +152,13 @@ def test_each_fastboot_model_follows_the_official_recon_contract(
     assert ctx.model_spec.dram == ("ddr3" if model in DDR3_MODEL_KEYS else "ddr4")
     assert ctx.fsbl_name == expected_fsbl
     recon(ctx, recovery_backup=False)
-    sunxi_ops = [
-        call[1:]
-        for call in ctx.runner.calls  # type: ignore[attr-defined]
-        if "sunxi-fel" in call[0] and call[1] in {"write", "exe"}
-    ]
-    assert sunxi_ops == [
-        ("write", ctx.model_spec.fsbl_addr, str(ctx.ws.dist / expected_fsbl)),
-        ("exe", ctx.model_spec.fsbl_addr),
-        ("write", ctx.model_spec.payload_addr, str(ctx.ws.dist / "payload.bin")),
-        ("exe", ctx.model_spec.payload_addr),
-    ]
+    fel_ops = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
+               if call[:len(FB)] == FB and call[len(FB)] == "fel-boot"]
+    assert fel_ops == [(
+        "fel-boot", ctx.model_spec.fsbl_addr, str(ctx.ws.dist / expected_fsbl),
+        ctx.model_spec.payload_addr, str(ctx.ws.dist / "payload.bin"), "3",
+    )]
+    assert not any("sunxi-fel" in call[0] for call in ctx.runner.calls)  # type: ignore[attr-defined]
 
 
 def test_standalone_recon_revalidates_a_stale_sunxi_cache(
@@ -254,7 +250,7 @@ def test_recon_waits_for_interactive_readiness_before_polling(make_ctx: CtxFacto
         "Ready to start watching for the robot? Press Enter when ready.",
         "Robot serial number? (Enter to skip)",
     ]
-    assert any(call.endswith("sunxi-fel ver") for call in ctx.runner.transcript())
+    assert any(call.endswith("fastboot-libusb.py fel-ver") for call in ctx.runner.transcript())
 
 
 def test_recon_intro_prints_only_once_per_process(make_ctx: CtxFactory) -> None:
@@ -288,7 +284,7 @@ def test_recon_does_not_prompt_for_readiness_non_interactively(make_ctx: CtxFact
 
     ctx.console.ask = unexpected_prompt
     recon(ctx, recovery_backup=False)
-    assert any(call.endswith("sunxi-fel ver") for call in ctx.runner.transcript())
+    assert any(call.endswith("fastboot-libusb.py fel-ver") for call in ctx.runner.transcript())
 
 
 def test_recon_declined_fel_retry_still_dies(make_ctx: CtxFactory) -> None:
@@ -351,10 +347,12 @@ def test_recon_binds_its_completion_marker_to_the_model_and_the_robot(
 
     robot = ctx.need_robot()
     assert robot.state_get("recon") == _marker("not-requested", model="d10s-pro")
-    # Phase 1 stays read-only: no partition write, flash-authorization token, or staged pull.
+    # Phase 1 stays read-only: no partition write, flash-authorization token, or staged pull. The
+    # FEL calls only probe and load the payload into RAM.
     fastboot = [call[len(FB):] for call in ctx.runner.calls  # type: ignore[attr-defined]
                 if call[:len(FB)] == FB]
-    assert all(call[0] in {"devices", "wait", "getvar"} for call in fastboot), fastboot
+    allowed = {"devices", "wait", "getvar", "fel-ver", "fel-boot"}
+    assert all(call[0] in allowed for call in fastboot), fastboot
 
 
 def test_recon_is_idempotent(make_ctx: CtxFactory) -> None:
@@ -722,6 +720,7 @@ def test_recon_fastboot_transcript_remains_read_only(make_ctx: CtxFactory) -> No
                       if call[:len(FB)] == FB]
     assert fastboot_calls == [
         ("devices",),
+        *fel_calls(ctx),
         ("wait", "90"),
         ("getvar", "config"),
         ("getvar", "serialno"),
