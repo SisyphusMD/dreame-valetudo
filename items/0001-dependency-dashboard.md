@@ -9,7 +9,7 @@ This issue lists Renovate updates and detected dependencies. Read the [Dependenc
 
 The following updates have all been created. To force a retry/rebase of any, click on a checkbox below.
 
- - [ ] <!-- rebase-branch=renovate/quay.io-pypa-manylinux_2_28-2026.11.x -->[chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.21-1](pulls/316)
+ - [ ] <!-- rebase-branch=renovate/quay.io-pypa-manylinux_2_28-2026.11.x -->[chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.27-1](pulls/316)
 
 ## Detected Dependencies
 
@@ -329,7 +329,7 @@ The following updates have all been created. To force a retry/rebase of any, cli
 
 <details><summary>packaging/release-pins.env (3)</summary>
 
- - `quay.io/pypa/manylinux_2_28 2026.11.14-1@sha256:834a11a02642a46e580b62f25f5b04588355092c8677eaf0393e3ea1997001a3` → [Updates: `2026.11.21-1`]
+ - `quay.io/pypa/manylinux_2_28 2026.11.14-1@sha256:834a11a02642a46e580b62f25f5b04588355092c8677eaf0393e3ea1997001a3` → [Updates: `2026.11.27-1`]
  - `goreleaser/nfpm v2.49.0@sha256:9ea46a59c4d055ef7071b22f3520b53e8dad98e18043b2f881b53bd7ffec634e`
  - `ubuntu-26.04-current 26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db`
 

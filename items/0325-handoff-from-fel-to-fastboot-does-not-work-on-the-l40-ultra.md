@@ -1,6 +1,6 @@
 # #325 Handoff from FEL to Fastboot does not work on the L40 Ultra
 
-- Kind: issue, state: open, by BoostCookie, created 2026-11-23T12:35:40-08:00
+- Kind: issue, state: closed, by BoostCookie, created 2026-11-23T12:35:40-08:00
 - Labels: status:in-progress; milestone: none
 
 ### Version
@@ -139,3 +139,13 @@ Status: fix up as draft PR #338, not yet proven on a robot.
 The FEL probe and the FSBL and payload load now go through the libusb client and send only the plain FEL requests the Dustfab helper sends, with no sunxi-fel secure-boot workaround. sunxi-fel remains only for `DREAME_FASTBOOT=system`.
 
 Next: one recon run on an X40 Ultra, which gets the same Dustfab FSBL and payload as the L40 Ultra. If it reaches fastboot, that proves both the cause and the fix. If not, the same session runs `sunxi-fel ver` followed by the Dustfab helper's `boot`, to test the cause directly.
+
+## cody, 2026-11-27T07:05:51-08:00
+
+Status: the fix (PR #338) is merged and closes this issue. FEL loading now goes through the bundled libusb client, which sends only the plain FEL requests Dustfab's own helper sends, so sunxi-fel's secure-boot workaround no longer runs first. A release candidate, v0.3.0-rc.53, is building.
+
+Not yet proven on a robot. Next: a recon run on an X40 Ultra, which gets the same Dustfab FSBL and payload as the L40 Ultra. If the robot still never reaches fastboot, this issue gets reopened with that run's log.
+
+## cody, 2026-11-27T09:00:12-08:00
+
+Status: v0.3.0-rc.53 is published and the dreame-valetudo-rc Homebrew formula now points at it. The X40 Ultra recon run is next.

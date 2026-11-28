@@ -319,7 +319,7 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 313 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to f64b2ff](items/0313-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
 | 314 | pull | closed | [chore: default CLI update checks, the Homebrew tap and links to Forgejo](items/0314-chore-default-cli-update-checks-the-homebrew-tap-and-links-t.md) |
 | 315 | pull | closed | [chore(deps): update dependency pyyaml to v6.0.4](items/0315-chore-deps-update-dependency-pyyaml-to-v6-0-4.md) |
-| 316 | pull | open | [chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.21-1](items/0316-chore-deps-update-quay-io-pypa-manylinux-2-28-docker-tag-to-.md) |
+| 316 | pull | open | [chore(deps): update quay.io/pypa/manylinux_2_28 docker tag to v2026.11.27-1](items/0316-chore-deps-update-quay-io-pypa-manylinux-2-28-docker-tag-to-.md) |
 | 317 | issue | closed | [AI review runs on any signed-in user's PR comment](items/0317-ai-review-runs-on-any-signed-in-user-s-pr-comment.md) |
 | 318 | pull | closed | [fix(ai-review): start a review from a PR comment only for pushers and the PR author](items/0318-fix-ai-review-start-a-review-from-a-pr-comment-only-for-push.md) |
 | 319 | issue | closed | [chore(ci): bring the AI review copy up to canonical project-rules 64b857c](items/0319-chore-ci-bring-the-ai-review-copy-up-to-canonical-project-ru.md) |
@@ -328,7 +328,7 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 322 | issue | closed | [README: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0322-readme-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-poin.md) |
 | 323 | pull | closed | [docs: warn that stable v0.2.1 cannot fetch stage 1 and point new users at the release candidate](items/0323-docs-warn-that-stable-v0-2-1-cannot-fetch-stage-1-and-point-.md) |
 | 324 | issue | open | [File Stefan Gehr's L40 Ultra reports if he doesn't](items/0324-file-stefan-gehr-s-l40-ultra-reports-if-he-doesn-t.md) |
-| 325 | issue | open | [Handoff from FEL to Fastboot does not work on the L40 Ultra](items/0325-handoff-from-fel-to-fastboot-does-not-work-on-the-l40-ultra.md) |
+| 325 | issue | closed | [Handoff from FEL to Fastboot does not work on the L40 Ultra](items/0325-handoff-from-fel-to-fastboot-does-not-work-on-the-l40-ultra.md) |
 | 326 | issue | open | [Import old backups](items/0326-import-old-backups.md) |
 | 327 | pull | closed | [chore(deps): update ubuntu-22.04-compat:22.04 docker digest to b000e69](items/0327-chore-deps-update-ubuntu-22-04-compat-22-04-docker-digest-to.md) |
 | 328 | issue | closed | [chore(ci): bring the AI review copy up to project-rules 72f8fcc](items/0328-chore-ci-bring-the-ai-review-copy-up-to-project-rules-72f8fc.md) |
@@ -341,4 +341,9 @@ Generated nightly from the primary Forgejo; do not edit. `json/` holds the full 
 | 335 | issue | closed | [Call the shared gate and AI review workflows instead of copying them](items/0335-call-the-shared-gate-and-ai-review-workflows-instead-of-copy.md) |
 | 336 | pull | closed | [chore(gate): call the shared gate and AI review workflows](items/0336-chore-gate-call-the-shared-gate-and-ai-review-workflows.md) |
 | 337 | pull | closed | [ci: map PROJECT_RULES_TOKEN into the shared jobs](items/0337-ci-map-project-rules-token-into-the-shared-jobs.md) |
-| 338 | pull | open | [WIP: fix(fel): load the FSBL and payload over libusb instead of sunxi-fel](items/0338-wip-fix-fel-load-the-fsbl-and-payload-over-libusb-instead-of.md) |
+| 338 | pull | closed | [fix(fel): load the FSBL and payload over libusb instead of sunxi-fel](items/0338-fix-fel-load-the-fsbl-and-payload-over-libusb-instead-of-sun.md) |
+| 339 | issue | open | [docs(packaging): Secrets table is missing PROJECT_RULES_TOKEN and ISSUE_READ_TOKEN](items/0339-docs-packaging-secrets-table-is-missing-project-rules-token-.md) |
+| 340 | issue | closed | [Call project-rules' shared issue-archive workflow](items/0340-call-project-rules-shared-issue-archive-workflow.md) |
+| 341 | pull | closed | [chore(ci): call the shared issue-archive workflow](items/0341-chore-ci-call-the-shared-issue-archive-workflow.md) |
+| 342 | issue | closed | [test: the README stable-outage check fails every rc cut](items/0342-test-the-readme-stable-outage-check-fails-every-rc-cut.md) |
+| 343 | pull | closed | [test: check the README stable-outage warning only on stable cuts](items/0343-test-check-the-readme-stable-outage-warning-only-on-stable-c.md) |
